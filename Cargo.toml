@@ -1,0 +1,10 @@
+[package]
+name = "crabot"
+version = "0.0.0"
+edition = "2024"
+description = "A smart and powerful coding agent with native GUI."
+license = "Apache-2.0"
+
+[dependencies]
+adk-rust = "1.0.0"
+iced = "0.14.0"
