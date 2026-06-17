@@ -9,19 +9,21 @@ use iced::{
 
 use crate::Message;
 
+use std::path::PathBuf;
+
 #[derive(Debug, Clone)]
-pub struct WorkspaceEntry {
+pub struct FilepathEntry {
     pub display: String,
-    pub path: String,
+    pub path: PathBuf,
 }
 
-impl std::fmt::Display for WorkspaceEntry {
+impl std::fmt::Display for FilepathEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display)
     }
 }
 
-impl PartialEq for WorkspaceEntry {
+impl PartialEq for FilepathEntry {
     fn eq(&self, other: &Self) -> bool {
         self.path == other.path
     }
@@ -70,27 +72,30 @@ fn expandable_header<'a>(
 }
 
 pub fn preamble_field_view<'a>(
-    expanded: bool,
     field: &'a (bool, String),
-    content: &'a text_editor::Content,
+    options: &'a [FilepathEntry],
+    selected_display: &'a str,
 ) -> Element<'a, Message> {
+    let checked = field.0;
     let name = "Preamble";
-    let header = expandable_header(name, field.0, expanded);
-
-    if expanded {
-        column![
-            header,
-            scrollable(
-                text_editor(content)
-                    .on_action(move |a| Message::EditSystemContent(name, a))
-                    .height(Length::Fixed(120.0)),
-            ),
-        ]
-        .spacing(4)
-        .into()
+    let selected = if selected_display.is_empty() {
+        None
     } else {
-        header
-    }
+        options
+            .iter()
+            .find(|e| e.display == selected_display)
+            .cloned()
+    };
+
+    row![
+        checkbox(checked)
+            .label(name)
+            .on_toggle(move |v| Message::ToggleSystemEnabled(name, v)),
+        pick_list(options, selected, Message::SelectPreamble).width(Fill),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 pub fn rules_field_view<'a>(
@@ -143,14 +148,17 @@ pub fn tools_field_view<'a>(
 
 pub fn workspace_field_view<'a>(
     field: &'a (bool, String),
-    options: Vec<WorkspaceEntry>,
+    options: &'a [FilepathEntry],
 ) -> Element<'a, Message> {
     let checked = field.0;
     let name = "Workspace";
     let selected = if field.1.is_empty() {
         None
     } else {
-        options.iter().find(|e| e.path == field.1).cloned()
+        options
+            .iter()
+            .find(|e| e.path == std::path::Path::new(&field.1))
+            .cloned()
     };
 
     row![
@@ -224,18 +232,40 @@ pub fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
     .into()
 }
 
-pub fn build_workspace_options(recent: &[String]) -> Vec<WorkspaceEntry> {
+pub fn build_preamble_options() -> Vec<FilepathEntry> {
+    let dir = home::home_dir()
+        .unwrap_or_default()
+        .join(".crabot")
+        .join("preamble");
+    let mut entries = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "md") {
+                let display = path
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                entries.push(FilepathEntry { display, path });
+            }
+        }
+    }
+    entries
+}
+
+pub fn build_workspace_options(recent: &[PathBuf]) -> Vec<FilepathEntry> {
     use std::collections::HashMap;
 
-    let mut entries: Vec<WorkspaceEntry> = recent
+    let mut entries: Vec<FilepathEntry> = recent
         .iter()
         .map(|path| {
-            let display = std::path::Path::new(path)
+            let display = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or(path)
+                .unwrap_or("unknown")
                 .to_string();
-            WorkspaceEntry {
+            FilepathEntry {
                 display,
                 path: path.clone(),
             }
@@ -248,18 +278,17 @@ pub fn build_workspace_options(recent: &[String]) -> Vec<WorkspaceEntry> {
         *counts.entry(e.display.clone()).or_default() += 1;
     }
     for e in &mut entries {
-        if counts[&e.display] > 1 {
-            if let Some(parent) = std::path::Path::new(&e.path).parent() {
-                if let Some(parent_name) = parent.file_name().and_then(|n| n.to_str()) {
-                    e.display = format!("{}/{}", parent_name, e.display);
-                }
-            }
+        if counts[&e.display] > 1
+            && let Some(parent) = e.path.parent()
+            && let Some(parent_name) = parent.file_name().and_then(|n| n.to_str())
+        {
+            e.display = format!("{}/{}", parent_name, e.display);
         }
     }
 
-    entries.push(WorkspaceEntry {
+    entries.push(FilepathEntry {
         display: "📁 Select new...".to_string(),
-        path: String::new(),
+        path: PathBuf::new(),
     });
 
     entries

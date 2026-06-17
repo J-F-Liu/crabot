@@ -8,8 +8,10 @@ use iced::{
     widget::{column, container, mouse_area, pick_list, row, rule, text, text_editor, toggler},
     window,
 };
-use model::Provider;
-use system::{SystemPrompt, WorkspaceEntry};
+use std::path::PathBuf;
+
+use model::{Model, Provider};
+use system::{FilepathEntry, SystemPrompt};
 
 pub fn main() -> iced::Result {
     iced::application(App::boot, App::update, App::view)
@@ -38,10 +40,6 @@ struct Drag {
     right_start: f32,
 }
 
-// ── check item ─────────────────────────────────────────────────────
-
-// ── application state ─────────────────────────────────────────────
-
 struct App {
     left_w: f32,
     right_w: f32,
@@ -55,14 +53,12 @@ struct App {
     thinking_level: Option<usize>,
     theme: Theme,
     system_prompt: SystemPrompt,
-    preamble_expanded: bool,
     rules_expanded: bool,
     tools_expanded: bool,
-    workspace_expanded: bool,
     files_expanded: bool,
-    date_expanded: bool,
-    recent_workspaces: Vec<String>,
-    preamble_content: text_editor::Content,
+    selected_preamble: String,
+    preamble_options: Vec<FilepathEntry>,
+    workspace_options: Vec<FilepathEntry>,
     rules_content: text_editor::Content,
     tools_content: text_editor::Content,
     files_content: text_editor::Content,
@@ -81,8 +77,10 @@ pub enum Message {
     ToggleSystemExpanded(&'static str),
     EditSystemField(&'static str, String),
     EditSystemContent(&'static str, text_editor::Action),
-    SelectWorkspace(WorkspaceEntry),
-    WorkspaceDialogResult(Option<String>),
+    SelectWorkspace(FilepathEntry),
+    WorkspaceDialogResult(Option<PathBuf>),
+    SelectPreamble(FilepathEntry),
+    PreambleFileResult(Result<String, String>),
 }
 
 const MIN_W: f32 = 280.0;
@@ -114,14 +112,12 @@ impl App {
                 files: (true, String::new()),
                 date: (true, String::new()),
             },
-            preamble_expanded: false,
             rules_expanded: false,
             tools_expanded: false,
-            workspace_expanded: false,
             files_expanded: false,
-            date_expanded: false,
-            recent_workspaces: Vec::new(),
-            preamble_content: text_editor::Content::new(),
+            selected_preamble: String::new(),
+            preamble_options: system::build_preamble_options(),
+            workspace_options: system::build_workspace_options(&[]),
             rules_content: text_editor::Content::new(),
             files_content: text_editor::Content::new(),
             tools_content: text_editor::Content::new(),
@@ -182,9 +178,8 @@ impl App {
                 self.reselect_model();
             }
             Message::SelectModel(id) => {
-                if let Some(index) = self.selected_provider {
-                    self.selected_model =
-                        self.providers[index].models.iter().position(|m| m.id == id);
+                if let Some(provider) = self.selected_provider() {
+                    self.selected_model = provider.models.iter().position(|m| m.id == id);
                     self.reset_thinking();
                 }
             }
@@ -194,11 +189,8 @@ impl App {
                 }
             }
             Message::SelectThinkingLevel(level) => {
-                if let (Some(pi), Some(mi)) = (self.selected_provider, self.selected_model) {
-                    self.thinking_level = self.providers[pi].models[mi]
-                        .thinking_levels
-                        .iter()
-                        .position(|l| *l == level);
+                if let Some(model) = self.selected_model() {
+                    self.thinking_level = model.thinking_levels.iter().position(|l| *l == level);
                 }
             }
             Message::ToggleSystemEnabled(name, enabled) => {
@@ -207,12 +199,9 @@ impl App {
                 }
             }
             Message::ToggleSystemExpanded(name) => match name {
-                "Preamble" => self.preamble_expanded = !self.preamble_expanded,
                 "Rules" => self.rules_expanded = !self.rules_expanded,
                 "Tools" => self.tools_expanded = !self.tools_expanded,
-                "Workspace" => self.workspace_expanded = !self.workspace_expanded,
                 "Files" => self.files_expanded = !self.files_expanded,
-                "Date" => self.date_expanded = !self.date_expanded,
                 _ => {}
             },
             Message::EditSystemField(name, value) => {
@@ -232,13 +221,11 @@ impl App {
                 }
             }
             Message::SelectWorkspace(entry) => {
-                if entry.path.is_empty() {
+                if entry.path.as_os_str().is_empty() {
                     return Task::perform(
                         async { rfd::FileDialog::new().pick_folder() },
                         |maybe_path| {
-                            Message::WorkspaceDialogResult(
-                                maybe_path.map(|p| p.to_string_lossy().to_string()),
-                            )
+                            Message::WorkspaceDialogResult(maybe_path)
                         },
                     );
                 }
@@ -248,49 +235,62 @@ impl App {
                 self.set_workspace(path);
             }
             Message::WorkspaceDialogResult(None) => {}
+            Message::SelectPreamble(entry) => {
+                self.selected_preamble = entry.display.clone();
+                return Task::perform(
+                    async move { std::fs::read_to_string(&entry.path).map_err(|e| e.to_string()) },
+                    Message::PreambleFileResult,
+                );
+            }
+            Message::PreambleFileResult(Ok(content)) => {
+                self.system_prompt.preamble.1 = content;
+            }
+            Message::PreambleFileResult(Err(_)) => {}
         }
         Task::none()
     }
 
-
     /// Bump `path` to top of recents, persist it as current workspace,
     /// and rebuild the files tree.
-    fn set_workspace(&mut self, path: String) {
-        self.recent_workspaces.retain(|p| p != &path);
-        self.recent_workspaces.insert(0, path.clone());
-        self.recent_workspaces.truncate(10);
-        self.system_prompt.workspace.1 = path.clone();
+    fn set_workspace(&mut self, path: PathBuf) {
+        let mut paths: Vec<PathBuf> = self
+            .workspace_options
+            .iter()
+            .filter(|e| !e.path.as_os_str().is_empty())
+            .map(|e| e.path.clone())
+            .collect();
+        paths.retain(|p| p != &path);
+        paths.insert(0, path.clone());
+        paths.truncate(10);
+
+        self.system_prompt.workspace.1 = path.to_string_lossy().to_string();
         self.system_prompt.files.1 = workspace::build_files_tree(&path);
         self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
+        self.workspace_options = system::build_workspace_options(&paths);
     }
 
     fn reselect_model(&mut self) {
         self.selected_model = self
-            .selected_provider
-            .and_then(|i| (!self.providers[i].models.is_empty()).then_some(0));
+            .selected_provider()
+            .and_then(|p| (!p.models.is_empty()).then_some(0));
         self.reset_thinking();
     }
 
     fn reset_thinking(&mut self) {
-        let model = self
-            .selected_provider
-            .and_then(|pi| self.providers[pi].models.get(self.selected_model?));
-        self.thinking_enabled = model.is_some_and(|m| m.thinking);
-        self.thinking_level = model.and_then(|m| (!m.thinking_levels.is_empty()).then_some(0));
+        let (thinking, has_levels) = self
+            .selected_model()
+            .map(|m| (m.thinking, !m.thinking_levels.is_empty()))
+            .unwrap_or((false, false));
+        self.thinking_enabled = thinking;
+        self.thinking_level = has_levels.then_some(0);
     }
 
     fn thinking_supported(&self) -> bool {
-        self.selected_provider
-            .and_then(|pi| {
-                self.selected_model
-                    .and_then(|mi| self.providers[pi].models.get(mi))
-            })
-            .is_some_and(|m| m.thinking)
+        self.selected_model().is_some_and(|m| m.thinking)
     }
 
     fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
         match name {
-            "Preamble" => Some(&mut self.preamble_content),
             "Rules" => Some(&mut self.rules_content),
             "Tools" => Some(&mut self.tools_content),
             "Files" => Some(&mut self.files_content),
@@ -298,24 +298,17 @@ impl App {
         }
     }
 
-    fn view(&self) -> Element<'_, Message> {
-        let selected: Option<&Provider> =
-            self.selected_provider.and_then(|i| self.providers.get(i));
+    fn selected_provider(&self) -> Option<&Provider> {
+        self.selected_provider.and_then(|i| self.providers.get(i))
+    }
 
-        let models: &[model::Model] = match self.selected_provider {
-            Some(i) => &self.providers[i].models[..],
-            None => &[],
-        };
-        let selected_model: Option<&model::Model> = self.selected_model.and_then(|i| models.get(i));
+    fn selected_model(&self) -> Option<&Model> {
+        self.selected_provider()
+            .and_then(|p| self.selected_model.and_then(|i| p.models.get(i)))
+    }
 
-        let levels: &[String] = match (self.selected_provider, self.selected_model) {
-            (Some(pi), Some(mi)) => &self.providers[pi].models[mi].thinking_levels[..],
-            _ => &[],
-        };
-        let selected_level: Option<&String> = self.thinking_level.and_then(|i| levels.get(i));
-
+    fn thinking_controls(&self) -> Element<'_, Message> {
         let supported = self.thinking_supported();
-
         let toggle: Element<_> = if supported {
             toggler(self.thinking_enabled)
                 .on_toggle(Message::ToggleThinking)
@@ -326,7 +319,12 @@ impl App {
                 .into()
         };
 
-        let thinking_row: Element<_> = if supported {
+        if supported {
+            let levels: &[String] = self
+                .selected_model()
+                .map(|m| &*m.thinking_levels)
+                .unwrap_or(&[]);
+            let selected_level = self.thinking_level.and_then(|i| levels.get(i));
             row![
                 label("Thinking", 60.0),
                 toggle,
@@ -341,7 +339,13 @@ impl App {
                 .spacing(8)
                 .align_y(Alignment::Center)
                 .into()
-        };
+        }
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let selected = self.selected_provider();
+        let models: &[Model] = selected.map(|p| &*p.models).unwrap_or(&[]);
+        let selected_model = self.selected_model();
 
         let mut left_col = column![
             row![
@@ -359,16 +363,16 @@ impl App {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            thinking_row,
+            self.thinking_controls(),
             rule::horizontal(0),
         ]
         .spacing(8);
 
         left_col = left_col.push(label("System Prompt", 140.0));
         left_col = left_col.push(system::preamble_field_view(
-            self.preamble_expanded,
             &self.system_prompt.preamble,
-            &self.preamble_content,
+            &self.preamble_options,
+            &self.selected_preamble,
         ));
         left_col = left_col.push(system::rules_field_view(
             self.rules_expanded,
@@ -380,10 +384,9 @@ impl App {
             &self.system_prompt.tools,
             &self.tools_content,
         ));
-        let workspace_opts = system::build_workspace_options(&self.recent_workspaces);
         left_col = left_col.push(system::workspace_field_view(
             &self.system_prompt.workspace,
-            workspace_opts,
+            &self.workspace_options,
         ));
         left_col = left_col.push(system::files_field_view(
             self.files_expanded,

@@ -35,16 +35,15 @@ struct FlatEntry {
 }
 
 /// Build a sorted, capped directory tree rendered as a string.
-pub fn build_files_tree(workspace: &str) -> String {
-    if workspace.is_empty() {
+pub fn build_files_tree(workspace: &Path) -> String {
+    if workspace.as_os_str().is_empty() {
         return String::new();
     }
-    let root = Path::new(workspace);
-    if !root.is_dir() {
+    if !workspace.is_dir() {
         return String::new();
     }
 
-    let entries = walk_entries(root);
+    let entries = walk_entries(workspace);
     if entries.is_empty() {
         return ".".to_string();
     }
