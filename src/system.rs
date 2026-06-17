@@ -1,4 +1,3 @@
-use chrono::Local;
 use iced::{
     Alignment, Element, Fill, Length, Padding,
     widget::{
@@ -49,6 +48,49 @@ impl SystemPrompt {
             "Date" => Some(&mut self.date),
             _ => None,
         }
+    }
+
+    /// Concatenate all enabled components, returning the full prompt string.
+    pub fn get_prompt(&self) -> String {
+        let mut prompt = String::new();
+        if let (true, content) = &self.preamble {
+            if !content.is_empty() {
+                prompt.push_str(content);
+                prompt.push('\n');
+            }
+        }
+        if let (true, content) = &self.rules {
+            if !content.is_empty() {
+                prompt.push_str(content);
+                prompt.push('\n');
+            }
+        }
+        if let (true, tools) = &self.tools {
+            if !tools.is_empty() {
+                prompt.push_str(tools);
+                prompt.push('\n');
+            }
+        }
+        if let (true, workspace) = &self.workspace {
+            if !workspace.is_empty() {
+                prompt.push_str(&format!("Current Workspace: {}", workspace));
+                prompt.push('\n');
+            }
+        }
+        if let (true, files) = &self.files {
+            if !files.is_empty() {
+                prompt.push_str("<workspace-tree>\nWorking directory layout (sorted by mtime, recent first; depth ≤ 3):\n");
+                prompt.push_str(files);
+                prompt.push_str("\n</workspace-tree>\n");
+            }
+        }
+        if let (true, date) = &self.date {
+            if !date.is_empty() {
+                prompt.push_str(&format!("Current Date: {}", date));
+                prompt.push('\n');
+            }
+        }
+        prompt
     }
 }
 
@@ -215,17 +257,16 @@ pub fn files_field_view<'a>(
 pub fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
     let checked = field.0;
     let name = "Date";
-    let today = Local::now().format("%Y-%m-%d").to_string();
-    let value: &str = if field.1.is_empty() { &today } else { &field.1 };
 
     row![
         checkbox(checked)
             .label(name)
             .on_toggle(move |v| Message::ToggleSystemEnabled(name, v)),
-        text_input("YYYY-MM-DD", value)
+        text_input("YYYY-MM-DD", &field.1)
             .on_input(move |s| Message::EditSystemField(name, s))
-            .width(Length::Fixed(100.0))
-            .padding(4),
+            .width(Length::Fixed(110.0))
+            .padding(4)
+            .align_x(iced::alignment::Horizontal::Center),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
