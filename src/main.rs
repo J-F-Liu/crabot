@@ -1,17 +1,14 @@
 mod adk;
 mod model;
+mod session;
 mod system;
 mod tool;
 mod user;
 mod workspace;
 
 use iced::{
-    Alignment, Element, Event, Fill, Font, Length, Point, Size, Subscription, Task, Theme, event,
-    font, mouse,
-    widget::{
-        self, button, column, container, mouse_area, pick_list, row, rule, scrollable, text,
-        text_editor,
-    },
+    Element, Event, Fill, Font, Length, Point, Size, Subscription, Task, Theme, event, font, mouse,
+    widget::{self, column, container, mouse_area, row, rule, scrollable, text, text_editor},
     window,
 };
 use iced_selection::Text as SelectableText;
@@ -20,9 +17,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use model::{Model, ModelConfig, Provider, model_config_view};
+use session::ChatMessage;
 use system::{FilepathEntry, SystemPrompt};
 use tool::{DevTool, dev_tools_view};
-use user::{ChatMessage, UserPrompt, WorkMode};
+use user::{UserPrompt, WorkMode, user_prompt_view};
 
 pub fn main() -> iced::Result {
     iced::application(App::boot, App::update, App::view)
@@ -85,10 +83,10 @@ pub enum Message {
     SelectModel(String),
     ToggleThinking(bool),
     SelectThinkingLevel(String),
-    ToggleSystemEnabled(&'static str, bool),
-    ToggleSystemExpanded(&'static str),
-    EditSystemField(&'static str, String),
-    EditSystemContent(&'static str, text_editor::Action),
+    ToggleEnabled(&'static str, bool),
+    ToggleExpanded(&'static str),
+    EditTextField(&'static str, String),
+    EditTextContent(&'static str, text_editor::Action),
     SelectWorkspace(FilepathEntry),
     WorkspaceDialogResult(Option<PathBuf>),
     SelectPreamble(FilepathEntry),
@@ -96,7 +94,7 @@ pub enum Message {
     ToggleDevTool(String, bool),
     EditUserPrompt(text_editor::Action),
     SelectWorkMode(WorkMode),
-    Send,
+    SendPrompt,
     SendResult(Result<ChatMessage, String>),
     ScrollToEnd,
 }
@@ -206,21 +204,18 @@ impl App {
                     cfg.model_id = id.clone();
                     cfg.thinking = false;
                     cfg.thinking_level = String::new();
-                    if let Some(p) = self.providers.iter().find(|p| p.id == cfg.provider_id) {
-                        if let Some(m) = p.models.iter().find(|m| m.id == id) {
-                            cfg.thinking = m.thinking;
-                            cfg.thinking_level =
-                                m.thinking_levels.first().cloned().unwrap_or_default();
-                        }
+                    if let Some(p) = self.providers.iter().find(|p| p.id == cfg.provider_id)
+                        && let Some(m) = p.models.iter().find(|m| m.id == id)
+                    {
+                        cfg.thinking = m.thinking;
+                        cfg.thinking_level = m.thinking_levels.first().cloned().unwrap_or_default();
                     }
                 }
             }
             Message::ToggleThinking(enabled) => {
                 let supported = self.selected_model().is_some_and(|(_, m)| m.thinking);
-                if supported {
-                    if let Some(ref mut cfg) = self.selected_model {
-                        cfg.thinking = enabled;
-                    }
+                if supported && let Some(ref mut cfg) = self.selected_model {
+                    cfg.thinking = enabled;
                 }
             }
             Message::SelectThinkingLevel(level) => {
@@ -228,7 +223,7 @@ impl App {
                     cfg.thinking_level = level;
                 }
             }
-            Message::ToggleSystemEnabled(name, enabled) => {
+            Message::ToggleEnabled(name, enabled) => {
                 if let Some(field) = self.system_prompt.get_mut(name) {
                     field.0 = enabled;
                 }
@@ -238,18 +233,18 @@ impl App {
                     self.dev_tools.insert(*tool, enabled);
                 }
             }
-            Message::ToggleSystemExpanded(name) => match name {
+            Message::ToggleExpanded(name) => match name {
                 "Rules" => self.rules_expanded = !self.rules_expanded,
                 "Tools" => self.tools_expanded = !self.tools_expanded,
                 "Files" => self.files_expanded = !self.files_expanded,
                 _ => {}
             },
-            Message::EditSystemField(name, value) => {
+            Message::EditTextField(name, value) => {
                 if let Some(field) = self.system_prompt.get_mut(name) {
                     field.1 = value;
                 }
             }
-            Message::EditSystemContent(name, action) => {
+            Message::EditTextContent(name, action) => {
                 let text = if let Some(content) = self.content_mut(name) {
                     content.perform(action);
                     content.text()
@@ -264,7 +259,7 @@ impl App {
                 if entry.path.as_os_str().is_empty() {
                     return Task::perform(
                         async { rfd::FileDialog::new().pick_folder() },
-                        |maybe_path| Message::WorkspaceDialogResult(maybe_path),
+                        Message::WorkspaceDialogResult,
                     );
                 }
                 self.set_workspace(entry.path);
@@ -291,7 +286,7 @@ impl App {
             Message::SelectWorkMode(mode) => {
                 self.workmode = mode;
             }
-            Message::Send => {
+            Message::SendPrompt => {
                 let content = self.user_prompt.text();
                 if content.trim().is_empty() {
                     return Task::none();
@@ -425,23 +420,7 @@ impl App {
             ),
             system::date_field_view(&self.system_prompt.date),
             label("User Prompt", 140.0),
-            text_editor(&self.user_prompt)
-                .height(120)
-                .on_action(Message::EditUserPrompt),
-            row![
-                pick_list(
-                    &[WorkMode::Plan, WorkMode::Code, WorkMode::Review][..],
-                    Some(self.workmode),
-                    Message::SelectWorkMode,
-                )
-                .width(120),
-                iced::widget::Space::new().width(Length::Fill),
-                button(text("Send").align_x(Alignment::Center))
-                    .width(80)
-                    .on_press(Message::Send),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
+            user_prompt_view(&self.user_prompt, self.workmode),
             label("Dev Tools", 140.0),
             dev_tools_view(&self.dev_tools),
         ]

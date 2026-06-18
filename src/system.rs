@@ -53,42 +53,42 @@ impl SystemPrompt {
     /// Concatenate all enabled components, returning the full prompt string.
     pub fn get_prompt(&self) -> String {
         let mut prompt = String::new();
-        if let (true, content) = &self.preamble {
-            if !content.is_empty() {
-                prompt.push_str(content);
-                prompt.push('\n');
-            }
+        if let (true, content) = &self.preamble
+            && !content.is_empty()
+        {
+            prompt.push_str(content);
+            prompt.push('\n');
         }
-        if let (true, content) = &self.rules {
-            if !content.is_empty() {
-                prompt.push_str(content);
-                prompt.push('\n');
-            }
+        if let (true, content) = &self.rules
+            && !content.is_empty()
+        {
+            prompt.push_str(content);
+            prompt.push('\n');
         }
-        if let (true, tools) = &self.tools {
-            if !tools.is_empty() {
-                prompt.push_str(tools);
-                prompt.push('\n');
-            }
+        if let (true, tools) = &self.tools
+            && !tools.is_empty()
+        {
+            prompt.push_str(tools);
+            prompt.push('\n');
         }
-        if let (true, workspace) = &self.workspace {
-            if !workspace.is_empty() {
-                prompt.push_str(&format!("Current Workspace: {}", workspace));
-                prompt.push('\n');
-            }
+        if let (true, workspace) = &self.workspace
+            && !workspace.is_empty()
+        {
+            prompt.push_str(&format!("Current Workspace: {}", workspace));
+            prompt.push('\n');
         }
-        if let (true, files) = &self.files {
-            if !files.is_empty() {
-                prompt.push_str("<workspace-tree>\nWorking directory layout (sorted by mtime, recent first; depth ≤ 3):\n");
-                prompt.push_str(files);
-                prompt.push_str("\n</workspace-tree>\n");
-            }
+        if let (true, files) = &self.files
+            && !files.is_empty()
+        {
+            prompt.push_str("<workspace-tree>\nWorking directory layout (sorted by mtime, recent first; depth ≤ 3):\n");
+            prompt.push_str(files);
+            prompt.push_str("\n</workspace-tree>\n");
         }
-        if let (true, date) = &self.date {
-            if !date.is_empty() {
-                prompt.push_str(&format!("Current Date: {}", date));
-                prompt.push('\n');
-            }
+        if let (true, date) = &self.date
+            && !date.is_empty()
+        {
+            prompt.push_str(&format!("Current Date: {}", date));
+            prompt.push('\n');
         }
         prompt
     }
@@ -105,8 +105,8 @@ fn expandable_header<'a>(
     row![
         checkbox(checked)
             .label(name)
-            .on_toggle(move |v| Message::ToggleSystemEnabled(name, v)),
-        mouse_area(text(arrow).size(12).width(16)).on_press(Message::ToggleSystemExpanded(name)),
+            .on_toggle(move |v| Message::ToggleEnabled(name, v)),
+        mouse_area(text(arrow).size(12).width(16)).on_press(Message::ToggleExpanded(name)),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
@@ -132,7 +132,7 @@ pub fn preamble_field_view<'a>(
     row![
         checkbox(checked)
             .label(name)
-            .on_toggle(move |v| Message::ToggleSystemEnabled(name, v)),
+            .on_toggle(move |v| Message::ToggleEnabled(name, v)),
         pick_list(options, selected, Message::SelectPreamble).width(Fill),
     ]
     .spacing(4)
@@ -153,7 +153,7 @@ pub fn rules_field_view<'a>(
             header,
             scrollable(
                 text_editor(content)
-                    .on_action(move |a| Message::EditSystemContent(name, a))
+                    .on_action(move |a| Message::EditTextContent(name, a))
                     .height(Length::Fixed(120.0)),
             ),
         ]
@@ -177,7 +177,7 @@ pub fn tools_field_view<'a>(
             header,
             scrollable(
                 text_editor(content)
-                    .on_action(move |a| Message::EditSystemContent(name, a))
+                    .on_action(move |a| Message::EditTextContent(name, a))
                     .height(Length::Fixed(120.0)),
             ),
         ]
@@ -206,7 +206,7 @@ pub fn workspace_field_view<'a>(
     row![
         checkbox(checked)
             .label(name)
-            .on_toggle(move |v| Message::ToggleSystemEnabled(name, v)),
+            .on_toggle(move |v| Message::ToggleEnabled(name, v)),
         pick_list(options, selected, Message::SelectWorkspace).width(Fill),
     ]
     .spacing(4)
@@ -232,7 +232,7 @@ pub fn files_field_view<'a>(
                 scrollable(
                     container(
                         text_editor(content)
-                            .on_action(move |a| Message::EditSystemContent(name, a))
+                            .on_action(move |a| Message::EditTextContent(name, a))
                             .font(iced::Font::MONOSPACE)
                             .wrapping(Wrapping::None),
                     )
@@ -261,9 +261,9 @@ pub fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
     row![
         checkbox(checked)
             .label(name)
-            .on_toggle(move |v| Message::ToggleSystemEnabled(name, v)),
+            .on_toggle(move |v| Message::ToggleEnabled(name, v)),
         text_input("YYYY-MM-DD", &field.1)
-            .on_input(move |s| Message::EditSystemField(name, s))
+            .on_input(move |s| Message::EditTextField(name, s))
             .width(Length::Fixed(110.0))
             .padding(4)
             .align_x(iced::alignment::Horizontal::Center),

@@ -17,7 +17,7 @@ use adk_rust::{
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
-use crate::user::ChatMessage;
+use crate::session::ChatMessage;
 
 /// Send a request to the LLM and return a ChatMessage with role, content, and reasoning.
 pub fn send(
