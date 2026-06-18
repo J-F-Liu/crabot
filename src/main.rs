@@ -9,13 +9,13 @@ use iced::{
     font, mouse,
     widget::{
         self, button, column, container, mouse_area, pick_list, row, rule, scrollable, text,
-        text_editor, toggler,
+        text_editor,
     },
     window,
 };
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
-use model::{Model, Provider};
+use model::{Model, ModelConfig, Provider, model_config_view};
 use std::path::PathBuf;
 use system::{FilepathEntry, SystemPrompt};
 use user::{ChatMessage, UserPrompt, WorkMode};
@@ -54,10 +54,7 @@ struct App {
     cursor: Point,
     dragging: Option<Drag>,
     providers: Vec<Provider>,
-    selected_provider: Option<usize>,
-    selected_model: Option<usize>,
-    thinking_enabled: bool,
-    thinking_level: Option<usize>,
+    selected_model: Option<ModelConfig>,
     theme: Theme,
     system_prompt: SystemPrompt,
     rules_expanded: bool,
@@ -107,18 +104,14 @@ impl App {
         let providers = model::try_load_models_from_omp()
             .or_else(|_| model::try_load_models_from_pi())
             .unwrap_or_default();
-        let selected_provider = (!providers.is_empty()).then_some(0);
-        let mut app = Self {
+        let app = Self {
             left_w: 300.0,
             right_w: 400.0,
             window_w: 1200.0,
             cursor: Point::ORIGIN,
             dragging: None,
             providers,
-            selected_provider,
             selected_model: None,
-            thinking_enabled: false,
-            thinking_level: None,
             theme: Theme::SolarizedLight,
             system_prompt: SystemPrompt {
                 preamble: (true, String::new()),
@@ -141,7 +134,6 @@ impl App {
             workmode: WorkMode::Code,
             messages: Vec::new(),
         };
-        app.reselect_model();
         (app, Task::none())
     }
 
@@ -193,23 +185,40 @@ impl App {
                 self.window_w = w;
             }
             Message::SelectProvider(id) => {
-                self.selected_provider = self.providers.iter().position(|p| p.id == id);
-                self.reselect_model();
+                self.selected_model = self.providers.iter().find(|p| p.id == id).and_then(|p| {
+                    p.models.first().map(|m| ModelConfig {
+                        provider_id: p.id.clone(),
+                        model_id: m.id.clone(),
+                        thinking: m.thinking,
+                        thinking_level: m.thinking_levels.first().cloned().unwrap_or_default(),
+                    })
+                });
             }
             Message::SelectModel(id) => {
-                if let Some(provider) = self.selected_provider() {
-                    self.selected_model = provider.models.iter().position(|m| m.id == id);
-                    self.reset_thinking();
+                if let Some(ref mut cfg) = self.selected_model {
+                    cfg.model_id = id.clone();
+                    cfg.thinking = false;
+                    cfg.thinking_level = String::new();
+                    if let Some(p) = self.providers.iter().find(|p| p.id == cfg.provider_id) {
+                        if let Some(m) = p.models.iter().find(|m| m.id == id) {
+                            cfg.thinking = m.thinking;
+                            cfg.thinking_level =
+                                m.thinking_levels.first().cloned().unwrap_or_default();
+                        }
+                    }
                 }
             }
             Message::ToggleThinking(enabled) => {
-                if self.thinking_supported() {
-                    self.thinking_enabled = enabled;
+                let supported = self.selected_model().is_some_and(|(_, m)| m.thinking);
+                if supported {
+                    if let Some(ref mut cfg) = self.selected_model {
+                        cfg.thinking = enabled;
+                    }
                 }
             }
             Message::SelectThinkingLevel(level) => {
-                if let Some(model) = self.selected_model() {
-                    self.thinking_level = model.thinking_levels.iter().position(|l| *l == level);
+                if let Some(ref mut cfg) = self.selected_model {
+                    cfg.thinking_level = level;
                 }
             }
             Message::ToggleSystemEnabled(name, enabled) => {
@@ -279,17 +288,15 @@ impl App {
                 let user_prompt = UserPrompt::new(self.workmode, content);
                 let user_input = user_prompt.get_prompt();
 
-                let provider = self.selected_provider();
-                let model = self.selected_model();
-                let (api_type, api_key, base_url, model_name) = match provider.zip(model) {
-                    Some((p, m)) => (
-                        p.api_type.clone(),
-                        p.api_key.clone(),
-                        p.base_url.clone(),
-                        m.id.clone(),
-                    ),
-                    None => return Task::none(),
+                let Some((provider, model)) = self.selected_model() else {
+                    return Task::none();
                 };
+                let (api_type, api_key, base_url, model_id) = (
+                    provider.api_type.clone(),
+                    provider.api_key.clone(),
+                    provider.base_url.clone(),
+                    model.id.clone(),
+                );
 
                 let system_prompt = self.system_prompt.get_prompt();
 
@@ -307,7 +314,7 @@ impl App {
                             base_url,
                             api_type,
                             api_key,
-                            model_name,
+                            model_id,
                             system_prompt,
                             user_input,
                         )
@@ -360,26 +367,6 @@ impl App {
         self.workspace_options = system::build_workspace_options(&paths);
     }
 
-    fn reselect_model(&mut self) {
-        self.selected_model = self
-            .selected_provider()
-            .and_then(|p| (!p.models.is_empty()).then_some(0));
-        self.reset_thinking();
-    }
-
-    fn reset_thinking(&mut self) {
-        let (thinking, has_levels) = self
-            .selected_model()
-            .map(|m| (m.thinking, !m.thinking_levels.is_empty()))
-            .unwrap_or((false, false));
-        self.thinking_enabled = thinking;
-        self.thinking_level = has_levels.then_some(0);
-    }
-
-    fn thinking_supported(&self) -> bool {
-        self.selected_model().is_some_and(|m| m.thinking)
-    }
-
     fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
         match name {
             "Rules" => Some(&mut self.rules_content),
@@ -389,72 +376,16 @@ impl App {
         }
     }
 
-    fn selected_provider(&self) -> Option<&Provider> {
-        self.selected_provider.and_then(|i| self.providers.get(i))
-    }
-
-    fn selected_model(&self) -> Option<&Model> {
-        self.selected_provider()
-            .and_then(|p| self.selected_model.and_then(|i| p.models.get(i)))
-    }
-
-    fn thinking_controls(&self) -> Element<'_, Message> {
-        let supported = self.thinking_supported();
-        let toggle: Element<_> = if supported {
-            toggler(self.thinking_enabled)
-                .on_toggle(Message::ToggleThinking)
-                .into()
-        } else {
-            mouse_area(toggler(self.thinking_enabled))
-                .interaction(mouse::Interaction::None)
-                .into()
-        };
-
-        if supported {
-            let levels: &[String] = self
-                .selected_model()
-                .map(|m| &*m.thinking_levels)
-                .unwrap_or(&[]);
-            let selected_level = self.thinking_level.and_then(|i| levels.get(i));
-            row![
-                label("Thinking", 60.0),
-                toggle,
-                text("Level").size(14),
-                pick_list(levels, selected_level, Message::SelectThinkingLevel).width(Fill),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into()
-        } else {
-            row![label("Thinking", 60.0), toggle]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into()
-        }
+    fn selected_model(&self) -> Option<(&Provider, &Model)> {
+        let cfg = self.selected_model.as_ref()?;
+        let provider = self.providers.iter().find(|p| p.id == cfg.provider_id)?;
+        let model = provider.models.iter().find(|m| m.id == cfg.model_id)?;
+        Some((provider, model))
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let selected = self.selected_provider();
-        let models: &[Model] = selected.map(|p| &*p.models).unwrap_or(&[]);
-        let selected_model = self.selected_model();
-
         let left_col = column![
-            row![
-                label("Provider", 60.0),
-                pick_list(&self.providers[..], selected, |p| Message::SelectProvider(
-                    p.id
-                ),)
-                .width(Fill),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-            row![
-                label("Model", 60.0),
-                pick_list(models, selected_model, |m| Message::SelectModel(m.id)).width(Fill),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-            self.thinking_controls(),
+            model_config_view(&self.providers, &self.selected_model),
             rule::horizontal(0),
             label("System Prompt", 140.0),
             system::preamble_field_view(
@@ -521,17 +452,15 @@ impl App {
                                     sel_secondary
                                 };
                                 container({
-                                    let mut col = column![
-                                        row![
-                                            SelectableText::new(msg.role.to_string())
-                                                .size(13)
-                                                .style(role_color),
-                                            iced::widget::Space::new().width(Length::Fill),
-                                            SelectableText::new(&msg.timestamp)
-                                                .size(11)
-                                                .style(sel_secondary),
-                                        ],
-                                    ];
+                                    let mut col = column![row![
+                                        SelectableText::new(msg.role.to_string())
+                                            .size(13)
+                                            .style(role_color),
+                                        iced::widget::Space::new().width(Length::Fill),
+                                        SelectableText::new(&msg.timestamp)
+                                            .size(11)
+                                            .style(sel_secondary),
+                                    ],];
                                     if let Some(reasoning) = &msg.reasoning {
                                         col = col.push(
                                             SelectableText::new(reasoning)

@@ -22,19 +22,19 @@ pub fn send(
     base_url: String,
     api_type: String,
     api_key: String,
-    model_name: String,
+    model_id: String,
     system_prompt: String,
     user_input: String,
 ) -> Result<ChatMessage, String> {
     let rt = Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
     rt.block_on(async {
-        let model: Arc<dyn Llm> = build_model(&base_url, &api_type, &api_key, &model_name)?;
+        let model: Arc<dyn Llm> = build_model(&base_url, &api_type, &api_key, &model_id)?;
 
         let contents = vec![
             Content::new("system").with_text(&system_prompt),
             Content::new("user").with_text(&user_input),
         ];
-        let request = LlmRequest::new(&model_name, contents);
+        let request = LlmRequest::new(&model_id, contents);
 
         let mut stream = model
             .generate_content(request, true)
@@ -46,9 +46,9 @@ pub fn send(
         let mut role: Option<String> = None;
         while let Some(item) = stream.next().await {
             let item = item.map_err(|e| format!("stream: {e}"))?;
-            if let Some(content) = &item.content {
+            if let Some(content) = item.content {
                 if role.is_none() && !content.role.is_empty() {
-                    role = Some(content.role.clone());
+                    role = Some(content.role);
                 }
                 for part in &content.parts {
                     if let Some(text) = part.text() {
@@ -75,24 +75,24 @@ fn build_model(
     base_url: &str,
     api_type: &str,
     api_key: &str,
-    model_name: &str,
+    model_id: &str,
 ) -> Result<Arc<dyn Llm>, String> {
     let base_url = (!base_url.is_empty()).then(|| base_url.to_owned());
     match api_type {
         "gemini" => Ok(Arc::new(
-            GeminiModel::new(api_key, model_name).map_err(|e| format!("gemini: {e}"))?,
+            GeminiModel::new(api_key, model_id).map_err(|e| format!("gemini: {e}"))?,
         )),
         "anthropic" => {
             let config = AnthropicConfig {
                 base_url: base_url.clone(),
-                ..AnthropicConfig::new(api_key, model_name)
+                ..AnthropicConfig::new(api_key, model_id)
             };
             Ok(Arc::new(
                 AnthropicClient::new(config).map_err(|e| format!("anthropic: {e}"))?,
             ))
         }
         "openrouter" => {
-            let mut config = OpenRouterConfig::new(api_key, model_name);
+            let mut config = OpenRouterConfig::new(api_key, model_id);
             if let Some(ref url) = base_url {
                 config.base_url.clone_from(url);
             }
@@ -101,7 +101,7 @@ fn build_model(
             ))
         }
         "deepseek" => {
-            let mut config = DeepSeekConfig::new(api_key, model_name);
+            let mut config = DeepSeekConfig::new(api_key, model_id);
             if let Some(ref url) = base_url {
                 config = config.with_base_url(url);
             }
@@ -112,7 +112,7 @@ fn build_model(
         "groq" => {
             let config = GroqConfig {
                 base_url: base_url.clone(),
-                ..GroqConfig::new(api_key, model_name)
+                ..GroqConfig::new(api_key, model_id)
             };
             Ok(Arc::new(
                 GroqClient::new(config).map_err(|e| format!("groq: {e}"))?,
@@ -120,7 +120,7 @@ fn build_model(
         }
         "ollama" => {
             let host = base_url.as_deref().unwrap_or("http://localhost:11434");
-            let config = OllamaConfig::with_host(host, model_name);
+            let config = OllamaConfig::with_host(host, model_id);
             Ok(Arc::new(
                 OllamaModel::new(config).map_err(|e| format!("ollama: {e}"))?,
             ))
@@ -129,7 +129,7 @@ fn build_model(
             let config = OpenAIConfig {
                 base_url,
                 api_key: api_key.to_owned(),
-                model: model_name.to_owned(),
+                model: model_id.to_owned(),
                 ..Default::default()
             };
             Ok(Arc::new(
