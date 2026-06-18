@@ -13,7 +13,7 @@ use iced::{
 };
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::path::PathBuf;
 
 use model::{Model, ModelConfig, Provider, model_config_view};
@@ -69,7 +69,7 @@ struct App {
     rules_content: text_editor::Content,
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
-    dev_tools: HashMap<DevTool, bool>,
+    dev_tools: IndexMap<DevTool, bool>,
     user_prompt: text_editor::Content,
     workmode: WorkMode,
     messages: Vec<ChatMessage>,

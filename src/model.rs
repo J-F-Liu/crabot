@@ -3,10 +3,11 @@ use iced::{
     Alignment, Element, Fill, mouse,
     widget::{column, mouse_area, pick_list, row, text, toggler},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub provider_id: String,
     pub model_id: String,

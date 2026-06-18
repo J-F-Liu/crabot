@@ -12,8 +12,16 @@ serde_json = "1"
 chrono = "0.4"
 rfd = "0.15"
 home = "0.5"
-adk-rust = { version = "1.0.0", features = ["openai", "anthropic", "openrouter", "deepseek", "groq", "ollama"] }
+adk-rust = { version = "1.0.0", features = [
+    "openai",
+    "anthropic",
+    "openrouter",
+    "deepseek",
+    "groq",
+    "ollama",
+] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 iced = { version = "0.14.0", features = ["advanced"] }
 iced_runtime = "0.14.0"
 iced_selection = "0.5.0"
+indexmap = "2.14.0"

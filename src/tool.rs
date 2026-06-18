@@ -1,5 +1,5 @@
+use indexmap::IndexMap;
 use std::collections::HashMap;
-use std::fmt::Write;
 
 use iced::{
     Element,
@@ -227,7 +227,7 @@ impl DevTool {
     }
 
     /// Build the `tools` map for `LlmRequest` from selected tools.
-    pub fn build_tools_map(selected: &HashMap<DevTool, bool>) -> HashMap<String, Value> {
+    pub fn build_tools_map(selected: &IndexMap<DevTool, bool>) -> HashMap<String, Value> {
         let mut tools = HashMap::new();
         for (tool, enabled) in selected {
             if *enabled {
@@ -240,7 +240,7 @@ impl DevTool {
 }
 
 // ── view ───────────────────────────────────────────────────────────
-pub fn dev_tools_view<'a>(selected: &'a HashMap<DevTool, bool>) -> Element<'a, Message> {
+pub fn dev_tools_view<'a>(selected: &'a IndexMap<DevTool, bool>) -> Element<'a, Message> {
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
     for chunk in DevTool::ALL.chunks(3) {
         let mut row_children = Vec::new();
@@ -260,16 +260,16 @@ pub fn dev_tools_view<'a>(selected: &'a HashMap<DevTool, bool>) -> Element<'a, M
 }
 
 /// Generate a human-readable summary of enabled dev tools.
-pub fn tools_summary(selected: &HashMap<DevTool, bool>) -> String {
+pub fn tools_summary(selected: &IndexMap<DevTool, bool>) -> String {
     let mut result = String::new();
     result.push_str("Available tools:\n");
 
     for (tool, &enabled) in selected {
         if enabled {
-            let _ = write!(result, "- {}: {}\n", tool.name(), tool.description());
+            result.push_str(&format!("- {}: {}\n", tool.name(), tool.description()));
         }
     }
 
-    result.push_str("You may have access to additional custom tools.");
+    result.push_str("You may have access to additional custom tools.\n");
     result
 }
