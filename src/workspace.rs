@@ -7,15 +7,36 @@ use std::path::Path;
 
 /// Directories skipped during workspace scan.
 const SKIP_DIRS: &[&str] = &[
-    ".git", ".hg", ".svn",
-    "node_modules", "target", "build", "dist", "out",
-    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    ".venv", "venv", ".env", "env",
-    ".next", ".nuxt", ".output",
-    "coverage", ".nyc_output",
-    ".cache", ".parcel-cache", ".turbo",
-    ".idea", ".vscode", ".vs",
-    "android", "ios", ".expo",
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "out",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    ".env",
+    "env",
+    ".next",
+    ".nuxt",
+    ".output",
+    "coverage",
+    ".nyc_output",
+    ".cache",
+    ".parcel-cache",
+    ".turbo",
+    ".idea",
+    ".vscode",
+    ".vs",
+    "android",
+    "ios",
+    ".expo",
 ];
 
 /// Max directory depth to scan (root = depth 0, its children = depth 1, …).
@@ -28,10 +49,10 @@ const LINE_CAP: usize = 120;
 /// A filesystem entry collected during the walk.
 #[derive(Debug, Clone)]
 struct FlatEntry {
-    rel_path: String,   // e.g. "src/main.rs" (relative to workspace root)
+    rel_path: String, // e.g. "src/main.rs" (relative to workspace root)
     is_dir: bool,
-    mtime: i64,         // unix seconds
-    size: u64,          // bytes
+    mtime: i64, // unix seconds
+    size: u64,  // bytes
 }
 
 /// Build a sorted, capped directory tree rendered as a string.
@@ -99,7 +120,9 @@ fn walk_entries(root: &Path) -> Vec<FlatEntry> {
         if depth >= MAX_DEPTH {
             continue;
         }
-        let Ok(read) = fs::read_dir(&dir) else { continue };
+        let Ok(read) = fs::read_dir(&dir) else {
+            continue;
+        };
         for dent in read.flatten() {
             let name = dent.file_name();
             let name_str = name.to_string_lossy();
@@ -135,7 +158,11 @@ fn walk_entries(root: &Path) -> Vec<FlatEntry> {
         }
     }
 
-    entries.sort_by(|a, b| b.mtime.cmp(&a.mtime).then_with(|| a.rel_path.cmp(&b.rel_path)));
+    entries.sort_by(|a, b| {
+        b.mtime
+            .cmp(&a.mtime)
+            .then_with(|| a.rel_path.cmp(&b.rel_path))
+    });
     entries
 }
 
@@ -172,16 +199,26 @@ fn render_dir(
         if e.is_dir {
             // Directories: no size column
             let mtime = format_mtime(e.mtime);
-            lines.push(format!("{: <width$}  {}", label, mtime, width = max_name + 2 + indent.len() + 2));
+            lines.push(format!(
+                "{: <width$}  {}",
+                label,
+                mtime,
+                width = max_name + 2 + indent.len() + 2
+            ));
             // Render grandchildren
-            let grandchildren = by_parent.get(&e.rel_path).map(|v| v.as_slice()).unwrap_or(&[]);
+            let grandchildren = by_parent
+                .get(&e.rel_path)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
             render_dir(lines, &e.rel_path, grandchildren, by_parent, depth + 1);
         } else {
             let size_str = format_size(e.size);
             let mtime = format_mtime(e.mtime);
             lines.push(format!(
                 "{: <width$}{:>8}  {}",
-                label, size_str, mtime,
+                label,
+                size_str,
+                mtime,
                 width = max_name + 2 + indent.len() + 2
             ));
         }

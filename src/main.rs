@@ -1,6 +1,7 @@
 mod adk;
 mod model;
 mod system;
+mod tool;
 mod user;
 mod workspace;
 
@@ -15,9 +16,12 @@ use iced::{
 };
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
-use model::{Model, ModelConfig, Provider, model_config_view};
+use std::collections::HashMap;
 use std::path::PathBuf;
+
+use model::{Model, ModelConfig, Provider, model_config_view};
 use system::{FilepathEntry, SystemPrompt};
+use tool::{DevTool, dev_tools_view};
 use user::{ChatMessage, UserPrompt, WorkMode};
 
 pub fn main() -> iced::Result {
@@ -66,6 +70,7 @@ struct App {
     rules_content: text_editor::Content,
     tools_content: text_editor::Content,
     files_content: text_editor::Content,
+    dev_tools: HashMap<DevTool, bool>,
     user_prompt: text_editor::Content,
     workmode: WorkMode,
     messages: Vec<ChatMessage>,
@@ -88,6 +93,7 @@ pub enum Message {
     WorkspaceDialogResult(Option<PathBuf>),
     SelectPreamble(FilepathEntry),
     PreambleFileResult(Result<String, String>),
+    ToggleDevTool(String, bool),
     EditUserPrompt(text_editor::Action),
     SelectWorkMode(WorkMode),
     Send,
@@ -130,6 +136,7 @@ impl App {
             rules_content: text_editor::Content::new(),
             files_content: text_editor::Content::new(),
             tools_content: text_editor::Content::new(),
+            dev_tools: DevTool::ALL.iter().map(|&t| (t, true)).collect(),
             user_prompt: text_editor::Content::new(),
             workmode: WorkMode::Code,
             messages: Vec::new(),
@@ -226,6 +233,11 @@ impl App {
                     field.0 = enabled;
                 }
             }
+            Message::ToggleDevTool(tool_name, enabled) => {
+                if let Some(tool) = DevTool::ALL.iter().find(|t| t.name() == tool_name) {
+                    self.dev_tools.insert(*tool, enabled);
+                }
+            }
             Message::ToggleSystemExpanded(name) => match name {
                 "Rules" => self.rules_expanded = !self.rules_expanded,
                 "Tools" => self.tools_expanded = !self.tools_expanded,
@@ -299,6 +311,7 @@ impl App {
                 );
 
                 let system_prompt = self.system_prompt.get_prompt();
+                let tools = DevTool::build_tools_map(&self.dev_tools);
 
                 self.user_prompt = text_editor::Content::new();
                 self.messages.push(ChatMessage {
@@ -317,6 +330,7 @@ impl App {
                             model_id,
                             system_prompt,
                             user_input,
+                            tools,
                         )
                     },
                     Message::SendResult,
@@ -428,6 +442,8 @@ impl App {
             ]
             .spacing(8)
             .align_y(Alignment::Center),
+            label("Dev Tools", 140.0),
+            dev_tools_view(&self.dev_tools),
         ]
         .spacing(8);
 

@@ -92,8 +92,11 @@ pub fn model_config_view<'a>(
     let supported = selected_model.is_some_and(|m| m.thinking);
     let thinking_enabled = selected.as_ref().map(|cfg| cfg.thinking).unwrap_or(false);
     let thinking_level = selected.as_ref().and_then(|cfg| {
-        selected_model
-            .and_then(|m| m.thinking_levels.iter().position(|l| *l == cfg.thinking_level))
+        selected_model.and_then(|m| {
+            m.thinking_levels
+                .iter()
+                .position(|l| *l == cfg.thinking_level)
+        })
     });
 
     let toggle: Element<_> = if supported {
@@ -107,9 +110,7 @@ pub fn model_config_view<'a>(
     };
 
     let thinking_row: Element<_> = if supported {
-        let levels: &[String] = selected_model
-            .map(|m| &*m.thinking_levels)
-            .unwrap_or(&[]);
+        let levels: &[String] = selected_model.map(|m| &*m.thinking_levels).unwrap_or(&[]);
         let selected_level = thinking_level.and_then(|i| levels.get(i));
         row![
             text("Thinking").size(14).width(60.0),
@@ -121,13 +122,10 @@ pub fn model_config_view<'a>(
         .align_y(Alignment::Center)
         .into()
     } else {
-        row![
-            text("Thinking").size(14).width(60.0),
-            toggle,
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center)
-        .into()
+        row![text("Thinking").size(14).width(60.0), toggle,]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
     };
 
     column![

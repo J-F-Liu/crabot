@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use adk_rust::futures::StreamExt;
@@ -13,6 +14,7 @@ use adk_rust::{
         openrouter::{OpenRouterClient, OpenRouterConfig},
     },
 };
+use serde_json::Value;
 use tokio::runtime::Runtime;
 
 use crate::user::ChatMessage;
@@ -25,6 +27,7 @@ pub fn send(
     model_id: String,
     system_prompt: String,
     user_input: String,
+    tools: HashMap<String, Value>,
 ) -> Result<ChatMessage, String> {
     let rt = Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
     rt.block_on(async {
@@ -34,7 +37,8 @@ pub fn send(
             Content::new("system").with_text(&system_prompt),
             Content::new("user").with_text(&user_input),
         ];
-        let request = LlmRequest::new(&model_id, contents);
+        let mut request = LlmRequest::new(&model_id, contents);
+        request.tools = tools;
 
         let mut stream = model
             .generate_content(request, true)
