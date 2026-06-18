@@ -26,7 +26,7 @@ pub fn send(
     api_key: String,
     model_id: String,
     system_prompt: String,
-    user_input: String,
+    user_prompt: String,
     tools: HashMap<String, Value>,
 ) -> Result<ChatMessage, String> {
     let rt = Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
@@ -35,7 +35,7 @@ pub fn send(
 
         let contents = vec![
             Content::new("system").with_text(&system_prompt),
-            Content::new("user").with_text(&user_input),
+            Content::new("user").with_text(&user_prompt),
         ];
         let mut request = LlmRequest::new(&model_id, contents);
         request.tools = tools;

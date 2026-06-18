@@ -65,9 +65,10 @@ struct App {
     selected_preamble: String,
     preamble_options: Vec<FilepathEntry>,
     workspace_options: Vec<FilepathEntry>,
+    // user-editable Content need to persist between view calls to maintain editor state
     rules_content: text_editor::Content,
-    tools_content: text_editor::Content,
     files_content: text_editor::Content,
+    tools_content: text_editor::Content,
     dev_tools: HashMap<DevTool, bool>,
     user_prompt: text_editor::Content,
     workmode: WorkMode,
@@ -108,6 +109,8 @@ impl App {
         let providers = model::try_load_models_from_omp()
             .or_else(|_| model::try_load_models_from_pi())
             .unwrap_or_default();
+        let dev_tools: HashMap<DevTool, bool> = DevTool::ALL.iter().map(|&t| (t, true)).collect();
+        let tools_summary = tool::tools_summary(&dev_tools);
         let app = Self {
             left_w: 300.0,
             right_w: 400.0,
@@ -120,7 +123,7 @@ impl App {
             system_prompt: SystemPrompt {
                 preamble: (true, String::new()),
                 rules: (true, String::new()),
-                tools: (true, String::new()),
+                tools: (true, tools_summary.clone()),
                 workspace: (true, String::new()),
                 files: (true, String::new()),
                 date: (true, chrono::Local::now().format("%Y-%m-%d").to_string()),
@@ -133,8 +136,8 @@ impl App {
             workspace_options: system::build_workspace_options(&[]),
             rules_content: text_editor::Content::new(),
             files_content: text_editor::Content::new(),
-            tools_content: text_editor::Content::new(),
-            dev_tools: DevTool::ALL.iter().map(|&t| (t, true)).collect(),
+            tools_content: text_editor::Content::with_text(&tools_summary),
+            dev_tools,
             user_prompt: text_editor::Content::new(),
             workmode: WorkMode::Code,
             messages: Vec::new(),
@@ -231,6 +234,9 @@ impl App {
             Message::ToggleDevTool(tool_name, enabled) => {
                 if let Some(tool) = DevTool::ALL.iter().find(|t| t.name() == tool_name) {
                     self.dev_tools.insert(*tool, enabled);
+                    let summary = tool::tools_summary(&self.dev_tools);
+                    self.system_prompt.tools.1 = summary.clone();
+                    self.tools_content = text_editor::Content::with_text(&summary);
                 }
             }
             Message::ToggleExpanded(name) => match name {
@@ -292,8 +298,7 @@ impl App {
                     return Task::none();
                 }
 
-                let user_prompt = UserPrompt::new(self.workmode, content);
-                let user_input = user_prompt.get_prompt();
+                let user_prompt = UserPrompt::new(self.workmode, content).get_prompt();
 
                 let Some((provider, model)) = self.selected_model() else {
                     return Task::none();
@@ -311,7 +316,7 @@ impl App {
                 self.user_prompt = text_editor::Content::new();
                 self.messages.push(ChatMessage {
                     role: "You".into(),
-                    content: user_input.clone(),
+                    content: user_prompt.clone(),
                     reasoning: None,
                     timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
                 });
@@ -324,7 +329,7 @@ impl App {
                             api_key,
                             model_id,
                             system_prompt,
-                            user_input,
+                            user_prompt,
                             tools,
                         )
                     },

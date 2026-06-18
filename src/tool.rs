@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write;
 
 use iced::{
     Element,
@@ -256,4 +257,19 @@ pub fn dev_tools_view<'a>(selected: &'a HashMap<DevTool, bool>) -> Element<'a, M
         rows.push(row(row_children).spacing(4).into());
     }
     column(rows).spacing(4).into()
+}
+
+/// Generate a human-readable summary of enabled dev tools.
+pub fn tools_summary(selected: &HashMap<DevTool, bool>) -> String {
+    let mut result = String::new();
+    result.push_str("Available tools:\n");
+
+    for (tool, &enabled) in selected {
+        if enabled {
+            let _ = write!(result, "- {}: {}\n", tool.name(), tool.description());
+        }
+    }
+
+    result.push_str("You may have access to additional custom tools.");
+    result
 }
