@@ -18,7 +18,7 @@ use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
 use std::path::PathBuf;
 
-use chat::{ChatMessage, Role};
+use chat::{ChatMessage, MessageContent, Role};
 use model::{Model, ModelConfig, Provider, model_config_view};
 use session::Session;
 use system::{FilepathEntry, SystemPrompt};
@@ -322,10 +322,11 @@ impl App {
                 self.user_prompt = text_editor::Content::new();
                 self.session.push(ChatMessage {
                     role: Role::User,
-                    content: user_prompt.clone(),
-                    reasoning: None,
+                    content: MessageContent::Text {
+                        content: user_prompt.clone(),
+                        reasoning: None,
+                    },
                     timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                    tool: None,
                 });
                 // Update session model info
                 self.session.model = self.selected_model.clone();
@@ -458,15 +459,15 @@ impl App {
                             .map(|msg| {
                                 let role_color: fn(&Theme) -> SelectionStyle = match msg.role {
                                     Role::User => sel_primary,
-                                    Role::ToolCall => sel_primary,
-                                    Role::ToolResult => sel_secondary,
+                                    Role::Tool => sel_primary,
                                     _ => sel_secondary,
                                 };
                                 container({
-                                    let header = if let Some(ref tool) = msg.tool {
-                                        format!("{} — {}", msg.role, tool.name)
-                                    } else {
-                                        msg.role.to_string()
+                                    let header = match &msg.content {
+                                        MessageContent::Tool { name, .. } => {
+                                            format!("{} — {}", msg.role, name)
+                                        }
+                                        _ => msg.role.to_string(),
                                     };
                                     let mut col = column![row![
                                         SelectableText::new(header).size(13).style(role_color),
@@ -475,22 +476,38 @@ impl App {
                                             .size(11)
                                             .style(sel_secondary),
                                     ],];
-                                    if let Some(reasoning) = &msg.reasoning {
-                                        col = col.push(
-                                            SelectableText::new(reasoning)
-                                                .size(13)
-                                                .font(Font {
-                                                    style: font::Style::Italic,
-                                                    ..Font::DEFAULT
-                                                })
-                                                .style(sel_secondary),
-                                        );
+                                    match &msg.content {
+                                        MessageContent::Text { content, reasoning } => {
+                                            if let Some(reasoning) = reasoning {
+                                                col = col.push(
+                                                    SelectableText::new(reasoning)
+                                                        .size(13)
+                                                        .font(Font {
+                                                            style: font::Style::Italic,
+                                                            ..Font::DEFAULT
+                                                        })
+                                                        .style(sel_secondary),
+                                                );
+                                            }
+                                            col = col.push(
+                                                SelectableText::new(content)
+                                                    .size(14)
+                                                    .style(sel_default),
+                                            );
+                                        }
+                                        MessageContent::Tool { args, result, .. } => {
+                                            col = col.push(
+                                                SelectableText::new(args)
+                                                    .size(13)
+                                                    .style(sel_secondary),
+                                            );
+                                            col = col.push(
+                                                SelectableText::new(result)
+                                                    .size(14)
+                                                    .style(sel_default),
+                                            );
+                                        }
                                     }
-                                    col = col.push(
-                                        SelectableText::new(&msg.content)
-                                            .size(14)
-                                            .style(sel_default),
-                                    );
                                     col.spacing(4).width(Fill)
                                 })
                                 .width(Fill)

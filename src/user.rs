@@ -35,9 +35,7 @@ impl UserPrompt {
 
     pub fn get_prompt(&self) -> String {
         let mut prompt = String::new();
-        if self.mode != WorkMode::Code {
-            prompt.push_str(&format!("You are in {} mode.\n", self.mode));
-        }
+        prompt.push_str(&format!("Current mode: {}\n", self.mode));
         prompt.push_str(&self.content);
         prompt
     }

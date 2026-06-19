@@ -8,8 +8,7 @@ pub enum Role {
     #[serde(rename = "You")]
     User,
     Assistant,
-    ToolCall,
-    ToolResult,
+    Tool,
 }
 
 impl Role {
@@ -17,8 +16,7 @@ impl Role {
         match self {
             Self::User => "You",
             Self::Assistant => "Assistant",
-            Self::ToolCall => "ToolCall",
-            Self::ToolResult => "ToolResult",
+            Self::Tool => "Tool",
         }
     }
 }
@@ -29,14 +27,27 @@ impl std::fmt::Display for Role {
     }
 }
 
-// ── ToolCall ──────────────────────────────────────────────────────────
+// ── MessageContent ────────────────────────────────────────────────────
 
-/// Info about a tool invocation when role is ToolCall or ToolResult.
+/// The actual content of a message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
+pub enum MessageContent {
+    /// Plain-text message (User or Assistant role).
+    Text {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
+    },
+    /// Paired tool call and its result.
+    Tool {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        call_id: Option<String>,
+        /// Prettified JSON of the call arguments.
+        args: String,
+        /// Execution result text.
+        result: String,
+    },
 }
 
 // ── ChatMessage ──────────────────────────────────────────────────────
@@ -45,68 +56,49 @@ pub struct ToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
-    pub content: String,
-    /// Reasoning / chain-of-thought content (thinking mode).
-    pub reasoning: Option<String>,
+    pub content: MessageContent,
     pub timestamp: String,
-    /// Tool info when role is ToolCall or ToolResult.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool: Option<ToolCall>,
 }
 
 impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: Role::User,
-            content: content.into(),
-            reasoning: None,
+            content: MessageContent::Text {
+                content: content.into(),
+                reasoning: None,
+            },
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-            tool: None,
         }
     }
 
     pub fn assistant(content: impl Into<String>, reasoning: Option<String>) -> Self {
         Self {
             role: Role::Assistant,
-            content: content.into(),
-            reasoning,
+            content: MessageContent::Text {
+                content: content.into(),
+                reasoning,
+            },
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-            tool: None,
         }
     }
 
-    pub fn tool_call(
+    pub fn tool(
         name: impl Into<String>,
         args: &serde_json::Value,
         id: Option<String>,
+        result: impl Into<String>,
     ) -> Self {
         let args_str = serde_json::to_string_pretty(args).unwrap_or_else(|_| format!("{args:?}"));
         Self {
-            role: Role::ToolCall,
-            content: args_str,
-            reasoning: None,
-            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-            tool: Some(ToolCall {
+            role: Role::Tool,
+            content: MessageContent::Tool {
                 name: name.into(),
                 call_id: id,
-            }),
-        }
-    }
-
-    pub fn tool_result(
-        name: impl Into<String>,
-        result: impl Into<String>,
-        id: Option<String>,
-    ) -> Self {
-        Self {
-            role: Role::ToolResult,
-            content: result.into(),
-            reasoning: None,
+                args: args_str,
+                result: result.into(),
+            },
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-            tool: Some(ToolCall {
-                name: name.into(),
-                call_id: id,
-            }),
         }
     }
 }

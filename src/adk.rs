@@ -18,7 +18,7 @@ use adk_rust::{
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
-use crate::chat::{ChatMessage, Role};
+use crate::chat::{ChatMessage, MessageContent, Role};
 use crate::tools::DevTool;
 
 /// Max agent loop iterations to prevent infinite tool-calling cycles.
@@ -58,50 +58,104 @@ pub fn send(config: SendConfig, history: &[ChatMessage]) -> Result<Vec<ChatMessa
         let model: Arc<dyn Llm> = build_model(&base_url, &api_type, &api_key, &model_id)?;
         let mut results: Vec<ChatMessage> = Vec::new();
 
-        // Build initial contents: system prompt + history + new user message.
+        // Build initial contents: system prompt.
         let mut contents: Vec<Content> = Vec::new();
         contents.push(Content::new("system").with_text(&system_prompt));
 
-        // Add conversation history as alternating user / model contents.
-        for msg in history {
+        // Reconstruct conversation history, merging consecutive
+        // assistant + tool messages back into the original structure:
+        //   model(text + fc₁ + fc₂), function(resp₁), function(resp₂), …
+        // This preserves the prefix the LLM originally saw, keeping
+        // server-side prompt caches warm across turns.
+        let mut i = 0;
+        while i < history.len() {
+            let msg = &history[i];
             match msg.role {
                 Role::User => {
-                    contents.push(Content::new("user").with_text(&msg.content));
+                    if let MessageContent::Text { content, .. } = &msg.content {
+                        contents.push(Content::new("user").with_text(content));
+                    }
+                    i += 1;
                 }
                 Role::Assistant => {
-                    let mut c = Content::new("model");
-                    c = c.with_text(&msg.content);
-                    if let Some(ref reasoning) = msg.reasoning {
-                        c = c.with_thinking(reasoning);
+                    if let MessageContent::Text { content, reasoning } = &msg.content {
+                        let mut model_content = Content::new("model");
+                        model_content = model_content.with_text(content);
+                        if let Some(reasoning) = reasoning {
+                            model_content = model_content.with_thinking(reasoning);
+                        }
+                        i += 1;
+
+                        // Consume all consecutive tool messages that belong
+                        // to this assistant turn.
+                        let mut function_responses: Vec<Content> = Vec::new();
+                        while i < history.len() {
+                            if let MessageContent::Tool {
+                                name,
+                                call_id,
+                                args,
+                                result,
+                            } = &history[i].content
+                            {
+                                model_content.parts.push(Part::FunctionCall {
+                                    name: name.clone(),
+                                    args: serde_json::from_str(args).unwrap_or_default(),
+                                    id: call_id.clone(),
+                                    thought_signature: None,
+                                });
+                                let func_resp = FunctionResponseData::new(
+                                    name.clone(),
+                                    serde_json::Value::String(result.clone()),
+                                );
+                                let mut resp_content = Content::new("function");
+                                resp_content.parts.push(Part::FunctionResponse {
+                                    function_response: func_resp,
+                                    id: call_id.clone(),
+                                });
+                                function_responses.push(resp_content);
+                                i += 1;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        contents.push(model_content);
+                        contents.extend(function_responses);
+                    } else {
+                        i += 1;
                     }
-                    contents.push(c);
                 }
-                Role::ToolCall => {
-                    // Tool calls are part of the model's response; they'll be included
-                    // in the history from the previous turn. We represent them as a model
-                    // content with function call parts.
-                    let tool = msg.tool.as_ref().expect("ToolCall missing tool info");
-                    let mut c = Content::new("model");
-                    c.parts.push(Part::FunctionCall {
-                        name: tool.name.clone(),
-                        args: serde_json::from_str(&msg.content).unwrap_or_default(),
-                        id: tool.call_id.clone(),
-                        thought_signature: None,
-                    });
-                    contents.push(c);
-                }
-                Role::ToolResult => {
-                    let tool = msg.tool.as_ref().expect("ToolResult missing tool info");
-                    let func_resp = FunctionResponseData::new(
-                        tool.name.clone(),
-                        serde_json::Value::String(msg.content.clone()),
-                    );
-                    let mut c = Content::new("function");
-                    c.parts.push(Part::FunctionResponse {
-                        function_response: func_resp,
-                        id: tool.call_id.clone(),
-                    });
-                    contents.push(c);
+                Role::Tool => {
+                    // Standalone tool message — shouldn't occur in normal
+                    // flow, but handled defensively.
+                    if let MessageContent::Tool {
+                        name,
+                        call_id,
+                        args,
+                        result,
+                    } = &msg.content
+                    {
+                        let mut call_content = Content::new("model");
+                        call_content.parts.push(Part::FunctionCall {
+                            name: name.clone(),
+                            args: serde_json::from_str(args).unwrap_or_default(),
+                            id: call_id.clone(),
+                            thought_signature: None,
+                        });
+                        contents.push(call_content);
+
+                        let func_resp = FunctionResponseData::new(
+                            name.clone(),
+                            serde_json::Value::String(result.clone()),
+                        );
+                        let mut resp_content = Content::new("function");
+                        resp_content.parts.push(Part::FunctionResponse {
+                            function_response: func_resp,
+                            id: call_id.clone(),
+                        });
+                        contents.push(resp_content);
+                    }
+                    i += 1;
                 }
             }
         }
@@ -153,8 +207,6 @@ pub fn send(config: SendConfig, history: &[ChatMessage]) -> Result<Vec<ChatMessa
             let mut function_response_contents: Vec<Content> = Vec::new();
             for part in &response_content.parts {
                 if let Part::FunctionCall { name, args, id, .. } = part {
-                    results.push(ChatMessage::tool_call(name, args, id.clone()));
-
                     let tool =
                         DevTool::from_name(name).ok_or_else(|| format!("Unknown tool: {name}"))?;
                     let exec_result = tool.execute(args, &workspace_path);
@@ -169,7 +221,7 @@ pub fn send(config: SendConfig, history: &[ChatMessage]) -> Result<Vec<ChatMessa
                                 id: id.clone(),
                             });
                             function_response_contents.push(fc);
-                            results.push(ChatMessage::tool_result(name, output, id.clone()));
+                            results.push(ChatMessage::tool(name, args, id.clone(), output));
                         }
                         Err(err) => {
                             let func_resp =
@@ -180,7 +232,7 @@ pub fn send(config: SendConfig, history: &[ChatMessage]) -> Result<Vec<ChatMessa
                                 id: id.clone(),
                             });
                             function_response_contents.push(fc);
-                            results.push(ChatMessage::tool_result(name, err, id.clone()));
+                            results.push(ChatMessage::tool(name, args, id.clone(), err));
                         }
                     }
                 }
