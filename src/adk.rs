@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use adk_core::types::FunctionResponseData;
 use adk_rust::futures::StreamExt;
 use adk_rust::{
-    Content, Llm, LlmRequest,
+    Content, Llm, LlmRequest, Part,
     model::{
         GeminiModel,
         anthropic::{AnthropicClient, AnthropicConfig},
@@ -17,62 +18,229 @@ use adk_rust::{
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
-use crate::session::ChatMessage;
+use crate::chat::{ChatMessage, Role};
+use crate::tools::DevTool;
 
-/// Send a request to the LLM and return a ChatMessage with role, content, and reasoning.
-pub fn send(
-    base_url: String,
-    api_type: String,
-    api_key: String,
-    model_id: String,
-    system_prompt: String,
-    user_prompt: String,
-    tools: HashMap<String, Value>,
-) -> Result<ChatMessage, String> {
+/// Max agent loop iterations to prevent infinite tool-calling cycles.
+const MAX_ITERATIONS: usize = 25;
+
+/// Configuration for a send request to the LLM.
+pub struct SendConfig {
+    pub base_url: String,
+    pub api_type: String,
+    pub api_key: String,
+    pub model_id: String,
+    pub workspace: String,
+    pub system_prompt: String,
+    pub user_prompt: String,
+    pub tools: HashMap<String, Value>,
+}
+
+/// Send a request to the LLM, with tool execution loop.
+///
+/// Returns all new `ChatMessage`s from this turn (user prompt, tool calls,
+/// tool results, and final assistant response).
+pub fn send(config: SendConfig, history: &[ChatMessage]) -> Result<Vec<ChatMessage>, String> {
+    let SendConfig {
+        base_url,
+        api_type,
+        api_key,
+        model_id,
+        workspace,
+        system_prompt,
+        user_prompt,
+        tools,
+    } = config;
     let rt = Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
+    let workspace_path = std::path::PathBuf::from(&workspace);
+
     rt.block_on(async {
         let model: Arc<dyn Llm> = build_model(&base_url, &api_type, &api_key, &model_id)?;
+        let mut results: Vec<ChatMessage> = Vec::new();
 
-        let contents = vec![
-            Content::new("system").with_text(&system_prompt),
-            Content::new("user").with_text(&user_prompt),
-        ];
-        let mut request = LlmRequest::new(&model_id, contents);
-        request.tools = tools;
+        // Build initial contents: system prompt + history + new user message.
+        let mut contents: Vec<Content> = Vec::new();
+        contents.push(Content::new("system").with_text(&system_prompt));
 
-        let mut stream = model
-            .generate_content(request, true)
-            .await
-            .map_err(|e| format!("generate_content: {e}"))?;
-
-        let mut result = String::new();
-        let mut reasoning = String::new();
-        let mut role: Option<String> = None;
-        while let Some(item) = stream.next().await {
-            let item = item.map_err(|e| format!("stream: {e}"))?;
-            if let Some(content) = item.content {
-                if role.is_none() && !content.role.is_empty() {
-                    role = Some(content.role);
+        // Add conversation history as alternating user / model contents.
+        for msg in history {
+            match msg.role {
+                Role::User => {
+                    contents.push(Content::new("user").with_text(&msg.content));
                 }
-                for part in &content.parts {
-                    if let Some(text) = part.text() {
-                        result.push_str(text);
+                Role::Assistant => {
+                    let mut c = Content::new("model");
+                    c = c.with_text(&msg.content);
+                    if let Some(ref reasoning) = msg.reasoning {
+                        c = c.with_thinking(reasoning);
                     }
-                    if let Some(think) = part.thinking_text() {
-                        reasoning.push_str(think);
-                    }
+                    contents.push(c);
+                }
+                Role::ToolCall => {
+                    // Tool calls are part of the model's response; they'll be included
+                    // in the history from the previous turn. We represent them as a model
+                    // content with function call parts.
+                    let tool = msg.tool.as_ref().expect("ToolCall missing tool info");
+                    let mut c = Content::new("model");
+                    c.parts.push(Part::FunctionCall {
+                        name: tool.name.clone(),
+                        args: serde_json::from_str(&msg.content).unwrap_or_default(),
+                        id: tool.call_id.clone(),
+                        thought_signature: None,
+                    });
+                    contents.push(c);
+                }
+                Role::ToolResult => {
+                    let tool = msg.tool.as_ref().expect("ToolResult missing tool info");
+                    let func_resp = FunctionResponseData::new(
+                        tool.name.clone(),
+                        serde_json::Value::String(msg.content.clone()),
+                    );
+                    let mut c = Content::new("function");
+                    c.parts.push(Part::FunctionResponse {
+                        function_response: func_resp,
+                        id: tool.call_id.clone(),
+                    });
+                    contents.push(c);
                 }
             }
         }
 
-        let reasoning = (!reasoning.is_empty()).then_some(reasoning);
-        Ok(ChatMessage {
-            role: role.unwrap_or_else(|| "Assistant".into()),
-            content: result,
-            reasoning,
-            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-        })
+        // Add the new user message.
+        contents.push(Content::new("user").with_text(&user_prompt));
+
+        // Agent loop: keep calling the LLM until it responds without tool calls.
+        for _ in 0..MAX_ITERATIONS {
+            let mut request = LlmRequest::new(&model_id, contents.clone());
+            request.tools = tools.clone();
+
+            let stream = model
+                .generate_content(request, true)
+                .await
+                .map_err(|e| format!("generate_content: {e}"))?;
+
+            // Collect streaming response into a single Content.
+            let response_content = collect_stream(stream).await?;
+
+            let text = response_content
+                .parts
+                .iter()
+                .filter_map(|p| p.text())
+                .collect::<Vec<_>>()
+                .join("");
+            let reasoning_text: String = response_content
+                .parts
+                .iter()
+                .filter_map(|p| p.thinking_text())
+                .collect();
+            let reasoning = (!reasoning_text.is_empty()).then_some(reasoning_text);
+            results.push(ChatMessage::assistant(text, reasoning));
+
+            let has_function_calls = response_content
+                .parts
+                .iter()
+                .any(|p| matches!(p, Part::FunctionCall { .. }));
+
+            if !has_function_calls {
+                // Final assistant response
+                break;
+            }
+
+            // Build the assistant content (includes both text and function calls).
+            contents.push(response_content.clone());
+
+            // Record tool calls and execute them.
+            let mut function_response_contents: Vec<Content> = Vec::new();
+            for part in &response_content.parts {
+                if let Part::FunctionCall { name, args, id, .. } = part {
+                    results.push(ChatMessage::tool_call(name, args, id.clone()));
+
+                    let tool =
+                        DevTool::from_name(name).ok_or_else(|| format!("Unknown tool: {name}"))?;
+                    let exec_result = tool.execute(args, &workspace_path);
+
+                    match exec_result {
+                        Ok(output) => {
+                            let func_resp =
+                                FunctionResponseData::new(name, Value::String(output.clone()));
+                            let mut fc = Content::new("function");
+                            fc.parts.push(Part::FunctionResponse {
+                                function_response: func_resp,
+                                id: id.clone(),
+                            });
+                            function_response_contents.push(fc);
+                            results.push(ChatMessage::tool_result(name, output, id.clone()));
+                        }
+                        Err(err) => {
+                            let func_resp =
+                                FunctionResponseData::new(name, Value::String(err.clone()));
+                            let mut fc = Content::new("function");
+                            fc.parts.push(Part::FunctionResponse {
+                                function_response: func_resp,
+                                id: id.clone(),
+                            });
+                            function_response_contents.push(fc);
+                            results.push(ChatMessage::tool_result(name, err, id.clone()));
+                        }
+                    }
+                }
+            }
+
+            // Append tool results to conversation.
+            contents.extend(function_response_contents);
+        }
+
+        Ok(results)
     })
+}
+
+/// Collect the stream into a single Content with thinking baked in.
+async fn collect_stream(mut stream: adk_rust::LlmResponseStream) -> Result<Content, String> {
+    let mut role: Option<String> = None;
+    let mut parts: Vec<Part> = Vec::new();
+    let mut reasoning = String::new();
+    let mut text_buf = String::new();
+
+    while let Some(item) = stream.next().await {
+        let item = item.map_err(|e| format!("stream: {e}"))?;
+        if let Some(content) = item.content {
+            if role.is_none() && !content.role.is_empty() {
+                role = Some(content.role);
+            }
+            for part in content.parts {
+                match &part {
+                    Part::Text { text } if !text.trim().is_empty() => text_buf.push_str(text),
+                    Part::Thinking { thinking, .. } => reasoning.push_str(thinking),
+                    _ => {
+                        if !text_buf.is_empty() {
+                            parts.push(Part::Text {
+                                text: std::mem::take(&mut text_buf),
+                            });
+                        }
+                        parts.push(part);
+                    }
+                }
+            }
+        }
+        if item.turn_complete {
+            break;
+        }
+    }
+
+    if !text_buf.is_empty() {
+        parts.push(Part::Text {
+            text: std::mem::take(&mut text_buf),
+        });
+    }
+
+    let mut content = Content {
+        role: role.unwrap_or_else(|| "model".into()),
+        parts,
+    };
+    if !reasoning.is_empty() {
+        content = content.with_thinking(reasoning);
+    }
+    Ok(content)
 }
 
 fn build_model(

@@ -1,8 +1,10 @@
 mod adk;
+mod chat;
 mod model;
 mod session;
 mod system;
 mod tool;
+mod tools;
 mod user;
 mod workspace;
 
@@ -16,10 +18,12 @@ use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
 use std::path::PathBuf;
 
+use chat::{ChatMessage, Role};
 use model::{Model, ModelConfig, Provider, model_config_view};
-use session::ChatMessage;
+use session::Session;
 use system::{FilepathEntry, SystemPrompt};
-use tool::{DevTool, dev_tools_view};
+use tool::dev_tools_view;
+use tools::DevTool;
 use user::{UserPrompt, WorkMode, user_prompt_view};
 
 pub fn main() -> iced::Result {
@@ -72,7 +76,7 @@ struct App {
     dev_tools: IndexMap<DevTool, bool>,
     user_prompt: text_editor::Content,
     workmode: WorkMode,
-    messages: Vec<ChatMessage>,
+    session: Session,
 }
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -96,7 +100,7 @@ pub enum Message {
     EditUserPrompt(text_editor::Action),
     SelectWorkMode(WorkMode),
     SendPrompt,
-    SendResult(Result<ChatMessage, String>),
+    SendResult(Result<Vec<ChatMessage>, String>),
     ScrollToEnd,
 }
 
@@ -109,7 +113,7 @@ impl App {
         let providers = model::try_load_models_from_omp()
             .or_else(|_| model::try_load_models_from_pi())
             .unwrap_or_default();
-        let dev_tools: HashMap<DevTool, bool> = DevTool::ALL.iter().map(|&t| (t, true)).collect();
+        let dev_tools: IndexMap<DevTool, bool> = DevTool::ALL.iter().map(|&t| (t, true)).collect();
         let tools_summary = tool::tools_summary(&dev_tools);
         let app = Self {
             left_w: 300.0,
@@ -140,7 +144,7 @@ impl App {
             dev_tools,
             user_prompt: text_editor::Content::new(),
             workmode: WorkMode::Code,
-            messages: Vec::new(),
+            session: Session::new(None, None),
         };
         (app, Task::none())
     }
@@ -312,43 +316,49 @@ impl App {
 
                 let system_prompt = self.system_prompt.get_prompt();
                 let tools = DevTool::build_tools_map(&self.dev_tools);
+                let workspace = self.system_prompt.workspace.1.clone();
+                let history = self.session.messages.clone();
 
                 self.user_prompt = text_editor::Content::new();
-                self.messages.push(ChatMessage {
-                    role: "You".into(),
+                self.session.push(ChatMessage {
+                    role: Role::User,
                     content: user_prompt.clone(),
                     reasoning: None,
                     timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                    tool: None,
                 });
+                // Update session model info
+                self.session.model = self.selected_model.clone();
+                if !workspace.is_empty() {
+                    self.session.workspace = workspace.clone();
+                }
 
+                let config = adk::SendConfig {
+                    base_url,
+                    api_type,
+                    api_key,
+                    model_id,
+                    workspace,
+                    system_prompt,
+                    user_prompt,
+                    tools,
+                };
                 let send = Task::perform(
-                    async move {
-                        adk::send(
-                            base_url,
-                            api_type,
-                            api_key,
-                            model_id,
-                            system_prompt,
-                            user_prompt,
-                            tools,
-                        )
-                    },
+                    async move { adk::send(config, &history) },
                     Message::SendResult,
                 );
 
                 return send;
             }
-            Message::SendResult(Ok(msg)) => {
-                self.messages.push(msg);
+            Message::SendResult(Ok(msgs)) => {
+                self.session.extend(msgs);
+                let _ = self.session.save();
                 return Task::done(Message::ScrollToEnd);
             }
             Message::SendResult(Err(err)) => {
-                self.messages.push(ChatMessage {
-                    role: "Assistant".into(),
-                    content: format!("Error: {err}"),
-                    reasoning: None,
-                    timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                });
+                self.session
+                    .push(ChatMessage::assistant(format!("Error: {err}"), None));
+                let _ = self.session.save();
                 return Task::done(Message::ScrollToEnd);
             }
             Message::ScrollToEnd => {
@@ -442,20 +452,24 @@ impl App {
             container(
                 scrollable(
                     column(
-                        self.messages
+                        self.session
+                            .messages
                             .iter()
                             .map(|msg| {
-                                let role_color: fn(&Theme) -> SelectionStyle = if msg.role == "You"
-                                {
-                                    sel_primary
-                                } else {
-                                    sel_secondary
+                                let role_color: fn(&Theme) -> SelectionStyle = match msg.role {
+                                    Role::User => sel_primary,
+                                    Role::ToolCall => sel_primary,
+                                    Role::ToolResult => sel_secondary,
+                                    _ => sel_secondary,
                                 };
                                 container({
+                                    let header = if let Some(ref tool) = msg.tool {
+                                        format!("{} — {}", msg.role, tool.name)
+                                    } else {
+                                        msg.role.to_string()
+                                    };
                                     let mut col = column![row![
-                                        SelectableText::new(msg.role.to_string())
-                                            .size(13)
-                                            .style(role_color),
+                                        SelectableText::new(header).size(13).style(role_color),
                                         iced::widget::Space::new().width(Length::Fill),
                                         SelectableText::new(&msg.timestamp)
                                             .size(11)
