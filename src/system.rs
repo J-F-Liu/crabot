@@ -32,7 +32,7 @@ pub struct SystemPrompt {
     pub preamble: (bool, String),
     pub rules: (bool, String),
     pub tools: (bool, String),
-    pub workspace: (bool, String),
+    pub workspace: (bool, PathBuf),
     pub files: (bool, String),
     pub date: (bool, String),
 }
@@ -43,7 +43,6 @@ impl SystemPrompt {
             "Preamble" => Some(&mut self.preamble),
             "Rules" => Some(&mut self.rules),
             "Tools" => Some(&mut self.tools),
-            "Workspace" => Some(&mut self.workspace),
             "Files" => Some(&mut self.files),
             "Date" => Some(&mut self.date),
             _ => None,
@@ -72,10 +71,10 @@ impl SystemPrompt {
             prompt.push('\n');
         }
         if let (true, workspace) = &self.workspace
-            && !workspace.is_empty()
+            && workspace.is_dir()
         {
-            prompt.push_str(&format!("Current Workspace: {}", workspace));
-            prompt.push('\n');
+            let path = crate::workspace::get_unix_style_path(workspace);
+            prompt.push_str(&format!("Current Workspace: {}\n", path));
         }
         if let (true, files) = &self.files
             && !files.is_empty()
@@ -87,8 +86,7 @@ impl SystemPrompt {
         if let (true, date) = &self.date
             && !date.is_empty()
         {
-            prompt.push_str(&format!("Current Date: {}", date));
-            prompt.push('\n');
+            prompt.push_str(&format!("Current Date: {}\n", date));
         }
         prompt
     }
@@ -189,18 +187,15 @@ pub fn tools_field_view<'a>(
 }
 
 pub fn workspace_field_view<'a>(
-    field: &'a (bool, String),
+    field: &'a (bool, PathBuf),
     options: &'a [FilepathEntry],
 ) -> Element<'a, Message> {
     let checked = field.0;
     let name = "Workspace";
-    let selected = if field.1.is_empty() {
+    let selected = if field.1.as_os_str().is_empty() {
         None
     } else {
-        options
-            .iter()
-            .find(|e| e.path == std::path::Path::new(&field.1))
-            .cloned()
+        options.iter().find(|e| e.path == field.1).cloned()
     };
 
     row![

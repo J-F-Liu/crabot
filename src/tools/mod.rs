@@ -122,8 +122,25 @@ pub(crate) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
 pub(crate) fn resolve_path(path: &str, workspace: &std::path::Path) -> std::path::PathBuf {
     let p = std::path::Path::new(path);
     if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        workspace.join(p)
+        return p.to_path_buf();
     }
+    // On Windows, a path like "/c/Users/..." is Unix‑style absolute but
+    // Path::is_absolute() returns false without a prefix. Convert it.
+    #[cfg(windows)]
+    if path.starts_with('/') {
+        let mut components = path[1..].splitn(2, '/');
+        if let Some(drive) = components.next() {
+            if drive.len() == 1 && drive.as_bytes()[0].is_ascii_alphabetic() {
+                let rest = components.next().unwrap_or("");
+                return std::path::PathBuf::from(format!(
+                    "{}:\\{}",
+                    drive.to_ascii_uppercase(),
+                    rest.replace('/', "\\")
+                ));
+            }
+        }
+        // Normalise slashes on Windows – Path handles both, but tools may not.
+        return std::path::PathBuf::from(path.replace('/', "\\"));
+    }
+    workspace.join(p)
 }

@@ -12,12 +12,10 @@ use crate::model::ModelConfig;
 pub struct Session {
     pub id: String,
     pub model: Option<ModelConfig>,
-    pub workspace: String,
+    pub workspace: PathBuf,
     /// App-level messages for UI display.
     pub messages: Vec<DisplayMessage>,
     /// Raw genai messages — exact history sent to / received from the LLM.
-    /// Used directly in subsequent turns to avoid fragile reconstruction.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<ChatMessage>,
     pub created_at: String,
     pub updated_at: String,
@@ -25,15 +23,13 @@ pub struct Session {
 
 impl Session {
     /// Create a new session.
-    pub fn new(model: Option<ModelConfig>, workspace: Option<&Path>) -> Self {
+    pub fn new(model: Option<ModelConfig>, workspace: PathBuf) -> Self {
         let now = chrono::Local::now();
         let id = now.format("%Y%m%d-%H%M%S").to_string();
         Session {
             id,
             model,
-            workspace: workspace
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default(),
+            workspace,
             history: Vec::new(),
             messages: Vec::new(),
             created_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -56,10 +52,10 @@ impl Session {
 
     /// Compute the save path for this session.
     pub fn save_path(&self) -> Option<PathBuf> {
-        if self.workspace.is_empty() {
+        if !self.workspace.is_dir() {
             return None;
         }
-        let base = Path::new(&self.workspace).join(".agent").join("sessions");
+        let base = self.workspace.join(".agent").join("sessions");
         Some(base.join(format!("{}.json", self.id)))
     }
 

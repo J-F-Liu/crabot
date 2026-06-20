@@ -18,7 +18,7 @@ pub struct SendConfig {
     pub api_type: String,
     pub api_key: String,
     pub model_id: String,
-    pub workspace: String,
+    pub workspace: std::path::PathBuf,
     pub system_prompt: String,
     pub user_prompt: String,
     pub tools: Vec<Tool>,
@@ -54,7 +54,6 @@ pub fn send(config: SendConfig, history: Vec<ChatMessage>) -> Result<TurnResult,
         tools,
     } = config;
     let rt = Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
-    let workspace_path = std::path::PathBuf::from(&workspace);
 
     rt.block_on(async {
         let client = build_client(&base_url, &api_key, &api_type);
@@ -116,7 +115,7 @@ pub fn send(config: SendConfig, history: Vec<ChatMessage>) -> Result<TurnResult,
             for tc in &tool_calls {
                 let tool = DevTool::from_name(&tc.fn_name)
                     .ok_or_else(|| format!("Unknown tool: {}", tc.fn_name))?;
-                let exec_result = tool.execute(&tc.fn_arguments, &workspace_path);
+                let exec_result = tool.execute(&tc.fn_arguments, &workspace);
 
                 match exec_result {
                     Ok(output) => {

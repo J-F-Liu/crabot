@@ -130,7 +130,7 @@ impl App {
                 preamble: (true, String::new()),
                 rules: (true, String::new()),
                 tools: (true, tools_summary.clone()),
-                workspace: (true, String::new()),
+                workspace: (true, PathBuf::new()),
                 files: (true, String::new()),
                 date: (true, chrono::Local::now().format("%Y-%m-%d").to_string()),
             },
@@ -146,7 +146,7 @@ impl App {
             dev_tools,
             user_prompt: text_editor::Content::new(),
             workmode: WorkMode::Code,
-            session: Session::new(None, None),
+            session: Session::new(None, PathBuf::new()),
         };
         (app, Task::none())
     }
@@ -233,7 +233,9 @@ impl App {
                 }
             }
             Message::ToggleEnabled(name, enabled) => {
-                if let Some(field) = self.system_prompt.get_mut(name) {
+                if name == "Workspace" {
+                    self.system_prompt.workspace.0 = enabled;
+                } else if let Some(field) = self.system_prompt.get_mut(name) {
                     field.0 = enabled;
                 }
             }
@@ -332,9 +334,7 @@ impl App {
                 });
                 // Update session model info
                 self.session.model = self.selected_model.clone();
-                if !workspace.is_empty() {
-                    self.session.workspace = workspace.clone();
-                }
+                self.session.workspace = workspace.clone();
 
                 let config = adk::SendConfig {
                     base_url,
@@ -386,7 +386,7 @@ impl App {
             .collect();
         paths.retain(|p| p != &path);
 
-        self.system_prompt.workspace.1 = path.to_string_lossy().to_string();
+        self.system_prompt.workspace.1 = path.clone();
         self.system_prompt.files.1 = workspace::build_files_tree(&path);
         self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
 
