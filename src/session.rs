@@ -1,7 +1,8 @@
+use genai::chat::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::chat::ChatMessage;
+use crate::chat::DisplayMessage;
 use crate::model::ModelConfig;
 
 // ── Session ──────────────────────────────────────────────────────────
@@ -12,7 +13,12 @@ pub struct Session {
     pub id: String,
     pub model: Option<ModelConfig>,
     pub workspace: String,
-    pub messages: Vec<ChatMessage>,
+    /// App-level messages for UI display.
+    pub messages: Vec<DisplayMessage>,
+    /// Raw genai messages — exact history sent to / received from the LLM.
+    /// Used directly in subsequent turns to avoid fragile reconstruction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<ChatMessage>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -28,6 +34,7 @@ impl Session {
             workspace: workspace
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
+            history: Vec::new(),
             messages: Vec::new(),
             created_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
             updated_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -35,13 +42,13 @@ impl Session {
     }
 
     /// Push a message and bump the updated_at timestamp.
-    pub fn push(&mut self, msg: ChatMessage) {
+    pub fn push(&mut self, msg: DisplayMessage) {
         self.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.messages.push(msg);
     }
 
     /// Push multiple messages.
-    pub fn extend(&mut self, msgs: impl IntoIterator<Item = ChatMessage>) {
+    pub fn extend(&mut self, msgs: impl IntoIterator<Item = DisplayMessage>) {
         for msg in msgs {
             self.push(msg);
         }

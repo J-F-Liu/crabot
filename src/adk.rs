@@ -1,24 +1,12 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use adk_core::types::FunctionResponseData;
-use adk_rust::futures::StreamExt;
-use adk_rust::{
-    Content, Llm, LlmRequest, Part,
-    model::{
-        GeminiModel,
-        anthropic::{AnthropicClient, AnthropicConfig},
-        deepseek::{DeepSeekClient, DeepSeekConfig},
-        groq::{GroqClient, GroqConfig},
-        ollama::{OllamaConfig, OllamaModel},
-        openai::{OpenAIClient, OpenAIConfig},
-        openrouter::{OpenRouterClient, OpenRouterConfig},
-    },
-};
-use serde_json::Value;
+use genai::adapter::AdapterKind;
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, Tool, ToolCall, ToolResponse};
+use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
+use genai::{Client, ModelIden, ServiceTarget};
 use tokio::runtime::Runtime;
 
-use crate::chat::{ChatMessage, MessageContent, Role};
+use crate::chat::DisplayMessage;
 use crate::tools::DevTool;
 
 /// Max agent loop iterations to prevent infinite tool-calling cycles.
@@ -33,14 +21,28 @@ pub struct SendConfig {
     pub workspace: String,
     pub system_prompt: String,
     pub user_prompt: String,
-    pub tools: HashMap<String, Value>,
+    pub tools: Vec<Tool>,
+}
+
+/// Result of one LLM turn — both genai messages (for next-turn history)
+/// and app-level messages (for UI display).
+#[derive(Debug, Clone)]
+pub struct TurnResult {
+    /// GenAI messages from this turn — append to session history.
+    pub genai_messages: Vec<ChatMessage>,
+    /// Application messages for chat display.
+    pub app_messages: Vec<DisplayMessage>,
 }
 
 /// Send a request to the LLM, with tool execution loop.
 ///
-/// Returns all new `ChatMessage`s from this turn (user prompt, tool calls,
-/// tool results, and final assistant response).
-pub fn send(config: SendConfig, history: &[ChatMessage]) -> Result<Vec<ChatMessage>, String> {
+/// `history` is the raw genai message history from previous turns
+/// (stored in `Session::history`). It is used directly — no
+/// reconstruction from app messages.
+///
+/// Returns both the new genai messages (for next-turn context) and
+/// app-level messages (for UI display).
+pub fn send(config: SendConfig, history: Vec<ChatMessage>) -> Result<TurnResult, String> {
     let SendConfig {
         base_url,
         api_type,
@@ -55,309 +57,150 @@ pub fn send(config: SendConfig, history: &[ChatMessage]) -> Result<Vec<ChatMessa
     let workspace_path = std::path::PathBuf::from(&workspace);
 
     rt.block_on(async {
-        let model: Arc<dyn Llm> = build_model(&base_url, &api_type, &api_key, &model_id)?;
-        let mut results: Vec<ChatMessage> = Vec::new();
+        let client = build_client(&base_url, &api_key, &api_type);
 
-        // Build initial contents: system prompt.
-        let mut contents: Vec<Content> = Vec::new();
-        contents.push(Content::new("system").with_text(&system_prompt));
+        let mut app_messages: Vec<DisplayMessage> = Vec::new();
+        let mut genai_messages: Vec<ChatMessage> = Vec::new();
 
-        // Reconstruct conversation history, merging consecutive
-        // assistant + tool messages back into the original structure:
-        //   model(text + fc₁ + fc₂), function(resp₁), function(resp₂), …
-        // This preserves the prefix the LLM originally saw, keeping
-        // server-side prompt caches warm across turns.
-        let mut i = 0;
-        while i < history.len() {
-            let msg = &history[i];
-            match msg.role {
-                Role::User => {
-                    if let MessageContent::Text { content, .. } = &msg.content {
-                        contents.push(Content::new("user").with_text(content));
-                    }
-                    i += 1;
-                }
-                Role::Assistant => {
-                    if let MessageContent::Text { content, reasoning } = &msg.content {
-                        let mut model_content = Content::new("model");
-                        model_content = model_content.with_text(content);
-                        if let Some(reasoning) = reasoning {
-                            model_content = model_content.with_thinking(reasoning);
-                        }
-                        i += 1;
-
-                        // Consume all consecutive tool messages that belong
-                        // to this assistant turn.
-                        let mut function_responses: Vec<Content> = Vec::new();
-                        while i < history.len() {
-                            if let MessageContent::Tool {
-                                name,
-                                call_id,
-                                args,
-                                result,
-                            } = &history[i].content
-                            {
-                                model_content.parts.push(Part::FunctionCall {
-                                    name: name.clone(),
-                                    args: serde_json::from_str(args).unwrap_or_default(),
-                                    id: call_id.clone(),
-                                    thought_signature: None,
-                                });
-                                let func_resp = FunctionResponseData::new(
-                                    name.clone(),
-                                    serde_json::Value::String(result.clone()),
-                                );
-                                let mut resp_content = Content::new("function");
-                                resp_content.parts.push(Part::FunctionResponse {
-                                    function_response: func_resp,
-                                    id: call_id.clone(),
-                                });
-                                function_responses.push(resp_content);
-                                i += 1;
-                            } else {
-                                break;
-                            }
-                        }
-
-                        contents.push(model_content);
-                        contents.extend(function_responses);
-                    } else {
-                        i += 1;
-                    }
-                }
-                Role::Tool => {
-                    // Standalone tool message — shouldn't occur in normal
-                    // flow, but handled defensively.
-                    if let MessageContent::Tool {
-                        name,
-                        call_id,
-                        args,
-                        result,
-                    } = &msg.content
-                    {
-                        let mut call_content = Content::new("model");
-                        call_content.parts.push(Part::FunctionCall {
-                            name: name.clone(),
-                            args: serde_json::from_str(args).unwrap_or_default(),
-                            id: call_id.clone(),
-                            thought_signature: None,
-                        });
-                        contents.push(call_content);
-
-                        let func_resp = FunctionResponseData::new(
-                            name.clone(),
-                            serde_json::Value::String(result.clone()),
-                        );
-                        let mut resp_content = Content::new("function");
-                        resp_content.parts.push(Part::FunctionResponse {
-                            function_response: func_resp,
-                            id: call_id.clone(),
-                        });
-                        contents.push(resp_content);
-                    }
-                    i += 1;
-                }
-            }
+        // Build ChatRequest from genai history directly.
+        let mut chat_req = ChatRequest::default().with_system(system_prompt);
+        for msg in &history {
+            chat_req = chat_req.append_message(msg.clone());
         }
 
         // Add the new user message.
-        contents.push(Content::new("user").with_text(&user_prompt));
+        let user_msg = ChatMessage::user(&user_prompt);
+        chat_req = chat_req.append_message(user_msg.clone());
+        genai_messages.push(user_msg);
+
+        // Chat options: normalize reasoning content for Anthropic/DeepSeek style thinking.
+        let chat_options = ChatOptions::default().with_normalize_reasoning_content(true);
 
         // Agent loop: keep calling the LLM until it responds without tool calls.
         for _ in 0..MAX_ITERATIONS {
-            let mut request = LlmRequest::new(&model_id, contents.clone());
-            request.tools = tools.clone();
-
-            let stream = model
-                .generate_content(request, true)
+            let req = chat_req.clone().with_tools(tools.clone());
+            let chat_res = client
+                .exec_chat(&model_id, req, Some(&chat_options))
                 .await
-                .map_err(|e| format!("generate_content: {e}"))?;
+                .map_err(|e| format!("exec_chat: {e}"))?;
 
-            // Collect streaming response into a single Content.
-            let response_content = collect_stream(stream).await?;
+            let text = chat_res.content.first_text().unwrap_or("").to_string();
+            let reasoning = chat_res.reasoning_content.clone();
 
-            let text = response_content
-                .parts
-                .iter()
-                .filter_map(|p| p.text())
-                .collect::<Vec<_>>()
-                .join("");
-            let reasoning_text: String = response_content
-                .parts
-                .iter()
-                .filter_map(|p| p.thinking_text())
-                .collect();
-            let reasoning = (!reasoning_text.is_empty()).then_some(reasoning_text);
-            results.push(ChatMessage::assistant(text, reasoning));
+            app_messages.push(DisplayMessage::assistant(text.clone(), reasoning.clone()));
 
-            let has_function_calls = response_content
-                .parts
-                .iter()
-                .any(|p| matches!(p, Part::FunctionCall { .. }));
+            // Build the full genai assistant message from the raw response content.
+            // This preserves text, tool calls, and reasoning — the exact message
+            // the LLM sent (needed for correct multi-turn context).
+            let mut assistant_msg = ChatMessage::assistant(chat_res.content.clone());
+            if let Some(ref rc) = reasoning {
+                assistant_msg = assistant_msg.with_reasoning_content(Some(rc.clone()));
+            }
 
-            if !has_function_calls {
-                // Final assistant response
+            // Extract tool calls from response.
+            let tool_calls: Vec<ToolCall> =
+                chat_res.content.tool_calls().into_iter().cloned().collect();
+
+            // Always push the assistant message — even the final response
+            // must be in history for correct multi-turn context.
+            chat_req = chat_req.append_message(assistant_msg.clone());
+            genai_messages.push(assistant_msg);
+
+            if tool_calls.is_empty() {
+                // Final assistant response — no more tool calls.
                 break;
             }
 
-            // Build the assistant content (includes both text and function calls).
-            contents.push(response_content.clone());
+            // Execute each tool call and record results.
+            let mut tool_responses: Vec<ToolResponse> = Vec::new();
+            for tc in &tool_calls {
+                let tool = DevTool::from_name(&tc.fn_name)
+                    .ok_or_else(|| format!("Unknown tool: {}", tc.fn_name))?;
+                let exec_result = tool.execute(&tc.fn_arguments, &workspace_path);
 
-            // Record tool calls and execute them.
-            let mut function_response_contents: Vec<Content> = Vec::new();
-            for part in &response_content.parts {
-                if let Part::FunctionCall { name, args, id, .. } = part {
-                    let tool =
-                        DevTool::from_name(name).ok_or_else(|| format!("Unknown tool: {name}"))?;
-                    let exec_result = tool.execute(args, &workspace_path);
-
-                    match exec_result {
-                        Ok(output) => {
-                            let func_resp =
-                                FunctionResponseData::new(name, Value::String(output.clone()));
-                            let mut fc = Content::new("function");
-                            fc.parts.push(Part::FunctionResponse {
-                                function_response: func_resp,
-                                id: id.clone(),
-                            });
-                            function_response_contents.push(fc);
-                            results.push(ChatMessage::tool(name, args, id.clone(), output));
-                        }
-                        Err(err) => {
-                            let func_resp =
-                                FunctionResponseData::new(name, Value::String(err.clone()));
-                            let mut fc = Content::new("function");
-                            fc.parts.push(Part::FunctionResponse {
-                                function_response: func_resp,
-                                id: id.clone(),
-                            });
-                            function_response_contents.push(fc);
-                            results.push(ChatMessage::tool(name, args, id.clone(), err));
-                        }
+                match exec_result {
+                    Ok(output) => {
+                        let resp = ToolResponse::from_tool_call(tc, output.clone());
+                        tool_responses.push(resp);
+                        app_messages.push(DisplayMessage::tool(
+                            &tc.fn_name,
+                            &tc.fn_arguments,
+                            Some(tc.call_id.clone()),
+                            output,
+                        ));
+                    }
+                    Err(err) => {
+                        let resp = ToolResponse::from_tool_call(tc, err.clone());
+                        tool_responses.push(resp);
+                        app_messages.push(DisplayMessage::tool(
+                            &tc.fn_name,
+                            &tc.fn_arguments,
+                            Some(tc.call_id.clone()),
+                            err,
+                        ));
                     }
                 }
             }
 
-            // Append tool results to conversation.
-            contents.extend(function_response_contents);
+            // Append tool responses to the request as one genai message.
+            let tool_resp_msg: ChatMessage = tool_responses.clone().into();
+            chat_req = chat_req.append_message(tool_responses);
+            genai_messages.push(tool_resp_msg);
         }
 
-        Ok(results)
+        Ok(TurnResult {
+            genai_messages,
+            app_messages,
+        })
     })
 }
 
-/// Collect the stream into a single Content with thinking baked in.
-async fn collect_stream(mut stream: adk_rust::LlmResponseStream) -> Result<Content, String> {
-    let mut role: Option<String> = None;
-    let mut parts: Vec<Part> = Vec::new();
-    let mut reasoning = String::new();
-    let mut text_buf = String::new();
+/// Build a genai `Client` with custom auth, endpoint, and adapter kind.
+fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Client {
+    let adapter_kind = AdapterKind::from_lower_str(api_type).unwrap_or(AdapterKind::OpenAI);
+    let has_custom_endpoint = !base_url.is_empty();
+    let has_custom_key = !api_key.is_empty();
 
-    while let Some(item) = stream.next().await {
-        let item = item.map_err(|e| format!("stream: {e}"))?;
-        if let Some(content) = item.content {
-            if role.is_none() && !content.role.is_empty() {
-                role = Some(content.role);
-            }
-            for part in content.parts {
-                match &part {
-                    Part::Text { text } if !text.trim().is_empty() => text_buf.push_str(text),
-                    Part::Thinking { thinking, .. } => reasoning.push_str(thinking),
-                    _ => {
-                        if !text_buf.is_empty() {
-                            parts.push(Part::Text {
-                                text: std::mem::take(&mut text_buf),
-                            });
-                        }
-                        parts.push(part);
-                    }
-                }
-            }
-        }
-        if item.turn_complete {
-            break;
-        }
+    if !has_custom_endpoint && !has_custom_key {
+        return Client::default();
     }
 
-    if !text_buf.is_empty() {
-        parts.push(Part::Text { text: text_buf });
+    let mut base_url = base_url.to_string();
+    // Ensure trailing slash so genai's URL join appends rather than replaces
+    // the last path segment (e.g. "/v1/" + "chat/completions" → "/v1/chat/completions").
+    if !base_url.ends_with('/') {
+        base_url.push('/');
     }
-    if !reasoning.is_empty() {
-        parts.push(Part::Thinking {
-            thinking: reasoning,
-            signature: None,
-        });
-    }
-    Ok(Content {
-        role: role.unwrap_or_else(|| "model".into()),
-        parts,
-    })
-}
+    let api_key = api_key.to_string();
 
-fn build_model(
-    base_url: &str,
-    api_type: &str,
-    api_key: &str,
-    model_id: &str,
-) -> Result<Arc<dyn Llm>, String> {
-    let base_url = (!base_url.is_empty()).then(|| base_url.to_owned());
-    match api_type {
-        "gemini" => Ok(Arc::new(
-            GeminiModel::new(api_key, model_id).map_err(|e| format!("gemini: {e}"))?,
-        )),
-        "anthropic" => {
-            let config = AnthropicConfig {
-                base_url: base_url.clone(),
-                ..AnthropicConfig::new(api_key, model_id)
+    let target_resolver = ServiceTargetResolver::from_resolver_fn(
+        move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
+            let ServiceTarget {
+                endpoint: default_endpoint,
+                auth: default_auth,
+                model,
+            } = target;
+
+            let endpoint = if has_custom_endpoint {
+                Endpoint::from_owned(Arc::from(base_url.as_str()))
+            } else {
+                default_endpoint
             };
-            Ok(Arc::new(
-                AnthropicClient::new(config).map_err(|e| format!("anthropic: {e}"))?,
-            ))
-        }
-        "openrouter" => {
-            let mut config = OpenRouterConfig::new(api_key, model_id);
-            if let Some(ref url) = base_url {
-                config.base_url.clone_from(url);
-            }
-            Ok(Arc::new(
-                OpenRouterClient::new(config).map_err(|e| format!("openrouter: {e}"))?,
-            ))
-        }
-        "deepseek" => {
-            let mut config = DeepSeekConfig::new(api_key, model_id);
-            if let Some(ref url) = base_url {
-                config = config.with_base_url(url);
-            }
-            Ok(Arc::new(
-                DeepSeekClient::new(config).map_err(|e| format!("deepseek: {e}"))?,
-            ))
-        }
-        "groq" => {
-            let config = GroqConfig {
-                base_url: base_url.clone(),
-                ..GroqConfig::new(api_key, model_id)
+
+            let auth = if has_custom_key {
+                AuthData::from_single(api_key.as_str())
+            } else {
+                default_auth
             };
-            Ok(Arc::new(
-                GroqClient::new(config).map_err(|e| format!("groq: {e}"))?,
-            ))
-        }
-        "ollama" => {
-            let host = base_url.as_deref().unwrap_or("http://localhost:11434");
-            let config = OllamaConfig::with_host(host, model_id);
-            Ok(Arc::new(
-                OllamaModel::new(config).map_err(|e| format!("ollama: {e}"))?,
-            ))
-        }
-        _ => {
-            let config = OpenAIConfig {
-                base_url,
-                api_key: api_key.to_owned(),
-                model: model_id.to_owned(),
-                ..Default::default()
-            };
-            Ok(Arc::new(
-                OpenAIClient::new(config).map_err(|e| format!("openai: {e}"))?,
-            ))
-        }
-    }
+            Ok(ServiceTarget {
+                endpoint,
+                auth,
+                model: ModelIden::new(adapter_kind, model.model_name),
+            })
+        },
+    );
+
+    Client::builder()
+        .with_service_target_resolver(target_resolver)
+        .build()
 }

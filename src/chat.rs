@@ -1,31 +1,5 @@
+use genai::chat::ChatRole;
 use serde::{Deserialize, Serialize};
-
-// ── Role ──────────────────────────────────────────────────────────────
-
-/// The role of a message in the conversation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Role {
-    #[serde(rename = "You")]
-    User,
-    Assistant,
-    Tool,
-}
-
-impl Role {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "You",
-            Self::Assistant => "Assistant",
-            Self::Tool => "Tool",
-        }
-    }
-}
-
-impl std::fmt::Display for Role {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
 
 // ── MessageContent ────────────────────────────────────────────────────
 
@@ -50,20 +24,20 @@ pub enum MessageContent {
     },
 }
 
-// ── ChatMessage ──────────────────────────────────────────────────────
+// ── DisplayMessage ──────────────────────────────────────────────────
 
-/// A single message in the conversation history.
+/// A single message in the conversation history, formatted for UI display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: Role,
+pub struct DisplayMessage {
+    pub role: ChatRole,
     pub content: MessageContent,
     pub timestamp: String,
 }
 
-impl ChatMessage {
+impl DisplayMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
-            role: Role::User,
+            role: ChatRole::User,
             content: MessageContent::Text {
                 content: content.into(),
                 reasoning: None,
@@ -74,7 +48,7 @@ impl ChatMessage {
 
     pub fn assistant(content: impl Into<String>, reasoning: Option<String>) -> Self {
         Self {
-            role: Role::Assistant,
+            role: ChatRole::Assistant,
             content: MessageContent::Text {
                 content: content.into(),
                 reasoning,
@@ -91,7 +65,7 @@ impl ChatMessage {
     ) -> Self {
         let args_str = serde_json::to_string_pretty(args).unwrap_or_else(|_| format!("{args:?}"));
         Self {
-            role: Role::Tool,
+            role: ChatRole::Tool,
             content: MessageContent::Tool {
                 name: name.into(),
                 call_id: id,

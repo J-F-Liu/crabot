@@ -5,10 +5,10 @@ mod grep;
 mod read;
 mod write;
 
-use std::collections::HashMap;
+use genai::chat::Tool;
 
 use indexmap::IndexMap;
-use serde_json::{Map, Value};
+use serde_json::Value;
 // ── DevTools ────────────────────────────────────────────────────────
 
 /// The six coding-agent devtools exposed to the LLM.
@@ -54,28 +54,20 @@ impl DevTool {
         }
     }
 
-    /// Full tool declaration suitable for `LlmRequest.tools`.
-    pub fn tool_declaration(self) -> (String, Value) {
-        let name = self.name().to_string();
-        let mut m = Map::new();
-        m.insert(
-            "description".into(),
-            Value::String(self.description().to_string()),
-        );
-        m.insert("parameters".into(), schema(self));
-        (name, Value::Object(m))
+    /// Full tool declaration suitable for genai ChatRequest.
+    pub fn tool_declaration(self) -> Tool {
+        Tool::new(self.name())
+            .with_description(self.description())
+            .with_schema(schema(self))
     }
 
-    /// Build the `tools` map for `LlmRequest` from selected tools.
-    pub fn build_tools_map(selected: &IndexMap<DevTool, bool>) -> HashMap<String, Value> {
-        let mut tools = HashMap::new();
-        for (tool, enabled) in selected {
-            if *enabled {
-                let (name, decl) = tool.tool_declaration();
-                tools.insert(name, decl);
-            }
-        }
-        tools
+    /// Build the tools list for genai ChatRequest from selected tools.
+    pub fn build_tools(selected: &IndexMap<DevTool, bool>) -> Vec<Tool> {
+        selected
+            .iter()
+            .filter(|(_, enabled)| **enabled)
+            .map(|(tool, _)| tool.tool_declaration())
+            .collect()
     }
 
     /// Execute this tool with the given JSON arguments and workspace root.

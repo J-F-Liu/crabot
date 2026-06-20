@@ -18,7 +18,9 @@ use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
 use std::path::PathBuf;
 
-use chat::{ChatMessage, MessageContent, Role};
+use adk::TurnResult;
+use chat::{DisplayMessage, MessageContent};
+use genai::chat::ChatRole;
 use model::{Model, ModelConfig, Provider, model_config_view};
 use session::Session;
 use system::{FilepathEntry, SystemPrompt};
@@ -100,7 +102,7 @@ pub enum Message {
     EditUserPrompt(text_editor::Action),
     SelectWorkMode(WorkMode),
     SendPrompt,
-    SendResult(Result<Vec<ChatMessage>, String>),
+    SendResult(Result<TurnResult, String>),
     ScrollToEnd,
 }
 
@@ -315,13 +317,13 @@ impl App {
                 );
 
                 let system_prompt = self.system_prompt.get_prompt();
-                let tools = DevTool::build_tools_map(&self.dev_tools);
+                let tools = DevTool::build_tools(&self.dev_tools);
                 let workspace = self.system_prompt.workspace.1.clone();
-                let history = self.session.messages.clone();
+                let history = self.session.history.clone();
 
                 self.user_prompt = text_editor::Content::new();
-                self.session.push(ChatMessage {
-                    role: Role::User,
+                self.session.push(DisplayMessage {
+                    role: ChatRole::User,
                     content: MessageContent::Text {
                         content: user_prompt.clone(),
                         reasoning: None,
@@ -345,20 +347,21 @@ impl App {
                     tools,
                 };
                 let send = Task::perform(
-                    async move { adk::send(config, &history) },
+                    async move { adk::send(config, history) },
                     Message::SendResult,
                 );
 
                 return send;
             }
-            Message::SendResult(Ok(msgs)) => {
-                self.session.extend(msgs);
+            Message::SendResult(Ok(turn)) => {
+                self.session.history.extend(turn.genai_messages);
+                self.session.extend(turn.app_messages);
                 let _ = self.session.save();
                 return Task::done(Message::ScrollToEnd);
             }
             Message::SendResult(Err(err)) => {
                 self.session
-                    .push(ChatMessage::assistant(format!("Error: {err}"), None));
+                    .push(DisplayMessage::assistant(format!("Error: {err}"), None));
                 let _ = self.session.save();
                 return Task::done(Message::ScrollToEnd);
             }
@@ -458,8 +461,8 @@ impl App {
                             .iter()
                             .map(|msg| {
                                 let role_color: fn(&Theme) -> SelectionStyle = match msg.role {
-                                    Role::User => sel_primary,
-                                    Role::Tool => sel_primary,
+                                    ChatRole::User => sel_primary,
+                                    ChatRole::Tool => sel_primary,
                                     _ => sel_secondary,
                                 };
                                 container({
