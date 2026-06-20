@@ -31,13 +31,14 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
     let mut found = false;
 
     if search_path.is_file() {
+        let path_string = super::convert_path_to_unix_style(&search_path);
         let content = std::fs::read_to_string(&search_path)
-            .map_err(|e| format!("Failed to read {}: {e}", search_path.display()))?;
+            .map_err(|e| format!("Failed to read {}: {e}", &path_string))?;
         for (i, line) in content.lines().enumerate() {
             if re.is_match(line) {
                 let _ = std::fmt::Write::write_fmt(
                     &mut out,
-                    format_args!("{}:{}:{}\n", search_path.display(), i + 1, line),
+                    format_args!("{}:{}:{}\n", &path_string, i + 1, line),
                 );
                 found = true;
             }
@@ -59,11 +60,12 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
                 Ok(c) => c,
                 Err(_) => continue,
             };
+            let path_string = super::convert_path_to_unix_style(&file_path);
             for (i, line) in content.lines().enumerate() {
                 if re.is_match(line) {
                     let _ = std::fmt::Write::write_fmt(
                         &mut out,
-                        format_args!("{}:{}:{}\n", file_path.display(), i + 1, line),
+                        format_args!("{}:{}:{}\n", &path_string, i + 1, line),
                     );
                     found = true;
                 }

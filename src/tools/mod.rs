@@ -119,6 +119,43 @@ pub(crate) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(|v| v.as_u64())
 }
 
+/// Convert a path to Unix‑style representation (reverse of `resolve_path`).
+///
+/// On Windows this turns `C:\Users\...` into `/c/Users/...`.
+/// On Unix this is a no‑op (just ensures forward slashes).
+pub fn convert_path_to_unix_style(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+
+    #[cfg(windows)]
+    {
+        // If it already looks like a Unix‑style path, just normalise slashes.
+        if s.starts_with('/') {
+            return s.replace('\\', "/");
+        }
+        // Match a Windows absolute path like C:\...  or C:/...
+        let mut comps = path.components();
+        if let Some(std::path::Component::Prefix(p)) = comps.next() {
+            if let std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d) = p.kind() {
+                let drive_letter = (d as char).to_ascii_lowercase();
+                let rest: String = comps
+                    .filter(|c| {
+                        !matches!(
+                            c,
+                            std::path::Component::RootDir | std::path::Component::CurDir
+                        )
+                    })
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                return format!("/{drive_letter}/{rest}");
+            }
+        }
+    }
+
+    // On non-Windows (or non‑absolute Windows), just normalise backslashes.
+    s.replace('\\', "/")
+}
+
 pub(crate) fn resolve_path(path: &str, workspace: &std::path::Path) -> std::path::PathBuf {
     let p = std::path::Path::new(path);
     if p.is_absolute() {

@@ -46,7 +46,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         let relative = path.strip_prefix(&search_path).unwrap_or(path);
         let relative_str = relative.to_string_lossy().replace('\\', "/");
         if glob_pattern.matches(&relative_str) {
-            results.push(path.display().to_string());
+            results.push(super::convert_path_to_unix_style(path));
         }
     }
 
