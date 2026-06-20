@@ -35,8 +35,8 @@ impl UserPrompt {
 
     pub fn get_prompt(&self) -> String {
         let mut prompt = String::new();
-        prompt.push_str(&format!("Current mode: {}\n", self.mode));
-        prompt.push_str(&self.content);
+        prompt.push_str(&format!("MODE: {}\n", self.mode));
+        prompt.push_str(&format!("TASK: {}\n", &self.content));
         prompt
     }
 }

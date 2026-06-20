@@ -482,10 +482,6 @@ impl App {
                                                 col = col.push(
                                                     SelectableText::new(reasoning)
                                                         .size(13)
-                                                        .font(Font {
-                                                            style: font::Style::Italic,
-                                                            ..Font::DEFAULT
-                                                        })
                                                         .style(sel_secondary),
                                                 );
                                             }

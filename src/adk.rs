@@ -280,19 +280,18 @@ async fn collect_stream(mut stream: adk_rust::LlmResponseStream) -> Result<Conte
     }
 
     if !text_buf.is_empty() {
-        parts.push(Part::Text {
-            text: std::mem::take(&mut text_buf),
+        parts.push(Part::Text { text: text_buf });
+    }
+    if !reasoning.is_empty() {
+        parts.push(Part::Thinking {
+            thinking: reasoning,
+            signature: None,
         });
     }
-
-    let mut content = Content {
+    Ok(Content {
         role: role.unwrap_or_else(|| "model".into()),
         parts,
-    };
-    if !reasoning.is_empty() {
-        content = content.with_thinking(reasoning);
-    }
-    Ok(content)
+    })
 }
 
 fn build_model(
