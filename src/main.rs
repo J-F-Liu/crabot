@@ -29,6 +29,26 @@ use std::path::PathBuf;
 
 use chat::{DisplayMessage, MessageContent, TextContent, ToolResult};
 
+/// Compile-time title embedding the Cargo.toml version via crabtime.
+#[crabtime::expression]
+fn crabot_title() {
+    let cargo_toml = format!("{}/Cargo.toml", crabtime::WORKSPACE_PATH);
+    let content = std::fs::read_to_string(&cargo_toml).unwrap_or_default();
+    let version = content
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("version = \"")
+                .and_then(|rest| rest.strip_suffix('"'))
+        })
+        .unwrap_or("unknown");
+    let title = format!("\"Crabot v{}\"", version);
+    crabtime::output! {
+        {{title}}
+    }
+}
+
 use genai::chat::ChatRole;
 use model::{Model, ModelConfig, Provider, model_config_view};
 use session::Session;
@@ -42,7 +62,7 @@ pub fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(|state: &App| state.theme.clone())
         .window_size(Size::new(1200.0, 800.0))
-        .title("Crabot")
+        .title(crabot_title!())
         .antialiasing(true)
         .exit_on_close_request(false)
         .run()
