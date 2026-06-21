@@ -19,6 +19,7 @@ pub fn dev_tools_view<'a>(selected: &'a IndexMap<DevTool, bool>) -> Element<'a, 
             row_children.push(
                 checkbox(is_checked)
                     .label(tool_name)
+                    .style(crate::primary_checkbox)
                     .on_toggle(move |v| Message::ToggleDevTool(tool.name().to_string(), v))
                     .into(),
             );

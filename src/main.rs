@@ -16,8 +16,8 @@ use iced::{
     advanced::text::Highlight,
     alignment, event, font, mouse,
     widget::{
-        self, Space, column, container, markdown, mouse_area, row, rule, scrollable, text,
-        text_editor,
+        self, Space, button, checkbox, column, container, markdown, mouse_area, row, rule,
+        scrollable, text, text_editor, toggler,
     },
     window,
 };
@@ -53,6 +53,32 @@ pub fn main() -> iced::Result {
 const MIN_W: f32 = 280.0;
 const HANDLE: f32 = 6.0;
 const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
+
+// ── theme colors ─────────────────────────────────────────────
+
+const CRABOT_BG: Color = Color::from_rgb8(0xF0, 0xF0, 0xF0);
+const CRABOT_PANEL: Color = Color::from_rgb8(0xF2, 0xF2, 0xF2);
+const CRABOT_SURFACE: Color = Color::from_rgb8(0xE8, 0xE8, 0xE8);
+const CRABOT_PRIMARY: Color = Color::from_rgb8(0x1A, 0x9A, 0x8C);
+const CRABOT_PRIMARY_HOVER: Color = Color::from_rgb8(0x15, 0x8C, 0x7F);
+const CRABOT_PRIMARY_PRESSED: Color = Color::from_rgb8(0x11, 0x7A, 0x70);
+const CRABOT_TEXT: Color = Color::from_rgb8(0x33, 0x33, 0x33);
+const CRABOT_TEXT_MUTED: Color = Color::from_rgb8(0x66, 0x66, 0x66);
+
+fn crabot_palette() -> iced::theme::Palette {
+    iced::theme::Palette {
+        background: CRABOT_BG,
+        text: CRABOT_TEXT,
+        primary: CRABOT_PRIMARY,
+        success: Color::from_rgb8(0x4C, 0xAF, 0x50),
+        warning: Color::from_rgb8(0xFF, 0xA0, 0x00),
+        danger: Color::from_rgb8(0xE8, 0x4E, 0x4E),
+    }
+}
+
+fn default_theme() -> Theme {
+    Theme::custom("Crabot Light", crabot_palette())
+}
 
 // ── divider identity ──────────────────────────────────────────────
 
@@ -165,7 +191,7 @@ impl App {
             .map(|&t| (t, dev_tools.get(&t).copied().unwrap_or(true)))
             .collect();
 
-        let theme = iced::Theme::SolarizedLight;
+        let theme = default_theme();
 
         let model_for_session = saved.selected_model.clone();
         let workspace_for_session = saved.system_prompt.workspace.1.clone();
@@ -796,13 +822,7 @@ fn center_pane<'a>(
                                 }
                                 _ => (msg.role.to_string(), false, ""),
                             };
-                            let text_role_color: fn(&Theme) -> widget::text::Style = match msg.role
-                            {
-                                ChatRole::User => text_primary,
-                                ChatRole::Tool => text_primary,
-                                _ => text_secondary,
-                            };
-                            let header_text = text(header).size(13).style(text_role_color);
+                            let header_text = text(header).size(13).color(CRABOT_TEXT);
                             let ts_text = SelectableText::new(&msg.timestamp)
                                 .size(11)
                                 .style(sel_secondary);
@@ -873,13 +893,7 @@ fn center_pane<'a>(
                         })
                         .width(Fill)
                         .padding(8)
-                        .style(|theme: &Theme| {
-                            let p = theme.extended_palette();
-                            container::Style {
-                                background: Some(p.background.base.color.into()),
-                                ..Default::default()
-                            }
-                        })
+                        .style(|_theme: &Theme| container::Style::default())
                         .into()
                     })
                     .collect::<Vec<_>>(),
@@ -894,6 +908,16 @@ fn center_pane<'a>(
     .width(Fill)
     .height(Fill)
     .style(pane_center)
+    .into()
+}
+
+/// Label-value row with the value right-aligned via a fill spacer.
+fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
+    row![
+        text(label).size(16),
+        Space::new().width(Length::Fill),
+        text(value).size(16),
+    ]
     .into()
 }
 
@@ -920,11 +944,11 @@ fn right_pane<'a>(
                 weight: font::Weight::Bold,
                 ..Font::DEFAULT
             }))
-            .push(text(format!("Prompt tokens:      {prompt_tokens}")).size(16))
-            .push(text(format!("Cached tokens:      {cached_tokens}")).size(16))
-            .push(text(format!("Total tokens:       {total_tokens}")).size(16))
-            .push(text(format!("Context window:     {cw}")).size(16))
-            .push(text(format!("Window used:        {pct}%")).size(16));
+            .push(token_row("Prompt tokens:", format!("{prompt_tokens}")))
+            .push(token_row("Cached tokens:", format!("{cached_tokens}")))
+            .push(token_row("Total tokens:", format!("{total_tokens}")))
+            .push(token_row("Context window:", format!("{cw}")))
+            .push(token_row("Window used:", format!("{pct}%")));
     }
 
     container(col.padding(20))
@@ -936,17 +960,16 @@ fn right_pane<'a>(
 
 // ── pane styles ───────────────────────────────────────────────────
 
-fn pane_side(theme: &Theme) -> container::Style {
-    let p = theme.extended_palette();
+fn pane_side(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(p.background.weak.color.into()),
+        background: Some(CRABOT_PANEL.into()),
         ..container::Style::default()
     }
 }
 
-fn pane_center(theme: &Theme) -> container::Style {
+fn pane_center(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(theme.palette().background.into()),
+        background: Some(Color::WHITE.into()),
         ..container::Style::default()
     }
 }
@@ -967,19 +990,16 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
             .style(|theme: &Theme| {
                 let p = theme.extended_palette();
                 SelectionStyle {
-                    color: Some(p.secondary.base.text),
-                    selection: theme.palette().primary,
+                    color: Some(CRABOT_TEXT),
+                    selection: p.primary.base.color,
                 }
             }),
     )
     .width(Fill)
     .padding([8, 12])
-    .style(|theme: &Theme| {
-        let p = theme.extended_palette();
-        container::Style {
-            background: Some(p.background.weak.color.into()),
-            ..container::Style::default()
-        }
+    .style(|_theme: &Theme| container::Style {
+        background: Some(CRABOT_SURFACE.into()),
+        ..container::Style::default()
     })
     .into()
 }
@@ -987,21 +1007,112 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
 // ── status line ───────────────────────────────────────────────────
 
 fn status_line<'a>(status_text: &'a str) -> Element<'a, Message> {
-    container(text(status_text).size(12))
+    container(text(status_text).size(12).color(CRABOT_TEXT_MUTED))
         .width(Fill)
         .align_x(alignment::Horizontal::Center)
         .padding([4, 10])
-        .style(|theme: &Theme| {
-            let p = theme.extended_palette();
-            container::Style {
-                background: Some(p.background.weak.color.into()),
-                ..container::Style::default()
-            }
+        .style(|_theme: &Theme| container::Style {
+            background: Some(CRABOT_SURFACE.into()),
+            ..container::Style::default()
         })
         .into()
 }
 
-// ── palette helpers ──────────────────────────────────────────────
+// ── button styles ───────────────────────────────────────────────
+
+pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: Some(CRABOT_PRIMARY.into()),
+        text_color: Color::WHITE,
+        border: Border::default().rounded(6),
+        ..button::Style::default()
+    };
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(CRABOT_PRIMARY_HOVER.into()),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(CRABOT_PRIMARY_PRESSED.into()),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            background: Some(CRABOT_PRIMARY.scale_alpha(0.5).into()),
+            ..base
+        },
+    }
+}
+
+pub fn primary_toggler(_theme: &Theme, status: toggler::Status) -> toggler::Style {
+    let base = toggler::Style {
+        background: CRABOT_SURFACE.into(),
+        background_border_width: 1.0,
+        background_border_color: Color::from_rgb8(0xC0, 0xC0, 0xC0),
+        foreground: Color::WHITE.into(),
+        foreground_border_width: 0.0,
+        foreground_border_color: Color::TRANSPARENT,
+        text_color: Some(CRABOT_TEXT),
+        border_radius: None,
+        padding_ratio: 0.3,
+    };
+    match status {
+        toggler::Status::Active { is_toggled }
+        | toggler::Status::Hovered { is_toggled }
+        | toggler::Status::Disabled { is_toggled } => {
+            let mut style = base;
+            if is_toggled {
+                style.background = CRABOT_PRIMARY.into();
+                style.background_border_color = CRABOT_PRIMARY;
+            }
+            if matches!(status, toggler::Status::Hovered { .. }) {
+                style.background = if is_toggled {
+                    CRABOT_PRIMARY_HOVER.into()
+                } else {
+                    Color::from_rgb8(0xD8, 0xD8, 0xD8).into()
+                };
+                style.background_border_color = if is_toggled {
+                    CRABOT_PRIMARY_HOVER
+                } else {
+                    Color::from_rgb8(0xA8, 0xA8, 0xA8)
+                };
+            }
+            style
+        }
+    }
+}
+
+pub fn primary_checkbox(_theme: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let base = checkbox::Style {
+        background: Color::WHITE.into(),
+        icon_color: Color::WHITE,
+        border: Border::default()
+            .rounded(4)
+            .width(1)
+            .color(Color::from_rgb8(0xB0, 0xB0, 0xB0)),
+        text_color: Some(CRABOT_TEXT),
+    };
+    match status {
+        checkbox::Status::Active { is_checked }
+        | checkbox::Status::Hovered { is_checked }
+        | checkbox::Status::Disabled { is_checked } => {
+            let mut style = base;
+            if is_checked {
+                style.background = CRABOT_PRIMARY.into();
+                style.border = Border::default().rounded(4).width(1).color(CRABOT_PRIMARY);
+                style.icon_color = Color::WHITE;
+            }
+            if matches!(status, checkbox::Status::Hovered { .. }) && is_checked {
+                style.background = CRABOT_PRIMARY_HOVER.into();
+                style.border = Border::default()
+                    .rounded(4)
+                    .width(1)
+                    .color(CRABOT_PRIMARY_HOVER);
+            }
+            style
+        }
+    }
+}
 
 fn color_text(theme: &Theme) -> iced::Color {
     theme.palette().text
@@ -1033,20 +1144,6 @@ fn sel_secondary(theme: &Theme) -> SelectionStyle {
     SelectionStyle {
         color: Some(color_secondary(theme)),
         selection: color_secondary(theme),
-    }
-}
-
-// ── plain text styles ─────────────────────────────────────────────
-
-fn text_primary(theme: &Theme) -> widget::text::Style {
-    widget::text::Style {
-        color: Some(color_primary(theme)),
-    }
-}
-
-fn text_secondary(theme: &Theme) -> widget::text::Style {
-    widget::text::Style {
-        color: Some(color_secondary(theme)),
     }
 }
 

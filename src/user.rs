@@ -59,7 +59,8 @@ pub fn user_prompt_view<'a>(
             iced::widget::Space::new().width(Length::Fill),
             button(text("Send").align_x(Alignment::Center))
                 .width(80)
-                .on_press(Message::SendPrompt),
+                .on_press(Message::SendPrompt)
+                .style(crate::primary_button),
         ]
         .spacing(8)
         .align_y(Alignment::Center),

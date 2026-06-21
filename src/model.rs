@@ -103,9 +103,10 @@ pub fn model_config_view<'a>(
     let toggle: Element<_> = if supported {
         toggler(thinking_enabled)
             .on_toggle(Message::ToggleThinking)
+            .style(crate::primary_toggler)
             .into()
     } else {
-        mouse_area(toggler(thinking_enabled))
+        mouse_area(toggler(thinking_enabled).style(crate::primary_toggler))
             .interaction(mouse::Interaction::None)
             .into()
     };

@@ -110,7 +110,9 @@ pub fn session_view<'a>() -> Element<'a, Message> {
             ..Font::DEFAULT
         }),
         iced::widget::Space::new().width(Length::Fill),
-        button(text("New").align_x(Alignment::Center)).on_press(Message::NewSession),
+        button(text("New").align_x(Alignment::Center))
+            .on_press(Message::NewSession)
+            .style(crate::primary_button),
     ]
     .align_y(Alignment::Center)
     .spacing(8)

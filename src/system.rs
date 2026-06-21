@@ -105,6 +105,7 @@ fn expandable_header<'a>(
     row![
         checkbox(checked)
             .label(name)
+            .style(crate::primary_checkbox)
             .on_toggle(move |v| Message::ToggleEnabled(name, v)),
         mouse_area(text(arrow).size(12).width(16)).on_press(Message::ToggleExpanded(name)),
     ]
@@ -132,6 +133,7 @@ pub fn preamble_field_view<'a>(
     row![
         checkbox(checked)
             .label(name)
+            .style(crate::primary_checkbox)
             .on_toggle(move |v| Message::ToggleEnabled(name, v)),
         pick_list(options, selected, Message::SelectPreamble).width(Fill),
     ]
@@ -203,6 +205,7 @@ pub fn workspace_field_view<'a>(
     row![
         checkbox(checked)
             .label(name)
+            .style(crate::primary_checkbox)
             .on_toggle(move |v| Message::ToggleEnabled(name, v)),
         pick_list(options, selected, Message::SelectWorkspace).width(Fill),
     ]
@@ -258,6 +261,7 @@ pub fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
     row![
         checkbox(checked)
             .label(name)
+            .style(crate::primary_checkbox)
             .on_toggle(move |v| Message::ToggleEnabled(name, v)),
         text_input("YYYY-MM-DD", &field.1)
             .on_input(move |s| Message::EditTextField(name, s))
