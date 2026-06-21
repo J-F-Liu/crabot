@@ -10,3 +10,13 @@ A smart and powerful coding agent.
 - Native, high-performance built-in tools.
 - Built in pure Rust — single native binary, no runtime dependency, zero GC pauses.
 - Each session is saved as a json file in workspace `.agent` folder.
+
+## Installation
+
+```sh
+cargo install crabot
+```
+or
+```sh
+cargo install --git https://github.com/J-F-Liu/crabot
+```
