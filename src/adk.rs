@@ -82,6 +82,7 @@ pub async fn send_stream(
         .with_capture_content(true)
         .with_capture_reasoning_content(true)
         .with_capture_tool_calls(true)
+        .with_capture_usage(true)
         .with_reasoning_effort(reasoning_effort);
 
     // Agent loop: keep calling the LLM until it responds without tool calls.
@@ -123,6 +124,9 @@ pub async fn send_stream(
                 Ok(genai::chat::ChatStreamEvent::End(end)) => {
                     captured_content = end.captured_content;
                     captured_reasoning = end.captured_reasoning_content;
+                    if !on_event(crate::Message::TokenUsage(end.captured_usage)).await {
+                        return;
+                    }
                 }
                 Ok(_) => {} // ignore Start, ThoughtSignature, ToolCallChunk
                 Err(e) => {

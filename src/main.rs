@@ -99,6 +99,8 @@ struct App {
     stream_start_index: usize,
     /// Indices of tool-result messages whose result body is expanded.
     expanded_tools: HashSet<usize>,
+    /// Token usage from the most recent completed LLM response.
+    last_usage: Option<genai::chat::Usage>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +130,7 @@ pub enum Message {
     StreamContent(String),
     StreamReasoning(String),
     StreamToolResult(ToolResult),
+    TokenUsage(Option<genai::chat::Usage>),
     StreamDone(Vec<genai::chat::ChatMessage>),
     StreamError(String, Vec<genai::chat::ChatMessage>),
 }
@@ -174,6 +177,7 @@ impl App {
             streaming: false,
             stream_start_index: 0,
             expanded_tools: HashSet::new(),
+            last_usage: None,
         };
         (app, Task::none())
     }
@@ -423,6 +427,9 @@ impl App {
             Message::StreamToolResult(tr) => {
                 self.session.push(DisplayMessage::from_tool_result(tr));
                 return scroll_to_end();
+            }
+            Message::TokenUsage(usage) => {
+                self.last_usage = usage;
             }
             Message::StreamDone(genai_messages) => {
                 self.handle_stream_done(genai_messages);
@@ -724,11 +731,11 @@ impl App {
             .height(Fill)
             .style(pane_center),
             divider(),
-            pane(
-                "Right Pane",
-                "◂ Drag to resize",
+            pane_right(
                 Length::Fixed(self.right_w),
-                pane_side
+                pane_side,
+                self.last_usage.as_ref(),
+                self.selected_model().map(|(_, m)| m.context_window),
             ),
         ]
         .spacing(0)
@@ -779,21 +786,41 @@ fn label<'a>(text: &'a str, width: impl Into<Length>) -> Element<'a, Message> {
     .into()
 }
 
-fn pane<'a>(
-    title: &'a str,
-    hint: &'a str,
+fn pane_right<'a>(
     width: impl Into<Length>,
     style: fn(&Theme) -> container::Style,
+    usage: Option<&genai::chat::Usage>,
+    context_window: Option<u64>,
 ) -> Element<'a, Message> {
-    container(
-        column![text(title).size(26), text(hint).size(14)]
-            .spacing(8)
-            .padding(20),
-    )
-    .width(width)
-    .height(Fill)
-    .style(style)
-    .into()
+    let mut col = column![].spacing(8);
+
+    if let (Some(u), Some(cw)) = (usage, context_window) {
+        let prompt_tokens = u.prompt_tokens.unwrap_or(0);
+        let cached_tokens = u
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+            .unwrap_or(0);
+        let total_tokens = u.total_tokens.unwrap_or(0);
+        let pct = ((prompt_tokens as u64) * 100).checked_div(cw).unwrap_or(0);
+        col = col
+            .push(rule::horizontal(1))
+            .push(text("Token Usage").size(14).font(Font {
+                weight: font::Weight::Bold,
+                ..Font::DEFAULT
+            }))
+            .push(text(format!("Prompt tokens:      {prompt_tokens}")).size(16))
+            .push(text(format!("Cached tokens:      {cached_tokens}")).size(16))
+            .push(text(format!("Total tokens:       {total_tokens}")).size(16))
+            .push(text(format!("Context window:     {cw}")).size(16))
+            .push(text(format!("Window used:        {pct}%")).size(16));
+    }
+
+    container(col.padding(20))
+        .width(width)
+        .height(Fill)
+        .style(style)
+        .into()
 }
 
 // ── pane styles ───────────────────────────────────────────────────
