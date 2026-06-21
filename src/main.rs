@@ -2,6 +2,7 @@ mod adk;
 mod chat;
 mod model;
 mod session;
+mod settings;
 mod system;
 mod tool;
 mod tools;
@@ -39,6 +40,7 @@ pub fn main() -> iced::Result {
         .window_size(Size::new(1200.0, 800.0))
         .title("Crabot")
         .antialiasing(true)
+        .exit_on_close_request(false)
         .run()
 }
 
@@ -133,6 +135,7 @@ pub enum Message {
     TokenUsage(Option<genai::chat::Usage>),
     StreamDone(Vec<genai::chat::ChatMessage>),
     StreamError(String, Vec<genai::chat::ChatMessage>),
+    AppClosing,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -142,38 +145,47 @@ impl App {
         let providers = model::try_load_models_from_omp()
             .or_else(|_| model::try_load_models_from_pi())
             .unwrap_or_default();
-        let dev_tools: IndexMap<DevTool, bool> = DevTool::ALL.iter().map(|&t| (t, true)).collect();
-        let tools_summary = tool::tools_summary(&dev_tools);
+        let saved = settings::Settings::load();
+
+        let dev_tools: IndexMap<DevTool, bool> = saved
+            .dev_tools
+            .iter()
+            .filter_map(|(name, enabled)| DevTool::from_name(name).map(|t| (t, *enabled)))
+            .collect();
+        // Ensure any newly-added tools default to enabled.
+        let dev_tools: IndexMap<DevTool, bool> = DevTool::ALL
+            .iter()
+            .map(|&t| (t, dev_tools.get(&t).copied().unwrap_or(true)))
+            .collect();
+
+        let theme = iced::Theme::SolarizedLight;
+
+        let model_for_session = saved.selected_model.clone();
+        let workspace_for_session = saved.system_prompt.workspace.1.clone();
+
         let app = Self {
-            left_w: 300.0,
-            right_w: 400.0,
-            window_w: 1200.0,
+            left_w: saved.left_w,
+            right_w: saved.right_w,
+            window_w: saved.window_w,
             cursor: Point::ORIGIN,
             dragging: None,
             providers,
-            selected_model: None,
-            theme: Theme::SolarizedLight,
-            system_prompt: SystemPrompt {
-                preamble: (true, String::new()),
-                rules: (true, String::new()),
-                tools: (true, tools_summary.clone()),
-                workspace: (true, PathBuf::new()),
-                files: (true, String::new()),
-                date: (true, chrono::Local::now().format("%Y-%m-%d").to_string()),
-            },
-            rules_expanded: false,
-            tools_expanded: false,
-            files_expanded: false,
-            selected_preamble: String::new(),
+            selected_model: saved.selected_model,
+            theme,
+            system_prompt: saved.system_prompt.clone(),
+            rules_expanded: saved.rules_expanded,
+            tools_expanded: saved.tools_expanded,
+            files_expanded: saved.files_expanded,
+            selected_preamble: saved.selected_preamble,
             preamble_options: system::build_preamble_options(),
-            workspace_options: system::build_workspace_options(&[]),
-            rules_content: text_editor::Content::new(),
-            files_content: text_editor::Content::new(),
-            tools_content: text_editor::Content::with_text(&tools_summary),
+            workspace_options: system::build_workspace_options(&saved.recent_workspaces),
+            rules_content: text_editor::Content::with_text(&saved.rules_text),
+            files_content: text_editor::Content::with_text(&saved.files_text),
+            tools_content: text_editor::Content::with_text(&saved.tools_text),
             dev_tools,
             user_prompt: text_editor::Content::new(),
-            workmode: WorkMode::Code,
-            session: Session::new(None, PathBuf::new()),
+            workmode: saved.workmode,
+            session: Session::new(model_for_session, workspace_for_session),
             streaming: false,
             stream_start_index: 0,
             expanded_tools: HashSet::new(),
@@ -439,6 +451,10 @@ impl App {
                 self.handle_stream_error(err, genai_messages);
                 return scroll_to_end();
             }
+            Message::AppClosing => {
+                self.save_settings();
+                return iced::exit();
+            }
         }
         Task::none()
     }
@@ -548,6 +564,37 @@ impl App {
         paths.insert(0, path);
         paths.truncate(10);
         self.workspace_options = system::build_workspace_options(&paths);
+    }
+
+    /// Collect current app state into `Settings` and persist to disk.
+    fn save_settings(&self) {
+        let settings = settings::Settings {
+            left_w: self.left_w,
+            right_w: self.right_w,
+            window_w: self.window_w,
+            selected_model: self.selected_model.clone(),
+            system_prompt: self.system_prompt.clone(),
+            rules_expanded: self.rules_expanded,
+            tools_expanded: self.tools_expanded,
+            files_expanded: self.files_expanded,
+            selected_preamble: self.selected_preamble.clone(),
+            recent_workspaces: self
+                .workspace_options
+                .iter()
+                .filter(|e| !e.path.as_os_str().is_empty())
+                .map(|e| e.path.clone())
+                .collect(),
+            rules_text: self.rules_content.text(),
+            tools_text: self.tools_content.text(),
+            files_text: self.files_content.text(),
+            dev_tools: self
+                .dev_tools
+                .iter()
+                .map(|(t, &enabled)| (t.name().to_string(), enabled))
+                .collect(),
+            workmode: self.workmode,
+        };
+        settings.save();
     }
 
     fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
@@ -743,19 +790,24 @@ impl App {
     }
 
     fn subscription(_state: &Self) -> Subscription<Message> {
-        event::listen_with(|event, _status, _window| match event {
-            Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                Some(Message::CursorMoved(position))
-            }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                Some(Message::LeftPressed)
-            }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                Some(Message::LeftReleased)
-            }
-            Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size.width)),
-            _ => None,
-        })
+        Subscription::batch([
+            event::listen_with(|event, _status, _window| match event {
+                Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                    Some(Message::CursorMoved(position))
+                }
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    Some(Message::LeftPressed)
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    Some(Message::LeftReleased)
+                }
+                Event::Window(window::Event::Resized(size)) => {
+                    Some(Message::WindowResized(size.width))
+                }
+                _ => None,
+            }),
+            window::close_requests().map(|_id| Message::AppClosing),
+        ])
     }
 }
 

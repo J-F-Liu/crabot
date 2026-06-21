@@ -28,6 +28,7 @@ impl PartialEq for FilepathEntry {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SystemPrompt {
     pub preamble: (bool, String),
     pub rules: (bool, String),

@@ -12,7 +12,7 @@ use serde_json::Value;
 // ── DevTools ────────────────────────────────────────────────────────
 
 /// The six coding-agent devtools exposed to the LLM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DevTool {
     Read,
     Write,

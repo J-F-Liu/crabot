@@ -69,21 +69,21 @@ pub async fn send_stream(
     let mut genai_messages: Vec<ChatMessage> = vec![user_msg];
 
     // Chat options: capture content for tool-call extraction, normalize reasoning.
-    let reasoning_effort = if thinking {
-        thinking_level
-            .to_lowercase()
-            .parse::<ReasoningEffort>()
-            .unwrap_or(ReasoningEffort::Medium)
-    } else {
-        ReasoningEffort::None
-    };
-    let chat_options = ChatOptions::default()
+    let mut chat_options = ChatOptions::default()
         .with_normalize_reasoning_content(true)
         .with_capture_content(true)
         .with_capture_reasoning_content(true)
         .with_capture_tool_calls(true)
-        .with_capture_usage(true)
-        .with_reasoning_effort(reasoning_effort);
+        .with_capture_usage(true);
+
+    // Set reasoning effort, When thinking is off, omit it entirely
+    if thinking {
+        let reasoning_effort = thinking_level
+            .to_lowercase()
+            .parse::<ReasoningEffort>()
+            .unwrap_or(ReasoningEffort::Medium);
+        chat_options = chat_options.with_reasoning_effort(reasoning_effort);
+    }
 
     // Agent loop: keep calling the LLM until it responds without tool calls.
     let mut finished = false;

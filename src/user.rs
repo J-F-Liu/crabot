@@ -6,7 +6,7 @@ use std::fmt;
 
 use crate::Message;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkMode {
     Plan,
     Code,
