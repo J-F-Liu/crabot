@@ -1,7 +1,12 @@
 use genai::chat::ChatMessage;
+use iced::{
+    Alignment, Element, Font, Length, font,
+    widget::{button, row, text},
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::Message;
 use crate::chat::DisplayMessage;
 use crate::model::ModelConfig;
 
@@ -96,4 +101,18 @@ impl Session {
         paths.sort_by(|a, b| b.cmp(a)); // newest first
         Ok(paths)
     }
+}
+
+pub fn session_view<'a>() -> Element<'a, Message> {
+    row![
+        text("Session").size(14).font(Font {
+            weight: font::Weight::Bold,
+            ..Font::DEFAULT
+        }),
+        iced::widget::Space::new().width(Length::Fill),
+        button(text("New").align_x(Alignment::Center)).on_press(Message::NewSession),
+    ]
+    .align_y(Alignment::Center)
+    .spacing(8)
+    .into()
 }

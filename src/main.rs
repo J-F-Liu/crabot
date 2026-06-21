@@ -108,6 +108,7 @@ pub enum Message {
     ToggleDevTool(String, bool),
     EditUserPrompt(text_editor::Action),
     SelectWorkMode(WorkMode),
+    NewSession,
     SendPrompt,
     StreamContent(String),
     StreamReasoning(String),
@@ -324,6 +325,10 @@ impl App {
             }
             Message::SelectWorkMode(mode) => {
                 self.workmode = mode;
+            }
+            Message::NewSession => {
+                let workspace = self.system_prompt.workspace.1.clone();
+                self.session = Session::new(self.selected_model.clone(), workspace);
             }
             Message::SendPrompt => {
                 if self.streaming {
@@ -571,6 +576,7 @@ impl App {
                 &self.files_content,
             ),
             system::date_field_view(&self.system_prompt.date),
+            session::session_view(),
             label("User Prompt", 140.0),
             user_prompt_view(&self.user_prompt, self.workmode),
             label("Dev Tools", 140.0),
