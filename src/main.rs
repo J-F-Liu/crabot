@@ -189,6 +189,8 @@ pub enum Message {
     StreamError(String, Vec<genai::chat::ChatMessage>),
     AppClosing,
     Noop,
+    CopySession,
+    ResendLastPrompt,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -243,7 +245,7 @@ impl App {
             stream_start_index: 0,
             expanded_tools: HashSet::new(),
             last_usage: None,
-            current_prompt: String::new(),
+            current_prompt: "New session".into(),
         };
         (app, Task::none())
     }
@@ -400,7 +402,7 @@ impl App {
             Message::NewSession => {
                 let workspace = self.system_prompt.workspace.1.clone();
                 self.session = Session::new(self.selected_model.clone(), workspace);
-                self.current_prompt.clear();
+                self.current_prompt = "New session".into();
             }
             Message::ToggleToolExpand(idx) => {
                 if self.expanded_tools.contains(&idx) {
@@ -515,6 +517,15 @@ impl App {
             Message::StreamError(err, genai_messages) => {
                 self.handle_stream_error(err, genai_messages);
                 return scroll_to_end();
+            }
+            Message::CopySession => {
+                return iced::clipboard::write(self.current_prompt.clone());
+            }
+            Message::ResendLastPrompt => {
+                if self.current_prompt != "New session" {
+                    self.user_prompt = text_editor::Content::with_text(&self.current_prompt);
+                    return Task::done(Message::SendPrompt);
+                }
             }
             Message::AppClosing => {
                 self.save_settings();
@@ -996,32 +1007,50 @@ fn pane_center(_theme: &Theme) -> container::Style {
 
 // ── session header ──────────────────────────────────────────────────
 
-/// Header bar at the top of the center pane displaying the current
-/// user-prompt text (if any).
+/// Header bar at the top of the center pane: prompt text or "New session",
+/// plus copy-to-clipboard and resend action icons on the far right.
 fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
-    let display_text = if prompt.is_empty() {
-        "New session"
-    } else {
-        prompt
-    };
-    container(
-        SelectableText::new(display_text)
-            .size(14)
-            .style(|theme: &Theme| {
-                let p = theme.extended_palette();
-                SelectionStyle {
-                    color: Some(CRABOT_TEXT),
-                    selection: p.primary.base.color,
-                }
-            }),
-    )
-    .width(Fill)
-    .padding([8, 12])
-    .style(|_theme: &Theme| container::Style {
-        background: Some(CRABOT_SURFACE.into()),
-        ..container::Style::default()
-    })
-    .into()
+    let header = row![
+        SelectableText::new(prompt).size(14).style(|theme: &Theme| {
+            let p = theme.extended_palette();
+            SelectionStyle {
+                color: Some(CRABOT_TEXT),
+                selection: p.primary.base.color,
+            }
+        }),
+        Space::new().width(Length::Fill),
+        button(text("\u{1F4CB}").size(14))
+            .on_press(Message::CopySession)
+            .padding(4)
+            .style(icon_button_style),
+        button(text("\u{21BB}").size(14))
+            .on_press(Message::ResendLastPrompt)
+            .padding(4)
+            .style(icon_button_style),
+    ];
+
+    container(header)
+        .width(Fill)
+        .padding([8, 12])
+        .style(|_theme: &Theme| container::Style {
+            background: Some(CRABOT_SURFACE.into()),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// Subtle icon-button style — transparent background, dim text.
+fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    let p = theme.extended_palette();
+    let mut style = button::Style::default();
+    match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            style.background = Some(p.secondary.weak.color.into());
+        }
+        _ => {}
+    }
+    style.text_color = CRABOT_TEXT;
+    style
 }
 
 // ── status line ───────────────────────────────────────────────────
