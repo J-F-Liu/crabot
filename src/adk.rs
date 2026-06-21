@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, Tool, ToolCall, ToolResponse};
+use genai::chat::{
+    ChatMessage, ChatOptions, ChatRequest, MessageContent, Tool, ToolCall, ToolResponse,
+};
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
-use tokio::runtime::Runtime;
 
-use crate::chat::DisplayMessage;
 use crate::tools::DevTool;
 
 /// Max agent loop iterations to prevent infinite tool-calling cycles.
@@ -24,25 +24,19 @@ pub struct SendConfig {
     pub tools: Vec<Tool>,
 }
 
-/// Result of one LLM turn — both genai messages (for next-turn history)
-/// and app-level messages (for UI display).
-#[derive(Debug, Clone)]
-pub struct TurnResult {
-    /// GenAI messages from this turn — append to session history.
-    pub genai_messages: Vec<ChatMessage>,
-    /// Application messages for chat display.
-    pub app_messages: Vec<DisplayMessage>,
-}
-
-/// Send a request to the LLM, with tool execution loop.
+/// Stream an LLM interaction with tool-execution loop.
 ///
-/// `history` is the raw genai message history from previous turns
-/// (stored in `Session::history`). It is used directly — no
-/// reconstruction from app messages.
+/// Text and reasoning chunks are emitted immediately via the `on_event` callback.
+/// Tool calls are executed after the stream ends for that turn, and results
+/// are emitted. The loop continues until the LLM responds without tool calls.
 ///
-/// Returns both the new genai messages (for next-turn context) and
-/// app-level messages (for UI display).
-pub fn send(config: SendConfig, history: Vec<ChatMessage>) -> Result<TurnResult, String> {
+/// The callback receives each [`crate::Message`] and returns a future. If the
+/// future resolves to `false`, streaming stops early.
+pub async fn send_stream(
+    config: SendConfig,
+    history: Vec<ChatMessage>,
+    on_event: &mut (dyn FnMut(crate::Message) -> futures::future::BoxFuture<'static, bool> + Send),
+) {
     let SendConfig {
         base_url,
         api_type,
@@ -53,105 +47,143 @@ pub fn send(config: SendConfig, history: Vec<ChatMessage>) -> Result<TurnResult,
         user_prompt,
         tools,
     } = config;
-    let rt = Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
 
-    rt.block_on(async {
-        let client = build_client(&base_url, &api_key, &api_type);
+    let client = build_client(&base_url, &api_key, &api_type);
 
-        let mut app_messages: Vec<DisplayMessage> = Vec::new();
-        let mut genai_messages: Vec<ChatMessage> = Vec::new();
+    // Build chat request from genai history directly.
+    let mut chat_req = ChatRequest::default()
+        .with_system(system_prompt)
+        .with_tools(tools);
+    chat_req = chat_req.append_messages(history);
 
-        // Build ChatRequest from genai history directly.
-        let mut chat_req = ChatRequest::default().with_system(system_prompt);
-        for msg in &history {
-            chat_req = chat_req.append_message(msg.clone());
-        }
+    // Add the new user message.
+    let user_msg = ChatMessage::user(&user_prompt);
+    chat_req = chat_req.append_message(user_msg.clone());
 
-        // Add the new user message.
-        let user_msg = ChatMessage::user(&user_prompt);
-        chat_req = chat_req.append_message(user_msg.clone());
-        genai_messages.push(user_msg);
+    // Accumulate genai messages for this turn (returned in Done).
+    let mut genai_messages: Vec<ChatMessage> = vec![user_msg];
 
-        // Chat options: normalize reasoning content for Anthropic/DeepSeek style thinking.
-        let chat_options = ChatOptions::default().with_normalize_reasoning_content(true);
+    // Chat options: capture content for tool-call extraction, normalize reasoning.
+    let chat_options = ChatOptions::default()
+        .with_normalize_reasoning_content(true)
+        .with_capture_content(true)
+        .with_capture_reasoning_content(true)
+        .with_capture_tool_calls(true);
 
-        // Agent loop: keep calling the LLM until it responds without tool calls.
-        for _ in 0..MAX_ITERATIONS {
-            let req = chat_req.clone().with_tools(tools.clone());
-            let chat_res = client
-                .exec_chat(&model_id, req, Some(&chat_options))
-                .await
-                .map_err(|e| format!("exec_chat: {e}"))?;
+    // Agent loop: keep calling the LLM until it responds without tool calls.
+    let mut finished = false;
+    for _ in 0..MAX_ITERATIONS {
+        let stream_result = client
+            .exec_chat_stream(&model_id, chat_req.clone(), Some(&chat_options))
+            .await;
 
-            let text = chat_res.content.first_text().unwrap_or("").to_string();
-            let reasoning = chat_res.reasoning_content.clone();
-
-            app_messages.push(DisplayMessage::assistant(text.clone(), reasoning.clone()));
-
-            // Build the full genai assistant message from the raw response content.
-            // This preserves text, tool calls, and reasoning — the exact message
-            // the LLM sent (needed for correct multi-turn context).
-            let mut assistant_msg = ChatMessage::assistant(chat_res.content.clone());
-            if let Some(ref rc) = reasoning {
-                assistant_msg = assistant_msg.with_reasoning_content(Some(rc.clone()));
+        let mut stream = match stream_result {
+            Ok(chat_res) => chat_res.stream,
+            Err(e) => {
+                on_event(crate::Message::StreamError(
+                    format!("exec_chat_stream: {e}"),
+                    genai_messages.clone(),
+                ))
+                .await;
+                return;
             }
+        };
 
-            // Extract tool calls from response.
-            let tool_calls: Vec<ToolCall> =
-                chat_res.content.tool_calls().into_iter().cloned().collect();
+        // Accumulate reasoning from chunks (captured_content covers text + tool calls).
+        let mut captured_content: Option<MessageContent> = None;
+        let mut captured_reasoning: Option<String> = None;
 
-            // Always push the assistant message — even the final response
-            // must be in history for correct multi-turn context.
-            chat_req = chat_req.append_message(assistant_msg.clone());
-            genai_messages.push(assistant_msg);
-
-            if tool_calls.is_empty() {
-                // Final assistant response — no more tool calls.
-                break;
-            }
-
-            // Execute each tool call and record results.
-            let mut tool_responses: Vec<ToolResponse> = Vec::new();
-            for tc in &tool_calls {
-                let tool = DevTool::from_name(&tc.fn_name)
-                    .ok_or_else(|| format!("Unknown tool: {}", tc.fn_name))?;
-                let exec_result = tool.execute(&tc.fn_arguments, &workspace);
-
-                match exec_result {
-                    Ok(output) => {
-                        let resp = ToolResponse::from_tool_call(tc, output.clone());
-                        tool_responses.push(resp);
-                        app_messages.push(DisplayMessage::tool(
-                            &tc.fn_name,
-                            &tc.fn_arguments,
-                            Some(tc.call_id.clone()),
-                            output,
-                        ));
-                    }
-                    Err(err) => {
-                        let resp = ToolResponse::from_tool_call(tc, err.clone());
-                        tool_responses.push(resp);
-                        app_messages.push(DisplayMessage::tool(
-                            &tc.fn_name,
-                            &tc.fn_arguments,
-                            Some(tc.call_id.clone()),
-                            err,
-                        ));
+        use futures::StreamExt;
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(genai::chat::ChatStreamEvent::Chunk(chunk)) => {
+                    if !on_event(crate::Message::StreamContent(chunk.content.clone())).await {
+                        return;
                     }
                 }
+                Ok(genai::chat::ChatStreamEvent::ReasoningChunk(chunk)) => {
+                    if !on_event(crate::Message::StreamReasoning(chunk.content.clone())).await {
+                        return;
+                    }
+                }
+                Ok(genai::chat::ChatStreamEvent::End(end)) => {
+                    captured_content = end.captured_content;
+                    captured_reasoning = end.captured_reasoning_content;
+                }
+                Ok(_) => {} // ignore Start, ThoughtSignature, ToolCallChunk
+                Err(e) => {
+                    on_event(crate::Message::StreamError(
+                        format!("stream error: {e}"),
+                        genai_messages.clone(),
+                    ))
+                    .await;
+                    return;
+                }
             }
-
-            // Append tool responses to the request as one genai message.
-            let tool_resp_msg: ChatMessage = tool_responses.clone().into();
-            chat_req = chat_req.append_message(tool_responses);
-            genai_messages.push(tool_resp_msg);
         }
 
-        Ok(TurnResult {
+        // captured_content has full text + tool calls thanks to ChatOptions.
+        let assistant_content =
+            captured_content.unwrap_or_else(|| MessageContent::from_text(String::new()));
+        let tool_calls: Vec<ToolCall> = assistant_content
+            .tool_calls()
+            .into_iter()
+            .cloned()
+            .collect();
+
+        let assistant_msg =
+            ChatMessage::assistant(assistant_content).with_reasoning_content(captured_reasoning);
+
+        // Append assistant message to request + genai history.
+        chat_req = chat_req.append_message(assistant_msg.clone());
+        genai_messages.push(assistant_msg);
+
+        if tool_calls.is_empty() {
+            // Final assistant response — no more tool calls.
+            finished = true;
+            break;
+        }
+
+        // Execute each tool call and record results.
+        // Unknown tools are reported back to the LLM as an error result
+        // rather than aborting the loop, giving the model a chance to recover.
+        let mut tool_responses: Vec<ToolResponse> = Vec::new();
+        for tc in &tool_calls {
+            let result = match DevTool::from_name(&tc.fn_name) {
+                Some(tool) => match tool.execute(&tc.fn_arguments, &workspace) {
+                    Ok(r) => r,
+                    Err(e) => e,
+                },
+                None => format!("Unknown tool: {}", tc.fn_name),
+            };
+
+            tool_responses.push(ToolResponse::from_tool_call(tc, result.clone()));
+            if !on_event(crate::Message::StreamToolResult {
+                name: tc.fn_name.clone(),
+                call_id: tc.call_id.clone(),
+                args: tc.fn_arguments.clone(),
+                result,
+            })
+            .await
+            {
+                return;
+            }
+        }
+
+        // Append tool responses to the request and genai history.
+        chat_req = chat_req.append_message(tool_responses.clone());
+        genai_messages.push(ChatMessage::from(tool_responses));
+    }
+
+    if finished {
+        on_event(crate::Message::StreamDone(genai_messages)).await;
+    } else {
+        on_event(crate::Message::StreamError(
+            format!("Exceeded maximum tool-calling iterations ({MAX_ITERATIONS})"),
             genai_messages,
-            app_messages,
-        })
-    })
+        ))
+        .await;
+    }
 }
 
 /// Build a genai `Client` with custom auth, endpoint, and adapter kind.

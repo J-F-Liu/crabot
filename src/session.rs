@@ -44,6 +44,7 @@ impl Session {
     }
 
     /// Push multiple messages.
+    #[allow(dead_code)]
     pub fn extend(&mut self, msgs: impl IntoIterator<Item = DisplayMessage>) {
         for msg in msgs {
             self.push(msg);

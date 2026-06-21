@@ -8,6 +8,7 @@ mod tools;
 mod user;
 mod workspace;
 
+use futures::{SinkExt, future::FutureExt};
 use iced::{
     Element, Event, Fill, Font, Length, Point, Size, Subscription, Task, Theme, event, font, mouse,
     widget::{self, column, container, mouse_area, row, rule, scrollable, text, text_editor},
@@ -18,8 +19,8 @@ use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
 use std::path::PathBuf;
 
-use adk::TurnResult;
 use chat::{DisplayMessage, MessageContent};
+
 use genai::chat::ChatRole;
 use model::{Model, ModelConfig, Provider, model_config_view};
 use session::Session;
@@ -79,6 +80,12 @@ struct App {
     user_prompt: text_editor::Content,
     workmode: WorkMode,
     session: Session,
+    /// Whether a streaming response is currently in progress.
+    streaming: bool,
+    /// Index in `session.messages` where the current stream's assistant
+    /// placeholders begin; used by `handle_stream_done` to backfill captured
+    /// content/reasoning into the right display messages.
+    stream_start_index: usize,
 }
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -102,8 +109,24 @@ pub enum Message {
     EditUserPrompt(text_editor::Action),
     SelectWorkMode(WorkMode),
     SendPrompt,
-    SendResult(Result<TurnResult, String>),
-    ScrollToEnd,
+    StreamContent(String),
+    StreamReasoning(String),
+    StreamToolResult {
+        name: String,
+        call_id: String,
+        args: serde_json::Value,
+        result: String,
+    },
+    StreamDone(Vec<genai::chat::ChatMessage>),
+    StreamError(String, Vec<genai::chat::ChatMessage>),
+}
+
+/// Return a widget-operation Task that snaps the message scroll to the end.
+fn scroll_to_end() -> Task<Message> {
+    iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::snap_to(
+        MESSAGE_SCROLL.clone(),
+        scrollable::RelativeOffset::END.into(),
+    ))
 }
 
 const MIN_W: f32 = 280.0;
@@ -147,6 +170,8 @@ impl App {
             user_prompt: text_editor::Content::new(),
             workmode: WorkMode::Code,
             session: Session::new(None, PathBuf::new()),
+            streaming: false,
+            stream_start_index: 0,
         };
         (app, Task::none())
     }
@@ -301,6 +326,9 @@ impl App {
                 self.workmode = mode;
             }
             Message::SendPrompt => {
+                if self.streaming {
+                    return Task::none();
+                }
                 let content = self.user_prompt.text();
                 if content.trim().is_empty() {
                     return Task::none();
@@ -324,14 +352,10 @@ impl App {
                 let history = self.session.history.clone();
 
                 self.user_prompt = text_editor::Content::new();
-                self.session.push(DisplayMessage {
-                    role: ChatRole::User,
-                    content: MessageContent::Text {
-                        content: user_prompt.clone(),
-                        reasoning: None,
-                    },
-                    timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-                });
+                self.stream_start_index = self.session.messages.len();
+                self.session.push(DisplayMessage::user(user_prompt.clone()));
+                self.streaming = true;
+
                 // Update session model info
                 self.session.model = self.selected_model.clone();
                 self.session.workspace = workspace.clone();
@@ -346,34 +370,143 @@ impl App {
                     user_prompt,
                     tools,
                 };
-                let send = Task::perform(
-                    async move { adk::send(config, history) },
-                    Message::SendResult,
-                );
 
-                return send;
+                return Task::stream(iced::stream::channel(128, async move |sender| {
+                    let mut callback = {
+                        move |msg: Message| {
+                            let mut sender = sender.clone();
+                            async move { sender.send(msg).await.is_ok() }.boxed()
+                        }
+                    };
+                    adk::send_stream(config, history, &mut callback).await;
+                }));
             }
-            Message::SendResult(Ok(turn)) => {
-                self.session.history.extend(turn.genai_messages);
-                self.session.extend(turn.app_messages);
-                let _ = self.session.save();
-                return Task::done(Message::ScrollToEnd);
+            Message::StreamContent(chunk) => {
+                self.ensure_assistant_placeholder();
+                if let Some(last) = self.session.messages.last_mut()
+                    && let MessageContent::Text { content, .. } = &mut last.content
+                {
+                    content.push_str(&chunk);
+                }
+                return scroll_to_end();
             }
-            Message::SendResult(Err(err)) => {
+            Message::StreamReasoning(chunk) => {
+                self.ensure_assistant_placeholder();
+                if let Some(last) = self.session.messages.last_mut()
+                    && let MessageContent::Text { reasoning, .. } = &mut last.content
+                {
+                    reasoning.get_or_insert_with(String::new).push_str(&chunk);
+                }
+                return scroll_to_end();
+            }
+            Message::StreamToolResult {
+                name,
+                call_id,
+                args,
+                result,
+            } => {
                 self.session
-                    .push(DisplayMessage::assistant(format!("Error: {err}"), None));
-                let _ = self.session.save();
-                return Task::done(Message::ScrollToEnd);
+                    .push(DisplayMessage::tool(name, &args, Some(call_id), result));
+                return scroll_to_end();
             }
-            Message::ScrollToEnd => {
-                let scroll_op = iced::advanced::widget::operation::scrollable::snap_to(
-                    MESSAGE_SCROLL.clone(),
-                    scrollable::RelativeOffset::END.into(),
-                );
-                return iced_runtime::task::widget(scroll_op);
+            Message::StreamDone(genai_messages) => {
+                self.handle_stream_done(genai_messages);
+                return scroll_to_end();
+            }
+            Message::StreamError(err, genai_messages) => {
+                self.handle_stream_error(err, genai_messages);
+                return scroll_to_end();
             }
         }
         Task::none()
+    }
+
+    /// Ensure the last message is an assistant Text placeholder for streaming.
+    /// If the last message is a Tool message (e.g., after a tool result was
+    /// pushed in a subsequent iteration), create a new assistant placeholder
+    /// so streamed text/reasoning lands in the right place.
+    fn ensure_assistant_placeholder(&mut self) {
+        let needs_placeholder = self.session.messages.last().is_none_or(|m| {
+            !(m.role == ChatRole::Assistant && matches!(m.content, MessageContent::Text { .. }))
+        });
+        if needs_placeholder {
+            self.session
+                .push(DisplayMessage::assistant(String::new(), None));
+        }
+    }
+
+    /// Backfill streaming placeholders with captured content from genai,
+    /// extend session history, and persist the session.
+    fn handle_stream_done(&mut self, genai_messages: Vec<genai::chat::ChatMessage>) {
+        self.streaming = false;
+
+        // Some providers omit ReasoningChunk events and only expose
+        // reasoning via captured_reasoning_content at stream end.
+        let mut genai_asst_iter = genai_messages
+            .iter()
+            .skip(1) // skip user message
+            .filter(|m| m.role == genai::chat::ChatRole::Assistant)
+            .filter(|m| {
+                !m.content.joined_texts().unwrap_or_default().is_empty()
+                    || m.content.first_reasoning_content().is_some()
+            });
+
+        for msg in self
+            .session
+            .messages
+            .iter_mut()
+            .skip(self.stream_start_index)
+        {
+            if msg.role != ChatRole::Assistant {
+                continue;
+            }
+            if let MessageContent::Text { content, reasoning } = &mut msg.content
+                && let Some(genai_asst) = genai_asst_iter.next()
+            {
+                if content.is_empty() {
+                    *content = genai_asst.content.joined_texts().unwrap_or_default();
+                }
+                if reasoning.is_none() {
+                    *reasoning = genai_asst
+                        .content
+                        .first_reasoning_content()
+                        .map(|s| s.to_string());
+                }
+            }
+        }
+
+        self.session.history.extend(genai_messages);
+        let _ = self.session.save();
+    }
+
+    /// Replace the last-message empty assistant placeholder with this error,
+    /// or push a new error message if no placeholder exists.
+    fn handle_stream_error(&mut self, err: String, genai_messages: Vec<genai::chat::ChatMessage>) {
+        self.streaming = false;
+
+        // Preserve any messages generated before the error (user msg,
+        // partial assistant turns, tool calls/responses) in the history
+        // so subsequent requests still carry valid context.
+        self.session.history.extend(genai_messages);
+
+        let is_empty_placeholder = self.session.messages.last().is_some_and(|m| {
+            m.role == ChatRole::Assistant
+                && matches!(
+                    &m.content,
+                    MessageContent::Text { content, reasoning }
+                        if content.is_empty() && reasoning.is_none()
+                )
+        });
+
+        if is_empty_placeholder {
+            if let Some(last) = self.session.messages.last_mut() {
+                *last = DisplayMessage::assistant(format!("Error: {err}"), None);
+            }
+        } else {
+            self.session
+                .push(DisplayMessage::assistant(format!("Error: {err}"), None));
+        }
+        let _ = self.session.save();
     }
 
     /// Bump `path` to top of recents, persist it as current workspace,
