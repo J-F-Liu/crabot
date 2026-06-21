@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, MessageContent, Tool, ToolCall, ToolResponse,
+    ChatMessage, ChatOptions, ChatRequest, MessageContent, ReasoningEffort, Tool, ToolCall,
+    ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
@@ -18,6 +19,8 @@ pub struct SendConfig {
     pub api_type: String,
     pub api_key: String,
     pub model_id: String,
+    pub thinking: bool,
+    pub thinking_level: String,
     pub workspace: std::path::PathBuf,
     pub system_prompt: String,
     pub user_prompt: String,
@@ -46,6 +49,8 @@ pub async fn send_stream(
         system_prompt,
         user_prompt,
         tools,
+        thinking,
+        thinking_level,
     } = config;
 
     let client = build_client(&base_url, &api_key, &api_type);
@@ -64,11 +69,20 @@ pub async fn send_stream(
     let mut genai_messages: Vec<ChatMessage> = vec![user_msg];
 
     // Chat options: capture content for tool-call extraction, normalize reasoning.
+    let reasoning_effort = if thinking {
+        thinking_level
+            .to_lowercase()
+            .parse::<ReasoningEffort>()
+            .unwrap_or(ReasoningEffort::Medium)
+    } else {
+        ReasoningEffort::None
+    };
     let chat_options = ChatOptions::default()
         .with_normalize_reasoning_content(true)
         .with_capture_content(true)
         .with_capture_reasoning_content(true)
-        .with_capture_tool_calls(true);
+        .with_capture_tool_calls(true)
+        .with_reasoning_effort(reasoning_effort);
 
     // Agent loop: keep calling the LLM until it responds without tool calls.
     let mut finished = false;

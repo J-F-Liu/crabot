@@ -374,6 +374,12 @@ impl App {
                     system_prompt,
                     user_prompt,
                     tools,
+                    thinking: self.selected_model.as_ref().is_some_and(|m| m.thinking),
+                    thinking_level: self
+                        .selected_model
+                        .as_ref()
+                        .map(|m| m.thinking_level.clone())
+                        .unwrap_or_default(),
                 };
 
                 return Task::stream(iced::stream::channel(128, async move |sender| {
