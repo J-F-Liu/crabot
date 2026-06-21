@@ -107,6 +107,8 @@ struct App {
     expanded_tools: HashSet<usize>,
     /// Token usage from the most recent completed LLM response.
     last_usage: Option<genai::chat::Usage>,
+    /// Last-sent user prompt text, displayed in the center-pane header.
+    current_prompt: String,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +197,7 @@ impl App {
             stream_start_index: 0,
             expanded_tools: HashSet::new(),
             last_usage: None,
+            current_prompt: String::new(),
         };
         (app, Task::none())
     }
@@ -351,6 +354,7 @@ impl App {
             Message::NewSession => {
                 let workspace = self.system_prompt.workspace.1.clone();
                 self.session = Session::new(self.selected_model.clone(), workspace);
+                self.current_prompt.clear();
             }
             Message::ToggleToolExpand(idx) => {
                 if self.expanded_tools.contains(&idx) {
@@ -367,6 +371,8 @@ impl App {
                 if content.trim().is_empty() {
                     return Task::none();
                 }
+
+                self.current_prompt = content.clone();
 
                 let user_prompt = UserPrompt::new(self.workmode, content).get_prompt();
 
@@ -643,6 +649,7 @@ impl App {
             left_pane(self),
             divider(),
             center_pane(
+                &self.current_prompt,
                 &self.session.messages,
                 &self.expanded_tools,
                 self.get_status(),
@@ -752,12 +759,14 @@ fn left_pane(app: &App) -> Element<'_, Message> {
 }
 
 fn center_pane<'a>(
+    current_prompt: &'a str,
     messages: &'a [DisplayMessage],
     expanded_tools: &'a HashSet<usize>,
     status: &'a str,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
     container(column![
+        session_header(current_prompt),
         scrollable(
             column(
                 messages
@@ -940,6 +949,39 @@ fn pane_center(theme: &Theme) -> container::Style {
         background: Some(theme.palette().background.into()),
         ..container::Style::default()
     }
+}
+
+// ── session header ──────────────────────────────────────────────────
+
+/// Header bar at the top of the center pane displaying the current
+/// user-prompt text (if any).
+fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
+    let display_text = if prompt.is_empty() {
+        "New session"
+    } else {
+        prompt
+    };
+    container(
+        SelectableText::new(display_text)
+            .size(14)
+            .style(|theme: &Theme| {
+                let p = theme.extended_palette();
+                SelectionStyle {
+                    color: Some(p.secondary.base.text),
+                    selection: theme.palette().primary,
+                }
+            }),
+    )
+    .width(Fill)
+    .padding([8, 12])
+    .style(|theme: &Theme| {
+        let p = theme.extended_palette();
+        container::Style {
+            background: Some(p.background.weak.color.into()),
+            ..container::Style::default()
+        }
+    })
+    .into()
 }
 
 // ── status line ───────────────────────────────────────────────────
