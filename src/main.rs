@@ -19,7 +19,7 @@ use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
 use std::path::PathBuf;
 
-use chat::{DisplayMessage, MessageContent};
+use chat::{DisplayMessage, MessageContent, TextContent, ToolResult};
 
 use genai::chat::ChatRole;
 use model::{Model, ModelConfig, Provider, model_config_view};
@@ -112,12 +112,7 @@ pub enum Message {
     SendPrompt,
     StreamContent(String),
     StreamReasoning(String),
-    StreamToolResult {
-        name: String,
-        call_id: String,
-        args: serde_json::Value,
-        result: String,
-    },
+    StreamToolResult(ToolResult),
     StreamDone(Vec<genai::chat::ChatMessage>),
     StreamError(String, Vec<genai::chat::ChatMessage>),
 }
@@ -395,29 +390,25 @@ impl App {
             Message::StreamContent(chunk) => {
                 self.ensure_assistant_placeholder();
                 if let Some(last) = self.session.messages.last_mut()
-                    && let MessageContent::Text { content, .. } = &mut last.content
+                    && let MessageContent::Text(tc) = &mut last.content
                 {
-                    content.push_str(&chunk);
+                    tc.content.push_str(&chunk);
                 }
                 return scroll_to_end();
             }
             Message::StreamReasoning(chunk) => {
                 self.ensure_assistant_placeholder();
                 if let Some(last) = self.session.messages.last_mut()
-                    && let MessageContent::Text { reasoning, .. } = &mut last.content
+                    && let MessageContent::Text(tc) = &mut last.content
                 {
-                    reasoning.get_or_insert_with(String::new).push_str(&chunk);
+                    tc.reasoning
+                        .get_or_insert_with(String::new)
+                        .push_str(&chunk);
                 }
                 return scroll_to_end();
             }
-            Message::StreamToolResult {
-                name,
-                call_id,
-                args,
-                result,
-            } => {
-                self.session
-                    .push(DisplayMessage::tool(name, &args, Some(call_id), result));
+            Message::StreamToolResult(tr) => {
+                self.session.push(DisplayMessage::from_tool_result(tr));
                 return scroll_to_end();
             }
             Message::StreamDone(genai_messages) => {
@@ -438,7 +429,7 @@ impl App {
     /// so streamed text/reasoning lands in the right place.
     fn ensure_assistant_placeholder(&mut self) {
         let needs_placeholder = self.session.messages.last().is_none_or(|m| {
-            !(m.role == ChatRole::Assistant && matches!(m.content, MessageContent::Text { .. }))
+            !(m.role == ChatRole::Assistant && matches!(m.content, MessageContent::Text(_)))
         });
         if needs_placeholder {
             self.session
@@ -471,14 +462,14 @@ impl App {
             if msg.role != ChatRole::Assistant {
                 continue;
             }
-            if let MessageContent::Text { content, reasoning } = &mut msg.content
+            if let MessageContent::Text(tc) = &mut msg.content
                 && let Some(genai_asst) = genai_asst_iter.next()
             {
-                if content.is_empty() {
-                    *content = genai_asst.content.joined_texts().unwrap_or_default();
+                if tc.content.is_empty() {
+                    tc.content = genai_asst.content.joined_texts().unwrap_or_default();
                 }
-                if reasoning.is_none() {
-                    *reasoning = genai_asst
+                if tc.reasoning.is_none() {
+                    tc.reasoning = genai_asst
                         .content
                         .first_reasoning_content()
                         .map(|s| s.to_string());
@@ -504,7 +495,7 @@ impl App {
             m.role == ChatRole::Assistant
                 && matches!(
                     &m.content,
-                    MessageContent::Text { content, reasoning }
+                    MessageContent::Text(TextContent { content, reasoning })
                         if content.is_empty() && reasoning.is_none()
                 )
         });
@@ -612,7 +603,7 @@ impl App {
                                 };
                                 container({
                                     let header = match &msg.content {
-                                        MessageContent::Tool { name, .. } => {
+                                        MessageContent::Tool(ToolResult { name, .. }) => {
                                             format!("{} — {}", msg.role, name)
                                         }
                                         _ => msg.role.to_string(),
@@ -625,7 +616,10 @@ impl App {
                                             .style(sel_secondary),
                                     ],];
                                     match &msg.content {
-                                        MessageContent::Text { content, reasoning } => {
+                                        MessageContent::Text(TextContent {
+                                            content,
+                                            reasoning,
+                                        }) => {
                                             if let Some(reasoning) = reasoning {
                                                 col = col.push(
                                                     SelectableText::new(reasoning)
@@ -639,16 +633,26 @@ impl App {
                                                     .style(sel_default),
                                             );
                                         }
-                                        MessageContent::Tool { args, result, .. } => {
+                                        MessageContent::Tool(ToolResult {
+                                            args, result, ..
+                                        }) => {
                                             col = col.push(
                                                 SelectableText::new(args)
                                                     .size(13)
                                                     .style(sel_secondary),
                                             );
+                                            let display_text = match result {
+                                                Ok(s) => s.clone(),
+                                                Err(e) => e.clone(),
+                                            };
+                                            let style = match result {
+                                                Ok(_) => sel_default,
+                                                Err(_) => sel_secondary,
+                                            };
                                             col = col.push(
-                                                SelectableText::new(result)
+                                                SelectableText::new(display_text)
                                                     .size(14)
-                                                    .style(sel_default),
+                                                    .style(style),
                                             );
                                         }
                                     }

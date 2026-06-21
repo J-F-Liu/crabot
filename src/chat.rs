@@ -1,27 +1,39 @@
 use genai::chat::ChatRole;
 use serde::{Deserialize, Serialize};
 
-// ── MessageContent ────────────────────────────────────────────────────
+// ── TextContent ──────────────────────────────────────────────────────
+
+/// Plain-text message content (User or Assistant role).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextContent {
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+}
+
+// ── ToolResult ───────────────────────────────────────────────────────
+
+/// Paired tool call and its execution result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResult {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// Prettified JSON of the call arguments.
+    pub args: String,
+    /// Execution result — Ok(success) or Err(failure).
+    pub result: Result<String, String>,
+}
+
+// ── MessageContent ───────────────────────────────────────────────────
 
 /// The actual content of a message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MessageContent {
     /// Plain-text message (User or Assistant role).
-    Text {
-        content: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reasoning: Option<String>,
-    },
+    Text(TextContent),
     /// Paired tool call and its result.
-    Tool {
-        name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        call_id: Option<String>,
-        /// Prettified JSON of the call arguments.
-        args: String,
-        /// Execution result text.
-        result: String,
-    },
+    Tool(ToolResult),
 }
 
 // ── DisplayMessage ──────────────────────────────────────────────────
@@ -38,10 +50,10 @@ impl DisplayMessage {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: ChatRole::User,
-            content: MessageContent::Text {
+            content: MessageContent::Text(TextContent {
                 content: content.into(),
                 reasoning: None,
-            },
+            }),
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
         }
     }
@@ -49,29 +61,18 @@ impl DisplayMessage {
     pub fn assistant(content: impl Into<String>, reasoning: Option<String>) -> Self {
         Self {
             role: ChatRole::Assistant,
-            content: MessageContent::Text {
+            content: MessageContent::Text(TextContent {
                 content: content.into(),
                 reasoning,
-            },
+            }),
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
         }
     }
 
-    pub fn tool(
-        name: impl Into<String>,
-        args: &serde_json::Value,
-        id: Option<String>,
-        result: impl Into<String>,
-    ) -> Self {
-        let args_str = serde_json::to_string_pretty(args).unwrap_or_else(|_| format!("{args:?}"));
+    pub fn from_tool_result(tr: ToolResult) -> Self {
         Self {
             role: ChatRole::Tool,
-            content: MessageContent::Tool {
-                name: name.into(),
-                call_id: id,
-                args: args_str,
-                result: result.into(),
-            },
+            content: MessageContent::Tool(tr),
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
         }
     }

@@ -164,22 +164,26 @@ pub async fn send_stream(
         let mut tool_responses: Vec<ToolResponse> = Vec::new();
         for tc in &tool_calls {
             let result = match DevTool::from_name(&tc.fn_name) {
-                Some(tool) => match tool.execute(&tc.fn_arguments, &workspace) {
-                    Ok(r) => r,
-                    Err(e) => e,
-                },
-                None => format!("Unknown tool: {}", tc.fn_name),
+                Some(tool) => tool.execute(&tc.fn_arguments, &workspace),
+                None => Err(format!("Unknown tool: {}", tc.fn_name)),
             };
 
-            tool_responses.push(ToolResponse::from_tool_call(tc, result.clone()));
-            if !on_event(crate::Message::StreamToolResult {
+            // Flatten for genai's ToolResponse (genai expects plain String).
+            let result_flat = match &result {
+                Ok(s) => s.clone(),
+                Err(e) => e.clone(),
+            };
+            tool_responses.push(ToolResponse::from_tool_call(tc, result_flat));
+
+            let args_pretty = serde_json::to_string_pretty(&tc.fn_arguments)
+                .unwrap_or_else(|_| format!("{:?}", tc.fn_arguments));
+            let tr = crate::chat::ToolResult {
                 name: tc.fn_name.clone(),
-                call_id: tc.call_id.clone(),
-                args: tc.fn_arguments.clone(),
+                call_id: Some(tc.call_id.clone()),
+                args: args_pretty,
                 result,
-            })
-            .await
-            {
+            };
+            if !on_event(crate::Message::StreamToolResult(tr)).await {
                 return;
             }
         }
