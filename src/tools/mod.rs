@@ -1,8 +1,8 @@
 mod bash;
 mod edit;
-mod glob;
-mod grep;
+mod find;
 mod read;
+mod search;
 mod write;
 
 use genai::chat::Tool;
@@ -17,8 +17,8 @@ pub enum DevTool {
     Read,
     Write,
     Edit,
-    Glob,
-    Grep,
+    Find,
+    Search,
     Bash,
 }
 
@@ -27,8 +27,8 @@ impl DevTool {
         Self::Read,
         Self::Write,
         Self::Edit,
-        Self::Glob,
-        Self::Grep,
+        Self::Find,
+        Self::Search,
         Self::Bash,
     ];
 
@@ -37,8 +37,8 @@ impl DevTool {
             Self::Read => "read",
             Self::Write => "write",
             Self::Edit => "edit",
-            Self::Glob => "glob",
-            Self::Grep => "grep",
+            Self::Find => "find",
+            Self::Search => "search",
             Self::Bash => "bash",
         }
     }
@@ -48,8 +48,8 @@ impl DevTool {
             Self::Read => "Read a file from the filesystem.",
             Self::Write => "Write content to a file.",
             Self::Edit => "Replace an exact string in a file with another.",
-            Self::Glob => "Find files matching a glob pattern.",
-            Self::Grep => "Search for a regular expression in files.",
+            Self::Find => "Find files matching a glob pattern.",
+            Self::Search => "Search for a regular expression in files.",
             Self::Bash => "Execute a shell command.",
         }
     }
@@ -76,8 +76,8 @@ impl DevTool {
             Self::Read => read::execute(args, workspace),
             Self::Write => write::execute(args, workspace),
             Self::Edit => edit::execute(args, workspace),
-            Self::Glob => glob::execute(args, workspace),
-            Self::Grep => grep::execute(args, workspace),
+            Self::Find => find::execute(args, workspace),
+            Self::Search => search::execute(args, workspace),
             Self::Bash => bash::execute(args, workspace),
         }
     }
@@ -88,8 +88,8 @@ impl DevTool {
             "read" => Some(Self::Read),
             "write" => Some(Self::Write),
             "edit" => Some(Self::Edit),
-            "glob" => Some(Self::Glob),
-            "grep" => Some(Self::Grep),
+            "find" => Some(Self::Find),
+            "search" => Some(Self::Search),
             "bash" => Some(Self::Bash),
             _ => None,
         }
@@ -103,8 +103,8 @@ fn schema(tool: DevTool) -> Value {
         DevTool::Read => read::schema(),
         DevTool::Write => write::schema(),
         DevTool::Edit => edit::schema(),
-        DevTool::Glob => glob::schema(),
-        DevTool::Grep => grep::schema(),
+        DevTool::Find => find::schema(),
+        DevTool::Search => search::schema(),
         DevTool::Bash => bash::schema(),
     }
 }
@@ -134,21 +134,21 @@ pub fn convert_path_to_unix_style(path: &std::path::Path) -> String {
         }
         // Match a Windows absolute path like C:\...  or C:/...
         let mut comps = path.components();
-        if let Some(std::path::Component::Prefix(p)) = comps.next() {
-            if let std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d) = p.kind() {
-                let drive_letter = (d as char).to_ascii_lowercase();
-                let rest: String = comps
-                    .filter(|c| {
-                        !matches!(
-                            c,
-                            std::path::Component::RootDir | std::path::Component::CurDir
-                        )
-                    })
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                return format!("/{drive_letter}/{rest}");
-            }
+        if let Some(std::path::Component::Prefix(p)) = comps.next()
+            && let std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d) = p.kind()
+        {
+            let drive_letter = (d as char).to_ascii_lowercase();
+            let rest: String = comps
+                .filter(|c| {
+                    !matches!(
+                        c,
+                        std::path::Component::RootDir | std::path::Component::CurDir
+                    )
+                })
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            return format!("/{drive_letter}/{rest}");
         }
     }
 
@@ -164,17 +164,18 @@ pub(crate) fn resolve_path(path: &str, workspace: &std::path::Path) -> std::path
     // On Windows, a path like "/c/Users/..." is Unix‑style absolute but
     // Path::is_absolute() returns false without a prefix. Convert it.
     #[cfg(windows)]
-    if path.starts_with('/') {
-        let mut components = path[1..].splitn(2, '/');
-        if let Some(drive) = components.next() {
-            if drive.len() == 1 && drive.as_bytes()[0].is_ascii_alphabetic() {
-                let rest = components.next().unwrap_or("");
-                return std::path::PathBuf::from(format!(
-                    "{}:\\{}",
-                    drive.to_ascii_uppercase(),
-                    rest.replace('/', "\\")
-                ));
-            }
+    if let Some(stripped) = path.strip_prefix('/') {
+        let mut components = stripped.splitn(2, '/');
+        if let Some(drive) = components.next()
+            && drive.len() == 1
+            && drive.as_bytes()[0].is_ascii_alphabetic()
+        {
+            let rest = components.next().unwrap_or("");
+            return std::path::PathBuf::from(format!(
+                "{}:\\{}",
+                drive.to_ascii_uppercase(),
+                rest.replace('/', "\\")
+            ));
         }
         // Normalise slashes on Windows – Path handles both, but tools may not.
         return std::path::PathBuf::from(path.replace('/', "\\"));

@@ -60,7 +60,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let path_string = super::convert_path_to_unix_style(&file_path);
+            let path_string = super::convert_path_to_unix_style(file_path);
             for (i, line) in content.lines().enumerate() {
                 if re.is_match(line) {
                     let _ = std::fmt::Write::write_fmt(

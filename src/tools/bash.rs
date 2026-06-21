@@ -8,7 +8,10 @@ pub(super) fn schema() -> Value {
         "properties": {
             "command": {
                 "type": "string",
-                "description": "Shell command to execute"
+                "description": "Execute commands in a Bash shell and return combined stdout/stderr. Use this tool for builds, tests, Git operations, package managers, and other CLI tasks.
+Do not use shell commands to search, locate, read, or edit files when dedicated tools are available. Prefer `search`, `find`, `read`, and `edit` over utilities such as `grep`, `find`, `ls`, `cat`, and `sed` to ensure consistent cross-platform behavior.
+The shell session starts in the workspace root; do not run `cd <workspace>` unless changing to a different directory is required.
+"
             }
         },
         "required": ["command"]

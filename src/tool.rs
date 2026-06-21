@@ -40,6 +40,5 @@ pub fn tools_summary(selected: &IndexMap<DevTool, bool>) -> String {
     }
 
     result.push_str("You may have access to additional custom tools.\n");
-    result.push_str("Use relative paths for files inside the workspace.\n");
     result
 }

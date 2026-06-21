@@ -29,7 +29,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         return Err(format!("Path does not exist: {}", search_path.display()));
     }
 
-    let glob_pattern =
+    let pattern =
         glob::Pattern::new(pattern_str).map_err(|e| format!("Glob pattern error: {e}"))?;
 
     let mut results: Vec<String> = Vec::new();
@@ -45,7 +45,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         let path = entry.path();
         let relative = path.strip_prefix(&search_path).unwrap_or(path);
         let relative_str = relative.to_string_lossy().replace('\\', "/");
-        if glob_pattern.matches(&relative_str) {
+        if pattern.matches(&relative_str) {
             results.push(super::convert_path_to_unix_style(path));
         }
     }
