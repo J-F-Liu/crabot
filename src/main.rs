@@ -11,7 +11,8 @@ mod workspace;
 
 use futures::{SinkExt, future::FutureExt};
 use iced::{
-    Element, Event, Fill, Font, Length, Point, Size, Subscription, Task, Theme, event, font, mouse,
+    Element, Event, Fill, Font, Length, Point, Size, Subscription, Task, Theme, alignment, event,
+    font, mouse,
     widget::{
         self, Space, column, container, mouse_area, row, rule, scrollable, text, text_editor,
     },
@@ -606,6 +607,16 @@ impl App {
         }
     }
 
+    fn get_status(&self) -> &str {
+        if self.streaming {
+            "🔄 Thinking…"
+        } else if self.session.messages.is_empty() {
+            "Type a message to begin"
+        } else {
+            "✅ Ready"
+        }
+    }
+
     fn selected_model(&self) -> Option<(&Provider, &Model)> {
         let cfg = self.selected_model.as_ref()?;
         let provider = self.providers.iter().find(|p| p.id == cfg.provider_id)?;
@@ -614,171 +625,16 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let left_col = column![
-            model_config_view(&self.providers, &self.selected_model),
-            rule::horizontal(0),
-            label("System Prompt", 140.0),
-            system::preamble_field_view(
-                &self.system_prompt.preamble,
-                &self.preamble_options,
-                &self.selected_preamble,
-            ),
-            system::rules_field_view(
-                self.rules_expanded,
-                &self.system_prompt.rules,
-                &self.rules_content,
-            ),
-            system::tools_field_view(
-                self.tools_expanded,
-                &self.system_prompt.tools,
-                &self.tools_content,
-            ),
-            system::workspace_field_view(&self.system_prompt.workspace, &self.workspace_options,),
-            system::files_field_view(
-                self.files_expanded,
-                &self.system_prompt.files,
-                &self.files_content,
-            ),
-            system::date_field_view(&self.system_prompt.date),
-            session::session_view(),
-            label("User Prompt", 140.0),
-            user_prompt_view(&self.user_prompt, self.workmode),
-            label("Dev Tools", 140.0),
-            dev_tools_view(&self.dev_tools),
-        ]
-        .spacing(8);
-
-        let left_pane = container(left_col.padding(15))
-            .width(Length::Fixed(self.left_w))
-            .height(Fill)
-            .style(pane_side);
-
         row![
-            left_pane,
+            left_pane(self),
             divider(),
-            container(
-                scrollable(
-                    column(
-                        self.session
-                            .messages
-                            .iter()
-                            .enumerate()
-                            .map(|(i, msg)| {
-                                container({
-                                    let is_tool = matches!(&msg.content, MessageContent::Tool(_));
-                                    let expanded = is_tool && self.expanded_tools.contains(&i);
-                                    let indicator = if is_tool {
-                                        if expanded { "▼" } else { "▶" }
-                                    } else {
-                                        ""
-                                    };
-                                    let (header, is_edit_or_write, _) = match &msg.content {
-                                        MessageContent::Tool(ToolResult {
-                                            name, result, ..
-                                        }) => {
-                                            let status_icon = match result {
-                                                Ok(_) => " ✓",
-                                                Err(_) => " ✗",
-                                            };
-                                            let hdr = format!(
-                                                "{} {} — {}{}",
-                                                indicator, msg.role, name, status_icon
-                                            );
-                                            let is_ew = name == "edit" || name == "write";
-                                            (hdr, is_ew, name.as_str())
-                                        }
-                                        _ => (msg.role.to_string(), false, ""),
-                                    };
-                                    let text_role_color: fn(&Theme) -> widget::text::Style =
-                                        match msg.role {
-                                            ChatRole::User => text_primary,
-                                            ChatRole::Tool => text_primary,
-                                            _ => text_secondary,
-                                        };
-                                    let header_text = text(header).size(13).style(text_role_color);
-                                    let ts_text = SelectableText::new(&msg.timestamp)
-                                        .size(11)
-                                        .style(sel_secondary);
-                                    let mut col = if is_tool {
-                                        let header_row = row![
-                                            header_text,
-                                            Space::new().width(Length::Fill),
-                                            ts_text,
-                                        ];
-                                        column![
-                                            mouse_area(header_row)
-                                                .on_press(Message::ToggleToolExpand(i))
-                                                .interaction(mouse::Interaction::Pointer),
-                                        ]
-                                    } else {
-                                        column![row![
-                                            header_text,
-                                            Space::new().width(Length::Fill),
-                                            ts_text,
-                                        ],]
-                                    };
-                                    match &msg.content {
-                                        MessageContent::Text(TextContent {
-                                            content,
-                                            reasoning,
-                                        }) => {
-                                            if let Some(reasoning) = reasoning {
-                                                col = col.push(
-                                                    SelectableText::new(reasoning)
-                                                        .size(13)
-                                                        .style(sel_secondary),
-                                                );
-                                            }
-                                            col = col.push(
-                                                SelectableText::new(content)
-                                                    .size(14)
-                                                    .style(sel_default),
-                                            );
-                                        }
-                                        MessageContent::Tool(ToolResult {
-                                            args, result, ..
-                                        }) => {
-                                            if is_edit_or_write {
-                                                if expanded {
-                                                    col = col.extend(args_rows(args));
-                                                    col = col.push(result_text(result));
-                                                } else if let Some(row) = path_arg_row(args) {
-                                                    col = col.push(row);
-                                                }
-                                            } else {
-                                                col = col.extend(args_rows(args));
-                                                if expanded {
-                                                    col = col.push(result_text(result));
-                                                }
-                                            }
-                                        }
-                                    }
-                                    col.spacing(4).width(Fill)
-                                })
-                                .width(Fill)
-                                .padding(8)
-                                .style(|theme: &Theme| {
-                                    let p = theme.extended_palette();
-                                    container::Style {
-                                        background: Some(p.background.base.color.into()),
-                                        ..Default::default()
-                                    }
-                                })
-                                .into()
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .spacing(8)
-                    .padding(10),
-                )
-                .height(Fill)
-                .id(MESSAGE_SCROLL.clone()),
-            )
-            .width(Fill)
-            .height(Fill)
-            .style(pane_center),
+            center_pane(
+                &self.session.messages,
+                &self.expanded_tools,
+                self.get_status()
+            ),
             divider(),
-            pane_right(
+            right_pane(
                 Length::Fixed(self.right_w),
                 pane_side,
                 self.last_usage.as_ref(),
@@ -838,7 +694,166 @@ fn label<'a>(text: &'a str, width: impl Into<Length>) -> Element<'a, Message> {
     .into()
 }
 
-fn pane_right<'a>(
+fn left_pane(app: &App) -> Element<'_, Message> {
+    let col = column![
+        model_config_view(&app.providers, &app.selected_model),
+        rule::horizontal(0),
+        label("System Prompt", 140.0),
+        system::preamble_field_view(
+            &app.system_prompt.preamble,
+            &app.preamble_options,
+            &app.selected_preamble,
+        ),
+        system::rules_field_view(
+            app.rules_expanded,
+            &app.system_prompt.rules,
+            &app.rules_content,
+        ),
+        system::tools_field_view(
+            app.tools_expanded,
+            &app.system_prompt.tools,
+            &app.tools_content,
+        ),
+        system::workspace_field_view(&app.system_prompt.workspace, &app.workspace_options,),
+        system::files_field_view(
+            app.files_expanded,
+            &app.system_prompt.files,
+            &app.files_content,
+        ),
+        system::date_field_view(&app.system_prompt.date),
+        session::session_view(),
+        label("User Prompt", 140.0),
+        user_prompt_view(&app.user_prompt, app.workmode),
+        label("Dev Tools", 140.0),
+        dev_tools_view(&app.dev_tools),
+    ]
+    .spacing(8);
+
+    container(col.padding(15))
+        .width(Length::Fixed(app.left_w))
+        .height(Fill)
+        .style(pane_side)
+        .into()
+}
+
+fn center_pane<'a>(
+    messages: &'a [DisplayMessage],
+    expanded_tools: &'a HashSet<usize>,
+    status: &'a str,
+) -> Element<'a, Message> {
+    container(column![
+        scrollable(
+            column(
+                messages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, msg)| {
+                        container({
+                            let is_tool = matches!(&msg.content, MessageContent::Tool(_));
+                            let expanded = is_tool && expanded_tools.contains(&i);
+                            let indicator = if is_tool {
+                                if expanded { "▼" } else { "▶" }
+                            } else {
+                                ""
+                            };
+                            let (header, is_edit_or_write, _) = match &msg.content {
+                                MessageContent::Tool(ToolResult { name, result, .. }) => {
+                                    let status_icon = match result {
+                                        Ok(_) => " ✓",
+                                        Err(_) => " ✗",
+                                    };
+                                    let hdr = format!(
+                                        "{} {} — {}{}",
+                                        indicator, msg.role, name, status_icon
+                                    );
+                                    let is_ew = name == "edit" || name == "write";
+                                    (hdr, is_ew, name.as_str())
+                                }
+                                _ => (msg.role.to_string(), false, ""),
+                            };
+                            let text_role_color: fn(&Theme) -> widget::text::Style = match msg.role
+                            {
+                                ChatRole::User => text_primary,
+                                ChatRole::Tool => text_primary,
+                                _ => text_secondary,
+                            };
+                            let header_text = text(header).size(13).style(text_role_color);
+                            let ts_text = SelectableText::new(&msg.timestamp)
+                                .size(11)
+                                .style(sel_secondary);
+                            let mut col = if is_tool {
+                                let header_row =
+                                    row![header_text, Space::new().width(Length::Fill), ts_text,];
+                                column![
+                                    mouse_area(header_row)
+                                        .on_press(Message::ToggleToolExpand(i))
+                                        .interaction(mouse::Interaction::Pointer),
+                                ]
+                            } else {
+                                column![row![
+                                    header_text,
+                                    Space::new().width(Length::Fill),
+                                    ts_text,
+                                ],]
+                            };
+                            match &msg.content {
+                                MessageContent::Text(TextContent { content, reasoning }) => {
+                                    if let Some(reasoning) = reasoning {
+                                        col = col.push(
+                                            SelectableText::new(reasoning)
+                                                .size(13)
+                                                .style(sel_secondary),
+                                        );
+                                    }
+                                    col = col.push(
+                                        SelectableText::new(content).size(14).style(sel_default),
+                                    );
+                                }
+                                MessageContent::Tool(ToolResult { args, result, .. }) => {
+                                    if is_edit_or_write {
+                                        if expanded {
+                                            col = col.extend(args_rows(args));
+                                            col = col.push(result_text(result));
+                                        } else if let Some(row) = path_arg_row(args) {
+                                            col = col.push(row);
+                                        }
+                                    } else {
+                                        col = col.extend(args_rows(args));
+                                        if expanded {
+                                            col = col.push(result_text(result));
+                                        }
+                                    }
+                                }
+                            }
+                            col.spacing(4).width(Fill)
+                        })
+                        .width(Fill)
+                        .padding(8)
+                        .style(|theme: &Theme| {
+                            let p = theme.extended_palette();
+                            container::Style {
+                                background: Some(p.background.base.color.into()),
+                                ..Default::default()
+                            }
+                        })
+                        .into()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .spacing(8)
+            .padding(10),
+        )
+        .height(Fill)
+        .id(MESSAGE_SCROLL.clone()),
+        status_line(status),
+    ])
+    .width(Fill)
+    .height(Fill)
+    .style(pane_center)
+    .into()
+}
+
+fn right_pane<'a>(
     width: impl Into<Length>,
     style: fn(&Theme) -> container::Style,
     usage: Option<&genai::chat::Usage>,
@@ -890,6 +905,23 @@ fn pane_center(theme: &Theme) -> container::Style {
         background: Some(theme.palette().background.into()),
         ..container::Style::default()
     }
+}
+
+// ── status line ───────────────────────────────────────────────────
+
+fn status_line<'a>(status_text: &'a str) -> Element<'a, Message> {
+    container(text(status_text).size(12))
+        .width(Fill)
+        .align_x(alignment::Horizontal::Center)
+        .padding([4, 10])
+        .style(|theme: &Theme| {
+            let p = theme.extended_palette();
+            container::Style {
+                background: Some(p.background.weak.color.into()),
+                ..container::Style::default()
+            }
+        })
+        .into()
 }
 
 // ── palette helpers ──────────────────────────────────────────────
