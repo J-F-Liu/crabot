@@ -11,10 +11,13 @@ mod workspace;
 
 use futures::{SinkExt, future::FutureExt};
 use iced::{
-    Element, Event, Fill, Font, Length, Point, Size, Subscription, Task, Theme, alignment, event,
-    font, mouse,
+    Background, Border, Color, Element, Event, Fill, Font, Length, Point, Size, Subscription, Task,
+    Theme,
+    advanced::text::Highlight,
+    alignment, event, font, mouse,
     widget::{
-        self, Space, column, container, mouse_area, row, rule, scrollable, text, text_editor,
+        self, Space, column, container, markdown, mouse_area, row, rule, scrollable, text,
+        text_editor,
     },
     window,
 };
@@ -137,6 +140,7 @@ pub enum Message {
     StreamDone(Vec<genai::chat::ChatMessage>),
     StreamError(String, Vec<genai::chat::ChatMessage>),
     AppClosing,
+    Noop,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -424,6 +428,10 @@ impl App {
                 {
                     tc.content.push_str(&chunk);
                 }
+                // Refresh the markdown cache for the last message.
+                if let Some(last) = self.session.messages.last_mut() {
+                    last.refresh_md_cache();
+                }
                 return scroll_to_end();
             }
             Message::StreamReasoning(chunk) => {
@@ -434,6 +442,10 @@ impl App {
                     tc.reasoning
                         .get_or_insert_with(String::new)
                         .push_str(&chunk);
+                }
+                // Refresh the markdown cache for the last message.
+                if let Some(last) = self.session.messages.last_mut() {
+                    last.refresh_md_cache();
                 }
                 return scroll_to_end();
             }
@@ -456,6 +468,7 @@ impl App {
                 self.save_settings();
                 return iced::exit();
             }
+            Message::Noop => {}
         }
         Task::none()
     }
@@ -511,6 +524,7 @@ impl App {
                         .first_reasoning_content()
                         .map(|s| s.to_string());
                 }
+                msg.refresh_md_cache();
             }
         }
 
@@ -631,7 +645,8 @@ impl App {
             center_pane(
                 &self.session.messages,
                 &self.expanded_tools,
-                self.get_status()
+                self.get_status(),
+                &self.theme,
             ),
             divider(),
             right_pane(
@@ -740,6 +755,7 @@ fn center_pane<'a>(
     messages: &'a [DisplayMessage],
     expanded_tools: &'a HashSet<usize>,
     status: &'a str,
+    theme: &'a Theme,
 ) -> Element<'a, Message> {
     container(column![
         scrollable(
@@ -805,9 +821,28 @@ fn center_pane<'a>(
                                                 .style(sel_secondary),
                                         );
                                     }
-                                    col = col.push(
-                                        SelectableText::new(content).size(14).style(sel_default),
-                                    );
+                                    if let Some(md) = &msg.content_md {
+                                        let mut md_style = markdown::Style::from(theme.clone());
+                                        md_style.inline_code_highlight = Highlight {
+                                            background: Background::Color(Color::TRANSPARENT),
+                                            border: Border::default(),
+                                        };
+                                        md_style.inline_code_padding = 0.into();
+                                        md_style.inline_code_color = color_text(theme);
+                                        col = col.push(
+                                            markdown::view(
+                                                md.items(),
+                                                markdown::Settings::with_text_size(14, md_style),
+                                            )
+                                            .map(|_| Message::Noop),
+                                        );
+                                    } else {
+                                        col = col.push(
+                                            SelectableText::new(content)
+                                                .size(14)
+                                                .style(sel_default),
+                                        );
+                                    }
                                 }
                                 MessageContent::Tool(ToolResult { args, result, .. }) => {
                                     if is_edit_or_write {
