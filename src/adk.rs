@@ -11,7 +11,7 @@ use genai::{Client, ModelIden, ServiceTarget};
 use crate::tools::DevTool;
 
 /// Max agent loop iterations to prevent infinite tool-calling cycles.
-const MAX_ITERATIONS: usize = 25;
+const MAX_ITERATIONS: usize = 50;
 
 /// Configuration for a send request to the LLM.
 pub struct SendConfig {
@@ -169,18 +169,13 @@ pub async fn send_stream(
             };
 
             // Flatten for genai's ToolResponse (genai expects plain String).
-            let result_flat = match &result {
-                Ok(s) => s.clone(),
-                Err(e) => e.clone(),
-            };
+            let result_flat = result.clone().unwrap_or_else(|e| e);
             tool_responses.push(ToolResponse::from_tool_call(tc, result_flat));
 
-            let args_pretty = serde_json::to_string_pretty(&tc.fn_arguments)
-                .unwrap_or_else(|_| format!("{:?}", tc.fn_arguments));
             let tr = crate::chat::ToolResult {
                 name: tc.fn_name.clone(),
                 call_id: Some(tc.call_id.clone()),
-                args: args_pretty,
+                args: tc.fn_arguments.clone(),
                 result,
             };
             if !on_event(crate::Message::StreamToolResult(tr)).await {

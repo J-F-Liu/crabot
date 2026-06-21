@@ -11,12 +11,15 @@ mod workspace;
 use futures::{SinkExt, future::FutureExt};
 use iced::{
     Element, Event, Fill, Font, Length, Point, Size, Subscription, Task, Theme, event, font, mouse,
-    widget::{self, column, container, mouse_area, row, rule, scrollable, text, text_editor},
+    widget::{
+        self, Space, column, container, mouse_area, row, rule, scrollable, text, text_editor,
+    },
     window,
 };
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use chat::{DisplayMessage, MessageContent, TextContent, ToolResult};
@@ -39,6 +42,12 @@ pub fn main() -> iced::Result {
         .run()
 }
 
+// ── constants ─────────────────────────────────────────────────────
+
+const MIN_W: f32 = 280.0;
+const HANDLE: f32 = 6.0;
+const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
+
 // ── divider identity ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +64,8 @@ struct Drag {
     left_start: f32,
     right_start: f32,
 }
+
+// ── App ───────────────────────────────────────────────────────────
 
 struct App {
     left_w: f32,
@@ -86,7 +97,10 @@ struct App {
     /// placeholders begin; used by `handle_stream_done` to backfill captured
     /// content/reasoning into the right display messages.
     stream_start_index: usize,
+    /// Indices of tool-result messages whose result body is expanded.
+    expanded_tools: HashSet<usize>,
 }
+
 #[derive(Debug, Clone)]
 pub enum Message {
     CursorMoved(Point),
@@ -110,6 +124,7 @@ pub enum Message {
     SelectWorkMode(WorkMode),
     NewSession,
     SendPrompt,
+    ToggleToolExpand(usize),
     StreamContent(String),
     StreamReasoning(String),
     StreamToolResult(ToolResult),
@@ -117,17 +132,7 @@ pub enum Message {
     StreamError(String, Vec<genai::chat::ChatMessage>),
 }
 
-/// Return a widget-operation Task that snaps the message scroll to the end.
-fn scroll_to_end() -> Task<Message> {
-    iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::snap_to(
-        MESSAGE_SCROLL.clone(),
-        scrollable::RelativeOffset::END.into(),
-    ))
-}
-
-const MIN_W: f32 = 280.0;
-const HANDLE: f32 = 6.0;
-const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
+// ── App impl ──────────────────────────────────────────────────────
 
 impl App {
     fn boot() -> (Self, Task<Message>) {
@@ -168,6 +173,7 @@ impl App {
             session: Session::new(None, PathBuf::new()),
             streaming: false,
             stream_start_index: 0,
+            expanded_tools: HashSet::new(),
         };
         (app, Task::none())
     }
@@ -324,6 +330,13 @@ impl App {
             Message::NewSession => {
                 let workspace = self.system_prompt.workspace.1.clone();
                 self.session = Session::new(self.selected_model.clone(), workspace);
+            }
+            Message::ToggleToolExpand(idx) => {
+                if self.expanded_tools.contains(&idx) {
+                    self.expanded_tools.remove(&idx);
+                } else {
+                    self.expanded_tools.insert(idx);
+                }
             }
             Message::SendPrompt => {
                 if self.streaming {
@@ -595,26 +608,61 @@ impl App {
                         self.session
                             .messages
                             .iter()
-                            .map(|msg| {
-                                let role_color: fn(&Theme) -> SelectionStyle = match msg.role {
-                                    ChatRole::User => sel_primary,
-                                    ChatRole::Tool => sel_primary,
-                                    _ => sel_secondary,
-                                };
+                            .enumerate()
+                            .map(|(i, msg)| {
                                 container({
-                                    let header = match &msg.content {
-                                        MessageContent::Tool(ToolResult { name, .. }) => {
-                                            format!("{} — {}", msg.role, name)
-                                        }
-                                        _ => msg.role.to_string(),
+                                    let is_tool = matches!(&msg.content, MessageContent::Tool(_));
+                                    let expanded = is_tool && self.expanded_tools.contains(&i);
+                                    let indicator = if is_tool {
+                                        if expanded { "▼" } else { "▶" }
+                                    } else {
+                                        ""
                                     };
-                                    let mut col = column![row![
-                                        SelectableText::new(header).size(13).style(role_color),
-                                        iced::widget::Space::new().width(Length::Fill),
-                                        SelectableText::new(&msg.timestamp)
-                                            .size(11)
-                                            .style(sel_secondary),
-                                    ],];
+                                    let (header, is_edit_or_write, _) = match &msg.content {
+                                        MessageContent::Tool(ToolResult {
+                                            name, result, ..
+                                        }) => {
+                                            let status_icon = match result {
+                                                Ok(_) => " ✓",
+                                                Err(_) => " ✗",
+                                            };
+                                            let hdr = format!(
+                                                "{} {} — {}{}",
+                                                indicator, msg.role, name, status_icon
+                                            );
+                                            let is_ew = name == "edit" || name == "write";
+                                            (hdr, is_ew, name.as_str())
+                                        }
+                                        _ => (msg.role.to_string(), false, ""),
+                                    };
+                                    let text_role_color: fn(&Theme) -> widget::text::Style =
+                                        match msg.role {
+                                            ChatRole::User => text_primary,
+                                            ChatRole::Tool => text_primary,
+                                            _ => text_secondary,
+                                        };
+                                    let header_text = text(header).size(13).style(text_role_color);
+                                    let ts_text = SelectableText::new(&msg.timestamp)
+                                        .size(11)
+                                        .style(sel_secondary);
+                                    let mut col = if is_tool {
+                                        let header_row = row![
+                                            header_text,
+                                            Space::new().width(Length::Fill),
+                                            ts_text,
+                                        ];
+                                        column![
+                                            mouse_area(header_row)
+                                                .on_press(Message::ToggleToolExpand(i))
+                                                .interaction(mouse::Interaction::Pointer),
+                                        ]
+                                    } else {
+                                        column![row![
+                                            header_text,
+                                            Space::new().width(Length::Fill),
+                                            ts_text,
+                                        ],]
+                                    };
                                     match &msg.content {
                                         MessageContent::Text(TextContent {
                                             content,
@@ -636,24 +684,19 @@ impl App {
                                         MessageContent::Tool(ToolResult {
                                             args, result, ..
                                         }) => {
-                                            col = col.push(
-                                                SelectableText::new(args)
-                                                    .size(13)
-                                                    .style(sel_secondary),
-                                            );
-                                            let display_text = match result {
-                                                Ok(s) => s.clone(),
-                                                Err(e) => e.clone(),
-                                            };
-                                            let style = match result {
-                                                Ok(_) => sel_default,
-                                                Err(_) => sel_secondary,
-                                            };
-                                            col = col.push(
-                                                SelectableText::new(display_text)
-                                                    .size(14)
-                                                    .style(style),
-                                            );
+                                            if is_edit_or_write {
+                                                if expanded {
+                                                    col = col.extend(args_rows(args));
+                                                    col = col.push(result_text(result));
+                                                } else if let Some(row) = path_arg_row(args) {
+                                                    col = col.push(row);
+                                                }
+                                            } else {
+                                                col = col.extend(args_rows(args));
+                                                if expanded {
+                                                    col = col.push(result_text(result));
+                                                }
+                                            }
                                         }
                                     }
                                     col.spacing(4).width(Fill)
@@ -708,6 +751,17 @@ impl App {
         })
     }
 }
+
+// ── free functions (widget constructors) ──────────────────────────
+
+/// Return a widget-operation Task that snaps the message scroll to the end.
+fn scroll_to_end() -> Task<Message> {
+    iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::snap_to(
+        MESSAGE_SCROLL.clone(),
+        scrollable::RelativeOffset::END.into(),
+    ))
+}
+
 fn divider() -> Element<'static, Message> {
     mouse_area(rule::vertical(HANDLE))
         .interaction(mouse::Interaction::ResizingHorizontally)
@@ -759,25 +813,97 @@ fn pane_center(theme: &Theme) -> container::Style {
     }
 }
 
+// ── palette helpers ──────────────────────────────────────────────
+
+fn color_text(theme: &Theme) -> iced::Color {
+    theme.palette().text
+}
+fn color_primary(theme: &Theme) -> iced::Color {
+    theme.palette().primary
+}
+fn color_secondary(theme: &Theme) -> iced::Color {
+    theme.extended_palette().secondary.base.color
+}
+
 // ── selectable text styles ────────────────────────────────────────
 
 fn sel_default(theme: &Theme) -> SelectionStyle {
     SelectionStyle {
-        color: Some(theme.palette().text),
-        selection: theme.palette().primary,
+        color: Some(color_text(theme)),
+        selection: color_primary(theme),
     }
 }
 
 fn sel_primary(theme: &Theme) -> SelectionStyle {
     SelectionStyle {
-        color: Some(theme.palette().primary),
-        selection: theme.palette().primary,
+        color: Some(color_primary(theme)),
+        selection: color_primary(theme),
     }
 }
 
 fn sel_secondary(theme: &Theme) -> SelectionStyle {
     SelectionStyle {
-        color: Some(theme.extended_palette().secondary.base.color),
-        selection: theme.extended_palette().secondary.base.color,
+        color: Some(color_secondary(theme)),
+        selection: color_secondary(theme),
     }
+}
+
+// ── plain text styles ─────────────────────────────────────────────
+
+fn text_primary(theme: &Theme) -> widget::text::Style {
+    widget::text::Style {
+        color: Some(color_primary(theme)),
+    }
+}
+
+fn text_secondary(theme: &Theme) -> widget::text::Style {
+    widget::text::Style {
+        color: Some(color_secondary(theme)),
+    }
+}
+
+// ── tool message rendering helpers ────────────────────────────────
+
+/// Single tool-argument key-value row.
+fn arg_row<'a>(key: &'a str, value: String) -> Element<'a, Message> {
+    row![
+        SelectableText::new(key).size(12).style(sel_primary),
+        Space::new().width(8),
+        SelectableText::new(value).size(12).style(sel_secondary),
+    ]
+    .spacing(0)
+    .into()
+}
+
+/// All tool-argument rows.
+fn args_rows(args: &serde_json::Value) -> Vec<Element<'_, Message>> {
+    let Some(map) = args.as_object() else {
+        return Vec::new();
+    };
+    map.iter()
+        .map(|(k, v)| {
+            let val = v
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| v.to_string());
+            arg_row(k, val)
+        })
+        .collect()
+}
+
+/// Only the "path" argument row, when present.
+fn path_arg_row(args: &serde_json::Value) -> Option<Element<'_, Message>> {
+    let path = args.as_object()?.get("path")?.as_str()?;
+    Some(arg_row("path", path.to_string()))
+}
+
+/// Tool result text (success or error).
+fn result_text(result: &Result<String, String>) -> Element<'_, Message> {
+    let display = result.clone().unwrap_or_else(|e| e);
+    let style = if result.is_ok() {
+        sel_default
+    } else {
+        sel_secondary
+    };
+    SelectableText::new(display).size(14).style(style).into()
 }

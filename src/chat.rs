@@ -1,5 +1,6 @@
 use genai::chat::ChatRole;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 // ── TextContent ──────────────────────────────────────────────────────
 
@@ -19,8 +20,8 @@ pub struct ToolResult {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
-    /// Prettified JSON of the call arguments.
-    pub args: String,
+    /// Tool call arguments as provided by the LLM.
+    pub args: Value,
     /// Execution result — Ok(success) or Err(failure).
     pub result: Result<String, String>,
 }
