@@ -157,7 +157,7 @@ struct App {
     /// Indices of tool-result messages whose result body is expanded.
     expanded_tools: HashSet<usize>,
     /// Token usage from the most recent completed LLM response.
-    last_usage: Option<genai::chat::Usage>,
+    last_usage: genai::chat::Usage,
     /// Last-sent user prompt text, displayed in the center-pane header.
     current_prompt: String,
     /// Whether to show the Restart button (current_exe within workspace).
@@ -273,7 +273,7 @@ impl App {
             streaming: StreamState::Idle,
             stream_start_index: 0,
             expanded_tools: HashSet::new(),
-            last_usage: None,
+            last_usage: genai::chat::Usage::default(),
             current_prompt: "New session".into(),
             show_restart,
             cancel_token: Arc::new(AtomicBool::new(false)),
@@ -552,7 +552,7 @@ impl App {
                 return scroll_to_end();
             }
             Message::TokenUsage(usage) => {
-                self.last_usage = usage;
+                self.last_usage = usage.unwrap_or_default();
             }
             Message::StreamDone(genai_messages) => {
                 self.handle_stream_done(genai_messages);
@@ -788,7 +788,7 @@ impl App {
             right_pane(
                 Length::Fixed(self.right_w),
                 pane_side,
-                self.last_usage.as_ref(),
+                &self.last_usage,
                 self.selected_model().map(|(_, m)| m.context_window),
                 self.show_restart,
             ),
@@ -1029,30 +1029,33 @@ fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
 fn right_pane<'a>(
     width: impl Into<Length>,
     style: fn(&Theme) -> container::Style,
-    usage: Option<&genai::chat::Usage>,
+    usage: &genai::chat::Usage,
     context_window: Option<u64>,
     show_restart: bool,
 ) -> Element<'a, Message> {
     let mut col = column![].spacing(8);
 
-    if let (Some(u), Some(cw)) = (usage, context_window) {
-        let prompt_tokens = u.prompt_tokens.unwrap_or(0);
-        let cached_tokens = u
-            .prompt_tokens_details
-            .as_ref()
-            .and_then(|d| d.cached_tokens)
-            .unwrap_or(0);
-        let total_tokens = u.total_tokens.unwrap_or(0);
+    let prompt_tokens = usage.prompt_tokens.unwrap_or(0);
+    let cached_tokens = usage
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|d| d.cached_tokens)
+        .unwrap_or(0);
+    let total_tokens = usage.total_tokens.unwrap_or(0);
+
+    col = col
+        .push(rule::horizontal(1))
+        .push(text("Token Usage").size(14).font(Font {
+            weight: font::Weight::Bold,
+            ..Font::DEFAULT
+        }))
+        .push(token_row("Prompt tokens:", format!("{prompt_tokens}")))
+        .push(token_row("Cached tokens:", format!("{cached_tokens}")))
+        .push(token_row("Total tokens:", format!("{total_tokens}")));
+
+    if let Some(cw) = context_window {
         let pct = ((prompt_tokens as u64) * 100).checked_div(cw).unwrap_or(0);
         col = col
-            .push(rule::horizontal(1))
-            .push(text("Token Usage").size(14).font(Font {
-                weight: font::Weight::Bold,
-                ..Font::DEFAULT
-            }))
-            .push(token_row("Prompt tokens:", format!("{prompt_tokens}")))
-            .push(token_row("Cached tokens:", format!("{cached_tokens}")))
-            .push(token_row("Total tokens:", format!("{total_tokens}")))
             .push(token_row("Context window:", format!("{cw}")))
             .push(token_row("Window used:", format!("{pct}%")));
     }
