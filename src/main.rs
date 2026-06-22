@@ -28,6 +28,8 @@ use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chat::{DisplayMessage, MessageContent, TextContent, ToolResult};
 
@@ -51,7 +53,7 @@ fn crabot_title() {
     }
 }
 
-use genai::chat::ChatRole;
+use genai::chat::{ChatMessage, ChatRole};
 use model::{Model, ModelConfig, Provider, model_config_view};
 use session::Session;
 use system::{FilepathEntry, SystemPrompt};
@@ -159,6 +161,8 @@ struct App {
     current_prompt: String,
     /// Whether to show the Restart button (current_exe within workspace).
     show_restart: bool,
+    /// Cancellation token to stop an in-progress stream early.
+    cancel_token: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,8 +193,10 @@ pub enum Message {
     StreamReasoning(String),
     StreamToolResult(ToolResult),
     TokenUsage(Option<genai::chat::Usage>),
-    StreamDone(Vec<genai::chat::ChatMessage>),
-    StreamError(String, Vec<genai::chat::ChatMessage>),
+    StreamDone(Vec<ChatMessage>),
+    StreamError(String, Vec<ChatMessage>),
+    StreamCancelled(Vec<ChatMessage>),
+    StopStream,
     AppClosing,
     Noop,
     CopySession,
@@ -257,6 +263,7 @@ impl App {
             last_usage: None,
             current_prompt: "New session".into(),
             show_restart,
+            cancel_token: Arc::new(AtomicBool::new(false)),
         };
         (app, Task::none())
     }
@@ -454,6 +461,9 @@ impl App {
                 self.stream_start_index = self.session.messages.len();
                 self.streaming = true;
 
+                self.cancel_token.store(false, Ordering::Relaxed);
+                let cancel_token = self.cancel_token.clone();
+
                 // Update session state with the selected model and workspace before sending the prompt.
                 self.session.model = self.selected_model.clone();
                 self.session.workspace = workspace.clone();
@@ -477,10 +487,20 @@ impl App {
                 };
 
                 return Task::stream(iced::stream::channel(128, async move |sender| {
+                    let cancel = cancel_token.clone();
                     let mut callback = {
                         move |msg: Message| {
+                            let cancel = cancel.clone();
                             let mut sender = sender.clone();
-                            async move { sender.send(msg).await.is_ok() }.boxed()
+                            async move {
+                                let ok = sender.send(msg).await.is_ok();
+                                if cancel.load(Ordering::Relaxed) {
+                                    false
+                                } else {
+                                    ok
+                                }
+                            }
+                            .boxed()
                         }
                     };
                     adk::send_stream(config, history, &mut callback).await;
@@ -544,6 +564,16 @@ impl App {
                 let _ = Command::new("cargo").args(["run", "--release"]).spawn();
                 return iced::exit();
             }
+            Message::StopStream => {
+                self.cancel_token.store(true, Ordering::Relaxed);
+            }
+            Message::StreamCancelled(genai_messages) => {
+                self.streaming = StreamState::Idle;
+                // Preserve partial assistant/tool messages in history so
+                // subsequent requests still carry valid context.
+                self.session.history.extend(genai_messages);
+                let _ = self.session.save();
+            }
             Message::AppClosing => {
                 self.save_settings();
                 return iced::exit();
@@ -569,7 +599,7 @@ impl App {
 
     /// Backfill streaming placeholders with captured content from genai,
     /// extend session history, and persist the session.
-    fn handle_stream_done(&mut self, genai_messages: Vec<genai::chat::ChatMessage>) {
+    fn handle_stream_done(&mut self, genai_messages: Vec<ChatMessage>) {
         self.streaming = false;
 
         // Some providers omit ReasoningChunk events and only expose
@@ -614,7 +644,7 @@ impl App {
 
     /// Replace the last-message empty assistant placeholder with this error,
     /// or push a new error message if no placeholder exists.
-    fn handle_stream_error(&mut self, err: String, genai_messages: Vec<genai::chat::ChatMessage>) {
+    fn handle_stream_error(&mut self, err: String, genai_messages: Vec<ChatMessage>) {
         self.streaming = false;
 
         // Preserve any messages generated before the error (user msg,
@@ -731,6 +761,7 @@ impl App {
                 &self.expanded_tools,
                 self.get_status(),
                 &self.theme,
+                self.streaming,
             ),
             divider(),
             right_pane(
@@ -821,7 +852,7 @@ fn left_pane(app: &App) -> Element<'_, Message> {
             &app.files_content,
         ),
         system::date_field_view(&app.system_prompt.date),
-        session::session_view(),
+        session::session_view(app.streaming),
         label("User Prompt", 140.0),
         user_prompt_view(&app.user_prompt, app.workmode),
         label("Dev Tools", 140.0),
@@ -842,6 +873,7 @@ fn center_pane<'a>(
     expanded_tools: &'a HashSet<usize>,
     status: &'a str,
     theme: &'a Theme,
+    streaming: bool,
 ) -> Element<'a, Message> {
     container(column![
         session_header(current_prompt),
@@ -955,7 +987,7 @@ fn center_pane<'a>(
         )
         .height(Fill)
         .id(MESSAGE_SCROLL.clone()),
-        status_line(status),
+        status_line(status, streaming),
     ])
     .width(Fill)
     .height(Fill)
@@ -1054,11 +1086,11 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
             }
         }),
         Space::new().width(Length::Fill),
-        button(text("\u{1F4CB}").size(14))
+        button(text("▣").size(14))
             .on_press(Message::CopySession)
             .padding(4)
             .style(icon_button_style),
-        button(text("\u{21BB}").size(14))
+        button(text("↻").size(14))
             .on_press(Message::ResendLastPrompt)
             .padding(4)
             .style(icon_button_style),
@@ -1090,8 +1122,19 @@ fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
 
 // ── status line ───────────────────────────────────────────────────
 
-fn status_line<'a>(status_text: &'a str) -> Element<'a, Message> {
-    container(text(status_text).size(12).color(CRABOT_TEXT_MUTED))
+fn status_line<'a>(status_text: &'a str, streaming: bool) -> Element<'a, Message> {
+    let mut row = row![text(status_text).size(12).color(CRABOT_TEXT_MUTED),]
+        .align_y(iced::Alignment::Center)
+        .spacing(8);
+    if streaming {
+        row = row.push(
+            button(text("⏹ Stop").size(11))
+                .on_press(Message::StopStream)
+                .padding([2, 8])
+                .style(icon_button_style),
+        );
+    }
+    container(row)
         .width(Fill)
         .align_x(alignment::Horizontal::Center)
         .padding([4, 10])

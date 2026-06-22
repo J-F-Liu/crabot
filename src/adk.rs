@@ -113,11 +113,13 @@ pub async fn send_stream(
             match event {
                 Ok(genai::chat::ChatStreamEvent::Chunk(chunk)) => {
                     if !on_event(crate::Message::StreamContent(chunk.content.clone())).await {
+                        on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
                         return;
                     }
                 }
                 Ok(genai::chat::ChatStreamEvent::ReasoningChunk(chunk)) => {
                     if !on_event(crate::Message::StreamReasoning(chunk.content.clone())).await {
+                        on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
                         return;
                     }
                 }
@@ -125,6 +127,7 @@ pub async fn send_stream(
                     captured_content = end.captured_content;
                     captured_reasoning = end.captured_reasoning_content;
                     if !on_event(crate::Message::TokenUsage(end.captured_usage)).await {
+                        on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
                         return;
                     }
                 }
@@ -183,6 +186,8 @@ pub async fn send_stream(
                 result,
             };
             if !on_event(crate::Message::StreamToolResult(tr)).await {
+                genai_messages.push(ChatMessage::from(tool_responses.clone()));
+                on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
                 return;
             }
         }

@@ -103,7 +103,7 @@ impl Session {
     }
 }
 
-pub fn session_view<'a>() -> Element<'a, Message> {
+pub fn session_view<'a>(streaming: bool) -> Element<'a, Message> {
     row![
         text("Session").size(14).font(Font {
             weight: font::Weight::Bold,
@@ -111,7 +111,11 @@ pub fn session_view<'a>() -> Element<'a, Message> {
         }),
         iced::widget::Space::new().width(Length::Fill),
         button(text("New").align_x(Alignment::Center))
-            .on_press(Message::NewSession)
+            .on_press_maybe(if streaming {
+                None
+            } else {
+                Some(Message::NewSession)
+            })
             .style(crate::primary_button),
     ]
     .align_y(Alignment::Center)
