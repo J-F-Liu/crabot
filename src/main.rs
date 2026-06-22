@@ -231,6 +231,17 @@ impl App {
         let model_for_session = saved.selected_model.clone();
         let workspace_for_session = saved.system_prompt.workspace.1.clone();
 
+        let mut system_prompt = saved.system_prompt.clone();
+        // Load preamble content from the .md file, not from saved settings.
+        let preamble_options = system::build_preamble_options();
+        let preamble_content = preamble_options
+            .iter()
+            .find(|e| e.display == saved.selected_preamble)
+            .map(|e| std::fs::read_to_string(&e.path).unwrap_or_else(|e| e.to_string()))
+            .unwrap_or_default();
+        system_prompt.preamble.1 = preamble_content;
+        system_prompt.date.1 = chrono::Local::now().format("%Y-%m-%d").to_string();
+
         let show_restart = !workspace_for_session.as_os_str().is_empty()
             && env::current_exe()
                 .ok()
@@ -243,14 +254,14 @@ impl App {
             cursor: Point::ORIGIN,
             dragging: None,
             providers,
-            selected_model: saved.selected_model,
+            preamble_options,
+            system_prompt,
             theme,
-            system_prompt: saved.system_prompt.clone(),
+            selected_model: saved.selected_model,
             rules_expanded: saved.rules_expanded,
             tools_expanded: saved.tools_expanded,
             files_expanded: saved.files_expanded,
             selected_preamble: saved.selected_preamble,
-            preamble_options: system::build_preamble_options(),
             workspace_options: system::build_workspace_options(&saved.recent_workspaces),
             rules_content: text_editor::Content::with_text(&saved.rules_text),
             files_content: text_editor::Content::with_text(&saved.files_text),
