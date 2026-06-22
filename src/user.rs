@@ -16,9 +16,9 @@ pub enum WorkMode {
 impl fmt::Display for WorkMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WorkMode::Plan => write!(f, "Plan"),
-            WorkMode::Code => write!(f, "Code"),
-            WorkMode::Review => write!(f, "Review"),
+            WorkMode::Plan => write!(f, "plan"),
+            WorkMode::Code => write!(f, "code"),
+            WorkMode::Review => write!(f, "review"),
         }
     }
 }
@@ -35,8 +35,8 @@ impl UserPrompt {
 
     pub fn get_prompt(&self) -> String {
         let mut prompt = String::new();
-        prompt.push_str(&format!("MODE: {}\n", self.mode));
-        prompt.push_str(&format!("TASK: {}\n", &self.content));
+        prompt.push_str(&format!("<work-mode>{}</work-mode>\n", self.mode));
+        prompt.push_str(&format!("{}\n", &self.content));
         prompt
     }
 }
