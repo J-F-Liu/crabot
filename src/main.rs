@@ -11,6 +11,7 @@ mod workspace;
 
 use adk::StreamState;
 use futures::{SinkExt, future::FutureExt};
+use iced::widget::scrollable::Viewport;
 use iced::{
     Background, Border, Color, Element, Event, Fill, Font, Length, Point, Size, Subscription, Task,
     Theme,
@@ -166,6 +167,10 @@ struct App {
     show_restart: bool,
     /// Cancellation token to stop an in-progress stream early.
     cancel_token: Arc<AtomicBool>,
+    /// Whether to auto-scroll the message view to the bottom during streaming.
+    /// Set `true` when a new prompt is sent; `on_scroll` toggles it based on
+    /// whether the user has manually scrolled away from or to the bottom.
+    auto_scroll: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +211,8 @@ pub enum Message {
     CopySession,
     ResendLastPrompt,
     Restart,
+    /// Fires when the message scrollable's viewport changes.
+    MessageViewScrolled(Viewport),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -280,6 +287,7 @@ impl App {
             current_prompt: "New session".into(),
             show_restart,
             cancel_token: Arc::new(AtomicBool::new(false)),
+            auto_scroll: Arc::new(AtomicBool::new(true)),
         };
         (app, Task::none())
     }
@@ -457,6 +465,7 @@ impl App {
                 }
 
                 self.current_prompt = content.clone();
+                self.auto_scroll.store(true, Ordering::Relaxed);
 
                 let user_prompt = UserPrompt::new(self.workmode, content).get_prompt();
 
@@ -535,7 +544,7 @@ impl App {
                 if let Some(last) = self.session.messages.last_mut() {
                     last.refresh_md_cache();
                 }
-                return scroll_to_end();
+                return self.maybe_scroll_to_end();
             }
             Message::StreamReasoning(chunk) => {
                 self.ensure_assistant_placeholder();
@@ -550,11 +559,11 @@ impl App {
                 if let Some(last) = self.session.messages.last_mut() {
                     last.refresh_md_cache();
                 }
-                return scroll_to_end();
+                return self.maybe_scroll_to_end();
             }
             Message::StreamToolResult(tr) => {
                 self.session.push(DisplayMessage::from_tool_result(tr));
-                return scroll_to_end();
+                return self.maybe_scroll_to_end();
             }
             Message::TokenUsage(usage) => {
                 let u = usage.unwrap_or_default();
@@ -563,11 +572,11 @@ impl App {
             }
             Message::StreamDone(genai_messages) => {
                 self.handle_stream_done(genai_messages);
-                return scroll_to_end();
+                return self.maybe_scroll_to_end();
             }
             Message::StreamError(err, genai_messages) => {
                 self.handle_stream_error(err, genai_messages);
-                return scroll_to_end();
+                return self.maybe_scroll_to_end();
             }
             Message::CopySession => {
                 return iced::clipboard::write(self.current_prompt.clone());
@@ -586,6 +595,16 @@ impl App {
             }
             Message::StopStream => {
                 self.cancel_token.store(true, Ordering::Relaxed);
+            }
+            Message::MessageViewScrolled(viewport) => {
+                // While streaming, track whether the user has scrolled away
+                // from the bottom (to pause auto-scroll) or back to it (to
+                // resume).
+                if self.streaming != StreamState::Idle {
+                    let y = viewport.relative_offset().y;
+                    let at_bottom = if y.is_nan() { true } else { y >= 0.98 };
+                    self.auto_scroll.store(at_bottom, Ordering::Relaxed);
+                }
             }
             Message::StreamCancelled(genai_messages) => {
                 self.streaming = StreamState::Idle;
@@ -693,6 +712,16 @@ impl App {
                 .push(DisplayMessage::assistant(format!("Error: {err}"), None));
         }
         let _ = self.session.save();
+    }
+
+    /// Snap the message scroll to the end, but only if auto-scroll is
+    /// currently enabled (i.e. the user hasn't scrolled away).
+    fn maybe_scroll_to_end(&self) -> Task<Message> {
+        if self.auto_scroll.load(Ordering::Relaxed) {
+            scroll_to_end()
+        } else {
+            Task::none()
+        }
     }
 
     /// Bump `path` to top of recents, persist it as current workspace,
@@ -829,7 +858,7 @@ impl App {
 
 // ── free functions (widget constructors) ──────────────────────────
 
-/// Return a widget-operation Task that snaps the message scroll to the end.
+/// Snap the message scroll to the end unconditionally.
 fn scroll_to_end() -> Task<Message> {
     iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::snap_to(
         MESSAGE_SCROLL.clone(),
@@ -1015,7 +1044,8 @@ fn center_pane<'a>(
             .padding(10),
         )
         .height(Fill)
-        .id(MESSAGE_SCROLL.clone()),
+        .id(MESSAGE_SCROLL.clone())
+        .on_scroll(Message::MessageViewScrolled),
         status_line(status, streaming),
     ])
     .width(Fill)
