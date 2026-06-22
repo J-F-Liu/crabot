@@ -158,6 +158,8 @@ struct App {
     expanded_tools: HashSet<usize>,
     /// Token usage from the most recent completed LLM response.
     last_usage: genai::chat::Usage,
+    /// Cumulative token amount across all turns in the current session.
+    token_amount: model::TokenAmount,
     /// Last-sent user prompt text, displayed in the center-pane header.
     current_prompt: String,
     /// Whether to show the Restart button (current_exe within workspace).
@@ -274,6 +276,7 @@ impl App {
             stream_start_index: 0,
             expanded_tools: HashSet::new(),
             last_usage: genai::chat::Usage::default(),
+            token_amount: model::TokenAmount::default(),
             current_prompt: "New session".into(),
             show_restart,
             cancel_token: Arc::new(AtomicBool::new(false)),
@@ -434,6 +437,8 @@ impl App {
                 let workspace = self.system_prompt.workspace.1.clone();
                 self.session = Session::new(self.selected_model.clone(), workspace);
                 self.current_prompt = "New session".into();
+                self.last_usage = genai::chat::Usage::default();
+                self.token_amount = model::TokenAmount::default();
             }
             Message::ToggleToolExpand(idx) => {
                 if self.expanded_tools.contains(&idx) {
@@ -552,7 +557,9 @@ impl App {
                 return scroll_to_end();
             }
             Message::TokenUsage(usage) => {
-                self.last_usage = usage.unwrap_or_default();
+                let u = usage.unwrap_or_default();
+                self.token_amount.accumulate(&u);
+                self.last_usage = u;
             }
             Message::StreamDone(genai_messages) => {
                 self.handle_stream_done(genai_messages);
@@ -789,7 +796,8 @@ impl App {
                 Length::Fixed(self.right_w),
                 pane_side,
                 &self.last_usage,
-                self.selected_model().map(|(_, m)| m.context_window),
+                &self.token_amount,
+                self.selected_model().map(|(_, m)| m),
                 self.show_restart,
             ),
         ]
@@ -1026,11 +1034,22 @@ fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
     .into()
 }
 
+/// Format cost value.
+/// Small amounts get 4 decimal places, larger amounts get 2 decimal places.
+fn format_cost(amount: f64) -> String {
+    if amount < 0.01 {
+        format!("{:.4}", amount)
+    } else {
+        format!("{:.2}", amount)
+    }
+}
+
 fn right_pane<'a>(
     width: impl Into<Length>,
     style: fn(&Theme) -> container::Style,
     usage: &genai::chat::Usage,
-    context_window: Option<u64>,
+    amount: &model::TokenAmount,
+    model: Option<&model::Model>,
     show_restart: bool,
 ) -> Element<'a, Message> {
     let mut col = column![].spacing(8);
@@ -1041,23 +1060,35 @@ fn right_pane<'a>(
         .as_ref()
         .and_then(|d| d.cached_tokens)
         .unwrap_or(0);
-    let total_tokens = usage.total_tokens.unwrap_or(0);
 
     col = col
         .push(rule::horizontal(1))
-        .push(text("Token Usage").size(14).font(Font {
+        .push(text("Context window").size(14).font(Font {
             weight: font::Weight::Bold,
             ..Font::DEFAULT
         }))
         .push(token_row("Prompt tokens:", format!("{prompt_tokens}")))
-        .push(token_row("Cached tokens:", format!("{cached_tokens}")))
-        .push(token_row("Total tokens:", format!("{total_tokens}")));
+        .push(token_row("Cached tokens:", format!("{cached_tokens}")));
 
-    if let Some(cw) = context_window {
+    if let Some(m) = model {
+        let cw = m.context_window;
         let pct = ((prompt_tokens as u64) * 100).checked_div(cw).unwrap_or(0);
         col = col
-            .push(token_row("Context window:", format!("{cw}")))
+            .push(token_row("window size:", format!("{cw}")))
             .push(token_row("Window used:", format!("{pct}%")));
+
+        // ── cumulative token usage and cost ───────────────────────────────────────────
+        let total_cost = m.cost.calculate(amount);
+        col = col
+            .push(rule::horizontal(1))
+            .push(text("Token Usage").size(14).font(Font {
+                weight: font::Weight::Bold,
+                ..Font::DEFAULT
+            }))
+            .push(token_row("Input tokens:", format!("{}", amount.input)))
+            .push(token_row("Cached tokens:", format!("{}", amount.cached)))
+            .push(token_row("Output tokens:", format!("{}", amount.output)))
+            .push(token_row("Total cost:", format_cost(total_cost)));
     }
 
     if show_restart {

@@ -77,6 +77,49 @@ pub struct Cost {
     pub cache_write: f64,
 }
 
+impl Cost {
+    /// Calculate cost breakdown from token usage.
+    /// Prices are per million tokens; token counts are raw integers.
+    pub fn calculate(&self, tokens: &TokenAmount) -> f64 {
+        let input_cost = tokens.input as f64 / 1_000_000.0 * self.input;
+        let cached_cost = tokens.cached as f64 / 1_000_000.0 * self.cache_read;
+        let output_cost = tokens.output as f64 / 1_000_000.0 * self.output;
+        input_cost + cached_cost + output_cost
+    }
+}
+
+/// Accumulated token counts for a session or single response.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct TokenAmount {
+    pub input: i32,
+    pub cached: i32,
+    pub output: i32,
+}
+
+impl TokenAmount {
+    /// Extract token counts from a `genai::chat::Usage`.
+    pub fn from_genai(usage: &genai::chat::Usage) -> Self {
+        let cached = usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens)
+            .unwrap_or(0);
+        let prompt = usage.prompt_tokens.unwrap_or(0);
+        Self {
+            input: (prompt - cached).max(0),
+            cached,
+            output: usage.completion_tokens.unwrap_or(0),
+        }
+    }
+    /// Accumulate `new_usage` into `self` in place.
+    pub fn accumulate(&mut self, new_usage: &genai::chat::Usage) {
+        let incoming = TokenAmount::from_genai(new_usage);
+        self.input += incoming.input;
+        self.cached += incoming.cached;
+        self.output += incoming.output;
+    }
+}
+
 pub fn model_config_view<'a>(
     providers: &'a [Provider],
     selected: &Option<ModelConfig>,
