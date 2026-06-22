@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::Message;
+use crate::adk::StreamState;
 use crate::chat::DisplayMessage;
 use crate::model::ModelConfig;
 
@@ -103,7 +104,7 @@ impl Session {
     }
 }
 
-pub fn session_view<'a>(streaming: bool) -> Element<'a, Message> {
+pub fn session_view<'a>(streaming: StreamState) -> Element<'a, Message> {
     row![
         text("Session").size(14).font(Font {
             weight: font::Weight::Bold,
@@ -111,7 +112,7 @@ pub fn session_view<'a>(streaming: bool) -> Element<'a, Message> {
         }),
         iced::widget::Space::new().width(Length::Fill),
         button(text("New").align_x(Alignment::Center))
-            .on_press_maybe(if streaming {
+            .on_press_maybe(if streaming != StreamState::Idle {
                 None
             } else {
                 Some(Message::NewSession)

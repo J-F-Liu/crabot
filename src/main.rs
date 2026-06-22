@@ -9,6 +9,7 @@ mod tools;
 mod user;
 mod workspace;
 
+use adk::StreamState;
 use futures::{SinkExt, future::FutureExt};
 use iced::{
     Background, Border, Color, Element, Event, Fill, Font, Length, Point, Size, Subscription, Task,
@@ -147,8 +148,8 @@ struct App {
     user_prompt: text_editor::Content,
     workmode: WorkMode,
     session: Session,
-    /// Whether a streaming response is currently in progress.
-    streaming: bool,
+    /// Current phase of the LLM interaction lifecycle.
+    streaming: StreamState,
     /// Index in `session.messages` where the current stream's assistant
     /// placeholders begin; used by `handle_stream_done` to backfill captured
     /// content/reasoning into the right display messages.
@@ -196,6 +197,7 @@ pub enum Message {
     StreamDone(Vec<ChatMessage>),
     StreamError(String, Vec<ChatMessage>),
     StreamCancelled(Vec<ChatMessage>),
+    StreamStateChange(StreamState),
     StopStream,
     AppClosing,
     Noop,
@@ -257,7 +259,7 @@ impl App {
             user_prompt: text_editor::Content::new(),
             workmode: saved.workmode,
             session: Session::new(model_for_session, workspace_for_session),
-            streaming: false,
+            streaming: StreamState::Idle,
             stream_start_index: 0,
             expanded_tools: HashSet::new(),
             last_usage: None,
@@ -430,7 +432,7 @@ impl App {
                 }
             }
             Message::SendPrompt => {
-                if self.streaming {
+                if self.streaming != StreamState::Idle {
                     return Task::none();
                 }
                 let content = self.user_prompt.text();
@@ -459,7 +461,7 @@ impl App {
 
                 self.user_prompt = text_editor::Content::new();
                 self.stream_start_index = self.session.messages.len();
-                self.streaming = true;
+                self.streaming = StreamState::LlmLoading;
 
                 self.cancel_token.store(false, Ordering::Relaxed);
                 let cancel_token = self.cancel_token.clone();
@@ -574,6 +576,9 @@ impl App {
                 self.session.history.extend(genai_messages);
                 let _ = self.session.save();
             }
+            Message::StreamStateChange(state) => {
+                self.streaming = state;
+            }
             Message::AppClosing => {
                 self.save_settings();
                 return iced::exit();
@@ -600,7 +605,7 @@ impl App {
     /// Backfill streaming placeholders with captured content from genai,
     /// extend session history, and persist the session.
     fn handle_stream_done(&mut self, genai_messages: Vec<ChatMessage>) {
-        self.streaming = false;
+        self.streaming = StreamState::Idle;
 
         // Some providers omit ReasoningChunk events and only expose
         // reasoning via captured_reasoning_content at stream end.
@@ -645,7 +650,7 @@ impl App {
     /// Replace the last-message empty assistant placeholder with this error,
     /// or push a new error message if no placeholder exists.
     fn handle_stream_error(&mut self, err: String, genai_messages: Vec<ChatMessage>) {
-        self.streaming = false;
+        self.streaming = StreamState::Idle;
 
         // Preserve any messages generated before the error (user msg,
         // partial assistant turns, tool calls/responses) in the history
@@ -735,12 +740,17 @@ impl App {
     }
 
     fn get_status(&self) -> &str {
-        if self.streaming {
-            "🔄 Thinking…"
-        } else if self.session.messages.is_empty() {
-            "Type a message to begin"
-        } else {
-            "✅ Ready"
+        match self.streaming {
+            StreamState::LlmLoading => "🔗 Loading LLM…",
+            StreamState::LlmThinking => "💭 LLM thinking…",
+            StreamState::ToolExecuting => "🔧 Tool executing…",
+            StreamState::Idle => {
+                if self.session.messages.is_empty() {
+                    "Send user prompt to start dialog with LLM"
+                } else {
+                    "✅ Ready"
+                }
+            }
         }
     }
 
@@ -873,7 +883,7 @@ fn center_pane<'a>(
     expanded_tools: &'a HashSet<usize>,
     status: &'a str,
     theme: &'a Theme,
-    streaming: bool,
+    streaming: StreamState,
 ) -> Element<'a, Message> {
     container(column![
         session_header(current_prompt),
@@ -1122,11 +1132,11 @@ fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
 
 // ── status line ───────────────────────────────────────────────────
 
-fn status_line<'a>(status_text: &'a str, streaming: bool) -> Element<'a, Message> {
+fn status_line<'a>(status_text: &'a str, streaming: StreamState) -> Element<'a, Message> {
     let mut row = row![text(status_text).size(12).color(CRABOT_TEXT_MUTED),]
         .align_y(iced::Alignment::Center)
         .spacing(8);
-    if streaming {
+    if streaming != StreamState::Idle {
         row = row.push(
             button(text("⏹ Stop").size(11))
                 .on_press(Message::StopStream)

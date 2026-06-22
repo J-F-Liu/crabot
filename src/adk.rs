@@ -10,6 +10,19 @@ use genai::{Client, ModelIden, ServiceTarget};
 
 use crate::tools::DevTool;
 
+// ── StreamState: tracks the current phase of an LLM interaction ────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamState {
+    Idle,
+    /// Establishing connection / sending request to the LLM server.
+    LlmLoading,
+    /// LLM is actively thinking / generating the response.
+    LlmThinking,
+    /// Locally executing a tool call.
+    ToolExecuting,
+}
+
 /// Max agent loop iterations to prevent infinite tool-calling cycles.
 const MAX_ITERATIONS: usize = 50;
 
@@ -88,6 +101,9 @@ pub async fn send_stream(
     // Agent loop: keep calling the LLM until it responds without tool calls.
     let mut finished = false;
     for _ in 0..MAX_ITERATIONS {
+        // Signal that we're connecting to the LLM.
+        on_event(crate::Message::StreamStateChange(StreamState::LlmLoading)).await;
+
         let stream_result = client
             .exec_chat_stream(&model_id, chat_req.clone(), Some(&chat_options))
             .await;
@@ -107,17 +123,26 @@ pub async fn send_stream(
         // Accumulate reasoning from chunks (captured_content covers text + tool calls).
         let mut captured_content: Option<MessageContent> = None;
         let mut captured_reasoning: Option<String> = None;
+        let mut thinking_signaled = false;
 
         use futures::StreamExt;
         while let Some(event) = stream.next().await {
             match event {
                 Ok(genai::chat::ChatStreamEvent::Chunk(chunk)) => {
+                    if !thinking_signaled {
+                        thinking_signaled = true;
+                        on_event(crate::Message::StreamStateChange(StreamState::LlmThinking)).await;
+                    }
                     if !on_event(crate::Message::StreamContent(chunk.content.clone())).await {
                         on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
                         return;
                     }
                 }
                 Ok(genai::chat::ChatStreamEvent::ReasoningChunk(chunk)) => {
+                    if !thinking_signaled {
+                        thinking_signaled = true;
+                        on_event(crate::Message::StreamStateChange(StreamState::LlmThinking)).await;
+                    }
                     if !on_event(crate::Message::StreamReasoning(chunk.content.clone())).await {
                         on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
                         return;
@@ -168,6 +193,11 @@ pub async fn send_stream(
         // Execute each tool call and record results.
         // Unknown tools are reported back to the LLM as an error result
         // rather than aborting the loop, giving the model a chance to recover.
+        on_event(crate::Message::StreamStateChange(
+            StreamState::ToolExecuting,
+        ))
+        .await;
+
         let mut tool_responses: Vec<ToolResponse> = Vec::new();
         for tc in &tool_calls {
             let result = match DevTool::from_name(&tc.fn_name) {
