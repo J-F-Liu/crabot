@@ -25,7 +25,9 @@ use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
 use std::collections::HashSet;
+use std::env;
 use std::path::PathBuf;
+use std::process::Command;
 
 use chat::{DisplayMessage, MessageContent, TextContent, ToolResult};
 
@@ -155,6 +157,8 @@ struct App {
     last_usage: Option<genai::chat::Usage>,
     /// Last-sent user prompt text, displayed in the center-pane header.
     current_prompt: String,
+    /// Whether to show the Restart button (current_exe within workspace).
+    show_restart: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +195,7 @@ pub enum Message {
     Noop,
     CopySession,
     ResendLastPrompt,
+    Restart,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -217,6 +222,11 @@ impl App {
 
         let model_for_session = saved.selected_model.clone();
         let workspace_for_session = saved.system_prompt.workspace.1.clone();
+
+        let show_restart = !workspace_for_session.as_os_str().is_empty()
+            && env::current_exe()
+                .ok()
+                .is_some_and(|exe| exe.starts_with(&workspace_for_session));
 
         let app = Self {
             left_w: saved.left_w,
@@ -246,6 +256,7 @@ impl App {
             expanded_tools: HashSet::new(),
             last_usage: None,
             current_prompt: "New session".into(),
+            show_restart,
         };
         (app, Task::none())
     }
@@ -441,12 +452,12 @@ impl App {
 
                 self.user_prompt = text_editor::Content::new();
                 self.stream_start_index = self.session.messages.len();
-                self.session.push(DisplayMessage::user(user_prompt.clone()));
                 self.streaming = true;
 
-                // Update session model info
+                // Update session state with the selected model and workspace before sending the prompt.
                 self.session.model = self.selected_model.clone();
                 self.session.workspace = workspace.clone();
+                self.session.push(DisplayMessage::user(user_prompt.clone()));
 
                 let config = adk::SendConfig {
                     base_url,
@@ -526,6 +537,12 @@ impl App {
                     self.user_prompt = text_editor::Content::with_text(&self.current_prompt);
                     return Task::done(Message::SendPrompt);
                 }
+            }
+            Message::Restart => {
+                self.save_settings();
+                // Spawn release build in background before exiting.
+                let _ = Command::new("cargo").args(["run", "--release"]).spawn();
+                return iced::exit();
             }
             Message::AppClosing => {
                 self.save_settings();
@@ -638,6 +655,9 @@ impl App {
         self.system_prompt.workspace.1 = path.clone();
         self.system_prompt.files.1 = workspace::build_files_tree(&path);
         self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
+        self.show_restart = env::current_exe()
+            .ok()
+            .is_some_and(|exe| exe.starts_with(&path));
 
         paths.insert(0, path);
         paths.truncate(10);
@@ -718,6 +738,7 @@ impl App {
                 pane_side,
                 self.last_usage.as_ref(),
                 self.selected_model().map(|(_, m)| m.context_window),
+                self.show_restart,
             ),
         ]
         .spacing(0)
@@ -957,6 +978,7 @@ fn right_pane<'a>(
     style: fn(&Theme) -> container::Style,
     usage: Option<&genai::chat::Usage>,
     context_window: Option<u64>,
+    show_restart: bool,
 ) -> Element<'a, Message> {
     let mut col = column![].spacing(8);
 
@@ -980,6 +1002,19 @@ fn right_pane<'a>(
             .push(token_row("Total tokens:", format!("{total_tokens}")))
             .push(token_row("Context window:", format!("{cw}")))
             .push(token_row("Window used:", format!("{pct}%")));
+    }
+
+    if show_restart {
+        col = col.push(Space::new().height(Fill)).push(
+            container(
+                button(text("Restart").size(14))
+                    .on_press(Message::Restart)
+                    .style(primary_button)
+                    .width(Length::Shrink),
+            )
+            .width(Fill)
+            .align_x(alignment::Horizontal::Center),
+        );
     }
 
     container(col.padding(20))
