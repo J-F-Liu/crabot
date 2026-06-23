@@ -16,7 +16,7 @@ use iced::{
     Background, Border, Color, Element, Event, Fill, Font, Length, Point, Size, Subscription, Task,
     Theme,
     advanced::text::Highlight,
-    alignment, event, font, mouse,
+    alignment, event, font, keyboard, mouse,
     widget::{
         self, Space, button, checkbox, column, container, markdown, mouse_area, row, rule,
         scrollable, text, text_editor, toggler,
@@ -171,6 +171,9 @@ struct App {
     /// Set `true` when a new prompt is sent; `on_scroll` toggles it based on
     /// whether the user has manually scrolled away from or to the bottom.
     auto_scroll: Arc<AtomicBool>,
+    /// Indices of messages displayed as selectable plain text (double-click
+    /// a single message to toggle; ESC clears all).
+    selectable_msgs: HashSet<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +216,9 @@ pub enum Message {
     Restart,
     /// Fires when the message scrollable's viewport changes.
     MessageViewScrolled(Viewport),
+    /// Toggle a single message between Markdown and selectable plain-text.
+    /// `Some(i)` toggles message `i`; `None` clears all (ESC).
+    ToggleSelectableMode(Option<usize>),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -288,6 +294,7 @@ impl App {
             show_restart,
             cancel_token: Arc::new(AtomicBool::new(false)),
             auto_scroll: Arc::new(AtomicBool::new(true)),
+            selectable_msgs: HashSet::new(),
         };
         (app, Task::none())
     }
@@ -602,7 +609,7 @@ impl App {
                 // resume).
                 if self.streaming != StreamState::Idle {
                     let y = viewport.relative_offset().y;
-                    let at_bottom = if y.is_nan() { true } else { y >= 0.98 };
+                    let at_bottom = if y.is_nan() { true } else { y >= 0.99 };
                     self.auto_scroll.store(at_bottom, Ordering::Relaxed);
                 }
             }
@@ -621,6 +628,16 @@ impl App {
                 return iced::exit();
             }
             Message::Noop => {}
+            Message::ToggleSelectableMode(msg_index) => match msg_index {
+                Some(i) => {
+                    if self.selectable_msgs.contains(&i) {
+                        self.selectable_msgs.remove(&i);
+                    } else {
+                        self.selectable_msgs.insert(i);
+                    }
+                }
+                None => self.selectable_msgs.clear(),
+            },
         }
         Task::none()
     }
@@ -819,6 +836,7 @@ impl App {
                 self.get_status(),
                 &self.theme,
                 self.streaming,
+                &self.selectable_msgs,
             ),
             divider(),
             right_pane(
@@ -849,6 +867,10 @@ impl App {
                 Event::Window(window::Event::Resized(size)) => {
                     Some(Message::WindowResized(size.width))
                 }
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::ToggleSelectableMode(None)),
                 _ => None,
             }),
             window::close_requests().map(|_id| Message::AppClosing),
@@ -932,6 +954,7 @@ fn center_pane<'a>(
     status: &'a str,
     theme: &'a Theme,
     streaming: StreamState,
+    selectable_msgs: &HashSet<usize>,
 ) -> Element<'a, Message> {
     container(column![
         session_header(current_prompt),
@@ -992,7 +1015,13 @@ fn center_pane<'a>(
                                                 .style(sel_secondary),
                                         );
                                     }
-                                    if let Some(md) = &msg.content_md {
+                                    if selectable_msgs.contains(&i) {
+                                        col = col.push(
+                                            SelectableText::new(content)
+                                                .size(14)
+                                                .style(sel_default),
+                                        );
+                                    } else if let Some(md) = &msg.content_md {
                                         let mut md_style = markdown::Style::from(theme.clone());
                                         md_style.inline_code_highlight = Highlight {
                                             background: Background::Color(Color::TRANSPARENT),
@@ -1001,11 +1030,18 @@ fn center_pane<'a>(
                                         md_style.inline_code_padding = 0.into();
                                         md_style.inline_code_color = color_text(theme);
                                         col = col.push(
-                                            markdown::view(
-                                                md.items(),
-                                                markdown::Settings::with_text_size(14, md_style),
+                                            mouse_area(
+                                                markdown::view(
+                                                    md.items(),
+                                                    markdown::Settings::with_text_size(
+                                                        14, md_style,
+                                                    ),
+                                                )
+                                                .map(|_| Message::Noop),
                                             )
-                                            .map(|_| Message::Noop),
+                                            .on_double_click(Message::ToggleSelectableMode(Some(
+                                                i,
+                                            ))),
                                         );
                                     } else {
                                         col = col.push(
@@ -1163,14 +1199,15 @@ fn pane_center(_theme: &Theme) -> container::Style {
 /// plus copy-to-clipboard and resend action icons on the far right.
 fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
     let header = row![
-        SelectableText::new(prompt).size(14).style(|theme: &Theme| {
+        container(SelectableText::new(prompt).size(14).style(|theme: &Theme| {
             let p = theme.extended_palette();
             SelectionStyle {
                 color: Some(CRABOT_TEXT),
                 selection: p.primary.base.color,
             }
-        }),
-        Space::new().width(Length::Fill),
+        }),)
+        .width(Length::Fill)
+        .clip(true),
         button(text("▣").size(14))
             .on_press(Message::CopySession)
             .padding(4)
