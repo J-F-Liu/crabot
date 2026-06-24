@@ -1,6 +1,5 @@
 use chrono::DateTime;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 /// Get a Unix-style workspace path for system-prompt display.
@@ -23,40 +22,6 @@ pub fn get_unix_style_path(path: &Path) -> String {
 }
 
 // ── files tree builder ───────────────────────────────────────────────
-
-/// Directories skipped during workspace scan.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".hg",
-    ".svn",
-    "node_modules",
-    "target",
-    "build",
-    "dist",
-    "out",
-    "__pycache__",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    "venv",
-    ".env",
-    "env",
-    ".next",
-    ".nuxt",
-    ".output",
-    "coverage",
-    ".nyc_output",
-    ".cache",
-    ".parcel-cache",
-    ".turbo",
-    ".idea",
-    ".vscode",
-    ".vs",
-    "android",
-    "ios",
-    ".expo",
-];
 
 /// Max directory depth to scan (root = depth 0, its children = depth 1, …).
 const MAX_DEPTH: usize = 3;
@@ -127,54 +92,50 @@ pub fn build_files_tree(workspace: &Path) -> String {
     lines.join("\n")
 }
 
-/// Walk `root` up to `MAX_DEPTH`, skipping hidden files and noisy dirs.
+/// Walk `root` up to `MAX_DEPTH`, skipping entries filtered by
+/// standard ignore rules (hidden files, `.gitignore`, `.ignore`, etc.).
 /// Returns entries sorted by recency (newest first, then name).
 fn walk_entries(root: &Path) -> Vec<FlatEntry> {
     let mut entries: Vec<FlatEntry> = Vec::new();
-    // stack: (fs_path, rel_path, depth)
-    let mut stack: Vec<(std::path::PathBuf, String, usize)> = Vec::new();
-    stack.push((root.to_path_buf(), String::new(), 0));
 
-    while let Some((dir, rel, depth)) = stack.pop() {
-        if depth >= MAX_DEPTH {
+    let walker = ignore::WalkBuilder::new(root)
+        .standard_filters(true) // hidden files, .gitignore, .ignore, etc.
+        .max_depth(Some(MAX_DEPTH))
+        .build();
+
+    for result in walker {
+        let Ok(dent) = result else { continue };
+        // Skip the root itself (depth 0).
+        if dent.depth() == 0 {
             continue;
         }
-        let Ok(read) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for dent in read.flatten() {
-            let name = dent.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with('.') {
-                continue;
-            }
-            let Ok(meta) = dent.metadata() else { continue };
-            let is_dir = meta.is_dir();
-            let mtime = meta
+
+        let Some(ft) = dent.file_type() else { continue };
+        let is_dir = ft.is_dir();
+
+        let rel_path = dent
+            .path()
+            .strip_prefix(root)
+            .unwrap_or_else(|_| dent.path())
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let (mtime, size) = dent.metadata().map_or((0, 0), |m| {
+            let mtime = m
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            let size = meta.len();
-            let owned_name = name_str.into_owned();
-            let child_rel = if rel.is_empty() {
-                owned_name.clone()
-            } else {
-                format!("{}/{}", rel, owned_name)
-            };
+            (mtime, m.len())
+        });
 
-            entries.push(FlatEntry {
-                rel_path: child_rel.clone(),
-                is_dir,
-                mtime,
-                size,
-            });
-
-            if is_dir && !SKIP_DIRS.contains(&owned_name.as_str()) {
-                stack.push((dent.path(), child_rel, depth + 1));
-            }
-        }
+        entries.push(FlatEntry {
+            rel_path,
+            is_dir,
+            mtime,
+            size,
+        });
     }
 
     entries.sort_by(|a, b| {
