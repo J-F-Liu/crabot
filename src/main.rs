@@ -1,3 +1,7 @@
+// Hide the console window in release builds. Debug builds keep the console
+// for `println!`/`eprintln!` output during development.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod adk;
 mod chat;
 mod model;
@@ -31,6 +35,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chat::{DisplayMessage, MessageContent, TextContent, ToolResult};
@@ -48,7 +53,7 @@ fn crabot_title() {
                 .strip_prefix("version = \"")
                 .and_then(|rest| rest.strip_suffix('"'))
         })
-        .unwrap_or("unknown");
+        .unwrap_or("0.0");
     let title = format!("\"Crabot v{}\"", version);
     crabtime::output! {
         {{title}}
@@ -64,15 +69,26 @@ use tools::DevTool;
 use user::{UserPrompt, WorkMode, user_prompt_view};
 
 pub fn main() -> iced::Result {
+    let saved = settings::Settings::load();
+    let size = Size::new(
+        saved.window_size.0.max(MIN_W),
+        saved.window_size.1.max(200.0),
+    );
+    let position =
+        iced::window::Position::Specific(Point::new(saved.window_pos.0, saved.window_pos.1));
+    SAVED_SETTINGS.set(saved).ok();
     iced::application(App::boot, App::update, App::view)
         .subscription(App::subscription)
         .theme(|state: &App| state.theme.clone())
-        .window_size(Size::new(1200.0, 800.0))
+        .window_size(size)
+        .position(position)
         .title(crabot_title!())
         .antialiasing(true)
         .exit_on_close_request(false)
         .run()
 }
+
+static SAVED_SETTINGS: OnceLock<settings::Settings> = OnceLock::new();
 
 // ── constants ─────────────────────────────────────────────────────
 
@@ -128,7 +144,8 @@ struct Drag {
 struct App {
     left_w: f32,
     right_w: f32,
-    window_w: f32,
+    window_size: Size,
+    window_pos: Point,
     cursor: Point,
     dragging: Option<Drag>,
     providers: Vec<Provider>,
@@ -181,7 +198,8 @@ pub enum Message {
     CursorMoved(Point),
     LeftPressed,
     LeftReleased,
-    WindowResized(f32),
+    WindowResized(Size),
+    WindowMoved(Point),
     SelectProvider(String),
     SelectModel(String),
     ToggleThinking(bool),
@@ -228,7 +246,9 @@ impl App {
         let providers = model::try_load_models_from_omp()
             .or_else(|_| model::try_load_models_from_pi())
             .unwrap_or_default();
-        let saved = settings::Settings::load();
+        let saved = SAVED_SETTINGS
+            .get()
+            .expect("settings must be loaded in main before boot");
 
         let dev_tools: IndexMap<DevTool, bool> = saved
             .dev_tools
@@ -265,18 +285,19 @@ impl App {
         let app = Self {
             left_w: saved.left_w,
             right_w: saved.right_w,
-            window_w: saved.window_w,
+            window_size: Size::new(saved.window_size.0, saved.window_size.1),
+            window_pos: Point::new(saved.window_pos.0, saved.window_pos.1),
             cursor: Point::ORIGIN,
             dragging: None,
             providers,
             preamble_options,
             system_prompt,
             theme,
-            selected_model: saved.selected_model,
+            selected_model: saved.selected_model.clone(),
             rules_expanded: saved.rules_expanded,
             tools_expanded: saved.tools_expanded,
             files_expanded: saved.files_expanded,
-            selected_preamble: saved.selected_preamble,
+            selected_preamble: saved.selected_preamble.clone(),
             workspace_options: system::build_workspace_options(&saved.recent_workspaces),
             rules_content: text_editor::Content::with_text(&saved.rules_text),
             files_content: text_editor::Content::with_text(&saved.files_text),
@@ -310,18 +331,20 @@ impl App {
                 let gutter = 2.0 * HANDLE;
                 match drag.which {
                     Divider::Left => {
-                        let max = (self.window_w - self.right_w - gutter - MIN_W).max(MIN_W);
+                        let max =
+                            (self.window_size.width - self.right_w - gutter - MIN_W).max(MIN_W);
                         self.left_w = (drag.left_start + delta).clamp(MIN_W, max);
                     }
                     Divider::Right => {
-                        let max = (self.window_w - self.left_w - gutter - MIN_W).max(MIN_W);
+                        let max =
+                            (self.window_size.width - self.left_w - gutter - MIN_W).max(MIN_W);
                         self.right_w = (drag.right_start - delta).clamp(MIN_W, max);
                     }
                 }
             }
             Message::LeftPressed => {
                 let left_x = self.left_w;
-                let right_x = self.window_w - self.right_w - HANDLE;
+                let right_x = self.window_size.width - self.right_w - HANDLE;
 
                 let which = if self.cursor.x >= left_x && self.cursor.x <= left_x + HANDLE {
                     Some(Divider::Left)
@@ -343,8 +366,14 @@ impl App {
             Message::LeftReleased => {
                 self.dragging = None;
             }
-            Message::WindowResized(w) => {
-                self.window_w = w;
+            Message::WindowResized(size) => {
+                // Ignore zero-size events (e.g. window minimized on Windows).
+                if size.width > 0.0 && size.height > 0.0 {
+                    self.window_size = size;
+                }
+            }
+            Message::WindowMoved(pos) => {
+                self.window_pos = pos;
             }
             Message::SelectProvider(id) => {
                 self.selected_model = self.providers.iter().find(|p| p.id == id).and_then(|p| {
@@ -768,7 +797,8 @@ impl App {
         let settings = settings::Settings {
             left_w: self.left_w,
             right_w: self.right_w,
-            window_w: self.window_w,
+            window_size: (self.window_size.width, self.window_size.height),
+            window_pos: (self.window_pos.x, self.window_pos.y),
             selected_model: self.selected_model.clone(),
             system_prompt: self.system_prompt.clone(),
             rules_expanded: self.rules_expanded,
@@ -864,9 +894,8 @@ impl App {
                 Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                     Some(Message::LeftReleased)
                 }
-                Event::Window(window::Event::Resized(size)) => {
-                    Some(Message::WindowResized(size.width))
-                }
+                Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size)),
+                Event::Window(window::Event::Moved(pos)) => Some(Message::WindowMoved(pos)),
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..

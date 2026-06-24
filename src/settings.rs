@@ -10,7 +10,8 @@ use crate::user::WorkMode;
 pub struct Settings {
     pub left_w: f32,
     pub right_w: f32,
-    pub window_w: f32,
+    pub window_size: (f32, f32),
+    pub window_pos: (f32, f32),
     pub selected_model: Option<ModelConfig>,
     pub system_prompt: SystemPrompt,
     pub rules_expanded: bool,
@@ -38,7 +39,8 @@ impl Default for Settings {
         Self {
             left_w: 300.0,
             right_w: 280.0,
-            window_w: 1200.0,
+            window_size: (1200.0, 800.0),
+            window_pos: (0.0, 0.0),
             selected_model: None,
             system_prompt: SystemPrompt {
                 preamble: (true, String::new()),
