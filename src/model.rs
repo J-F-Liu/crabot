@@ -81,7 +81,7 @@ impl Cost {
     /// Calculate cost breakdown from token usage.
     /// Prices are per million tokens; token counts are raw integers.
     pub fn calculate(&self, tokens: &TokenAmount) -> f64 {
-        let input_cost = tokens.input as f64 / 1_000_000.0 * self.input;
+        let input_cost = (tokens.input - tokens.cached).max(0) as f64 / 1_000_000.0 * self.input;
         let cached_cost = tokens.cached as f64 / 1_000_000.0 * self.cache_read;
         let output_cost = tokens.output as f64 / 1_000_000.0 * self.output;
         input_cost + cached_cost + output_cost
@@ -106,7 +106,7 @@ impl TokenAmount {
             .unwrap_or(0);
         let prompt = usage.prompt_tokens.unwrap_or(0);
         Self {
-            input: (prompt - cached).max(0),
+            input: prompt, // total input (cached + uncached)
             cached,
             output: usage.completion_tokens.unwrap_or(0),
         }
