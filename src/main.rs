@@ -194,6 +194,9 @@ struct App {
     /// Whether the Shift key is currently held. Used to distinguish Enter
     /// (send prompt) from Shift+Enter (insert newline) in the text editor.
     shift_held: bool,
+    /// Files modified during this session (insertion order, deduplicated).
+    /// Mirrors `session.modified_files` for convenient UI access.
+    modified_files: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +325,7 @@ impl App {
             auto_scroll: Arc::new(AtomicBool::new(true)),
             selectable_msgs: HashSet::new(),
             shift_held: false,
+            modified_files: Vec::new(),
         };
         (app, Task::none())
     }
@@ -495,6 +499,7 @@ impl App {
                 self.current_prompt = "New session".into();
                 self.last_usage = genai::chat::Usage::default();
                 self.token_amount = model::TokenAmount::default();
+                self.modified_files.clear();
             }
             Message::ToggleToolExpand(idx) => {
                 if self.expanded_tools.contains(&idx) {
@@ -610,6 +615,14 @@ impl App {
                 return self.maybe_scroll_to_end();
             }
             Message::StreamToolResult(tr) => {
+                // Track files modified by write / edit tools.
+                if tr.result.is_ok()
+                    && (tr.name == "write" || tr.name == "edit")
+                    && let Some(path_str) = tr.args.get("path").and_then(|v| v.as_str())
+                    && !self.modified_files.iter().any(|p| p == path_str)
+                {
+                    self.modified_files.push(path_str.to_string());
+                }
                 self.session.push(DisplayMessage::from_tool_result(tr));
                 return self.maybe_scroll_to_end();
             }
@@ -885,11 +898,11 @@ impl App {
             ),
             divider(),
             right_pane(
-                Length::Fixed(self.right_w),
-                pane_side,
+                self.right_w,
                 &self.last_usage,
                 &self.token_amount,
                 self.selected_model().map(|(_, m)| m),
+                &self.modified_files,
                 self.show_restart,
             ),
         ]
@@ -1163,11 +1176,11 @@ fn format_cost(amount: f64) -> String {
 }
 
 fn right_pane<'a>(
-    width: impl Into<Length>,
-    style: fn(&Theme) -> container::Style,
+    pane_width: f32,
     usage: &genai::chat::Usage,
     amount: &model::TokenAmount,
     model: Option<&model::Model>,
+    modified_files: &'a [String],
     show_restart: bool,
 ) -> Element<'a, Message> {
     let mut col = column![].spacing(8);
@@ -1209,6 +1222,26 @@ fn right_pane<'a>(
             .push(token_row("Total cost:", format_cost(total_cost)));
     }
 
+    // ── modified files ──
+    if !modified_files.is_empty() {
+        let files: Vec<Element<'_, Message>> = modified_files
+            .iter()
+            .map(|p| {
+                container(SelectableText::new(p.as_str()).size(12).style(sel_primary))
+                    .padding([1, 0])
+                    .into()
+            })
+            .collect();
+        let files_col = column(files).spacing(2);
+        col = col
+            .push(rule::horizontal(1))
+            .push(text("Modified Files").size(14).font(Font {
+                weight: font::Weight::Bold,
+                ..Font::DEFAULT
+            }))
+            .push(files_col);
+    }
+
     if show_restart {
         col = col.push(Space::new().height(Fill)).push(
             container(
@@ -1222,10 +1255,10 @@ fn right_pane<'a>(
         );
     }
 
-    container(col.padding(20))
-        .width(width)
+    container(scrollable(container(col.padding(20))))
+        .width(Length::Fixed(pane_width))
         .height(Fill)
-        .style(style)
+        .style(pane_side)
         .into()
 }
 
