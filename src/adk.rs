@@ -190,34 +190,54 @@ pub async fn send_stream(
             break;
         }
 
-        // Execute each tool call and record results.
-        // Unknown tools are reported back to the LLM as an error result
-        // rather than aborting the loop, giving the model a chance to recover.
+        // Signal tool execution state to the UI *before* we start
+        // executing so the status bar updates even when tools run
+        // synchronously on a worker thread.
         on_event(crate::Message::StreamStateChange(
             StreamState::ToolExecuting,
         ))
         .await;
 
-        let mut tool_responses: Vec<ToolResponse> = Vec::new();
-        for tc in &tool_calls {
+        // Yield once so the iced event loop can pick up the state change
+        // and re-render before we proceed to tool execution.
+        tokio::task::yield_now().await;
+
+        // Execute each tool call and record results.
+        // Unknown tools are reported back to the LLM as an error result
+        // rather than aborting the loop, giving the model a chance to recover.
+        let mut tool_responses: Vec<ToolResponse> = Vec::with_capacity(tool_calls.len());
+        for tc in tool_calls {
+            // Resolve the tool on this thread so we don't have to clone the
+            // name into the blocking closure. Unknown tools short-circuit to
+            // an error result without spawning a task.
             let result = match DevTool::from_name(&tc.fn_name) {
-                Some(tool) => tool.execute(&tc.fn_arguments, &workspace),
+                Some(tool) => {
+                    // Run tool execution on a blocking thread so the async
+                    // task yields while the tool runs – this keeps the iced
+                    // UI responsive and lets the "Tool executing…" status be
+                    // painted.
+                    let fn_args = tc.fn_arguments.clone();
+                    let workspace = workspace.clone();
+                    tokio::task::spawn_blocking(move || tool.execute(&fn_args, &workspace))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
+                }
                 None => Err(format!("Unknown tool: {}", tc.fn_name)),
             };
 
             // Flatten for genai's ToolResponse (genai expects plain String).
             let result_flat = result.clone().unwrap_or_else(|e| e);
-            tool_responses.push(ToolResponse::from_tool_call(tc, result_flat));
+            tool_responses.push(ToolResponse::from_tool_call(&tc, result_flat));
 
             let tr = crate::chat::ToolResult {
-                name: tc.fn_name.clone(),
-                call_id: Some(tc.call_id.clone()),
-                args: tc.fn_arguments.clone(),
+                name: tc.fn_name,
+                call_id: Some(tc.call_id),
+                args: tc.fn_arguments,
                 result,
             };
             if !on_event(crate::Message::StreamToolResult(tr)).await {
-                genai_messages.push(ChatMessage::from(tool_responses.clone()));
-                on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
+                genai_messages.push(ChatMessage::from(tool_responses));
+                on_event(crate::Message::StreamCancelled(genai_messages)).await;
                 return;
             }
         }
