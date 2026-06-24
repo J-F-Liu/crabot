@@ -191,6 +191,9 @@ struct App {
     /// Indices of messages displayed as selectable plain text (double-click
     /// a single message to toggle; ESC clears all).
     selectable_msgs: HashSet<usize>,
+    /// Whether the Shift key is currently held. Used to distinguish Enter
+    /// (send prompt) from Shift+Enter (insert newline) in the text editor.
+    shift_held: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +240,8 @@ pub enum Message {
     /// Toggle a single message between Markdown and selectable plain-text.
     /// `Some(i)` toggles message `i`; `None` clears all (ESC).
     ToggleSelectableMode(Option<usize>),
+    /// Track whether the Shift key is currently held.
+    ShiftHeld(bool),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -316,6 +321,7 @@ impl App {
             cancel_token: Arc::new(AtomicBool::new(false)),
             auto_scroll: Arc::new(AtomicBool::new(true)),
             selectable_msgs: HashSet::new(),
+            shift_held: false,
         };
         (app, Task::none())
     }
@@ -472,6 +478,12 @@ impl App {
             }
             Message::PreambleFileResult(Err(_)) => {}
             Message::EditUserPrompt(action) => {
+                // Enter without Shift sends the prompt; Shift+Enter inserts a newline.
+                if matches!(action, text_editor::Action::Edit(text_editor::Edit::Enter))
+                    && !self.shift_held
+                {
+                    return Task::done(Message::SendPrompt);
+                }
                 self.user_prompt.perform(action);
             }
             Message::SelectWorkMode(mode) => {
@@ -657,6 +669,9 @@ impl App {
                 return iced::exit();
             }
             Message::Noop => {}
+            Message::ShiftHeld(held) => {
+                self.shift_held = held;
+            }
             Message::ToggleSelectableMode(msg_index) => match msg_index {
                 Some(i) => {
                     if self.selectable_msgs.contains(&i) {
@@ -900,6 +915,14 @@ impl App {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::ToggleSelectableMode(None)),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Shift),
+                    ..
+                }) => Some(Message::ShiftHeld(true)),
+                Event::Keyboard(keyboard::Event::KeyReleased {
+                    key: keyboard::Key::Named(keyboard::key::Named::Shift),
+                    ..
+                }) => Some(Message::ShiftHeld(false)),
                 _ => None,
             }),
             window::close_requests().map(|_id| Message::AppClosing),
