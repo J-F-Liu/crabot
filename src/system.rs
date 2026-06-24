@@ -1,14 +1,21 @@
 use iced::{
     Alignment, Element, Fill, Length, Padding,
     widget::{
-        checkbox, column, container, mouse_area, pick_list, row, scrollable, text, text_editor,
-        text_input,
+        Space, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
+        text_editor, text_input,
     },
 };
 
 use crate::Message;
 
 use std::path::PathBuf;
+
+pub const PREAMBLE: &str = "Preamble";
+pub const RULES: &str = "Rules";
+pub const TOOLS: &str = "Tools";
+pub const WORKSPACE: &str = "Workspace";
+pub const WORKSPACE_TREE: &str = "Workspace tree";
+pub const DATE: &str = "Date";
 
 #[derive(Debug, Clone)]
 pub struct FilepathEntry {
@@ -41,11 +48,11 @@ pub struct SystemPrompt {
 impl SystemPrompt {
     pub fn get_mut(&mut self, name: &str) -> Option<&mut (bool, String)> {
         match name {
-            "Preamble" => Some(&mut self.preamble),
-            "Rules" => Some(&mut self.rules),
-            "Tools" => Some(&mut self.tools),
-            "Files" => Some(&mut self.files),
-            "Date" => Some(&mut self.date),
+            PREAMBLE => Some(&mut self.preamble),
+            RULES => Some(&mut self.rules),
+            TOOLS => Some(&mut self.tools),
+            WORKSPACE_TREE => Some(&mut self.files),
+            DATE => Some(&mut self.date),
             _ => None,
         }
     }
@@ -101,12 +108,13 @@ fn expandable_header<'a>(
     checked: bool,
     expanded: bool,
 ) -> Element<'a, Message> {
-    let arrow = if expanded { "▼" } else { "▶" };
+    let arrow = if expanded { "▼" } else { "⯈" };
     row![
         checkbox(checked)
             .label(name)
             .style(crate::primary_checkbox)
             .on_toggle(move |v| Message::ToggleEnabled(name, v)),
+        Space::new().width(Length::Fill),
         mouse_area(text(arrow).size(12).width(16)).on_press(Message::ToggleExpanded(name)),
     ]
     .spacing(4)
@@ -120,7 +128,7 @@ pub fn preamble_field_view<'a>(
     selected_display: &'a str,
 ) -> Element<'a, Message> {
     let checked = field.0;
-    let name = "Preamble";
+    let name = PREAMBLE;
     let selected = if selected_display.is_empty() {
         None
     } else {
@@ -147,7 +155,7 @@ pub fn rules_field_view<'a>(
     field: &'a (bool, String),
     content: &'a text_editor::Content,
 ) -> Element<'a, Message> {
-    let name = "Rules";
+    let name = RULES;
     let header = expandable_header(name, field.0, expanded);
 
     if expanded {
@@ -171,7 +179,7 @@ pub fn tools_field_view<'a>(
     field: &'a (bool, String),
     content: &'a text_editor::Content,
 ) -> Element<'a, Message> {
-    let name = "Tools";
+    let name = TOOLS;
     let header = expandable_header(name, field.0, expanded);
 
     if expanded {
@@ -195,7 +203,7 @@ pub fn workspace_field_view<'a>(
     options: &'a [FilepathEntry],
 ) -> Element<'a, Message> {
     let checked = field.0;
-    let name = "Workspace";
+    let name = WORKSPACE;
     let selected = if field.1.as_os_str().is_empty() {
         None
     } else {
@@ -219,7 +227,7 @@ pub fn files_field_view<'a>(
     field: &'a (bool, String),
     content: &'a text_editor::Content,
 ) -> Element<'a, Message> {
-    let name = "Files";
+    let name = WORKSPACE_TREE;
     let header = expandable_header(name, field.0, expanded);
 
     use iced::widget::scrollable::Direction;
@@ -256,7 +264,7 @@ pub fn files_field_view<'a>(
 
 pub fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
     let checked = field.0;
-    let name = "Date";
+    let name = DATE;
 
     row![
         checkbox(checked)

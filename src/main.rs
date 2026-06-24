@@ -63,7 +63,7 @@ fn crabot_title() {
 use genai::chat::{ChatMessage, ChatRole};
 use model::{Model, ModelConfig, Provider, model_config_view};
 use session::Session;
-use system::{FilepathEntry, SystemPrompt};
+use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use tool::dev_tools_view;
 use tools::DevTool;
 use user::{UserPrompt, WorkMode, user_prompt_view};
@@ -410,7 +410,7 @@ impl App {
                 }
             }
             Message::ToggleEnabled(name, enabled) => {
-                if name == "Workspace" {
+                if name == WORKSPACE {
                     self.system_prompt.workspace.0 = enabled;
                 } else if let Some(field) = self.system_prompt.get_mut(name) {
                     field.0 = enabled;
@@ -425,9 +425,9 @@ impl App {
                 }
             }
             Message::ToggleExpanded(name) => match name {
-                "Rules" => self.rules_expanded = !self.rules_expanded,
-                "Tools" => self.tools_expanded = !self.tools_expanded,
-                "Files" => self.files_expanded = !self.files_expanded,
+                RULES => self.rules_expanded = !self.rules_expanded,
+                TOOLS => self.tools_expanded = !self.tools_expanded,
+                WORKSPACE_TREE => self.files_expanded = !self.files_expanded,
                 _ => {}
             },
             Message::EditTextField(name, value) => {
@@ -826,9 +826,9 @@ impl App {
 
     fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
         match name {
-            "Rules" => Some(&mut self.rules_content),
-            "Tools" => Some(&mut self.tools_content),
-            "Files" => Some(&mut self.files_content),
+            RULES => Some(&mut self.rules_content),
+            TOOLS => Some(&mut self.tools_content),
+            WORKSPACE_TREE => Some(&mut self.files_content),
             _ => None,
         }
     }
@@ -964,12 +964,12 @@ fn left_pane(app: &App) -> Element<'_, Message> {
         session::session_view(app.streaming),
         label("User Prompt", 140.0),
         user_prompt_view(&app.user_prompt, app.workmode),
-        label("Dev Tools", 140.0),
-        dev_tools_view(&app.dev_tools),
+        container(column![label("Tools", 140.0), dev_tools_view(&app.dev_tools)].spacing(4))
+            .padding(iced::padding::top(6.0))
     ]
     .spacing(8);
 
-    container(col.padding(15))
+    container(scrollable(col.padding(15)))
         .width(Length::Fixed(app.left_w))
         .height(Fill)
         .style(pane_side)
