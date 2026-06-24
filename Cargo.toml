@@ -25,3 +25,4 @@ glob = "0.3.3"
 
 ignore = "0.4.26"
 crabtime = "1.1.4"
+dunce = "1"
