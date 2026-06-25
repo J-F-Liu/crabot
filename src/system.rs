@@ -6,7 +6,9 @@ use iced::{
     },
 };
 
+use crate::FocusedTarget;
 use crate::Message;
+use crate::widgets::textarea::TextArea;
 
 use std::path::PathBuf;
 
@@ -153,17 +155,16 @@ pub fn preamble_field_view<'a>(
 pub fn rules_field_view<'a>(
     expanded: bool,
     field: &'a (bool, String),
-    content: &'a text_editor::Content,
+    content: &'a TextArea,
 ) -> Element<'a, Message> {
-    let name = RULES;
-    let header = expandable_header(name, field.0, expanded);
+    let header = expandable_header(RULES, field.0, expanded);
 
     if expanded {
         column![
             header,
             scrollable(
-                text_editor(content)
-                    .on_action(move |a| Message::EditTextContent(name, a))
+                content
+                    .view(|msg| Message::EditTextArea(FocusedTarget::EditText(RULES), msg))
                     .height(Length::Fixed(120.0)),
             ),
         ]

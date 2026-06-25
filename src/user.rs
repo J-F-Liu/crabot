@@ -1,10 +1,12 @@
 use iced::{
     Alignment, Element, Length,
-    widget::{button, column, pick_list, row, text, text_editor},
+    widget::{button, column, pick_list, row, text},
 };
 use std::fmt;
 
+use crate::FocusedTarget;
 use crate::Message;
+use crate::widgets::textarea::TextArea;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkMode {
@@ -41,14 +43,11 @@ impl UserPrompt {
     }
 }
 
-pub fn user_prompt_view<'a>(
-    user_prompt: &'a text_editor::Content,
-    workmode: WorkMode,
-) -> Element<'a, Message> {
+pub fn user_prompt_view<'a>(user_prompt: &'a TextArea, workmode: WorkMode) -> Element<'a, Message> {
     column![
-        text_editor(user_prompt)
-            .height(120)
-            .on_action(Message::EditUserPrompt),
+        user_prompt
+            .view(|msg| Message::EditTextArea(FocusedTarget::UserPrompt, msg))
+            .height(120),
         row![
             pick_list(
                 &[WorkMode::Plan, WorkMode::Code, WorkMode::Review][..],

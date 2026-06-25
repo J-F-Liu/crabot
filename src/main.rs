@@ -11,6 +11,7 @@ mod system;
 mod tool;
 mod tools;
 mod user;
+mod widgets;
 mod workspace;
 
 use adk::StreamState;
@@ -67,6 +68,7 @@ use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TRE
 use tool::dev_tools_view;
 use tools::DevTool;
 use user::{UserPrompt, WorkMode, user_prompt_view};
+use widgets::textarea::{self, TextArea};
 
 pub fn main() -> iced::Result {
     let saved = settings::Settings::load();
@@ -141,6 +143,19 @@ struct Drag {
 
 // ── App ───────────────────────────────────────────────────────────
 
+/// Which widget currently holds keyboard focus.
+///
+/// Stored as a single `Option` on `App` so that setting focus on one widget
+/// implicitly clears focus on all others — no manual `set_focused(false)`
+/// calls are needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusedTarget {
+    /// The user prompt text area.
+    UserPrompt,
+    /// A system-prompt text editor identified by its field name.
+    EditText(&'static str),
+}
+
 struct App {
     left_w: f32,
     right_w: f32,
@@ -159,11 +174,11 @@ struct App {
     preamble_options: Vec<FilepathEntry>,
     workspace_options: Vec<FilepathEntry>,
     // user-editable Content need to persist between view calls to maintain editor state
-    rules_content: text_editor::Content,
+    rules_content: TextArea,
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
     dev_tools: IndexMap<DevTool, bool>,
-    user_prompt: text_editor::Content,
+    user_prompt: TextArea,
     workmode: WorkMode,
     session: Session,
     /// Current phase of the LLM interaction lifecycle.
@@ -194,6 +209,9 @@ struct App {
     /// Whether the Shift key is currently held. Used to distinguish Enter
     /// (send prompt) from Shift+Enter (insert newline) in the text editor.
     shift_held: bool,
+    /// Which widget currently holds keyboard focus; `None` when no editable
+    /// widget is focused. Setting this implicitly clears focus on all others.
+    focused: Option<FocusedTarget>,
     /// Files modified during this session (insertion order, deduplicated).
     /// Mirrors `session.modified_files` for convenient UI access.
     modified_files: Vec<String>,
@@ -219,7 +237,13 @@ pub enum Message {
     SelectPreamble(FilepathEntry),
     PreambleFileResult(Result<String, String>),
     ToggleDevTool(String, bool),
-    EditUserPrompt(text_editor::Action),
+    /// An edit action targeting a specific [`TextArea`]. The [`FocusedTarget`]
+    /// identifies which text area (rules or user prompt) should receive the
+    /// action — a click sets focus, subsequent edits are gated on that focus.
+    EditTextArea(FocusedTarget, textarea::Message),
+    /// Global undo/redo shortcut (Ctrl+Z / Ctrl+Y). Routed to whichever
+    /// [`TextArea`] currently holds keyboard focus.
+    UndoRedo(textarea::Message),
     SelectWorkMode(WorkMode),
     NewSession,
     SendPrompt,
@@ -307,11 +331,11 @@ impl App {
             files_expanded: saved.files_expanded,
             selected_preamble: saved.selected_preamble.clone(),
             workspace_options: system::build_workspace_options(&saved.recent_workspaces),
-            rules_content: text_editor::Content::with_text(&saved.rules_text),
+            rules_content: TextArea::with_text(&saved.rules_text),
             files_content: text_editor::Content::with_text(&saved.files_text),
             tools_content: text_editor::Content::with_text(&saved.tools_text),
             dev_tools,
-            user_prompt: text_editor::Content::new(),
+            user_prompt: TextArea::new(),
             workmode: saved.workmode,
             session: Session::new(model_for_session, workspace_for_session),
             streaming: StreamState::Idle,
@@ -325,6 +349,7 @@ impl App {
             auto_scroll: Arc::new(AtomicBool::new(true)),
             selectable_msgs: HashSet::new(),
             shift_held: false,
+            focused: None,
             modified_files: Vec::new(),
         };
         (app, Task::none())
@@ -446,6 +471,11 @@ impl App {
                 }
             }
             Message::EditTextContent(name, action) => {
+                // A click on this text editor claims focus (implicitly clearing
+                // focus on the prompt editor and all others).
+                if matches!(action, text_editor::Action::Click(_)) {
+                    self.focused = Some(FocusedTarget::EditText(name));
+                }
                 let text = if let Some(content) = self.content_mut(name) {
                     content.perform(action);
                     content.text()
@@ -454,6 +484,42 @@ impl App {
                 };
                 if let Some(field) = self.system_prompt.get_mut(name) {
                     field.1 = text;
+                }
+            }
+            Message::EditTextArea(target, msg) => {
+                // A click claims keyboard focus for this text area.
+                if msg.is_click() {
+                    self.focused = Some(target);
+                } else if self.focused != Some(target) {
+                    return Task::none();
+                }
+                match target {
+                    FocusedTarget::UserPrompt => {
+                        // Enter without Shift sends the prompt; Shift+Enter inserts
+                        // a newline.
+                        if msg.is_enter() && !self.shift_held {
+                            return Task::done(Message::SendPrompt);
+                        }
+                        self.user_prompt.update(msg, self.shift_held);
+                    }
+                    FocusedTarget::EditText(RULES) => {
+                        self.rules_content.update(msg, self.shift_held);
+                        self.system_prompt.rules.1 = self.rules_content.text();
+                    }
+                    _ => {}
+                }
+            }
+            Message::UndoRedo(msg) => {
+                // Global Ctrl+Z/Y — route to whichever TextArea holds focus.
+                match self.focused {
+                    Some(FocusedTarget::UserPrompt) => {
+                        self.user_prompt.update(msg, self.shift_held);
+                    }
+                    Some(FocusedTarget::EditText(RULES)) => {
+                        self.rules_content.update(msg, self.shift_held);
+                        self.system_prompt.rules.1 = self.rules_content.text();
+                    }
+                    _ => {}
                 }
             }
             Message::SelectWorkspace(entry) => {
@@ -481,28 +547,6 @@ impl App {
                 self.system_prompt.preamble.1 = content;
             }
             Message::PreambleFileResult(Err(_)) => {}
-            Message::EditUserPrompt(action) => {
-                // Enter without Shift sends the prompt; Shift+Enter inserts a newline.
-                if matches!(action, text_editor::Action::Edit(text_editor::Edit::Enter))
-                    && !self.shift_held
-                {
-                    return Task::done(Message::SendPrompt);
-                }
-                // Shift+Click extends the selection from the previous cursor position.
-                if self.shift_held
-                    && let text_editor::Action::Click(_) = &action
-                {
-                    let anchor = self.user_prompt.cursor().position;
-                    self.user_prompt.perform(action);
-                    let cursor = self.user_prompt.cursor();
-                    self.user_prompt.move_to(text_editor::Cursor {
-                        position: cursor.position,
-                        selection: Some(anchor),
-                    });
-                    return Task::none();
-                }
-                self.user_prompt.perform(action);
-            }
             Message::SelectWorkMode(mode) => {
                 self.workmode = mode;
             }
@@ -550,7 +594,8 @@ impl App {
                 let workspace = self.system_prompt.workspace.1.clone();
                 let history = self.session.history.clone();
 
-                self.user_prompt = text_editor::Content::new();
+                self.user_prompt = TextArea::new();
+                self.focused = None;
                 self.stream_start_index = self.session.messages.len();
                 self.streaming = StreamState::LlmLoading;
 
@@ -657,7 +702,8 @@ impl App {
             }
             Message::ResendLastPrompt => {
                 if self.current_prompt != "New session" {
-                    self.user_prompt = text_editor::Content::with_text(&self.current_prompt);
+                    self.user_prompt = TextArea::with_text(&self.current_prompt);
+                    self.focused = None;
                     return Task::done(Message::SendPrompt);
                 }
             }
@@ -867,7 +913,6 @@ impl App {
 
     fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
         match name {
-            RULES => Some(&mut self.rules_content),
             TOOLS => Some(&mut self.tools_content),
             WORKSPACE_TREE => Some(&mut self.files_content),
             _ => None,
@@ -941,6 +986,19 @@ impl App {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..
                 }) => Some(Message::ToggleSelectableMode(None)),
+                Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
+                    if modifiers.command() =>
+                {
+                    match &key {
+                        keyboard::Key::Character(s) if s.as_str() == "z" => {
+                            Some(Message::UndoRedo(textarea::Message::Undo))
+                        }
+                        keyboard::Key::Character(s) if s.as_str() == "y" => {
+                            Some(Message::UndoRedo(textarea::Message::Redo))
+                        }
+                        _ => None,
+                    }
+                }
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::Shift),
                     ..
