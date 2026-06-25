@@ -3,7 +3,11 @@ use std::io::{BufRead, BufReader};
 
 use serde_json::{Value, json};
 
-use super::{arg_str, arg_u64, resolve_path};
+use super::{arg_str, arg_u64, make_workspace_relative, resolve_path};
+
+pub(super) fn instruction() -> &'static str {
+    "When reading files, prefer larger, context-rich reads over multiple small consecutive reads. Large files may be truncated with a marker such as \"[213 more lines in file. Use offset=2000 to continue.]\". You can use the `read` tool to load additional content if needed. Never pass the truncation marker to an edit tool. You don't need to read a file if it's already provided in context."
+}
 
 pub(super) fn description() -> &'static str {
     "Read a file from the filesystem with line-numbered output. Supports offset and line-limit pagination."
@@ -62,6 +66,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
     let path = arg_str(args, "path").ok_or("Missing 'path' argument")?;
     let file_path = resolve_path(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
+    let display_path = make_workspace_relative(&file_path, workspace);
 
     // offset is 1-based; default to 1 (first line)
     let offset = arg_u64(args, "offset").map(|v| v as usize).unwrap_or(1);
@@ -72,10 +77,10 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
     }
 
     // Pre-check: existence and file-vs-directory give clearer errors.
-    check_readable(&file_path)?;
+    check_readable(&file_path, &display_path)?;
 
     let file = std::fs::File::open(&file_path)
-        .map_err(|e| format!("Failed to open {}: {e}", file_path.display()))?;
+        .map_err(|e| format!("Failed to open {display_path}: {e}"))?;
     let mut reader = BufReader::with_capacity(64 * 1024, file);
 
     let start = offset - 1; // 0-based lines to skip
@@ -99,7 +104,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
                 ));
             }
             Ok(_) => lines_skipped += 1,
-            Err(e) => return Err(format!("Failed to read {}: {e}", file_path.display())),
+            Err(e) => return Err(format!("Failed to read {display_path}: {e}")),
         }
     }
 
@@ -140,7 +145,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
                     break;
                 }
             }
-            Err(e) => return Err(format!("Failed to read {}: {e}", file_path.display())),
+            Err(e) => return Err(format!("Failed to read {display_path}: {e}")),
         }
     }
 
@@ -166,9 +171,8 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         let line = next_line.as_deref().unwrap_or("");
         let approx_kb = (line.len() + 7) / 1024;
         return Ok(format!(
-            "[Line {offset} is ~{approx_kb}KB, exceeds {}KB limit. Use bash: sed -n '{offset}p' {}]\n",
+            "[Line {offset} is ~{approx_kb}KB, exceeds {}KB limit. Use bash: sed -n '{offset}p' {display_path}]\n",
             DEFAULT_MAX_BYTES / 1024,
-            file_path.display()
         ));
     }
 
@@ -190,9 +194,8 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         let approx_kb = (overflowing.len() + 7) / 1024;
         let _ = writeln!(
             &mut out,
-            "[Line {next_line_num} is ~{approx_kb}KB, exceeds {}KB limit. Use bash: sed -n '{next_line_num}p' {}]",
+            "[Line {next_line_num} is ~{approx_kb}KB, exceeds {}KB limit. Use bash: sed -n '{next_line_num}p' {display_path}]",
             DEFAULT_MAX_BYTES / 1024,
-            file_path.display()
         );
     }
 
@@ -223,22 +226,19 @@ enum LimitKind {
 }
 
 /// Verify the path exists and is a regular file before attempting to read it.
-fn check_readable(path: &std::path::Path) -> Result<(), String> {
+fn check_readable(path: &std::path::Path, display_path: &str) -> Result<(), String> {
     match std::fs::metadata(path) {
         Ok(meta) => {
             if meta.is_dir() {
-                return Err(format!(
-                    "Path is a directory, not a file: {}",
-                    path.display()
-                ));
+                return Err(format!("Path is a directory, not a file: {display_path}"));
             }
             Ok(())
         }
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                Err(format!("File not found: {}", path.display()))
+                Err(format!("File not found: {display_path}"))
             } else {
-                Err(format!("Cannot access {}: {e}", path.display()))
+                Err(format!("Cannot access {display_path}: {e}"))
             }
         }
     }

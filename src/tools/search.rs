@@ -2,6 +2,10 @@ use serde_json::{Value, json};
 
 use super::{arg_str, resolve_path};
 
+pub(super) fn instruction() -> &'static str {
+    "Search file contents using a regular expression. Returns matches in file:line:content format. Respects .gitignore rules. Use this tool to locate definitions, references, usages, or other patterns across the codebase before reading or editing specific files."
+}
+
 pub(super) fn description() -> &'static str {
     "Search for a regex pattern in file contents. Returns file:line:content matches. Respects .gitignore."
 }
@@ -37,8 +41,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
     let mut found = false;
 
     if search_path.is_file() {
-        let rel_path = search_path.strip_prefix(workspace).unwrap_or(&search_path);
-        let path_string = super::convert_path_to_unix_style(rel_path);
+        let path_string = super::make_workspace_relative(&search_path, workspace);
         let content = std::fs::read_to_string(&search_path)
             .map_err(|e| format!("Failed to read {}: {e}", &path_string))?;
         for (i, line) in content.lines().enumerate() {
@@ -67,8 +70,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let rel_path = file_path.strip_prefix(workspace).unwrap_or(file_path);
-            let path_string = super::convert_path_to_unix_style(rel_path);
+            let path_string = super::make_workspace_relative(file_path, workspace);
             for (i, line) in content.lines().enumerate() {
                 if re.is_match(line) {
                     let _ = std::fmt::Write::write_fmt(

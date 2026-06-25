@@ -2,6 +2,10 @@ use serde_json::{Value, json};
 
 use super::{arg_str, resolve_path};
 
+pub(super) fn instruction() -> &'static str {
+    "Find files matching a glob pattern (for example, *.rs or src/**/*.ts). Respects .gitignore rules and returns workspace-relative paths, one per line. Use this tool to discover file locations before attempting to read or modify files."
+}
+
 pub(super) fn description() -> &'static str {
     "Find files matching a glob pattern. Respects .gitignore and returns workspace-relative paths."
 }
@@ -32,7 +36,10 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         .unwrap_or_else(|| workspace.to_path_buf());
 
     if !search_path.exists() {
-        return Err(format!("Path does not exist: {}", search_path.display()));
+        return Err(format!(
+            "Path does not exist: {}",
+            super::make_workspace_relative(&search_path, workspace)
+        ));
     }
 
     let pattern =
@@ -49,10 +56,9 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
             continue;
         }
         let path = entry.path();
-        let relative = path.strip_prefix(workspace).unwrap_or(path);
-        let relative_str = relative.to_string_lossy().replace('\\', "/");
+        let relative_str = super::make_workspace_relative(path, workspace);
         if pattern.matches(&relative_str) {
-            results.push(super::convert_path_to_unix_style(relative));
+            results.push(relative_str);
         }
     }
 

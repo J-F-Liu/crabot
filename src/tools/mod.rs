@@ -1,5 +1,5 @@
 mod bash;
-mod edit;
+pub(crate) mod edit;
 mod find;
 mod read;
 mod search;
@@ -41,6 +41,11 @@ impl DevTool {
             Self::Search => "search",
             Self::Bash => "bash",
         }
+    }
+
+    /// Instruction text for composing the system prompt.
+    pub fn instruction(self) -> &'static str {
+        instruction(self)
     }
 
     pub fn description(self) -> &'static str {
@@ -102,6 +107,17 @@ fn schema(tool: DevTool) -> Value {
     }
 }
 
+fn instruction(tool: DevTool) -> &'static str {
+    match tool {
+        DevTool::Read => read::instruction(),
+        DevTool::Write => write::instruction(),
+        DevTool::Edit => edit::instruction(),
+        DevTool::Find => find::instruction(),
+        DevTool::Search => search::instruction(),
+        DevTool::Bash => bash::instruction(),
+    }
+}
+
 fn description(tool: DevTool) -> &'static str {
     match tool {
         DevTool::Read => read::description(),
@@ -121,6 +137,15 @@ pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 
 pub(crate) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(|v| v.as_u64())
+}
+
+/// Strip the workspace prefix and convert to Unix‑style display path.
+pub(crate) fn make_workspace_relative(
+    path: &std::path::Path,
+    workspace: &std::path::Path,
+) -> String {
+    let rel = path.strip_prefix(workspace).unwrap_or(path);
+    convert_path_to_unix_style(rel)
 }
 
 /// Convert a path to Unix‑style representation (reverse of `resolve_path`).
@@ -160,37 +185,89 @@ pub fn convert_path_to_unix_style(path: &std::path::Path) -> String {
     s.replace('\\', "/")
 }
 
+/// Build the (non‑canonicalized) target path for `path` relative to `workspace`.
+///
+/// Handles native absolute paths, Windows Unix‑style paths such as
+/// `/c/Users/...`, and workspace‑relative paths.
+fn candidate_path(path: &str, workspace: &std::path::Path) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+
+    // On Windows a path like "/c/Users/..." is Unix‑style absolute, but
+    // `Path::is_absolute()` returns false without a drive prefix.
+    #[cfg(windows)]
+    if let Some(native) = normalise_windows_unix_style(path) {
+        return native;
+    }
+
+    workspace.join(p)
+}
+
+/// On Windows, convert a Unix‑style path like `/c/Users/...` into a native
+/// `C:\Users\...` `PathBuf`. Returns `None` when `path` is not Unix‑style
+/// absolute (i.e. does not start with `/`).
+#[cfg(windows)]
+fn normalise_windows_unix_style(path: &str) -> Option<std::path::PathBuf> {
+    let stripped = path.strip_prefix('/')?;
+    let native = if let Some((drive, rest)) = stripped.split_once('/')
+        && drive.len() == 1
+        && drive.as_bytes()[0].is_ascii_alphabetic()
+    {
+        format!(
+            "{}:\\{}",
+            drive.to_ascii_uppercase(),
+            rest.replace('/', "\\")
+        )
+    } else {
+        path.replace('/', "\\")
+    };
+    Some(std::path::PathBuf::from(native))
+}
+
 pub(crate) fn resolve_path(
     path: &str,
     workspace: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {
-    let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        return dunce::canonicalize(p);
+    dunce::canonicalize(candidate_path(path, workspace))
+}
+
+/// Like [`resolve_path`] but does not require the final path to exist.
+///
+/// Canonicalizes the nearest existing ancestor, then appends the remaining
+/// (possibly non‑existent) tail components.
+pub(crate) fn resolve_path_partial(
+    path: &str,
+    workspace: &std::path::Path,
+) -> std::io::Result<std::path::PathBuf> {
+    let candidate = candidate_path(path, workspace);
+
+    // Walk up from the candidate until we find an existing ancestor, then
+    // re‑attach the missing tail components. The first iteration covers the
+    // common case where the full path already exists.
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut current = candidate.as_path();
+    loop {
+        if let Ok(canon) = dunce::canonicalize(current) {
+            let mut result = canon;
+            for seg in missing.iter().rev() {
+                result.push(seg);
+            }
+            return Ok(result);
+        }
+        match current.parent() {
+            Some(parent) => {
+                if let Some(name) = current.file_name() {
+                    missing.push(name);
+                }
+                current = parent;
+            }
+            // Reached the root without finding an existing ancestor — fall
+            // back to the un‑canonicalized candidate.
+            None => return Ok(candidate),
+        }
     }
-
-    // On Windows a path like "/c/Users/..." is Unix‑style absolute,
-    // but Path::is_absolute() returns false without a prefix.
-    #[cfg(windows)]
-    if let Some(stripped) = path.strip_prefix('/') {
-        // normalise slashes on Windows to create std::path::PathBuf.
-        let path_string = if let Some((drive, rest)) = stripped.split_once('/')
-            && drive.len() == 1
-            && drive.as_bytes()[0].is_ascii_alphabetic()
-        {
-            format!(
-                "{}:\\{}",
-                drive.to_ascii_uppercase(),
-                rest.replace('/', "\\")
-            )
-        } else {
-            path.replace('/', "\\")
-        };
-
-        return dunce::canonicalize(std::path::PathBuf::from(path_string));
-    }
-
-    dunce::canonicalize(workspace.join(p))
 }
 
 // ── output truncation ──────────────────────────────────────────────

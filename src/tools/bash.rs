@@ -7,6 +7,10 @@ use super::arg_str;
 /// Maximum seconds a bash command is allowed to run before being killed.
 const BASH_TIMEOUT_SECONDS: u64 = 120;
 
+pub(super) fn instruction() -> &'static str {
+    "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files. Dedicated tools are available for those operations."
+}
+
 pub(super) fn description() -> &'static str {
     "Execute a shell command via Bash. For builds, tests, and Git only; use dedicated tools for file operations."
 }

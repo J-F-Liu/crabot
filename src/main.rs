@@ -67,6 +67,7 @@ use session::Session;
 use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use tool::dev_tools_view;
 use tools::DevTool;
+use tools::edit::EditParam;
 use user::{UserPrompt, WorkMode, user_prompt_view};
 use widgets::textarea::{self, TextArea};
 
@@ -1565,6 +1566,60 @@ fn arg_row<'a>(key: &'a str, value: String) -> Element<'a, Message> {
     .into()
 }
 
+/// Embedded table for the `edits` argument — each edit becomes a labelled block.
+fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, Message> {
+    let header = row![
+        SelectableText::new(key).size(12).style(sel_primary),
+        Space::new().width(8),
+        SelectableText::new(format!("{}", edits.len()))
+            .size(12)
+            .style(sel_secondary),
+    ]
+    .spacing(0);
+
+    let rows: Vec<Element<'_, Message>> = edits
+        .iter()
+        .enumerate()
+        .flat_map(|(i, edit)| {
+            let ep: EditParam = serde_json::from_value(edit.clone()).unwrap_or(EditParam {
+                old_text: String::new(),
+                new_text: String::new(),
+            });
+            let EditParam { old_text, new_text } = ep;
+            let idx = row![
+                SelectableText::new(format!("#{}", i))
+                    .size(11)
+                    .style(sel_secondary),
+                text(":").size(11).style(|t| text::Style {
+                    color: Some(color_secondary(t))
+                }),
+            ]
+            .spacing(0);
+            let old_row = row![
+                Space::new().width(12),
+                text("-").size(12).style(|t| text::Style {
+                    color: Some(color_secondary(t))
+                }),
+                Space::new().width(4),
+                SelectableText::new(old_text).size(12).style(sel_secondary),
+            ]
+            .spacing(0);
+            let new_row = row![
+                Space::new().width(12),
+                text("+").size(12).style(|t| text::Style {
+                    color: Some(color_primary(t))
+                }),
+                Space::new().width(4),
+                SelectableText::new(new_text).size(12).style(sel_primary),
+            ]
+            .spacing(0);
+            [idx.into(), old_row.into(), new_row.into()]
+        })
+        .collect();
+
+    column![header, column(rows).spacing(0)].spacing(2).into()
+}
+
 /// All tool-argument rows.
 fn args_rows(args: &serde_json::Value) -> Vec<Element<'_, Message>> {
     let Some(map) = args.as_object() else {
@@ -1572,6 +1627,11 @@ fn args_rows(args: &serde_json::Value) -> Vec<Element<'_, Message>> {
     };
     map.iter()
         .map(|(k, v)| {
+            if k == "edits"
+                && let Some(arr) = v.as_array()
+            {
+                return edits_table(k, arr);
+            }
             let val = v
                 .as_str()
                 .map(|s| s.to_string())
