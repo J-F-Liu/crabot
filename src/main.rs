@@ -1222,7 +1222,7 @@ fn right_pane<'a>(
             .push(token_row("Window used:", format!("{pct}%")));
 
         // ── cumulative token usage and cost ───────────────────────────────────────────
-        let total_cost = m.cost.calculate(amount);
+        let session_cost = m.cost.calculate(amount);
         col = col
             .push(rule::horizontal(1))
             .push(text("Token Usage").size(14).font(Font {
@@ -1232,7 +1232,7 @@ fn right_pane<'a>(
             .push(token_row("Input tokens:", format!("{}", amount.input)))
             .push(token_row("Cached tokens:", format!("{}", amount.cached)))
             .push(token_row("Output tokens:", format!("{}", amount.output)))
-            .push(token_row("Total cost:", format_cost(total_cost)));
+            .push(token_row("Session cost:", format_cost(session_cost)));
     }
 
     // ── modified files ──
