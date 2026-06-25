@@ -488,6 +488,19 @@ impl App {
                 {
                     return Task::done(Message::SendPrompt);
                 }
+                // Shift+Click extends the selection from the previous cursor position.
+                if self.shift_held
+                    && let text_editor::Action::Click(_) = &action
+                {
+                    let anchor = self.user_prompt.cursor().position;
+                    self.user_prompt.perform(action);
+                    let cursor = self.user_prompt.cursor();
+                    self.user_prompt.move_to(text_editor::Cursor {
+                        position: cursor.position,
+                        selection: Some(anchor),
+                    });
+                    return Task::none();
+                }
                 self.user_prompt.perform(action);
             }
             Message::SelectWorkMode(mode) => {
