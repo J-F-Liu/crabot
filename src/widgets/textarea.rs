@@ -129,6 +129,13 @@ impl TextArea {
         self.content.move_to(cursor);
     }
 
+    /// Clears all text content and resets the undo/redo history.
+    pub fn clear(&mut self) {
+        self.content = text_editor::Content::new();
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
     // ── private helpers ────────────────────────────────────────────────
 
     fn perform(&mut self, action: text_editor::Action) {
@@ -151,12 +158,6 @@ impl TextArea {
             self.push_undo();
             self.restore_snapshot(&snapshot);
         }
-    }
-
-    #[allow(dead_code)]
-    fn clear_history(&mut self) {
-        self.undo_stack.clear();
-        self.redo_stack.clear();
     }
 
     fn push_undo(&mut self) {

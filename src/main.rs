@@ -595,8 +595,7 @@ impl App {
                 let workspace = self.system_prompt.workspace.1.clone();
                 let history = self.session.history.clone();
 
-                self.user_prompt = TextArea::new();
-                self.focused = None;
+                self.user_prompt.clear();
                 self.stream_start_index = self.session.messages.len();
                 self.streaming = StreamState::LlmLoading;
 
