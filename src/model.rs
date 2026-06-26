@@ -89,7 +89,7 @@ impl Cost {
 }
 
 /// Accumulated token counts for a session or single response.
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TokenAmount {
     pub input: i32,
     pub cached: i32,
@@ -111,9 +111,8 @@ impl TokenAmount {
             output: usage.completion_tokens.unwrap_or(0),
         }
     }
-    /// Accumulate `new_usage` into `self` in place.
-    pub fn accumulate(&mut self, new_usage: &genai::chat::Usage) {
-        let incoming = TokenAmount::from_genai(new_usage);
+    /// Accumulate `incoming` into `self` in place.
+    pub fn accumulate(&mut self, incoming: &TokenAmount) {
         self.input += incoming.input;
         self.cached += incoming.cached;
         self.output += incoming.output;

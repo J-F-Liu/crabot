@@ -26,54 +26,46 @@ pub struct ToolResult {
     pub result: Result<String, String>,
 }
 
-// ── MessageContent ───────────────────────────────────────────────────
+// ── TurnBody ────────────────────────────────────────────────────────
 
-/// The actual content of a message.
+/// Body of a single turn in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MessageContent {
+pub enum TurnBody {
     /// Plain-text message (User or Assistant role).
     Text(TextContent),
     /// Paired tool call and its result.
     Tool(ToolResult),
 }
 
-// ── DisplayMessage ──────────────────────────────────────────────────
+// ── Turn ────────────────────────────────────────────────────────────
 
-/// A single message in the conversation history, formatted for UI display.
+/// A single turn in the conversation history, formatted for UI display.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DisplayMessage {
+pub struct Turn {
     pub role: ChatRole,
-    pub content: MessageContent,
+    pub body: TurnBody,
     pub timestamp: String,
     /// Cached parsed Markdown for the text content (if any).
     #[serde(skip)]
     pub content_md: Option<iced::widget::markdown::Content>,
 }
 
-impl Clone for DisplayMessage {
-    fn clone(&self) -> Self {
-        Self {
-            role: self.role.clone(),
-            content: self.content.clone(),
-            timestamp: self.timestamp.clone(),
-            content_md: self.content_md.as_ref().map(|_| {
-                if let MessageContent::Text(tc) = &self.content {
-                    iced::widget::markdown::Content::parse(&tc.content)
-                } else {
-                    iced::widget::markdown::Content::new()
-                }
-            }),
-        }
-    }
+// ── Dialog ──────────────────────────────────────────────────────────
+
+/// A named conversation — a sequence of turns grouped under a title.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Dialog {
+    pub title: String,
+    pub turns: Vec<Turn>,
 }
 
-impl DisplayMessage {
+impl Turn {
     pub fn user(content: impl Into<String>) -> Self {
         let content_str: String = content.into();
         let content_md = Some(iced::widget::markdown::Content::parse(&content_str));
         Self {
             role: ChatRole::User,
-            content: MessageContent::Text(TextContent {
+            body: TurnBody::Text(TextContent {
                 content: content_str,
                 reasoning: None,
             }),
@@ -87,7 +79,7 @@ impl DisplayMessage {
         let content_md = Some(iced::widget::markdown::Content::parse(&content_str));
         Self {
             role: ChatRole::Assistant,
-            content: MessageContent::Text(TextContent {
+            body: TurnBody::Text(TextContent {
                 content: content_str,
                 reasoning,
             }),
@@ -99,7 +91,7 @@ impl DisplayMessage {
     pub fn from_tool_result(tr: ToolResult) -> Self {
         Self {
             role: ChatRole::Tool,
-            content: MessageContent::Tool(tr),
+            body: TurnBody::Tool(tr),
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             content_md: None,
         }
@@ -107,8 +99,21 @@ impl DisplayMessage {
 
     /// Ensure the markdown cache is up to date with the raw text content.
     pub fn refresh_md_cache(&mut self) {
-        if let MessageContent::Text(tc) = &self.content {
+        if let TurnBody::Text(tc) = &self.body {
             self.content_md = Some(iced::widget::markdown::Content::parse(&tc.content));
         }
+    }
+}
+
+impl Clone for Turn {
+    fn clone(&self) -> Self {
+        let mut cloned = Self {
+            role: self.role.clone(),
+            body: self.body.clone(),
+            timestamp: self.timestamp.clone(),
+            content_md: None,
+        };
+        cloned.refresh_md_cache();
+        cloned
     }
 }

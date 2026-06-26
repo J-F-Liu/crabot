@@ -2,8 +2,8 @@
 // for `println!`/`eprintln!` output during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod adk;
 mod chat;
+mod llm;
 mod model;
 mod session;
 mod settings;
@@ -14,7 +14,6 @@ mod user;
 mod widgets;
 mod workspace;
 
-use adk::StreamState;
 use futures::{SinkExt, future::FutureExt};
 use iced::widget::scrollable::Viewport;
 use iced::{
@@ -31,6 +30,7 @@ use iced::{
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
+use llm::StreamState;
 use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use chat::{DisplayMessage, MessageContent, TextContent, ToolResult};
+use chat::{Dialog, TextContent, ToolResult, Turn, TurnBody};
 
 /// Compile-time title embedding the Cargo.toml version via crabtime.
 #[crabtime::expression]
@@ -62,7 +62,7 @@ fn crabot_title() {
 }
 
 use genai::chat::{ChatMessage, ChatRole};
-use model::{Model, ModelConfig, Provider, model_config_view};
+use model::{Model, ModelConfig, Provider, TokenAmount, model_config_view};
 use session::Session;
 use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use tool::dev_tools_view;
@@ -184,7 +184,7 @@ struct App {
     session: Session,
     /// Current phase of the LLM interaction lifecycle.
     streaming: StreamState,
-    /// Index in `session.messages` where the current stream's assistant
+    /// Index (flat turn count) in the session where the current stream's
     /// placeholders begin; used by `handle_stream_done` to backfill captured
     /// content/reasoning into the right display messages.
     stream_start_index: usize,
@@ -192,8 +192,6 @@ struct App {
     expanded_tools: HashSet<usize>,
     /// Token usage from the most recent completed LLM response.
     last_usage: genai::chat::Usage,
-    /// Cumulative token amount across all turns in the current session.
-    token_amount: model::TokenAmount,
     /// Last-sent user prompt text, displayed in the center-pane header.
     current_prompt: String,
     /// Whether to show the Restart button (current_exe within workspace).
@@ -343,7 +341,6 @@ impl App {
             stream_start_index: 0,
             expanded_tools: HashSet::new(),
             last_usage: genai::chat::Usage::default(),
-            token_amount: model::TokenAmount::default(),
             current_prompt: "New session".into(),
             show_restart,
             cancel_token: Arc::new(AtomicBool::new(false)),
@@ -556,8 +553,9 @@ impl App {
                 self.session = Session::new(self.selected_model.clone(), workspace);
                 self.current_prompt = "New session".into();
                 self.last_usage = genai::chat::Usage::default();
-                self.token_amount = model::TokenAmount::default();
                 self.modified_files.clear();
+                self.expanded_tools.clear();
+                self.selectable_msgs.clear();
             }
             Message::ToggleToolExpand(idx) => {
                 if self.expanded_tools.contains(&idx) {
@@ -596,7 +594,7 @@ impl App {
                 let history = self.session.history.clone();
 
                 self.user_prompt.clear();
-                self.stream_start_index = self.session.messages.len();
+                self.stream_start_index = self.session.total_turns();
                 self.streaming = StreamState::LlmLoading;
 
                 self.cancel_token.store(false, Ordering::Relaxed);
@@ -605,9 +603,9 @@ impl App {
                 // Update session state with the selected model and workspace before sending the prompt.
                 self.session.model = self.selected_model.clone();
                 self.session.workspace = workspace.clone();
-                self.session.push(DisplayMessage::user(user_prompt.clone()));
+                self.session.push_turn(Turn::user(user_prompt.clone()));
 
-                let config = adk::SendConfig {
+                let config = llm::SendConfig {
                     base_url,
                     api_type,
                     api_key,
@@ -641,33 +639,33 @@ impl App {
                             .boxed()
                         }
                     };
-                    adk::send_stream(config, history, &mut callback).await;
+                    llm::send_stream(config, history, &mut callback).await;
                 }));
             }
             Message::StreamContent(chunk) => {
                 self.ensure_assistant_placeholder();
-                if let Some(last) = self.session.messages.last_mut()
-                    && let MessageContent::Text(tc) = &mut last.content
+                if let Some(last) = self.session.last_turn_mut()
+                    && let TurnBody::Text(tc) = &mut last.body
                 {
                     tc.content.push_str(&chunk);
                 }
                 // Refresh the markdown cache for the last message.
-                if let Some(last) = self.session.messages.last_mut() {
+                if let Some(last) = self.session.last_turn_mut() {
                     last.refresh_md_cache();
                 }
                 return self.maybe_scroll_to_end();
             }
             Message::StreamReasoning(chunk) => {
                 self.ensure_assistant_placeholder();
-                if let Some(last) = self.session.messages.last_mut()
-                    && let MessageContent::Text(tc) = &mut last.content
+                if let Some(last) = self.session.last_turn_mut()
+                    && let TurnBody::Text(tc) = &mut last.body
                 {
                     tc.reasoning
                         .get_or_insert_with(String::new)
                         .push_str(&chunk);
                 }
                 // Refresh the markdown cache for the last message.
-                if let Some(last) = self.session.messages.last_mut() {
+                if let Some(last) = self.session.last_turn_mut() {
                     last.refresh_md_cache();
                 }
                 return self.maybe_scroll_to_end();
@@ -681,12 +679,20 @@ impl App {
                 {
                     self.modified_files.push(path_str.to_string());
                 }
-                self.session.push(DisplayMessage::from_tool_result(tr));
+                self.session.push_turn(Turn::from_tool_result(tr));
                 return self.maybe_scroll_to_end();
             }
             Message::TokenUsage(usage) => {
                 let u = usage.unwrap_or_default();
-                self.token_amount.accumulate(&u);
+                let tokens = TokenAmount::from_genai(&u);
+                let cost = self.selected_model.as_ref().and_then(|cfg| {
+                    self.providers
+                        .iter()
+                        .find(|p| p.id == cfg.provider_id)
+                        .and_then(|p| p.models.iter().find(|m| m.id == cfg.model_id))
+                        .map(|m| &m.cost)
+                });
+                self.session.accumulate_usage(&tokens, cost);
                 self.last_usage = u;
             }
             Message::StreamDone(genai_messages) => {
@@ -763,12 +769,11 @@ impl App {
     /// pushed in a subsequent iteration), create a new assistant placeholder
     /// so streamed text/reasoning lands in the right place.
     fn ensure_assistant_placeholder(&mut self) {
-        let needs_placeholder = self.session.messages.last().is_none_or(|m| {
-            !(m.role == ChatRole::Assistant && matches!(m.content, MessageContent::Text(_)))
+        let needs_placeholder = self.session.last_turn().is_none_or(|m| {
+            !(m.role == ChatRole::Assistant && matches!(m.body, TurnBody::Text(_)))
         });
         if needs_placeholder {
-            self.session
-                .push(DisplayMessage::assistant(String::new(), None));
+            self.session.push_turn(Turn::assistant(String::new(), None));
         }
     }
 
@@ -788,16 +793,11 @@ impl App {
                     || m.content.first_reasoning_content().is_some()
             });
 
-        for msg in self
-            .session
-            .messages
-            .iter_mut()
-            .skip(self.stream_start_index)
-        {
+        for msg in self.session.turns_from_mut(self.stream_start_index) {
             if msg.role != ChatRole::Assistant {
                 continue;
             }
-            if let MessageContent::Text(tc) = &mut msg.content
+            if let TurnBody::Text(tc) = &mut msg.body
                 && let Some(genai_asst) = genai_asst_iter.next()
             {
                 if tc.content.is_empty() {
@@ -827,22 +827,22 @@ impl App {
         // so subsequent requests still carry valid context.
         self.session.history.extend(genai_messages);
 
-        let is_empty_placeholder = self.session.messages.last().is_some_and(|m| {
+        let is_empty_placeholder = self.session.last_turn().is_some_and(|m| {
             m.role == ChatRole::Assistant
                 && matches!(
-                    &m.content,
-                    MessageContent::Text(TextContent { content, reasoning })
+                    &m.body,
+                    TurnBody::Text(TextContent { content, reasoning })
                         if content.is_empty() && reasoning.is_none()
                 )
         });
 
         if is_empty_placeholder {
-            if let Some(last) = self.session.messages.last_mut() {
-                *last = DisplayMessage::assistant(format!("Error: {err}"), None);
+            if let Some(last) = self.session.last_turn_mut() {
+                *last = Turn::assistant(format!("Error: {err}"), None);
             }
         } else {
             self.session
-                .push(DisplayMessage::assistant(format!("Error: {err}"), None));
+                .push_turn(Turn::assistant(format!("Error: {err}"), None));
         }
         let _ = self.session.save();
     }
@@ -925,7 +925,7 @@ impl App {
             StreamState::LlmThinking => "💭 LLM thinking…",
             StreamState::ToolExecuting => "🔧 Tool executing…",
             StreamState::Idle => {
-                if self.session.messages.is_empty() {
+                if self.session.is_empty() {
                     "Send user prompt to start dialog with LLM"
                 } else {
                     "✅ Ready"
@@ -947,7 +947,7 @@ impl App {
             divider(),
             center_pane(
                 &self.current_prompt,
-                &self.session.messages,
+                self.session.dialogs_ref(),
                 &self.expanded_tools,
                 self.get_status(),
                 &self.theme,
@@ -957,9 +957,10 @@ impl App {
             divider(),
             right_pane(
                 self.right_w,
+                self.selected_model().map(|(_, m)| m.context_window),
                 &self.last_usage,
-                &self.token_amount,
-                self.selected_model().map(|(_, m)| m),
+                &self.session.usage,
+                self.session.cost,
                 &self.modified_files,
                 self.show_restart,
             ),
@@ -1085,139 +1086,153 @@ fn left_pane(app: &App) -> Element<'_, Message> {
 
 fn center_pane<'a>(
     current_prompt: &'a str,
-    messages: &'a [DisplayMessage],
+    dialogs: &'a [Dialog],
     expanded_tools: &'a HashSet<usize>,
     status: &'a str,
     theme: &'a Theme,
     streaming: StreamState,
     selectable_msgs: &HashSet<usize>,
 ) -> Element<'a, Message> {
-    container(column![
-        session_header(current_prompt),
-        scrollable(
-            column(
-                messages
-                    .iter()
-                    .enumerate()
-                    .map(|(i, msg)| {
-                        container({
-                            let is_tool = matches!(&msg.content, MessageContent::Tool(_));
-                            let expanded = is_tool && expanded_tools.contains(&i);
-                            let indicator = if is_tool {
-                                if expanded { "▼" } else { "▶" }
-                            } else {
-                                ""
-                            };
-                            let (header, is_edit_or_write, _) = match &msg.content {
-                                MessageContent::Tool(ToolResult { name, result, .. }) => {
-                                    let status_icon = match result {
-                                        Ok(_) => " ✓",
-                                        Err(_) => " ✗",
-                                    };
-                                    let hdr = format!(
-                                        "{} {} — {}{}",
-                                        indicator, msg.role, name, status_icon
+    // Flatten dialogs into turns with a running flat index.
+    let mut flat_idx: usize = 0;
+    let dialog_blocks: Vec<Element<'_, Message>> = dialogs
+        .iter()
+        .map(|dialog| {
+            let title_row: Option<Element<'_, Message>> = if dialog.title.is_empty() {
+                None
+            } else {
+                Some(
+                    container(text(&dialog.title).size(13).font(Font {
+                        weight: font::Weight::Bold,
+                        ..Font::DEFAULT
+                    }))
+                    .padding([4, 8])
+                    .style(|_theme: &Theme| container::Style {
+                        background: Some(CRABOT_SURFACE.into()),
+                        ..container::Style::default()
+                    })
+                    .into(),
+                )
+            };
+            let turn_blocks: Vec<Element<'_, Message>> = dialog
+                .turns
+                .iter()
+                .map(|msg| {
+                    let i = flat_idx;
+                    flat_idx += 1;
+                    container({
+                        let is_tool = matches!(&msg.body, TurnBody::Tool(_));
+                        let expanded = is_tool && expanded_tools.contains(&i);
+                        let indicator = if is_tool {
+                            if expanded { "▼" } else { "▶" }
+                        } else {
+                            ""
+                        };
+                        let (header, is_edit_or_write, _) = match &msg.body {
+                            TurnBody::Tool(ToolResult { name, result, .. }) => {
+                                let status_icon = match result {
+                                    Ok(_) => " ✓",
+                                    Err(_) => " ✗",
+                                };
+                                let hdr =
+                                    format!("{} {} — {}{}", indicator, msg.role, name, status_icon);
+                                let is_ew = name == "edit" || name == "write";
+                                (hdr, is_ew, name.as_str())
+                            }
+                            _ => (msg.role.to_string(), false, ""),
+                        };
+                        let header_text = text(header).size(13).color(CRABOT_TEXT);
+                        let ts_text = SelectableText::new(&msg.timestamp)
+                            .size(11)
+                            .style(sel_secondary);
+                        let mut col = if is_tool {
+                            let header_row =
+                                row![header_text, Space::new().width(Length::Fill), ts_text,];
+                            column![
+                                mouse_area(header_row)
+                                    .on_press(Message::ToggleToolExpand(i))
+                                    .interaction(mouse::Interaction::Pointer),
+                            ]
+                        } else {
+                            column![row![header_text, Space::new().width(Length::Fill), ts_text,],]
+                        };
+                        match &msg.body {
+                            TurnBody::Text(TextContent { content, reasoning }) => {
+                                if let Some(reasoning) = reasoning {
+                                    col = col.push(
+                                        SelectableText::new(reasoning)
+                                            .size(13)
+                                            .style(sel_secondary),
                                     );
-                                    let is_ew = name == "edit" || name == "write";
-                                    (hdr, is_ew, name.as_str())
                                 }
-                                _ => (msg.role.to_string(), false, ""),
-                            };
-                            let header_text = text(header).size(13).color(CRABOT_TEXT);
-                            let ts_text = SelectableText::new(&msg.timestamp)
-                                .size(11)
-                                .style(sel_secondary);
-                            let mut col = if is_tool {
-                                let header_row =
-                                    row![header_text, Space::new().width(Length::Fill), ts_text,];
-                                column![
-                                    mouse_area(header_row)
-                                        .on_press(Message::ToggleToolExpand(i))
-                                        .interaction(mouse::Interaction::Pointer),
-                                ]
-                            } else {
-                                column![row![
-                                    header_text,
-                                    Space::new().width(Length::Fill),
-                                    ts_text,
-                                ],]
-                            };
-                            match &msg.content {
-                                MessageContent::Text(TextContent { content, reasoning }) => {
-                                    if let Some(reasoning) = reasoning {
-                                        col = col.push(
-                                            SelectableText::new(reasoning)
-                                                .size(13)
-                                                .style(sel_secondary),
-                                        );
-                                    }
-                                    if selectable_msgs.contains(&i) {
-                                        col = col.push(
-                                            SelectableText::new(content)
-                                                .size(14)
-                                                .style(sel_default),
-                                        );
-                                    } else if let Some(md) = &msg.content_md {
-                                        let mut md_style = markdown::Style::from(theme.clone());
-                                        md_style.inline_code_highlight = Highlight {
-                                            background: Background::Color(Color::TRANSPARENT),
-                                            border: Border::default(),
-                                        };
-                                        md_style.inline_code_padding = 0.into();
-                                        md_style.inline_code_color = color_text(theme);
-                                        col = col.push(
-                                            mouse_area(
-                                                markdown::view(
-                                                    md.items(),
-                                                    markdown::Settings::with_text_size(
-                                                        14, md_style,
-                                                    ),
-                                                )
-                                                .map(|_| Message::Noop),
+                                if selectable_msgs.contains(&i) {
+                                    col = col.push(
+                                        SelectableText::new(content).size(14).style(sel_default),
+                                    );
+                                } else if let Some(md) = &msg.content_md {
+                                    let mut md_style = markdown::Style::from(theme.clone());
+                                    md_style.inline_code_highlight = Highlight {
+                                        background: Background::Color(Color::TRANSPARENT),
+                                        border: Border::default(),
+                                    };
+                                    md_style.inline_code_padding = 0.into();
+                                    md_style.inline_code_color = color_text(theme);
+                                    col = col.push(
+                                        mouse_area(
+                                            markdown::view(
+                                                md.items(),
+                                                markdown::Settings::with_text_size(14, md_style),
                                             )
-                                            .on_double_click(Message::ToggleSelectableMode(Some(
-                                                i,
-                                            ))),
-                                        );
-                                    } else {
-                                        col = col.push(
-                                            SelectableText::new(content)
-                                                .size(14)
-                                                .style(sel_default),
-                                        );
-                                    }
+                                            .map(|_| Message::Noop),
+                                        )
+                                        .on_double_click(Message::ToggleSelectableMode(Some(i))),
+                                    );
+                                } else {
+                                    col = col.push(
+                                        SelectableText::new(content).size(14).style(sel_default),
+                                    );
                                 }
-                                MessageContent::Tool(ToolResult { args, result, .. }) => {
-                                    if is_edit_or_write {
-                                        if expanded {
-                                            col = col.extend(args_rows(args));
-                                            col = col.push(result_text(result));
-                                        } else if let Some(row) = path_arg_row(args) {
-                                            col = col.push(row);
-                                        }
-                                    } else {
+                            }
+                            TurnBody::Tool(ToolResult { args, result, .. }) => {
+                                if is_edit_or_write {
+                                    if expanded {
                                         col = col.extend(args_rows(args));
-                                        if expanded {
-                                            col = col.push(result_text(result));
-                                        }
+                                        col = col.push(result_text(result));
+                                    } else if let Some(row) = path_arg_row(args) {
+                                        col = col.push(row);
+                                    }
+                                } else {
+                                    col = col.extend(args_rows(args));
+                                    if expanded {
+                                        col = col.push(result_text(result));
                                     }
                                 }
                             }
-                            col.spacing(4).width(Fill)
-                        })
-                        .width(Fill)
-                        .padding(8)
-                        .style(|_theme: &Theme| container::Style::default())
-                        .into()
+                        }
+                        col.spacing(4).width(Fill)
                     })
-                    .collect::<Vec<_>>(),
-            )
-            .spacing(8)
-            .padding(10),
-        )
-        .height(Fill)
-        .id(MESSAGE_SCROLL.clone())
-        .on_scroll(Message::MessageViewScrolled),
+                    .width(Fill)
+                    .padding(8)
+                    .style(|_theme: &Theme| container::Style::default())
+                    .into()
+                })
+                .collect();
+            let mut group = column(turn_blocks).spacing(8);
+            if let Some(title) = title_row {
+                group = column![title, group].spacing(4);
+            }
+            container(group)
+                .style(|_theme: &Theme| container::Style::default())
+                .into()
+        })
+        .collect();
+
+    container(column![
+        session_header(current_prompt),
+        scrollable(column(dialog_blocks).spacing(16).padding(10),)
+            .height(Fill)
+            .id(MESSAGE_SCROLL.clone())
+            .on_scroll(Message::MessageViewScrolled),
         status_line(status, streaming),
     ])
     .width(Fill)
@@ -1248,9 +1263,10 @@ fn format_cost(amount: f64) -> String {
 
 fn right_pane<'a>(
     pane_width: f32,
+    context_window: Option<u64>,
     usage: &genai::chat::Usage,
     amount: &model::TokenAmount,
-    model: Option<&model::Model>,
+    cost: f64,
     modified_files: &'a [String],
     show_restart: bool,
 ) -> Element<'a, Message> {
@@ -1272,26 +1288,24 @@ fn right_pane<'a>(
         .push(token_row("Prompt tokens:", format!("{prompt_tokens}")))
         .push(token_row("Cached tokens:", format!("{cached_tokens}")));
 
-    if let Some(m) = model {
-        let cw = m.context_window;
+    if let Some(cw) = context_window.filter(|&cw| cw > 0) {
         let pct = ((prompt_tokens as u64) * 100).checked_div(cw).unwrap_or(0);
         col = col
             .push(token_row("window size:", format!("{cw}")))
             .push(token_row("Window used:", format!("{pct}%")));
-
-        // ── cumulative token usage and cost ───────────────────────────────────────────
-        let session_cost = m.cost.calculate(amount);
-        col = col
-            .push(rule::horizontal(1))
-            .push(text("Token Usage").size(14).font(Font {
-                weight: font::Weight::Bold,
-                ..Font::DEFAULT
-            }))
-            .push(token_row("Input tokens:", format!("{}", amount.input)))
-            .push(token_row("Cached tokens:", format!("{}", amount.cached)))
-            .push(token_row("Output tokens:", format!("{}", amount.output)))
-            .push(token_row("Session cost:", format_cost(session_cost)));
     }
+
+    // ── cumulative token usage and cost ───────────────────────────────────────────
+    col = col
+        .push(rule::horizontal(1))
+        .push(text("Token Usage").size(14).font(Font {
+            weight: font::Weight::Bold,
+            ..Font::DEFAULT
+        }))
+        .push(token_row("Input tokens:", format!("{}", amount.input)))
+        .push(token_row("Cached tokens:", format!("{}", amount.cached)))
+        .push(token_row("Output tokens:", format!("{}", amount.output)))
+        .push(token_row("Session cost:", format_cost(cost)));
 
     // ── modified files ──
     if !modified_files.is_empty() {

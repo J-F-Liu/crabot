@@ -198,7 +198,7 @@ fn candidate_path(path: &str, workspace: &std::path::Path) -> std::path::PathBuf
     // On Windows a path like "/c/Users/..." is Unix‑style absolute, but
     // `Path::is_absolute()` returns false without a drive prefix.
     #[cfg(windows)]
-    if let Some(native) = normalise_windows_unix_style(path) {
+    if let Some(native) = convert_path_to_windows_style(path) {
         return native;
     }
 
@@ -209,7 +209,7 @@ fn candidate_path(path: &str, workspace: &std::path::Path) -> std::path::PathBuf
 /// `C:\Users\...` `PathBuf`. Returns `None` when `path` is not Unix‑style
 /// absolute (i.e. does not start with `/`).
 #[cfg(windows)]
-fn normalise_windows_unix_style(path: &str) -> Option<std::path::PathBuf> {
+fn convert_path_to_windows_style(path: &str) -> Option<std::path::PathBuf> {
     let stripped = path.strip_prefix('/')?;
     let native = if let Some((drive, rest)) = stripped.split_once('/')
         && drive.len() == 1
