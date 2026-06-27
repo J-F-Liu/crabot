@@ -4,10 +4,11 @@ use iced::{
     widget::{button, row, text},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::Message;
-use crate::chat::{Dialog, ToolResult, Turn, TurnBody};
+use crate::chat::{Dialog, Turn, TurnBody};
 use crate::llm::StreamState;
 use crate::model::{ModelConfig, TokenAmount};
 
@@ -57,20 +58,22 @@ impl Session {
 
     // ── Dialog / turn helpers ────────────────────────────────────────
 
+    /// Add a new empty dialog with the given title.
+    pub fn add_dialog(&mut self, title: String) {
+        if self.title.is_empty() {
+            self.title = title.clone();
+        }
+        self.dialogs.push(Dialog {
+            title,
+            turns: Vec::new(),
+        });
+    }
+
     /// Push a turn.  A `User` turn starts a new dialog; all other roles
     /// append to the last dialog (creating one if none exists yet).
     pub fn push_turn(&mut self, turn: Turn) {
         self.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        if turn.role == ChatRole::User {
-            let title = Self::derive_title(&turn);
-            if self.title.is_empty() {
-                self.title = title.clone();
-            }
-            self.dialogs.push(Dialog {
-                title,
-                turns: vec![turn],
-            });
-        } else if let Some(last) = self.dialogs.last_mut() {
+        if let Some(last) = self.dialogs.last_mut() {
             last.turns.push(turn);
         } else {
             self.dialogs.push(Dialog {
@@ -111,19 +114,15 @@ impl Session {
         }
     }
 
-    /// Derive a short title from a user turn's text.
-    fn derive_title(turn: &Turn) -> String {
-        if let TurnBody::Text(tc) = &turn.body {
-            let trimmed = tc.content.trim();
-            // Take up to the first newline, or first 72 chars.
-            let first_line = trimmed.lines().next().unwrap_or("");
-            if let Some((idx, _)) = first_line.char_indices().nth(72) {
-                format!("{}…", &first_line[..idx])
-            } else {
-                first_line.to_string()
-            }
+    /// Derive a short title from text content.
+    pub fn derive_title(text: &str) -> String {
+        let trimmed = text.trim();
+        // Take up to the first newline, or first 144 chars.
+        let first_line = trimmed.lines().next().unwrap_or("");
+        if let Some((idx, _)) = first_line.char_indices().nth(144) {
+            format!("{}…", &first_line[..idx])
         } else {
-            String::new()
+            first_line.to_string()
         }
     }
 
@@ -140,55 +139,63 @@ impl Session {
     /// Reconstruct the `dialogs` Vec from the raw `history`.
     /// Called after loading a session from disk (since `dialogs` is `#[serde(skip)]`).
     pub fn rebuild_dialogs(&mut self) {
-        self.dialogs.clear();
-
         // First pass: collect tool responses indexed by call_id so we can
         // pair them with their tool calls (matching the live-stream behaviour
         // in llm.rs where each tool call+result is a single Turn).
-        let mut response_map: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
+        let mut results: HashMap<String, String> = HashMap::new();
         for msg in &self.history {
             if msg.role == ChatRole::Tool {
                 for tr in msg.content.tool_responses() {
-                    response_map.insert(tr.call_id.clone(), tr.content.clone());
+                    results.insert(tr.call_id.clone(), tr.content.clone());
                 }
             }
         }
 
-        enum Draft {
-            User(String),
-            Assistant(String, Option<String>),
-            Tool(ToolResult),
+        let mut dialogs: Vec<Dialog> = Vec::new();
+
+        /// Append `turn` to the last dialog, or start a new one if none exists.
+        fn push_or_new(dialogs: &mut Vec<Dialog>, turn: Turn) {
+            match dialogs.last_mut() {
+                Some(d) => d.turns.push(turn),
+                None => dialogs.push(Dialog {
+                    title: String::new(),
+                    turns: vec![turn],
+                }),
+            }
         }
-        let mut drafts: Vec<Draft> = Vec::new();
+
         for msg in &self.history {
             match msg.role {
                 ChatRole::System => {}
                 ChatRole::User => {
                     let text = msg.content.joined_texts().unwrap_or_default();
-                    drafts.push(Draft::User(text));
+                    let title = Self::derive_title(&text);
+                    let turn = Turn::user(text);
+                    if self.title.is_empty() {
+                        self.title = title.clone();
+                    }
+                    dialogs.push(Dialog {
+                        title,
+                        turns: vec![turn],
+                    });
                 }
                 ChatRole::Assistant => {
                     let text = msg.content.joined_texts().unwrap_or_default();
                     let reasoning = msg.content.first_reasoning_content().map(|s| s.to_string());
 
                     if !text.is_empty() || reasoning.is_some() {
-                        drafts.push(Draft::Assistant(text, reasoning));
+                        push_or_new(&mut dialogs, Turn::assistant(text, reasoning));
                     }
 
                     for tc in msg.content.tool_calls() {
-                        // Pair tool call with its response; unmatched calls
-                        // (shouldn't happen) still get a Turn with an empty result.
-                        let result = response_map
-                            .remove(&tc.call_id)
-                            .map(Ok)
-                            .unwrap_or_else(|| Ok(String::new()));
-                        drafts.push(Draft::Tool(ToolResult {
-                            name: tc.fn_name.clone(),
-                            call_id: Some(tc.call_id.clone()),
-                            args: tc.fn_arguments.clone(),
-                            result,
-                        }));
+                        let result = results.remove(&tc.call_id).unwrap_or_default();
+                        let turn = Turn {
+                            role: ChatRole::Tool,
+                            body: TurnBody::tool(tc, Ok(result)),
+                            timestamp: String::new(),
+                            content_md: None,
+                        };
+                        push_or_new(&mut dialogs, turn);
                     }
                 }
                 ChatRole::Tool => {
@@ -197,29 +204,9 @@ impl Session {
             }
         }
 
-        // Any unmatched tool responses (shouldn't happen, but be defensive).
-        for (call_id, content) in response_map {
-            drafts.push(Draft::Tool(ToolResult {
-                name: String::new(),
-                call_id: Some(call_id),
-                args: serde_json::Value::Null,
-                result: Ok(content),
-            }));
-        }
+        // todo: if results is not empty, log warning
 
-        for draft in drafts {
-            match draft {
-                Draft::User(text) => self.push_turn(Turn::user(text)),
-                Draft::Assistant(text, reasoning) => {
-                    self.push_turn(Turn::assistant(text, reasoning))
-                }
-                Draft::Tool(tr) => {
-                    let mut turn = Turn::from_tool_result(tr);
-                    turn.timestamp = String::new();
-                    self.push_turn(turn);
-                }
-            }
-        }
+        self.dialogs = dialogs;
     }
 
     // ── Persistence ─────────────────────────────────────────────────

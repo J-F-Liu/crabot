@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use chat::{Dialog, TextContent, ToolResult, Turn, TurnBody};
+use chat::{Dialog, TextContent, ToolResult, Turn, TurnBody, replace_emoji};
 
 /// Compile-time title embedding the Cargo.toml version via crabtime.
 #[crabtime::expression]
@@ -572,6 +572,7 @@ impl App {
                 if content.trim().is_empty() {
                     return Task::none();
                 }
+                let title = Session::derive_title(&content);
 
                 self.current_prompt = content.clone();
                 self.auto_scroll.store(true, Ordering::Relaxed);
@@ -603,6 +604,7 @@ impl App {
                 // Update session state with the selected model and workspace before sending the prompt.
                 self.session.model = self.selected_model.clone();
                 self.session.workspace = workspace.clone();
+                self.session.add_dialog(title);
                 self.session.push_turn(Turn::user(user_prompt.clone()));
 
                 let config = llm::SendConfig {
@@ -800,9 +802,7 @@ impl App {
             if let TurnBody::Text(tc) = &mut msg.body
                 && let Some(genai_asst) = genai_asst_iter.next()
             {
-                if tc.content.is_empty() {
-                    tc.content = genai_asst.content.joined_texts().unwrap_or_default();
-                }
+                tc.content = replace_emoji(&genai_asst.content.joined_texts().unwrap_or_default());
                 if tc.reasoning.is_none() {
                     tc.reasoning = genai_asst
                         .content

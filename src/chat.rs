@@ -1,6 +1,17 @@
-use genai::chat::ChatRole;
+use std::sync::LazyLock;
+
+use genai::chat::{ChatRole, ToolCall};
+use gh_emoji::Replacer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Static emoji replacer — compiled once and reused.
+static EMOJI: LazyLock<Replacer> = LazyLock::new(Replacer::new);
+
+/// Replace GitHub-flavored `:emoji:` codes with Unicode emoji in text.
+pub fn replace_emoji(text: &str) -> String {
+    EMOJI.replace_all(text).into()
+}
 
 // ── TextContent ──────────────────────────────────────────────────────
 
@@ -37,6 +48,23 @@ pub enum TurnBody {
     Tool(ToolResult),
 }
 
+impl TurnBody {
+    /// Construct a `Text` variant from a content string and optional reasoning.
+    pub fn text(content: String, reasoning: Option<String>) -> Self {
+        TurnBody::Text(TextContent { content, reasoning })
+    }
+
+    /// Construct a `Tool` variant from a genai `ToolCall` and its result.
+    pub fn tool(tc: &ToolCall, result: Result<String, String>) -> Self {
+        TurnBody::Tool(ToolResult {
+            name: tc.fn_name.clone(),
+            call_id: Some(tc.call_id.clone()),
+            args: tc.fn_arguments.clone(),
+            result,
+        })
+    }
+}
+
 // ── Turn ────────────────────────────────────────────────────────────
 
 /// A single turn in the conversation history, formatted for UI display.
@@ -65,24 +93,18 @@ impl Turn {
         let content_md = Some(iced::widget::markdown::Content::parse(&content_str));
         Self {
             role: ChatRole::User,
-            body: TurnBody::Text(TextContent {
-                content: content_str,
-                reasoning: None,
-            }),
+            body: TurnBody::text(content_str, None),
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             content_md,
         }
     }
 
     pub fn assistant(content: impl Into<String>, reasoning: Option<String>) -> Self {
-        let content_str: String = content.into();
+        let content_str: String = replace_emoji(&content.into());
         let content_md = Some(iced::widget::markdown::Content::parse(&content_str));
         Self {
             role: ChatRole::Assistant,
-            body: TurnBody::Text(TextContent {
-                content: content_str,
-                reasoning,
-            }),
+            body: TurnBody::text(content_str, reasoning),
             timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             content_md,
         }
