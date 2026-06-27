@@ -1,15 +1,9 @@
 use genai::chat::{ChatMessage, ChatRole};
-use iced::{
-    Alignment, Element, Font, Length, font,
-    widget::{button, row, text},
-};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::Message;
 use crate::chat::{Dialog, Turn, TurnBody};
-use crate::llm::StreamState;
 use crate::model::{ModelConfig, TokenAmount};
 
 // ── Session ──────────────────────────────────────────────────────────
@@ -259,24 +253,4 @@ impl Session {
         paths.sort_by(|a, b| b.cmp(a)); // newest first
         Ok(paths)
     }
-}
-
-pub fn session_view<'a>(streaming: StreamState) -> Element<'a, Message> {
-    row![
-        text("Session").size(14).font(Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        }),
-        iced::widget::Space::new().width(Length::Fill),
-        button(text("New").align_x(Alignment::Center))
-            .on_press_maybe(if streaming != StreamState::Idle {
-                None
-            } else {
-                Some(Message::NewSession)
-            })
-            .style(crate::primary_button),
-    ]
-    .align_y(Alignment::Center)
-    .spacing(8)
-    .into()
 }

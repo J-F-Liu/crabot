@@ -11,24 +11,16 @@ mod system;
 mod tool;
 mod tools;
 mod user;
+mod views;
 mod widgets;
 mod workspace;
 
 use futures::{SinkExt, future::FutureExt};
 use iced::widget::scrollable::Viewport;
+use iced::widget::{row, text_editor};
 use iced::{
-    Background, Border, Color, Element, Event, Fill, Font, Length, Point, Size, Subscription, Task,
-    Theme,
-    advanced::text::Highlight,
-    alignment, event, font, keyboard, mouse,
-    widget::{
-        self, Space, button, checkbox, column, container, markdown, mouse_area, row, rule,
-        scrollable, text, text_editor, toggler,
-    },
-    window,
+    Element, Event, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window,
 };
-use iced_selection::Text as SelectableText;
-use iced_selection::text::Style as SelectionStyle;
 use indexmap::IndexMap;
 use llm::StreamState;
 use std::collections::HashSet;
@@ -39,7 +31,16 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use chat::{Dialog, TextContent, ToolResult, Turn, TurnBody, replace_emoji};
+use chat::{TextContent, ToolResult, Turn, TurnBody, replace_emoji};
+use genai::chat::{ChatMessage, ChatRole};
+use model::{Model, ModelConfig, Provider, TokenAmount};
+use session::Session;
+use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
+use tools::DevTool;
+use user::{UserPrompt, WorkMode};
+use views::theme::{HANDLE, MIN_W, default_theme};
+use views::{center_pane, divider, left_pane, right_pane, scroll_to_end};
+use widgets::textarea::{self, TextArea};
 
 /// Compile-time title embedding the Cargo.toml version via crabtime.
 #[crabtime::expression]
@@ -60,16 +61,6 @@ fn crabot_title() {
         {{title}}
     }
 }
-
-use genai::chat::{ChatMessage, ChatRole};
-use model::{Model, ModelConfig, Provider, TokenAmount, model_config_view};
-use session::Session;
-use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
-use tool::dev_tools_view;
-use tools::DevTool;
-use tools::edit::EditParam;
-use user::{UserPrompt, WorkMode, user_prompt_view};
-use widgets::textarea::{self, TextArea};
 
 pub fn main() -> iced::Result {
     let saved = settings::Settings::load();
@@ -92,38 +83,6 @@ pub fn main() -> iced::Result {
 }
 
 static SAVED_SETTINGS: OnceLock<settings::Settings> = OnceLock::new();
-
-// ── constants ─────────────────────────────────────────────────────
-
-const MIN_W: f32 = 280.0;
-const HANDLE: f32 = 6.0;
-const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
-
-// ── theme colors ─────────────────────────────────────────────
-
-const CRABOT_BG: Color = Color::from_rgb8(0xF0, 0xF0, 0xF0);
-const CRABOT_PANEL: Color = Color::from_rgb8(0xF2, 0xF2, 0xF2);
-const CRABOT_SURFACE: Color = Color::from_rgb8(0xE8, 0xE8, 0xE8);
-const CRABOT_PRIMARY: Color = Color::from_rgb8(0x1A, 0x9A, 0x8C);
-const CRABOT_PRIMARY_HOVER: Color = Color::from_rgb8(0x15, 0x8C, 0x7F);
-const CRABOT_PRIMARY_PRESSED: Color = Color::from_rgb8(0x11, 0x7A, 0x70);
-const CRABOT_TEXT: Color = Color::from_rgb8(0x33, 0x33, 0x33);
-const CRABOT_TEXT_MUTED: Color = Color::from_rgb8(0x66, 0x66, 0x66);
-
-fn crabot_palette() -> iced::theme::Palette {
-    iced::theme::Palette {
-        background: CRABOT_BG,
-        text: CRABOT_TEXT,
-        primary: CRABOT_PRIMARY,
-        success: Color::from_rgb8(0x4C, 0xAF, 0x50),
-        warning: Color::from_rgb8(0xFF, 0xA0, 0x00),
-        danger: Color::from_rgb8(0xE8, 0x4E, 0x4E),
-    }
-}
-
-fn default_theme() -> Theme {
-    Theme::custom("Crabot Light", crabot_palette())
-}
 
 // ── divider identity ──────────────────────────────────────────────
 
@@ -624,25 +583,28 @@ impl App {
                         .unwrap_or_default(),
                 };
 
-                return Task::stream(iced::stream::channel(128, async move |sender| {
-                    let cancel = cancel_token.clone();
-                    let mut callback = {
-                        move |msg: Message| {
-                            let cancel = cancel.clone();
-                            let mut sender = sender.clone();
-                            async move {
-                                let ok = sender.send(msg).await.is_ok();
-                                if cancel.load(Ordering::Relaxed) {
-                                    false
-                                } else {
-                                    ok
+                return Task::batch([
+                    scroll_to_end(),
+                    Task::stream(iced::stream::channel(128, async move |sender| {
+                        let cancel = cancel_token.clone();
+                        let mut callback = {
+                            move |msg: Message| {
+                                let cancel = cancel.clone();
+                                let mut sender = sender.clone();
+                                async move {
+                                    let ok = sender.send(msg).await.is_ok();
+                                    if cancel.load(Ordering::Relaxed) {
+                                        false
+                                    } else {
+                                        ok
+                                    }
                                 }
+                                .boxed()
                             }
-                            .boxed()
-                        }
-                    };
-                    llm::send_stream(config, history, &mut callback).await;
-                }));
+                        };
+                        llm::send_stream(config, history, &mut callback).await;
+                    })),
+                ]);
             }
             Message::StreamContent(chunk) => {
                 self.ensure_assistant_placeholder();
@@ -943,7 +905,25 @@ impl App {
 
     fn view(&self) -> Element<'_, Message> {
         row![
-            left_pane(self),
+            left_pane(
+                self.left_w,
+                &self.providers,
+                &self.selected_model,
+                &self.system_prompt,
+                self.rules_expanded,
+                self.tools_expanded,
+                self.files_expanded,
+                &self.selected_preamble,
+                &self.preamble_options,
+                &self.workspace_options,
+                &self.rules_content,
+                &self.files_content,
+                &self.tools_content,
+                &self.dev_tools,
+                &self.user_prompt,
+                self.workmode,
+                self.streaming,
+            ),
             divider(),
             center_pane(
                 &self.current_prompt,
@@ -1013,660 +993,4 @@ impl App {
             window::close_requests().map(|_id| Message::AppClosing),
         ])
     }
-}
-
-// ── free functions (widget constructors) ──────────────────────────
-
-/// Snap the message scroll to the end unconditionally.
-fn scroll_to_end() -> Task<Message> {
-    iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::snap_to(
-        MESSAGE_SCROLL.clone(),
-        scrollable::RelativeOffset::END.into(),
-    ))
-}
-
-fn divider() -> Element<'static, Message> {
-    mouse_area(rule::vertical(HANDLE))
-        .interaction(mouse::Interaction::ResizingHorizontally)
-        .into()
-}
-
-// ── pane helpers ──────────────────────────────────────────────────
-
-fn label<'a>(text: &'a str, width: impl Into<Length>) -> Element<'a, Message> {
-    container(iced::widget::text(text).size(14).font(Font {
-        weight: font::Weight::Bold,
-        ..Font::DEFAULT
-    }))
-    .width(width)
-    .into()
-}
-
-fn left_pane(app: &App) -> Element<'_, Message> {
-    let col = column![
-        model_config_view(&app.providers, &app.selected_model),
-        rule::horizontal(0),
-        label("System Prompt", 140.0),
-        system::preamble_field_view(
-            &app.system_prompt.preamble,
-            &app.preamble_options,
-            &app.selected_preamble,
-        ),
-        system::rules_field_view(
-            app.rules_expanded,
-            &app.system_prompt.rules,
-            &app.rules_content,
-        ),
-        system::tools_field_view(
-            app.tools_expanded,
-            &app.system_prompt.tools,
-            &app.tools_content,
-        ),
-        system::workspace_field_view(&app.system_prompt.workspace, &app.workspace_options,),
-        system::files_field_view(
-            app.files_expanded,
-            &app.system_prompt.files,
-            &app.files_content,
-        ),
-        system::date_field_view(&app.system_prompt.date),
-        session::session_view(app.streaming),
-        label("User Prompt", 140.0),
-        user_prompt_view(&app.user_prompt, app.workmode),
-        container(column![label("Tools", 140.0), dev_tools_view(&app.dev_tools)].spacing(4))
-            .padding(iced::padding::top(6.0))
-    ]
-    .spacing(8);
-
-    container(scrollable(col.padding(15)))
-        .width(Length::Fixed(app.left_w))
-        .height(Fill)
-        .style(pane_side)
-        .into()
-}
-
-fn center_pane<'a>(
-    current_prompt: &'a str,
-    dialogs: &'a [Dialog],
-    expanded_tools: &'a HashSet<usize>,
-    status: &'a str,
-    theme: &'a Theme,
-    streaming: StreamState,
-    selectable_msgs: &HashSet<usize>,
-) -> Element<'a, Message> {
-    // Flatten dialogs into turns with a running flat index.
-    let mut flat_idx: usize = 0;
-    let dialog_blocks: Vec<Element<'_, Message>> = dialogs
-        .iter()
-        .map(|dialog| {
-            let title_row: Option<Element<'_, Message>> = if dialog.title.is_empty() {
-                None
-            } else {
-                Some(
-                    container(text(&dialog.title).size(13).font(Font {
-                        weight: font::Weight::Bold,
-                        ..Font::DEFAULT
-                    }))
-                    .padding([4, 8])
-                    .style(|_theme: &Theme| container::Style {
-                        background: Some(CRABOT_SURFACE.into()),
-                        ..container::Style::default()
-                    })
-                    .into(),
-                )
-            };
-            let turn_blocks: Vec<Element<'_, Message>> = dialog
-                .turns
-                .iter()
-                .map(|msg| {
-                    let i = flat_idx;
-                    flat_idx += 1;
-                    container({
-                        let is_tool = matches!(&msg.body, TurnBody::Tool(_));
-                        let expanded = is_tool && expanded_tools.contains(&i);
-                        let indicator = if is_tool {
-                            if expanded { "▼" } else { "▶" }
-                        } else {
-                            ""
-                        };
-                        let (header, is_edit_or_write, _) = match &msg.body {
-                            TurnBody::Tool(ToolResult { name, result, .. }) => {
-                                let status_icon = match result {
-                                    Ok(_) => " ✓",
-                                    Err(_) => " ✗",
-                                };
-                                let hdr =
-                                    format!("{} {} — {}{}", indicator, msg.role, name, status_icon);
-                                let is_ew = name == "edit" || name == "write";
-                                (hdr, is_ew, name.as_str())
-                            }
-                            _ => (msg.role.to_string(), false, ""),
-                        };
-                        let header_text = text(header).size(13).color(CRABOT_TEXT);
-                        let ts_text = SelectableText::new(&msg.timestamp)
-                            .size(11)
-                            .style(sel_secondary);
-                        let mut col = if is_tool {
-                            let header_row =
-                                row![header_text, Space::new().width(Length::Fill), ts_text,];
-                            column![
-                                mouse_area(header_row)
-                                    .on_press(Message::ToggleToolExpand(i))
-                                    .interaction(mouse::Interaction::Pointer),
-                            ]
-                        } else {
-                            column![row![header_text, Space::new().width(Length::Fill), ts_text,],]
-                        };
-                        match &msg.body {
-                            TurnBody::Text(TextContent { content, reasoning }) => {
-                                if let Some(reasoning) = reasoning {
-                                    col = col.push(
-                                        SelectableText::new(reasoning)
-                                            .size(13)
-                                            .style(sel_secondary),
-                                    );
-                                }
-                                if selectable_msgs.contains(&i) {
-                                    col = col.push(
-                                        SelectableText::new(content).size(14).style(sel_default),
-                                    );
-                                } else if let Some(md) = &msg.content_md {
-                                    let mut md_style = markdown::Style::from(theme.clone());
-                                    md_style.inline_code_highlight = Highlight {
-                                        background: Background::Color(Color::TRANSPARENT),
-                                        border: Border::default(),
-                                    };
-                                    md_style.inline_code_padding = 0.into();
-                                    md_style.inline_code_color = color_text(theme);
-                                    col = col.push(
-                                        mouse_area(
-                                            markdown::view(
-                                                md.items(),
-                                                markdown::Settings::with_text_size(14, md_style),
-                                            )
-                                            .map(|_| Message::Noop),
-                                        )
-                                        .on_double_click(Message::ToggleSelectableMode(Some(i))),
-                                    );
-                                } else {
-                                    col = col.push(
-                                        SelectableText::new(content).size(14).style(sel_default),
-                                    );
-                                }
-                            }
-                            TurnBody::Tool(ToolResult { args, result, .. }) => {
-                                if is_edit_or_write {
-                                    if expanded {
-                                        col = col.extend(args_rows(args));
-                                        col = col.push(result_text(result));
-                                    } else if let Some(row) = path_arg_row(args) {
-                                        col = col.push(row);
-                                    }
-                                } else {
-                                    col = col.extend(args_rows(args));
-                                    if expanded {
-                                        col = col.push(result_text(result));
-                                    }
-                                }
-                            }
-                        }
-                        col.spacing(4).width(Fill)
-                    })
-                    .width(Fill)
-                    .padding(8)
-                    .style(|_theme: &Theme| container::Style::default())
-                    .into()
-                })
-                .collect();
-            let mut group = column(turn_blocks).spacing(8);
-            if let Some(title) = title_row {
-                group = column![title, group].spacing(4);
-            }
-            container(group)
-                .style(|_theme: &Theme| container::Style::default())
-                .into()
-        })
-        .collect();
-
-    container(column![
-        session_header(current_prompt),
-        scrollable(column(dialog_blocks).spacing(16).padding(10),)
-            .height(Fill)
-            .id(MESSAGE_SCROLL.clone())
-            .on_scroll(Message::MessageViewScrolled),
-        status_line(status, streaming),
-    ])
-    .width(Fill)
-    .height(Fill)
-    .style(pane_center)
-    .into()
-}
-
-/// Label-value row with the value right-aligned via a fill spacer.
-fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
-    row![
-        text(label).size(16),
-        Space::new().width(Length::Fill),
-        text(value).size(16),
-    ]
-    .into()
-}
-
-/// Format cost value.
-/// Small amounts get 4 decimal places, larger amounts get 2 decimal places.
-fn format_cost(amount: f64) -> String {
-    if amount < 0.01 {
-        format!("{:.4}", amount)
-    } else {
-        format!("{:.2}", amount)
-    }
-}
-
-fn right_pane<'a>(
-    pane_width: f32,
-    context_window: Option<u64>,
-    usage: &genai::chat::Usage,
-    amount: &model::TokenAmount,
-    cost: f64,
-    modified_files: &'a [String],
-    show_restart: bool,
-) -> Element<'a, Message> {
-    let mut col = column![].spacing(8);
-
-    let prompt_tokens = usage.prompt_tokens.unwrap_or(0);
-    let cached_tokens = usage
-        .prompt_tokens_details
-        .as_ref()
-        .and_then(|d| d.cached_tokens)
-        .unwrap_or(0);
-
-    col = col
-        .push(rule::horizontal(1))
-        .push(text("Context window").size(14).font(Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        }))
-        .push(token_row("Prompt tokens:", format!("{prompt_tokens}")))
-        .push(token_row("Cached tokens:", format!("{cached_tokens}")));
-
-    if let Some(cw) = context_window.filter(|&cw| cw > 0) {
-        let pct = ((prompt_tokens as u64) * 100).checked_div(cw).unwrap_or(0);
-        col = col
-            .push(token_row("window size:", format!("{cw}")))
-            .push(token_row("Window used:", format!("{pct}%")));
-    }
-
-    // ── cumulative token usage and cost ───────────────────────────────────────────
-    col = col
-        .push(rule::horizontal(1))
-        .push(text("Token Usage").size(14).font(Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        }))
-        .push(token_row("Input tokens:", format!("{}", amount.input)))
-        .push(token_row("Cached tokens:", format!("{}", amount.cached)))
-        .push(token_row("Output tokens:", format!("{}", amount.output)))
-        .push(token_row("Session cost:", format_cost(cost)));
-
-    // ── modified files ──
-    if !modified_files.is_empty() {
-        let files: Vec<Element<'_, Message>> = modified_files
-            .iter()
-            .map(|p| {
-                container(SelectableText::new(p.as_str()).size(12).style(sel_primary))
-                    .padding([1, 0])
-                    .into()
-            })
-            .collect();
-        let files_col = column(files).spacing(2);
-        col = col
-            .push(rule::horizontal(1))
-            .push(text("Modified Files").size(14).font(Font {
-                weight: font::Weight::Bold,
-                ..Font::DEFAULT
-            }))
-            .push(files_col);
-    }
-
-    if show_restart {
-        col = col.push(Space::new().height(Fill)).push(
-            container(
-                button(text("Restart").size(14))
-                    .on_press(Message::Restart)
-                    .style(primary_button)
-                    .width(Length::Shrink),
-            )
-            .width(Fill)
-            .align_x(alignment::Horizontal::Center),
-        );
-    }
-
-    container(scrollable(container(col.padding(20))))
-        .width(Length::Fixed(pane_width))
-        .height(Fill)
-        .style(pane_side)
-        .into()
-}
-
-// ── pane styles ───────────────────────────────────────────────────
-
-fn pane_side(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(CRABOT_PANEL.into()),
-        ..container::Style::default()
-    }
-}
-
-fn pane_center(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::WHITE.into()),
-        ..container::Style::default()
-    }
-}
-
-// ── session header ──────────────────────────────────────────────────
-
-/// Header bar at the top of the center pane: prompt text or "New session",
-/// plus copy-to-clipboard and resend action icons on the far right.
-fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
-    let header = row![
-        container(SelectableText::new(prompt).size(14).style(|theme: &Theme| {
-            let p = theme.extended_palette();
-            SelectionStyle {
-                color: Some(CRABOT_TEXT),
-                selection: p.primary.base.color,
-            }
-        }),)
-        .width(Length::Fill)
-        .clip(true),
-        button(text("▣").size(14))
-            .on_press(Message::CopySession)
-            .padding(4)
-            .style(icon_button_style),
-        button(text("↻").size(14))
-            .on_press(Message::ResendLastPrompt)
-            .padding(4)
-            .style(icon_button_style),
-    ];
-
-    container(header)
-        .width(Fill)
-        .padding([8, 12])
-        .style(|_theme: &Theme| container::Style {
-            background: Some(CRABOT_SURFACE.into()),
-            ..container::Style::default()
-        })
-        .into()
-}
-
-/// Subtle icon-button style — transparent background, dim text.
-fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    let p = theme.extended_palette();
-    let mut style = button::Style::default();
-    match status {
-        button::Status::Hovered | button::Status::Pressed => {
-            style.background = Some(p.secondary.weak.color.into());
-        }
-        _ => {}
-    }
-    style.text_color = CRABOT_TEXT;
-    style
-}
-
-// ── status line ───────────────────────────────────────────────────
-
-fn status_line<'a>(status_text: &'a str, streaming: StreamState) -> Element<'a, Message> {
-    let mut row = row![text(status_text).size(12).color(CRABOT_TEXT_MUTED),]
-        .align_y(iced::Alignment::Center)
-        .spacing(8);
-    if streaming != StreamState::Idle {
-        row = row.push(
-            button(text("⏹ Stop").size(11))
-                .on_press(Message::StopStream)
-                .padding([2, 8])
-                .style(icon_button_style),
-        );
-    }
-    container(row)
-        .width(Fill)
-        .align_x(alignment::Horizontal::Center)
-        .padding([4, 10])
-        .style(|_theme: &Theme| container::Style {
-            background: Some(CRABOT_SURFACE.into()),
-            ..container::Style::default()
-        })
-        .into()
-}
-
-// ── button styles ───────────────────────────────────────────────
-
-pub fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
-    let base = button::Style {
-        background: Some(CRABOT_PRIMARY.into()),
-        text_color: Color::WHITE,
-        border: Border::default().rounded(6),
-        ..button::Style::default()
-    };
-    match status {
-        button::Status::Active => base,
-        button::Status::Hovered => button::Style {
-            background: Some(CRABOT_PRIMARY_HOVER.into()),
-            ..base
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(CRABOT_PRIMARY_PRESSED.into()),
-            ..base
-        },
-        button::Status::Disabled => button::Style {
-            background: Some(CRABOT_PRIMARY.scale_alpha(0.5).into()),
-            ..base
-        },
-    }
-}
-
-pub fn primary_toggler(_theme: &Theme, status: toggler::Status) -> toggler::Style {
-    let base = toggler::Style {
-        background: CRABOT_SURFACE.into(),
-        background_border_width: 1.0,
-        background_border_color: Color::from_rgb8(0xC0, 0xC0, 0xC0),
-        foreground: Color::WHITE.into(),
-        foreground_border_width: 0.0,
-        foreground_border_color: Color::TRANSPARENT,
-        text_color: Some(CRABOT_TEXT),
-        border_radius: None,
-        padding_ratio: 0.3,
-    };
-    match status {
-        toggler::Status::Active { is_toggled }
-        | toggler::Status::Hovered { is_toggled }
-        | toggler::Status::Disabled { is_toggled } => {
-            let mut style = base;
-            if is_toggled {
-                style.background = CRABOT_PRIMARY.into();
-                style.background_border_color = CRABOT_PRIMARY;
-            }
-            if matches!(status, toggler::Status::Hovered { .. }) {
-                style.background = if is_toggled {
-                    CRABOT_PRIMARY_HOVER.into()
-                } else {
-                    Color::from_rgb8(0xD8, 0xD8, 0xD8).into()
-                };
-                style.background_border_color = if is_toggled {
-                    CRABOT_PRIMARY_HOVER
-                } else {
-                    Color::from_rgb8(0xA8, 0xA8, 0xA8)
-                };
-            }
-            style
-        }
-    }
-}
-
-pub fn primary_checkbox(_theme: &Theme, status: checkbox::Status) -> checkbox::Style {
-    let base = checkbox::Style {
-        background: Color::WHITE.into(),
-        icon_color: Color::WHITE,
-        border: Border::default()
-            .rounded(4)
-            .width(1)
-            .color(Color::from_rgb8(0xB0, 0xB0, 0xB0)),
-        text_color: Some(CRABOT_TEXT),
-    };
-    match status {
-        checkbox::Status::Active { is_checked }
-        | checkbox::Status::Hovered { is_checked }
-        | checkbox::Status::Disabled { is_checked } => {
-            let mut style = base;
-            if is_checked {
-                style.background = CRABOT_PRIMARY.into();
-                style.border = Border::default().rounded(4).width(1).color(CRABOT_PRIMARY);
-                style.icon_color = Color::WHITE;
-            }
-            if matches!(status, checkbox::Status::Hovered { .. }) && is_checked {
-                style.background = CRABOT_PRIMARY_HOVER.into();
-                style.border = Border::default()
-                    .rounded(4)
-                    .width(1)
-                    .color(CRABOT_PRIMARY_HOVER);
-            }
-            style
-        }
-    }
-}
-
-fn color_text(theme: &Theme) -> iced::Color {
-    theme.palette().text
-}
-fn color_primary(theme: &Theme) -> iced::Color {
-    theme.palette().primary
-}
-fn color_secondary(theme: &Theme) -> iced::Color {
-    theme.extended_palette().secondary.base.color
-}
-
-// ── selectable text styles ────────────────────────────────────────
-
-fn sel_default(theme: &Theme) -> SelectionStyle {
-    SelectionStyle {
-        color: Some(color_text(theme)),
-        selection: color_primary(theme),
-    }
-}
-
-fn sel_primary(theme: &Theme) -> SelectionStyle {
-    SelectionStyle {
-        color: Some(color_primary(theme)),
-        selection: color_primary(theme),
-    }
-}
-
-fn sel_secondary(theme: &Theme) -> SelectionStyle {
-    SelectionStyle {
-        color: Some(color_secondary(theme)),
-        selection: color_secondary(theme),
-    }
-}
-
-// ── tool message rendering helpers ────────────────────────────────
-
-/// Single tool-argument key-value row.
-fn arg_row<'a>(key: &'a str, value: String) -> Element<'a, Message> {
-    row![
-        SelectableText::new(key).size(12).style(sel_primary),
-        Space::new().width(8),
-        SelectableText::new(value).size(12).style(sel_secondary),
-    ]
-    .spacing(0)
-    .into()
-}
-
-/// Embedded table for the `edits` argument — each edit becomes a labelled block.
-fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, Message> {
-    let header = row![
-        SelectableText::new(key).size(12).style(sel_primary),
-        Space::new().width(8),
-        SelectableText::new(format!("{}", edits.len()))
-            .size(12)
-            .style(sel_secondary),
-    ]
-    .spacing(0);
-
-    let rows: Vec<Element<'_, Message>> = edits
-        .iter()
-        .enumerate()
-        .flat_map(|(i, edit)| {
-            let ep: EditParam = serde_json::from_value(edit.clone()).unwrap_or(EditParam {
-                old_text: String::new(),
-                new_text: String::new(),
-            });
-            let EditParam { old_text, new_text } = ep;
-            let idx = row![
-                SelectableText::new(format!("#{}", i))
-                    .size(11)
-                    .style(sel_secondary),
-                text(":").size(11).style(|t| text::Style {
-                    color: Some(color_secondary(t))
-                }),
-            ]
-            .spacing(0);
-            let old_row = row![
-                Space::new().width(12),
-                text("-").size(12).style(|t| text::Style {
-                    color: Some(color_secondary(t))
-                }),
-                Space::new().width(4),
-                SelectableText::new(old_text).size(12).style(sel_secondary),
-            ]
-            .spacing(0);
-            let new_row = row![
-                Space::new().width(12),
-                text("+").size(12).style(|t| text::Style {
-                    color: Some(color_primary(t))
-                }),
-                Space::new().width(4),
-                SelectableText::new(new_text).size(12).style(sel_primary),
-            ]
-            .spacing(0);
-            [idx.into(), old_row.into(), new_row.into()]
-        })
-        .collect();
-
-    column![header, column(rows).spacing(0)].spacing(2).into()
-}
-
-/// All tool-argument rows.
-fn args_rows(args: &serde_json::Value) -> Vec<Element<'_, Message>> {
-    let Some(map) = args.as_object() else {
-        return Vec::new();
-    };
-    map.iter()
-        .map(|(k, v)| {
-            if k == "edits"
-                && let Some(arr) = v.as_array()
-            {
-                return edits_table(k, arr);
-            }
-            let val = v
-                .as_str()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| v.to_string());
-            arg_row(k, val)
-        })
-        .collect()
-}
-
-/// Only the "path" argument row, when present.
-fn path_arg_row(args: &serde_json::Value) -> Option<Element<'_, Message>> {
-    let path = args.as_object()?.get("path")?.as_str()?;
-    Some(arg_row("path", path.to_string()))
-}
-
-/// Tool result text (success or error).
-fn result_text(result: &Result<String, String>) -> Element<'_, Message> {
-    let display = result.clone().unwrap_or_else(|e| e);
-    let style = if result.is_ok() {
-        sel_default
-    } else {
-        sel_secondary
-    };
-    SelectableText::new(display).size(14).style(style).into()
 }
