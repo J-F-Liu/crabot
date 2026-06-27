@@ -162,7 +162,6 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         }
     }
 
-    let total_lines = lines_skipped + lines_emitted + remaining;
     let end_line = start + lines_emitted; // last 1-based line emitted
 
     // ── edge case: first requested line exceeds byte limit ───────────
@@ -171,7 +170,7 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         let line = next_line.as_deref().unwrap_or("");
         let approx_kb = (line.len() + 7) / 1024;
         return Ok(format!(
-            "[Line {offset} is ~{approx_kb}KB, exceeds {}KB limit. Use bash: sed -n '{offset}p' {display_path}]\n",
+            "[Line {offset} is ~{approx_kb}KB, exceeds {}KB limit — use sed -n '{offset}p' {display_path}]\n",
             DEFAULT_MAX_BYTES / 1024,
         ));
     }
@@ -194,24 +193,17 @@ pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<Strin
         let approx_kb = (overflowing.len() + 7) / 1024;
         let _ = writeln!(
             &mut out,
-            "[Line {next_line_num} is ~{approx_kb}KB, exceeds {}KB limit. Use bash: sed -n '{next_line_num}p' {display_path}]",
+            "[Line {next_line_num} is ~{approx_kb}KB, exceeds {}KB limit — use sed -n '{next_line_num}p' {display_path}]",
             DEFAULT_MAX_BYTES / 1024,
         );
     }
 
-    if limit_kind == Some(LimitKind::Lines) && remaining > 0 {
+    if limit_kind == Some(LimitKind::Lines) && remaining > 0 && user_limit.is_none() {
         let next_offset = end_line + 1;
-        if user_limit == Some(lines_emitted) {
-            let _ = writeln!(
-                &mut out,
-                "[{remaining} more lines in file. Use offset={next_offset} to continue.]"
-            );
-        } else {
-            let _ = writeln!(
-                &mut out,
-                "[Showing lines {offset}-{end_line} of {total_lines}. Use offset={next_offset} to continue.]"
-            );
-        }
+        let _ = writeln!(
+            &mut out,
+            "[{remaining} more lines in file. Use offset={next_offset} to continue.]"
+        );
     }
 
     Ok(out)
