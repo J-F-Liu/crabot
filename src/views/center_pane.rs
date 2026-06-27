@@ -1,17 +1,22 @@
 use iced::widget;
 use iced::{
-    Background, Border, Color, Element, Fill, Font, Length, Task, Theme,
+    Background, Border, Color, Element, Fill, Font, Length, Padding, Task, Theme,
     advanced::text::Highlight,
     alignment, font,
     widget::{Space, button, column, container, markdown, mouse_area, row, scrollable, text},
 };
 use iced_selection::Text as SelectableText;
 
-use super::styles::{icon_button_style, pane_center, sel_default, sel_secondary};
-use super::theme::{CRABOT_SURFACE, CRABOT_TEXT, CRABOT_TEXT_MUTED, color_text};
+use super::styles::{
+    assistant_bubble_style, icon_button_style, pane_center, role_badge_style, sel_default,
+    sel_secondary, tool_bubble_style, user_bubble_style,
+};
+use super::theme::{
+    CRABOT_BORDER, CRABOT_PRIMARY, CRABOT_TEXT, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text,
+};
 use super::tool_message::{args_rows, path_arg_row, result_text};
 use crate::Message;
-use crate::chat::{Dialog, TextContent, ToolResult, TurnBody};
+use crate::chat::{Dialog, TextContent, ToolResult, Turn, TurnBody};
 use crate::llm::StreamState;
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
@@ -24,152 +29,325 @@ pub(crate) fn scroll_to_end() -> Task<Message> {
     ))
 }
 
+// ── dialog styles ─────────────────────────────────────────────────
+
+const DIALOG_BG: Color = Color::WHITE;
+const DIALOG_RADIUS: f32 = 10.0;
+
+fn dialog_container_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(DIALOG_BG.into()),
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: DIALOG_RADIUS.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+fn bordered_bar_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::WHITE.into()),
+        border: Border {
+            color: CRABOT_BORDER,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Small turn-count pill.
+fn turn_count_badge(count: usize) -> Element<'static, Message> {
+    container(
+        text(format!(
+            "{} turn{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        ))
+        .size(10),
+    )
+    .padding([2, 8])
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Color::from_rgb8(0xE0, 0xE0, 0xE0).into()),
+        border: Border {
+            radius: 10.0.into(),
+            ..Default::default()
+        },
+        text_color: Some(CRABOT_TEXT_MUTED),
+        ..container::Style::default()
+    })
+    .into()
+}
+
+// ── turn block builders ────────────────────────────────────────────
+
+/// Build the colored role badge shown in a turn header.
+fn role_badge(badge_text: String, style_label: &'static str) -> Element<'static, Message> {
+    container(text(badge_text).size(11).font(Font {
+        weight: font::Weight::Bold,
+        ..Font::DEFAULT
+    }))
+    .padding([3, 8])
+    .style(role_badge_style(style_label))
+    .into()
+}
+
+/// Wrap a turn's content in its role-colored bubble.
+fn wrap_bubble<'a>(
+    content: impl Into<Element<'a, Message>>,
+    style: fn(&Theme) -> container::Style,
+) -> Element<'a, Message> {
+    container(content)
+        .width(Fill)
+        .padding([8, 12])
+        .style(style)
+        .into()
+}
+
+/// Build a complete Tool turn block (header + body + bubble).
+fn tool_turn_block<'a>(
+    msg: &'a Turn,
+    i: usize,
+    expanded_turns: &std::collections::HashSet<usize>,
+) -> Element<'a, Message> {
+    let TurnBody::Tool(ToolResult {
+        name, args, result, ..
+    }) = &msg.body
+    else {
+        unreachable!("tool_turn_block called on non-Tool turn")
+    };
+
+    let expanded = expanded_turns.contains(&i);
+    let indicator = if expanded { "▼" } else { "⏵" };
+    let badge = role_badge(format!("Tool - {name}"), "Tool");
+    let ts_text = text(&msg.timestamp).size(11).color(CRABOT_TEXT_MUTED);
+    let mut content_col = column![].spacing(8).width(Fill);
+
+    // ── header: badge + status icon + timestamp ──
+    let (status_icon, status_color) = match result {
+        Ok(_) => ("✓", super::theme::CRABOT_SUCCESS),
+        Err(_) => ("✗", super::theme::CRABOT_DANGER),
+    };
+    let tool_header = row![
+        badge,
+        text(indicator).size(10).color(CRABOT_TOOL_ACCENT),
+        Space::new().width(Length::Fill),
+        text(status_icon).size(12).color(status_color).font(Font {
+            weight: font::Weight::Bold,
+            ..Font::DEFAULT
+        }),
+        ts_text,
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+    content_col = content_col.push(
+        mouse_area(tool_header)
+            .on_press(Message::ToggleTurnExpand(i))
+            .interaction(iced::mouse::Interaction::Pointer),
+    );
+
+    // ── body: args + result ──
+    let is_edit_or_write = name == "edit" || name == "write";
+    if expanded {
+        for r in args_rows(args) {
+            content_col = content_col.push(r);
+        }
+        content_col = content_col.push(result_text(result));
+    } else if is_edit_or_write {
+        if let Some(row) = path_arg_row(args) {
+            content_col = content_col.push(row);
+        }
+    } else {
+        for r in args_rows(args) {
+            content_col = content_col.push(r);
+        }
+    }
+
+    wrap_bubble(content_col, tool_bubble_style)
+}
+
+/// Build a complete Text turn block (header + body + bubble).
+fn text_turn_block<'a>(
+    msg: &'a Turn,
+    i: usize,
+    expanded_turns: &std::collections::HashSet<usize>,
+    selectable_msgs: &std::collections::HashSet<usize>,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    let TurnBody::Text(TextContent { content, reasoning }) = &msg.body else {
+        unreachable!("text_turn_block called on non-Text turn")
+    };
+
+    let (role_label, bubble_style): (&'static str, fn(&Theme) -> container::Style) = match msg.role {
+        genai::chat::ChatRole::User => ("User", user_bubble_style),
+        genai::chat::ChatRole::Assistant => ("Assistant", assistant_bubble_style),
+        _ => ("System", assistant_bubble_style),
+    };
+    let badge = role_badge(role_label.to_string(), role_label);
+    let ts_text = text(&msg.timestamp).size(11).color(CRABOT_TEXT_MUTED);
+    let mut content_col = column![].spacing(8).width(Fill);
+
+    // ── header: badge + (indicator if reasoning) + timestamp ──
+    if reasoning.is_some() {
+        // Reasoning by default is expanded so inverse membership.
+        let expanded = !expanded_turns.contains(&i);
+        let indicator = if expanded { "▼" } else { "⏵" };
+        let header = row![
+            badge,
+            text(indicator).size(10).color(CRABOT_PRIMARY),
+            Space::new().width(Length::Fill),
+            ts_text,
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        content_col = content_col.push(
+            mouse_area(header)
+                .on_press(Message::ToggleTurnExpand(i))
+                .interaction(iced::mouse::Interaction::Pointer),
+        );
+    } else {
+        let header =
+            row![badge, Space::new().width(Length::Fill), ts_text].align_y(iced::Alignment::Center);
+        content_col = content_col.push(header);
+    }
+
+    // ── body: reasoning + content ──
+    if let Some(reasoning) = reasoning {
+        // Default expanded; badge-row click toggles collapse.
+        if !expanded_turns.contains(&i) {
+            content_col =
+                content_col.push(SelectableText::new(reasoning).size(13).style(sel_secondary));
+        }
+    }
+    if selectable_msgs.contains(&i) {
+        content_col = content_col.push(SelectableText::new(content).size(14).style(sel_default));
+    } else if let Some(md) = &msg.content_md {
+        let mut md_style = markdown::Style::from(theme.clone());
+        md_style.inline_code_highlight = Highlight {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+        };
+        md_style.inline_code_padding = 0.into();
+        md_style.inline_code_color = color_text(theme);
+        content_col = content_col.push(
+            mouse_area(
+                markdown::view(md.items(), markdown::Settings::with_text_size(14, md_style))
+                    .map(|_| Message::Noop),
+            )
+            .on_double_click(Message::ToggleSelectableMode(Some(i))),
+        );
+    } else {
+        content_col = content_col.push(SelectableText::new(content).size(14).style(sel_default));
+    }
+
+    wrap_bubble(content_col, bubble_style)
+}
+
+/// Build a single turn block (header + body) wrapped in its role-colored bubble.
+fn turn_block<'a>(
+    msg: &'a Turn,
+    i: usize,
+    expanded_turns: &'a std::collections::HashSet<usize>,
+    selectable_msgs: &std::collections::HashSet<usize>,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    match &msg.body {
+        TurnBody::Tool(_) => tool_turn_block(msg, i, expanded_turns),
+        TurnBody::Text(_) => text_turn_block(msg, i, expanded_turns, selectable_msgs, theme),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn center_pane<'a>(
     current_prompt: &'a str,
     dialogs: &'a [Dialog],
-    expanded_tools: &'a std::collections::HashSet<usize>,
+    expanded_turns: &'a std::collections::HashSet<usize>,
+    expanded_dialogs: &'a std::collections::HashSet<usize>,
     status: &'a str,
     theme: &'a Theme,
     streaming: StreamState,
     selectable_msgs: &std::collections::HashSet<usize>,
 ) -> Element<'a, Message> {
-    // Flatten dialogs into turns with a running flat index.
+    // Flatten dialogs into turns with a running flat index per dialog.
     let mut flat_idx: usize = 0;
     let dialog_blocks: Vec<Element<'_, Message>> = dialogs
         .iter()
-        .map(|dialog| {
-            let title_row: Option<Element<'_, Message>> = if dialog.title.is_empty() {
-                None
+        .enumerate()
+        .map(|(di, dialog)| {
+            let collapsed = !expanded_dialogs.contains(&di);
+            let indicator = if collapsed { "⊞" } else { "⊟" };
+            let title = if dialog.title.is_empty() {
+                format!("Dialog {}", di + 1)
             } else {
-                Some(
-                    container(text(&dialog.title).size(13).font(Font {
-                        weight: font::Weight::Bold,
-                        ..Font::DEFAULT
-                    }))
-                    .padding([4, 8])
-                    .style(|_theme: &Theme| container::Style {
-                        background: Some(CRABOT_SURFACE.into()),
-                        ..container::Style::default()
-                    })
-                    .into(),
-                )
+                dialog.title.clone()
             };
-            let turn_blocks: Vec<Element<'_, Message>> = dialog
-                .turns
-                .iter()
-                .map(|msg| {
-                    let i = flat_idx;
-                    flat_idx += 1;
-                    container({
-                        let is_tool = matches!(&msg.body, TurnBody::Tool(_));
-                        let expanded = is_tool && expanded_tools.contains(&i);
-                        let indicator = if is_tool {
-                            if expanded { "▼" } else { "▶" }
-                        } else {
-                            ""
-                        };
-                        let (header, is_edit_or_write, _) = match &msg.body {
-                            TurnBody::Tool(ToolResult { name, result, .. }) => {
-                                let status_icon = match result {
-                                    Ok(_) => " ✓",
-                                    Err(_) => " ✗",
-                                };
-                                let hdr =
-                                    format!("{} {} — {}{}", indicator, msg.role, name, status_icon);
-                                let is_ew = name == "edit" || name == "write";
-                                (hdr, is_ew, name.as_str())
-                            }
-                            _ => (msg.role.to_string(), false, ""),
-                        };
-                        let header_text = text(header).size(13).color(CRABOT_TEXT);
-                        let ts_text = SelectableText::new(&msg.timestamp)
-                            .size(11)
-                            .style(sel_secondary);
-                        let mut col = if is_tool {
-                            let header_row =
-                                row![header_text, Space::new().width(Length::Fill), ts_text,];
-                            column![
-                                mouse_area(header_row)
-                                    .on_press(Message::ToggleToolExpand(i))
-                                    .interaction(iced::mouse::Interaction::Pointer),
-                            ]
-                        } else {
-                            column![row![header_text, Space::new().width(Length::Fill), ts_text,],]
-                        };
-                        match &msg.body {
-                            TurnBody::Text(TextContent { content, reasoning }) => {
-                                if let Some(reasoning) = reasoning {
-                                    col = col.push(
-                                        SelectableText::new(reasoning)
-                                            .size(13)
-                                            .style(sel_secondary),
-                                    );
-                                }
-                                if selectable_msgs.contains(&i) {
-                                    col = col.push(
-                                        SelectableText::new(content).size(14).style(sel_default),
-                                    );
-                                } else if let Some(md) = &msg.content_md {
-                                    let mut md_style = markdown::Style::from(theme.clone());
-                                    md_style.inline_code_highlight = Highlight {
-                                        background: Background::Color(Color::TRANSPARENT),
-                                        border: Border::default(),
-                                    };
-                                    md_style.inline_code_padding = 0.into();
-                                    md_style.inline_code_color = color_text(theme);
-                                    col = col.push(
-                                        mouse_area(
-                                            markdown::view(
-                                                md.items(),
-                                                markdown::Settings::with_text_size(14, md_style),
-                                            )
-                                            .map(|_| Message::Noop),
-                                        )
-                                        .on_double_click(Message::ToggleSelectableMode(Some(i))),
-                                    );
-                                } else {
-                                    col = col.push(
-                                        SelectableText::new(content).size(14).style(sel_default),
-                                    );
-                                }
-                            }
-                            TurnBody::Tool(ToolResult { args, result, .. }) => {
-                                if is_edit_or_write {
-                                    if expanded {
-                                        col = col.extend(args_rows(args));
-                                        col = col.push(result_text(result));
-                                    } else if let Some(row) = path_arg_row(args) {
-                                        col = col.push(row);
-                                    }
-                                } else {
-                                    col = col.extend(args_rows(args));
-                                    if expanded {
-                                        col = col.push(result_text(result));
-                                    }
-                                }
-                            }
-                        }
-                        col.spacing(4).width(Fill)
-                    })
-                    .width(Fill)
-                    .padding(8)
-                    .style(|_theme: &Theme| container::Style::default())
-                    .into()
-                })
-                .collect();
-            let mut group = column(turn_blocks).spacing(8);
-            if let Some(title) = title_row {
-                group = column![title, group].spacing(4);
+            let turn_count = dialog.turns.len();
+
+            // ── clickable header ──────────────────────────────────
+            let title_row = row![
+                text(indicator).size(10).color(CRABOT_PRIMARY),
+                text(title).size(13).font(Font {
+                    weight: font::Weight::Bold,
+                    ..Font::DEFAULT
+                }),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+
+            let mut header_row = row![title_row]
+                .spacing(10)
+                .align_y(iced::Alignment::Center)
+                .width(Fill);
+            if collapsed && turn_count > 0 {
+                header_row = header_row.push(Space::new().width(Length::Fill));
+                header_row = header_row.push(turn_count_badge(turn_count));
             }
-            container(group)
-                .style(|_theme: &Theme| container::Style::default())
+
+            let header = mouse_area(
+                container(header_row)
+                    .width(Fill)
+                    .padding([8, 12]),
+            )
+            .on_press(Message::ToggleDialogExpand(di))
+            .interaction(iced::mouse::Interaction::Pointer);
+
+            // ── turn blocks (only built when expanded) ────────────
+            let turn_blocks: Vec<Element<'_, Message>> = if collapsed {
+                flat_idx += dialog.turns.len();
+                Vec::new()
+            } else {
+                dialog
+                    .turns
+                    .iter()
+                    .map(|msg| {
+                        let i = flat_idx;
+                        flat_idx += 1;
+                        turn_block(msg, i, expanded_turns, selectable_msgs, theme)
+                    })
+                    .collect()
+            };
+
+            // ── assemble dialog container ──────────────────────────
+            let mut content = column![header];
+            if !turn_blocks.is_empty() {
+                content = content.push(
+                    container(column(turn_blocks).spacing(8))
+                        .padding(Padding::new(10.0).top(8.0))
+                        .width(Fill),
+                );
+            }
+            container(content.spacing(0).width(Fill))
+                .style(dialog_container_style)
+                .clip(true)
                 .into()
         })
         .collect();
 
     container(column![
         session_header(current_prompt),
-        scrollable(column(dialog_blocks).spacing(16).padding(10),)
+        scrollable(column(dialog_blocks).spacing(18).padding(14),)
             .height(Fill)
             .id(MESSAGE_SCROLL.clone())
             .on_scroll(Message::MessageViewScrolled),
@@ -200,21 +378,20 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
         .clip(true),
         button(text("▣").size(14))
             .on_press(Message::CopySession)
-            .padding(4)
+            .padding(6)
             .style(icon_button_style),
         button(text("↻").size(14))
             .on_press(Message::ResendLastPrompt)
-            .padding(4)
+            .padding(6)
             .style(icon_button_style),
-    ];
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
 
     container(header)
         .width(Fill)
-        .padding([8, 12])
-        .style(|_theme: &Theme| container::Style {
-            background: Some(CRABOT_SURFACE.into()),
-            ..container::Style::default()
-        })
+        .padding([10, 14])
+        .style(bordered_bar_style)
         .into()
 }
 
@@ -228,17 +405,14 @@ fn status_line<'a>(status_text: &'a str, streaming: StreamState) -> Element<'a, 
         row = row.push(
             button(text("⏹ Stop").size(11))
                 .on_press(Message::StopStream)
-                .padding([2, 8])
+                .padding([4, 10])
                 .style(icon_button_style),
         );
     }
     container(row)
         .width(Fill)
         .align_x(alignment::Horizontal::Center)
-        .padding([4, 10])
-        .style(|_theme: &Theme| container::Style {
-            background: Some(CRABOT_SURFACE.into()),
-            ..container::Style::default()
-        })
+        .padding([6, 12])
+        .style(bordered_bar_style)
         .into()
 }

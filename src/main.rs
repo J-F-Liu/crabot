@@ -147,8 +147,10 @@ struct App {
     /// placeholders begin; used by `handle_stream_done` to backfill captured
     /// content/reasoning into the right display messages.
     stream_start_index: usize,
-    /// Indices of tool-result messages whose result body is expanded.
-    expanded_tools: HashSet<usize>,
+    /// Indices of turns whose collapsible body (tool result / reasoning) is expanded.
+    expanded_turns: HashSet<usize>,
+    /// Indices of dialogs that are expanded.
+    expanded_dialogs: HashSet<usize>,
     /// Token usage from the most recent completed LLM response.
     last_usage: genai::chat::Usage,
     /// Last-sent user prompt text, displayed in the center-pane header.
@@ -205,7 +207,8 @@ pub enum Message {
     SelectWorkMode(WorkMode),
     NewSession,
     SendPrompt,
-    ToggleToolExpand(usize),
+    ToggleTurnExpand(usize),
+    ToggleDialogExpand(usize),
     StreamContent(String),
     StreamReasoning(String),
     StreamToolResult(ToolResult),
@@ -298,7 +301,8 @@ impl App {
             session: Session::new(model_for_session, workspace_for_session),
             streaming: StreamState::Idle,
             stream_start_index: 0,
-            expanded_tools: HashSet::new(),
+            expanded_turns: HashSet::new(),
+            expanded_dialogs: HashSet::new(),
             last_usage: genai::chat::Usage::default(),
             current_prompt: "New session".into(),
             show_restart,
@@ -513,14 +517,22 @@ impl App {
                 self.current_prompt = "New session".into();
                 self.last_usage = genai::chat::Usage::default();
                 self.modified_files.clear();
-                self.expanded_tools.clear();
+                self.expanded_turns.clear();
+                self.expanded_dialogs.clear();
                 self.selectable_msgs.clear();
             }
-            Message::ToggleToolExpand(idx) => {
-                if self.expanded_tools.contains(&idx) {
-                    self.expanded_tools.remove(&idx);
+            Message::ToggleTurnExpand(idx) => {
+                if self.expanded_turns.contains(&idx) {
+                    self.expanded_turns.remove(&idx);
                 } else {
-                    self.expanded_tools.insert(idx);
+                    self.expanded_turns.insert(idx);
+                }
+            }
+            Message::ToggleDialogExpand(idx) => {
+                if self.expanded_dialogs.contains(&idx) {
+                    self.expanded_dialogs.remove(&idx);
+                } else {
+                    self.expanded_dialogs.insert(idx);
                 }
             }
             Message::SendPrompt => {
@@ -536,6 +548,10 @@ impl App {
                 // Update session state with the selected model and workspace.
                 self.session.model = self.selected_model.clone();
                 self.session.workspace = self.system_prompt.workspace.1.clone();
+                // Auto-collapse all previous dialogs; keep the new one expanded.
+                let new_dialog_idx = self.session.dialogs.len();
+                self.expanded_dialogs.clear();
+                self.expanded_dialogs.insert(new_dialog_idx);
                 self.session.add_dialog(title);
                 self.session.push_turn(Turn::user(user_prompt.clone()));
 
@@ -544,6 +560,11 @@ impl App {
             Message::ResendLastPrompt => {
                 if self.streaming != StreamState::Idle || self.current_prompt == "New session" {
                     return Task::none();
+                }
+                // Collapse all other dialogs; keep the last one expanded during resend.
+                self.expanded_dialogs.clear();
+                if let Some(idx) = self.session.dialogs.len().checked_sub(1) {
+                    self.expanded_dialogs.insert(idx);
                 }
                 return self.start_dialog(None);
             }
@@ -917,8 +938,9 @@ impl App {
             divider(),
             center_pane(
                 &self.current_prompt,
-                self.session.dialogs_ref(),
-                &self.expanded_tools,
+                self.session.dialogs.as_slice(),
+                &self.expanded_turns,
+                &self.expanded_dialogs,
                 self.get_status(),
                 &self.theme,
                 self.streaming,

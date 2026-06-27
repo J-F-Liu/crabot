@@ -1,5 +1,5 @@
 use iced::{
-    Color, Element, Font, Length, Theme, font,
+    Border, Color, Element, Font, Length, Theme, font,
     widget::{button, checkbox, container, mouse_area, rule, toggler},
 };
 use iced_selection::text::Style as SelectionStyle;
@@ -151,8 +151,65 @@ pub(crate) fn icon_button_style(theme: &Theme, status: button::Status) -> button
         }
         _ => {}
     }
-    style.text_color = CRABOT_TEXT;
+    style.text_color = CRABOT_TEXT_MUTED;
     style
+}
+
+// ── message bubble styles ─────────────────────────────────────────
+
+pub(crate) fn user_bubble_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(CRABOT_USER_BG.into()),
+        border: Border {
+            color: CRABOT_USER_BG,
+            width: 0.0,
+            radius: 12.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+pub(crate) fn assistant_bubble_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(CRABOT_ASSISTANT_BG.into()),
+        border: Border {
+            color: CRABOT_ASSISTANT_BG,
+            width: 0.0,
+            radius: 12.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+pub(crate) fn tool_bubble_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(CRABOT_TOOL_BG.into()),
+        border: Border {
+            color: CRABOT_TOOL_BG,
+            width: 0.0,
+            radius: 8.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Small role badge (User / Assistant / Tool).
+pub(crate) fn role_badge_style(role: &str) -> impl Fn(&Theme) -> container::Style + '_ {
+    let (bg, fg) = match role {
+        "User" => (Color::from_rgb8(0x4A, 0x90, 0xD9), Color::WHITE),
+        "Assistant" => (Color::from_rgb8(0x1A, 0x9A, 0x8C), Color::WHITE),
+        "Tool" => (Color::from_rgb8(0xD4, 0xA7, 0x6A), Color::WHITE),
+        _ => (CRABOT_SURFACE, CRABOT_TEXT),
+    };
+    move |_theme: &Theme| container::Style {
+        background: Some(bg.into()),
+        text_color: Some(fg),
+        border: Border {
+            radius: 6.0.into(),
+            ..Default::default()
+        },
+        ..container::Style::default()
+    }
 }
 
 // ── selectable text styles ────────────────────────────────────────

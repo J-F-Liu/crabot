@@ -15,6 +15,15 @@ pub(crate) const CRABOT_PRIMARY_HOVER: Color = Color::from_rgb8(0x15, 0x8C, 0x7F
 pub(crate) const CRABOT_PRIMARY_PRESSED: Color = Color::from_rgb8(0x11, 0x7A, 0x70);
 pub(crate) const CRABOT_TEXT: Color = Color::from_rgb8(0x33, 0x33, 0x33);
 pub(crate) const CRABOT_TEXT_MUTED: Color = Color::from_rgb8(0x66, 0x66, 0x66);
+pub(crate) const CRABOT_BORDER: Color = Color::from_rgb8(0xE0, 0xE0, 0xE0);
+pub(crate) const CRABOT_USER_BG: Color = Color::from_rgb8(0xEF, 0xF5, 0xFD);
+pub(crate) const CRABOT_ASSISTANT_BG: Color = Color::from_rgb8(0xF3, 0xF7, 0xF6);
+pub(crate) const CRABOT_TOOL_BG: Color = Color::from_rgb8(0xFB, 0xFB, 0xF8);
+pub(crate) const CRABOT_TOOL_ACCENT: Color = Color::from_rgb8(0xD0, 0x8F, 0x33);
+pub(crate) const CRABOT_TOOL_CONTENT_BG: Color = Color::from_rgb8(0xFF, 0xF8, 0xF2);
+pub(crate) const CRABOT_TOOL_CONTENT_BORDER: Color = Color::from_rgb8(0xF4, 0xF0, 0xEC);
+pub(crate) const CRABOT_SUCCESS: Color = Color::from_rgb8(0x2E, 0xB6, 0x7F);
+pub(crate) const CRABOT_DANGER: Color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
 
 pub(crate) fn crabot_palette() -> iced::theme::Palette {
     iced::theme::Palette {

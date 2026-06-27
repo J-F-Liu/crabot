@@ -125,11 +125,6 @@ impl Session {
         self.dialogs.is_empty()
     }
 
-    /// Reference to all dialogs (for UI display).
-    pub fn dialogs_ref(&self) -> &[Dialog] {
-        &self.dialogs
-    }
-
     /// Reconstruct the `dialogs` Vec from the raw `history`.
     /// Called after loading a session from disk (since `dialogs` is `#[serde(skip)]`).
     pub fn rebuild_dialogs(&mut self) {
