@@ -36,7 +36,7 @@ pub struct SendConfig {
     pub thinking_level: String,
     pub workspace: std::path::PathBuf,
     pub system_prompt: String,
-    pub user_prompt: String,
+    pub user_prompt: Option<String>,
     pub tools: Vec<Tool>,
 }
 
@@ -74,12 +74,13 @@ pub async fn send_stream(
         .with_tools(tools);
     chat_req = chat_req.append_messages(history);
 
-    // Add the new user message.
-    let user_msg = ChatMessage::user(&user_prompt);
-    chat_req = chat_req.append_message(user_msg.clone());
-
-    // Accumulate genai messages for this turn (returned in Done).
-    let mut genai_messages: Vec<ChatMessage> = vec![user_msg];
+    // Optionally add a new user message (None when resending history as-is).
+    let mut genai_messages: Vec<ChatMessage> = Vec::new();
+    if let Some(prompt) = &user_prompt {
+        let user_msg = ChatMessage::user(prompt);
+        chat_req = chat_req.append_message(user_msg.clone());
+        genai_messages.push(user_msg);
+    }
 
     // Chat options: capture content for tool-call extraction, normalize reasoning.
     let mut chat_options = ChatOptions::default()

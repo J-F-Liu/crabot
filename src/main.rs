@@ -524,87 +524,28 @@ impl App {
                 }
             }
             Message::SendPrompt => {
-                if self.streaming != StreamState::Idle {
-                    return Task::none();
-                }
                 let content = self.user_prompt.text();
-                if content.trim().is_empty() {
+                if self.streaming != StreamState::Idle || content.trim().is_empty() {
                     return Task::none();
                 }
                 let title = Session::derive_title(&content);
-
                 self.current_prompt = content.clone();
-                self.auto_scroll.store(true, Ordering::Relaxed);
 
                 let user_prompt = UserPrompt::new(self.workmode, content).get_prompt();
-
-                let Some((provider, model)) = self.selected_model() else {
-                    return Task::none();
-                };
-                let (api_type, api_key, base_url, model_id) = (
-                    provider.api_type.clone(),
-                    provider.api_key.clone(),
-                    provider.base_url.clone(),
-                    model.id.clone(),
-                );
-
-                let system_prompt = self.system_prompt.get_prompt();
-                let tools = DevTool::build_tools(&self.dev_tools);
-                let workspace = self.system_prompt.workspace.1.clone();
-                let history = self.session.history.clone();
-
                 self.user_prompt.clear();
-                self.stream_start_index = self.session.total_turns();
-                self.streaming = StreamState::LlmLoading;
-
-                self.cancel_token.store(false, Ordering::Relaxed);
-                let cancel_token = self.cancel_token.clone();
-
-                // Update session state with the selected model and workspace before sending the prompt.
+                // Update session state with the selected model and workspace.
                 self.session.model = self.selected_model.clone();
-                self.session.workspace = workspace.clone();
+                self.session.workspace = self.system_prompt.workspace.1.clone();
                 self.session.add_dialog(title);
                 self.session.push_turn(Turn::user(user_prompt.clone()));
 
-                let config = llm::SendConfig {
-                    base_url,
-                    api_type,
-                    api_key,
-                    model_id,
-                    workspace,
-                    system_prompt,
-                    user_prompt,
-                    tools,
-                    thinking: self.selected_model.as_ref().is_some_and(|m| m.thinking),
-                    thinking_level: self
-                        .selected_model
-                        .as_ref()
-                        .map(|m| m.thinking_level.clone())
-                        .unwrap_or_default(),
-                };
-
-                return Task::batch([
-                    scroll_to_end(),
-                    Task::stream(iced::stream::channel(128, async move |sender| {
-                        let cancel = cancel_token.clone();
-                        let mut callback = {
-                            move |msg: Message| {
-                                let cancel = cancel.clone();
-                                let mut sender = sender.clone();
-                                async move {
-                                    let ok = sender.send(msg).await.is_ok();
-                                    if cancel.load(Ordering::Relaxed) {
-                                        false
-                                    } else {
-                                        ok
-                                    }
-                                }
-                                .boxed()
-                            }
-                        };
-                        llm::send_stream(config, history, &mut callback).await;
-                    })),
-                ]);
+                return self.start_dialog(Some(user_prompt));
+            }
+            Message::ResendLastPrompt => {
+                if self.streaming != StreamState::Idle || self.current_prompt == "New session" {
+                    return Task::none();
+                }
+                return self.start_dialog(None);
             }
             Message::StreamContent(chunk) => {
                 self.ensure_assistant_placeholder();
@@ -669,13 +610,6 @@ impl App {
             }
             Message::CopySession => {
                 return iced::clipboard::write(self.current_prompt.clone());
-            }
-            Message::ResendLastPrompt => {
-                if self.current_prompt != "New session" {
-                    self.user_prompt = TextArea::with_text(&self.current_prompt);
-                    self.focused = None;
-                    return Task::done(Message::SendPrompt);
-                }
             }
             Message::Restart => {
                 self.save_settings();
@@ -750,7 +684,6 @@ impl App {
         // reasoning via captured_reasoning_content at stream end.
         let mut genai_asst_iter = genai_messages
             .iter()
-            .skip(1) // skip user message
             .filter(|m| m.role == genai::chat::ChatRole::Assistant)
             .filter(|m| {
                 !m.content.joined_texts().unwrap_or_default().is_empty()
@@ -817,6 +750,63 @@ impl App {
         } else {
             Task::none()
         }
+    }
+
+    fn start_dialog(&mut self, user_prompt: Option<String>) -> Task<Message> {
+        self.auto_scroll.store(true, Ordering::Relaxed);
+        self.stream_start_index = self.session.total_turns();
+
+        let Some((provider, model)) = self.selected_model() else {
+            return Task::none();
+        };
+
+        let (thinking, thinking_level) = self
+            .selected_model
+            .as_ref()
+            .map(|m| (m.thinking, m.thinking_level.clone()))
+            .unwrap_or_default();
+
+        let config = llm::SendConfig {
+            base_url: provider.base_url.clone(),
+            api_type: provider.api_type.clone(),
+            api_key: provider.api_key.clone(),
+            model_id: model.id.clone(),
+            workspace: self.system_prompt.workspace.1.clone(),
+            system_prompt: self.system_prompt.get_prompt(),
+            user_prompt,
+            tools: DevTool::build_tools(&self.dev_tools),
+            thinking,
+            thinking_level,
+        };
+
+        let history = self.session.history.clone();
+
+        self.streaming = StreamState::LlmLoading;
+        self.cancel_token.store(false, Ordering::Relaxed);
+        let cancel_token = self.cancel_token.clone();
+
+        Task::batch([
+            scroll_to_end(),
+            Task::stream(iced::stream::channel(128, async move |sender| {
+                let cancel = cancel_token.clone();
+                let mut callback = {
+                    move |msg: Message| {
+                        let cancel = cancel.clone();
+                        let mut sender = sender.clone();
+                        async move {
+                            let ok = sender.send(msg).await.is_ok();
+                            if cancel.load(Ordering::Relaxed) {
+                                false
+                            } else {
+                                ok
+                            }
+                        }
+                        .boxed()
+                    }
+                };
+                llm::send_stream(config, history, &mut callback).await;
+            })),
+        ])
     }
 
     /// Bump `path` to top of recents, persist it as current workspace,
