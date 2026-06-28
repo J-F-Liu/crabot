@@ -195,19 +195,15 @@ pub(crate) fn tool_bubble_style(_theme: &Theme) -> container::Style {
 
 /// Small role badge (User / Assistant / Tool).
 pub(crate) fn role_badge_style(role: &str) -> impl Fn(&Theme) -> container::Style + '_ {
-    let (bg, fg) = match role {
-        "User" => (Color::from_rgb8(0x4A, 0x90, 0xD9), Color::WHITE),
-        "Assistant" => (Color::from_rgb8(0x1A, 0x9A, 0x8C), Color::WHITE),
-        "Tool" => (Color::from_rgb8(0xD4, 0xA7, 0x6A), Color::WHITE),
-        _ => (CRABOT_SURFACE, CRABOT_TEXT),
+    let (fg, bg) = match role {
+        "User" => (Color::from_rgb8(0x4A, 0x90, 0xD9), Color::TRANSPARENT),
+        "Assistant" => (Color::from_rgb8(0x1A, 0x9A, 0x8C), Color::TRANSPARENT),
+        "Tool" => (Color::from_rgb8(0xD0, 0x8F, 0x33), Color::TRANSPARENT),
+        _ => (CRABOT_SURFACE, Color::TRANSPARENT),
     };
     move |_theme: &Theme| container::Style {
         background: Some(bg.into()),
         text_color: Some(fg),
-        border: Border {
-            radius: 6.0.into(),
-            ..Default::default()
-        },
         ..container::Style::default()
     }
 }

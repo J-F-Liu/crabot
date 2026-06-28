@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use chat::{TextContent, ToolResult, Turn, TurnBody, replace_emoji};
+use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use genai::chat::{ChatMessage, ChatRole};
 use model::{Model, ModelConfig, Provider, TokenAmount};
 use session::{Session, SessionEntry};
@@ -210,6 +210,7 @@ pub enum Message {
     SendPrompt,
     ToggleTurnExpand(usize),
     ToggleDialogExpand(usize),
+    StreamToolCall(ToolCall),
     StreamContent(String),
     StreamReasoning(String),
     StreamToolResult(ToolResult),
@@ -598,6 +599,10 @@ impl App {
                 }
                 return self.start_dialog(None);
             }
+            Message::StreamToolCall(tc) => {
+                self.session.push_turn(Turn::from_tool_call(tc));
+                return self.maybe_scroll_to_end();
+            }
             Message::StreamContent(chunk) => {
                 self.ensure_assistant_placeholder();
                 if let Some(last) = self.session.last_turn_mut()
@@ -633,7 +638,12 @@ impl App {
                 {
                     self.session.modified_files.push(path_str.to_string());
                 }
-                self.session.push_turn(Turn::from_tool_result(tr));
+                // Replace the pending Temp placeholder with the completed Tool turn.
+                if let Some(last) = self.session.last_turn_mut() {
+                    last.body = TurnBody::Tool(tr);
+                } else {
+                    self.session.push_turn(Turn::from_tool_result(tr));
+                }
                 return self.maybe_scroll_to_end();
             }
             Message::TokenUsage(usage) => {

@@ -16,7 +16,7 @@ use super::theme::{
 };
 use super::tool_message::{args_rows, path_arg_row, result_text};
 use crate::Message;
-use crate::chat::{Dialog, TextContent, ToolResult, Turn, TurnBody};
+use crate::chat::{Dialog, TextContent, ToolCall, ToolResult, Turn, TurnBody};
 use crate::llm::StreamState;
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
@@ -85,11 +85,11 @@ fn turn_count_badge(count: usize) -> Element<'static, Message> {
 
 /// Build the colored role badge shown in a turn header.
 fn role_badge(badge_text: String, style_label: &'static str) -> Element<'static, Message> {
-    container(text(badge_text).size(11).font(Font {
+    container(text(badge_text).size(12).font(Font {
         weight: font::Weight::Bold,
         ..Font::DEFAULT
     }))
-    .padding([3, 8])
+    .padding([3, 0])
     .style(role_badge_style(style_label))
     .into()
 }
@@ -106,62 +106,83 @@ fn wrap_bubble<'a>(
         .into()
 }
 
-/// Build a complete Tool turn block (header + body + bubble).
+/// Collapsed args preview: just the path for edit/write, all args otherwise.
+fn args_preview<'a>(name: &str, args: &'a serde_json::Value) -> Vec<Element<'a, Message>> {
+    if name == "edit" || name == "write" {
+        path_arg_row(args).into_iter().collect()
+    } else {
+        args_rows(args)
+    }
+}
+
+/// Build a Tool turn block — handles both completed (`Tool`) and pending (`Temp`) calls.
 fn tool_turn_block<'a>(
     msg: &'a Turn,
     i: usize,
     expanded_turns: &std::collections::HashSet<usize>,
 ) -> Element<'a, Message> {
-    let TurnBody::Tool(ToolResult {
-        name, args, result, ..
-    }) = &msg.body
-    else {
-        unreachable!("tool_turn_block called on non-Tool turn")
+    let (name, args, result) = match &msg.body {
+        TurnBody::Tool(ToolResult {
+            name, args, result, ..
+        }) => (name.as_str(), args, Some(result)),
+        TurnBody::Temp(ToolCall { name, args, .. }) => (name.as_str(), args, None),
+        _ => unreachable!("tool_turn_block called on non-tool turn"),
     };
 
-    let expanded = expanded_turns.contains(&i);
-    let indicator = if expanded { "▼" } else { "⏵" };
     let badge = role_badge(format!("Tool - {name}"), "Tool");
     let ts_text = text(&msg.timestamp).size(11).color(CRABOT_TEXT_MUTED);
     let mut content_col = column![].spacing(8).width(Fill);
 
-    // ── header: badge + status icon + timestamp ──
-    let (status_icon, status_color) = match result {
-        Ok(_) => ("✓", super::theme::CRABOT_SUCCESS),
-        Err(_) => ("✗", super::theme::CRABOT_DANGER),
-    };
-    let tool_header = row![
-        badge,
-        text(indicator).size(10).color(CRABOT_TOOL_ACCENT),
-        Space::new().width(Length::Fill),
-        text(status_icon).size(12).color(status_color).font(Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        }),
-        ts_text,
-    ]
-    .spacing(6)
-    .align_y(iced::Alignment::Center);
-    content_col = content_col.push(
-        mouse_area(tool_header)
-            .on_press(Message::ToggleTurnExpand(i))
-            .interaction(iced::mouse::Interaction::Pointer),
-    );
-
-    // ── body: args + result ──
-    let is_edit_or_write = name == "edit" || name == "write";
-    if expanded {
-        for r in args_rows(args) {
-            content_col = content_col.push(r);
-        }
-        content_col = content_col.push(result_text(result));
-    } else if is_edit_or_write {
-        if let Some(row) = path_arg_row(args) {
-            content_col = content_col.push(row);
-        }
+    // ── header: expand indicator + status icon (completed) or spinner (pending) ──
+    let header: Element<'a, Message> = if let Some(result) = result {
+        let expanded = expanded_turns.contains(&i);
+        let indicator = if expanded { "▼" } else { "⏵" };
+        let (status_icon, status_color) = match result {
+            Ok(_) => ("✓", super::theme::CRABOT_SUCCESS),
+            Err(_) => ("✗", super::theme::CRABOT_DANGER),
+        };
+        mouse_area(
+            row![
+                badge,
+                text(status_icon).size(12).color(status_color).font(Font {
+                    weight: font::Weight::Bold,
+                    ..Font::DEFAULT
+                }),
+                text(indicator).size(10).color(CRABOT_TOOL_ACCENT),
+                Space::new().width(Length::Fill),
+                ts_text,
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
+        )
+        .on_press(Message::ToggleTurnExpand(i))
+        .interaction(iced::mouse::Interaction::Pointer)
+        .into()
     } else {
-        for r in args_rows(args) {
-            content_col = content_col.push(r);
+        row![
+            badge,
+            text("⏳").size(12).color(CRABOT_TEXT_MUTED),
+            Space::new().width(Length::Fill),
+            ts_text,
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center)
+        .into()
+    };
+    content_col = content_col.push(header);
+
+    // ── body: full args + result when expanded, otherwise a collapsed preview ──
+    match result {
+        Some(result) if expanded_turns.contains(&i) => {
+            for r in args_rows(args) {
+                content_col = content_col.push(r);
+            }
+            content_col = content_col.push(result_text(result));
+        }
+        _ => {
+            for r in args_preview(name, args) {
+                content_col = content_col.push(r);
+            }
         }
     }
 
@@ -255,7 +276,7 @@ fn turn_block<'a>(
     theme: &'a Theme,
 ) -> Element<'a, Message> {
     match &msg.body {
-        TurnBody::Tool(_) => tool_turn_block(msg, i, expanded_turns),
+        TurnBody::Tool(_) | TurnBody::Temp(_) => tool_turn_block(msg, i, expanded_turns),
         TurnBody::Text(_) => text_turn_block(msg, i, expanded_turns, selectable_msgs, theme),
     }
 }

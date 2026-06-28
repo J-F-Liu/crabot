@@ -49,6 +49,17 @@ impl ToolResult {
     }
 }
 
+// ── ToolCall ─────────────────────────────────────────────────────────
+
+/// A pending tool call that hasn't produced a result yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    pub args: serde_json::Value,
+}
+
 // ── TurnBody ────────────────────────────────────────────────────────
 
 /// Body of a single turn in the conversation.
@@ -58,6 +69,8 @@ pub enum TurnBody {
     Text(TextContent),
     /// Paired tool call and its result.
     Tool(ToolResult),
+    /// Pending tool call — execution in progress, no result yet.
+    Temp(ToolCall),
 }
 
 // ── Turn ────────────────────────────────────────────────────────────
@@ -112,6 +125,15 @@ impl Turn {
         Self {
             role: ChatRole::Tool,
             body: TurnBody::Tool(tr),
+            timestamp: String::new(),
+            content_md: None,
+        }
+    }
+
+    pub fn from_tool_call(tc: ToolCall) -> Self {
+        Self {
+            role: ChatRole::Tool,
+            body: TurnBody::Temp(tc),
             timestamp: String::new(),
             content_md: None,
         }
