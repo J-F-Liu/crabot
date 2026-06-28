@@ -15,6 +15,7 @@ use super::user_prompt::user_prompt_view;
 use crate::Message;
 use crate::llm::StreamState;
 use crate::model::{ModelConfig, Provider};
+use crate::session::SessionEntry;
 use crate::system::{FilepathEntry, SystemPrompt};
 use crate::tools::DevTool;
 use crate::user::WorkMode;
@@ -40,6 +41,8 @@ pub(crate) fn left_pane<'a>(
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     streaming: StreamState,
+    session_options: &'a [SessionEntry],
+    current_session_id: &'a str,
 ) -> Element<'a, Message> {
     let col = column![
         model_config_view(providers, selected_model),
@@ -51,7 +54,7 @@ pub(crate) fn left_pane<'a>(
         workspace_field_view(&system_prompt.workspace, workspace_options),
         files_field_view(files_expanded, &system_prompt.files, files_content,),
         date_field_view(&system_prompt.date),
-        session_view(streaming),
+        session_view(streaming, session_options, current_session_id),
         label("User Prompt", 140.0),
         user_prompt_view(user_prompt, workmode),
         container(column![label("Tools", 140.0), dev_tools_view(dev_tools)].spacing(4))

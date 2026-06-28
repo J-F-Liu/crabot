@@ -11,7 +11,9 @@ pub mod tool_message;
 pub mod user_prompt;
 
 // Re-export the style functions for external callers.
-pub(crate) use styles::{primary_button, primary_checkbox, primary_toggler};
+pub(crate) use styles::{
+    disabled_pick_list_style, primary_button, primary_checkbox, primary_toggler,
+};
 
 // Re-export the pane constructors and helpers used by `App::view` / `App::update`.
 pub(crate) use center_pane::{center_pane, scroll_to_end};

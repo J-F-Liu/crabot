@@ -1,10 +1,38 @@
 use genai::chat::{ChatMessage, ChatRole};
+use json_escape::unescape;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::chat::{Dialog, Turn, TurnBody};
+use crate::chat::{Dialog, ToolResult, Turn};
 use crate::model::{ModelConfig, TokenAmount};
+
+// ── SessionEntry ────────────────────────────────────────────────────
+
+/// Lightweight session metadata for dropdown listing.
+#[derive(Debug, Clone)]
+pub struct SessionEntry {
+    pub id: String,
+    pub title: String,
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for SessionEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.title.is_empty() {
+            write!(f, "{}", self.id)
+        } else {
+            write!(f, "{} — {}", self.id, self.title)
+        }
+    }
+}
+
+impl PartialEq for SessionEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
 
 // ── Session ──────────────────────────────────────────────────────────
 
@@ -27,6 +55,13 @@ pub struct Session {
     /// Accumulated cost in USD.
     #[serde(default)]
     pub cost: f64,
+    /// Size of the last prompt in tokens.
+    #[serde(default)]
+    pub size: i32,
+    /// Files modified during this session (write / edit tools).
+    /// Derived from history on load; not serialised directly.
+    #[serde(skip, default)]
+    pub modified_files: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -45,6 +80,8 @@ impl Session {
             dialogs: Vec::new(),
             usage: TokenAmount::default(),
             cost: 0.0,
+            size: 0,
+            modified_files: Vec::new(),
             created_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
             updated_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
         }
@@ -65,8 +102,10 @@ impl Session {
 
     /// Push a turn.  A `User` turn starts a new dialog; all other roles
     /// append to the last dialog (creating one if none exists yet).
-    pub fn push_turn(&mut self, turn: Turn) {
-        self.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    pub fn push_turn(&mut self, mut turn: Turn) {
+        let now = chrono::Local::now();
+        turn.timestamp = now.format("%H:%M:%S").to_string();
+        self.updated_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
         if let Some(last) = self.dialogs.last_mut() {
             last.turns.push(turn);
         } else {
@@ -153,16 +192,21 @@ impl Session {
             }
         }
 
+        let mut modified: Vec<String> = Vec::new();
+
         for msg in &self.history {
             match msg.role {
                 ChatRole::System => {}
                 ChatRole::User => {
                     let text = msg.content.joined_texts().unwrap_or_default();
-                    let title = Self::derive_title(&text);
+                    // Strip the leading <work-mode>…</work-mode>\n tag so the
+                    // title reflects the actual user message, not the mode annotation.
+                    let text_for_title = text
+                        .find("</work-mode>\n")
+                        .map(|idx| &text[idx + "</work-mode>\n".len()..])
+                        .unwrap_or(&text);
+                    let title = Self::derive_title(text_for_title);
                     let turn = Turn::user(text);
-                    if self.title.is_empty() {
-                        self.title = title.clone();
-                    }
                     dialogs.push(Dialog {
                         title,
                         turns: vec![turn],
@@ -178,12 +222,19 @@ impl Session {
 
                     for tc in msg.content.tool_calls() {
                         let result = results.remove(&tc.call_id).unwrap_or_default();
-                        let turn = Turn {
-                            role: ChatRole::Tool,
-                            body: TurnBody::tool(tc, Ok(result)),
-                            timestamp: String::new(),
-                            content_md: None,
+                        let tr = ToolResult {
+                            name: tc.fn_name.clone(),
+                            call_id: Some(tc.call_id.clone()),
+                            args: tc.fn_arguments.clone(),
+                            result: Ok(result),
                         };
+                        // Track files modified by write / edit tools.
+                        if let Some(path_str) = tr.get_modified_file()
+                            && !modified.iter().any(|p| p == path_str)
+                        {
+                            modified.push(path_str.to_string());
+                        }
+                        let turn = Turn::from_tool_result(tr);
                         push_or_new(&mut dialogs, turn);
                     }
                 }
@@ -195,6 +246,7 @@ impl Session {
 
         // todo: if results is not empty, log warning
 
+        self.modified_files = modified;
         self.dialogs = dialogs;
     }
 
@@ -222,7 +274,6 @@ impl Session {
     }
 
     /// Load a session from disk.
-    #[allow(dead_code)]
     pub fn load(path: &Path) -> Result<Self, String> {
         let json = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read session file: {e}"))?;
@@ -232,8 +283,31 @@ impl Session {
         Ok(session)
     }
 
+    /// List session metadata for a workspace (reads only first 8 KiB per file).
+    pub fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String> {
+        let paths = Self::list(workspace)?;
+        let mut entries = Vec::with_capacity(paths.len());
+        let mut buf = vec![0u8; 8192];
+        for path in paths {
+            let (id, title) = match std::fs::File::open(&path) {
+                Ok(mut file) => match file.read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        let text = String::from_utf8_lossy(&buf[..n]);
+                        (
+                            extract_json_string(&text, "id").unwrap_or_default(),
+                            extract_json_string(&text, "title").unwrap_or_default(),
+                        )
+                    }
+                    _ => (String::new(), String::new()),
+                },
+                Err(_) => (String::new(), String::new()),
+            };
+            entries.push(SessionEntry { id, title, path });
+        }
+        Ok(entries)
+    }
+
     /// List all saved sessions for a workspace.
-    #[allow(dead_code)]
     pub fn list(workspace: &Path) -> Result<Vec<PathBuf>, String> {
         let dir = workspace.join(".agent").join("sessions");
         if !dir.exists() {
@@ -248,4 +322,27 @@ impl Session {
         paths.sort_by(|a, b| b.cmp(a)); // newest first
         Ok(paths)
     }
+}
+
+/// Extract a top-level JSON string value for `key` from partial JSON text.
+/// Unescaping (incl. `\uXXXX` surrogate pairs) is handled by `json_escape`;
+/// truncated input yields the portion decoded so far.
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
+    let search = format!("\"{}\"", key);
+    let rest = json.split_once(&search)?.1;
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    // Isolate the quoted string: `unescape` won't stop at a closing quote,
+    // so scan to the first unescaped `"` ourselves.
+    let content = rest.strip_prefix('"')?;
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => break,
+            _ => i += 1,
+        }
+    }
+    let inner = &content[..i.min(content.len())];
+    Some(unescape(inner).display_utf8_lossy().to_string())
 }

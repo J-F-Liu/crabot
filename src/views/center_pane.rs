@@ -180,7 +180,8 @@ fn text_turn_block<'a>(
         unreachable!("text_turn_block called on non-Text turn")
     };
 
-    let (role_label, bubble_style): (&'static str, fn(&Theme) -> container::Style) = match msg.role {
+    let (role_label, bubble_style): (&'static str, fn(&Theme) -> container::Style) = match msg.role
+    {
         genai::chat::ChatRole::User => ("User", user_bubble_style),
         genai::chat::ChatRole::Assistant => ("Assistant", assistant_bubble_style),
         _ => ("System", assistant_bubble_style),
@@ -305,13 +306,9 @@ pub(crate) fn center_pane<'a>(
                 header_row = header_row.push(turn_count_badge(turn_count));
             }
 
-            let header = mouse_area(
-                container(header_row)
-                    .width(Fill)
-                    .padding([8, 12]),
-            )
-            .on_press(Message::ToggleDialogExpand(di))
-            .interaction(iced::mouse::Interaction::Pointer);
+            let header = mouse_area(container(header_row).width(Fill).padding([8, 12]))
+                .on_press(Message::ToggleDialogExpand(di))
+                .interaction(iced::mouse::Interaction::Pointer);
 
             // ── turn blocks (only built when expanded) ────────────
             let turn_blocks: Vec<Element<'_, Message>> = if collapsed {

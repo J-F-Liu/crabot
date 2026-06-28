@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use chat::{TextContent, ToolResult, Turn, TurnBody, replace_emoji};
 use genai::chat::{ChatMessage, ChatRole};
 use model::{Model, ModelConfig, Provider, TokenAmount};
-use session::Session;
+use session::{Session, SessionEntry};
 use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use tools::DevTool;
 use user::{UserPrompt, WorkMode};
@@ -141,6 +141,8 @@ struct App {
     user_prompt: TextArea,
     workmode: WorkMode,
     session: Session,
+    /// Available saved-sessions for the dropdown list in the left pane.
+    session_options: Vec<SessionEntry>,
     /// Current phase of the LLM interaction lifecycle.
     streaming: StreamState,
     /// Index (flat turn count) in the session where the current stream's
@@ -172,9 +174,6 @@ struct App {
     /// Which widget currently holds keyboard focus; `None` when no editable
     /// widget is focused. Setting this implicitly clears focus on all others.
     focused: Option<FocusedTarget>,
-    /// Files modified during this session (insertion order, deduplicated).
-    /// Mirrors `session.modified_files` for convenient UI access.
-    modified_files: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +205,8 @@ pub enum Message {
     UndoRedo(textarea::Message),
     SelectWorkMode(WorkMode),
     NewSession,
+    LoadSession(SessionEntry),
+    SessionListLoaded(Vec<SessionEntry>),
     SendPrompt,
     ToggleTurnExpand(usize),
     ToggleDialogExpand(usize),
@@ -268,14 +269,16 @@ impl App {
             .map(|e| std::fs::read_to_string(&e.path).unwrap_or_else(|e| e.to_string()))
             .unwrap_or_default();
         system_prompt.preamble.1 = preamble_content;
+        system_prompt.files.1 = workspace::build_files_tree(&system_prompt.workspace.1);
         system_prompt.date.1 = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let files_tree = system_prompt.files.1.clone();
 
         let show_restart = !workspace_for_session.as_os_str().is_empty()
             && env::current_exe()
                 .ok()
                 .is_some_and(|exe| exe.starts_with(&workspace_for_session));
 
-        let app = Self {
+        let mut app = Self {
             left_w: saved.left_w,
             right_w: saved.right_w,
             window_size: Size::new(saved.window_size.0, saved.window_size.1),
@@ -293,12 +296,13 @@ impl App {
             selected_preamble: saved.selected_preamble.clone(),
             workspace_options: system::build_workspace_options(&saved.recent_workspaces),
             rules_content: TextArea::with_text(&saved.rules_text),
-            files_content: text_editor::Content::with_text(&saved.files_text),
+            files_content: text_editor::Content::with_text(&files_tree),
             tools_content: text_editor::Content::with_text(&saved.tools_text),
             dev_tools,
             user_prompt: TextArea::new(),
             workmode: saved.workmode,
             session: Session::new(model_for_session, workspace_for_session),
+            session_options: Vec::new(),
             streaming: StreamState::Idle,
             stream_start_index: 0,
             expanded_turns: HashSet::new(),
@@ -311,9 +315,9 @@ impl App {
             selectable_msgs: HashSet::new(),
             shift_held: false,
             focused: None,
-            modified_files: Vec::new(),
         };
-        (app, Task::none())
+        let session_task = app.refresh_session_list();
+        (app, session_task)
     }
 
     fn update(&mut self, msg: Message) -> Task<Message> {
@@ -491,9 +495,11 @@ impl App {
                     );
                 }
                 self.set_workspace(entry.path);
+                return self.refresh_session_list();
             }
             Message::WorkspaceDialogResult(Some(path)) => {
                 self.set_workspace(path);
+                return self.refresh_session_list();
             }
             Message::WorkspaceDialogResult(None) => {}
             Message::SelectPreamble(entry) => {
@@ -516,10 +522,10 @@ impl App {
                 self.session = Session::new(self.selected_model.clone(), workspace);
                 self.current_prompt = "New session".into();
                 self.last_usage = genai::chat::Usage::default();
-                self.modified_files.clear();
                 self.expanded_turns.clear();
                 self.expanded_dialogs.clear();
                 self.selectable_msgs.clear();
+                return self.refresh_session_list();
             }
             Message::ToggleTurnExpand(idx) => {
                 if self.expanded_turns.contains(&idx) {
@@ -534,6 +540,30 @@ impl App {
                 } else {
                     self.expanded_dialogs.insert(idx);
                 }
+            }
+            Message::LoadSession(entry) => {
+                if self.streaming != StreamState::Idle {
+                    return Task::none();
+                }
+                match Session::load(&entry.path) {
+                    Ok(session) => {
+                        self.session = session;
+                        self.last_usage = genai::chat::Usage {
+                            prompt_tokens: Some(self.session.size),
+                            ..Default::default()
+                        };
+                        self.current_prompt = self.session.title.clone();
+                        self.expanded_turns.clear();
+                        self.expanded_dialogs.clear();
+                        self.selectable_msgs.clear();
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to load session: {e}");
+                    }
+                }
+            }
+            Message::SessionListLoaded(entries) => {
+                self.session_options = entries;
             }
             Message::SendPrompt => {
                 let content = self.user_prompt.text();
@@ -598,12 +628,10 @@ impl App {
             }
             Message::StreamToolResult(tr) => {
                 // Track files modified by write / edit tools.
-                if tr.result.is_ok()
-                    && (tr.name == "write" || tr.name == "edit")
-                    && let Some(path_str) = tr.args.get("path").and_then(|v| v.as_str())
-                    && !self.modified_files.iter().any(|p| p == path_str)
+                if let Some(path_str) = tr.get_modified_file()
+                    && !self.session.modified_files.iter().any(|p| p == path_str)
                 {
-                    self.modified_files.push(path_str.to_string());
+                    self.session.modified_files.push(path_str.to_string());
                 }
                 self.session.push_turn(Turn::from_tool_result(tr));
                 return self.maybe_scroll_to_end();
@@ -619,6 +647,7 @@ impl App {
                         .map(|m| &m.cost)
                 });
                 self.session.accumulate_usage(&tokens, cost);
+                self.session.size = u.prompt_tokens.unwrap_or(0);
                 self.last_usage = u;
             }
             Message::StreamDone(genai_messages) => {
@@ -884,6 +913,22 @@ impl App {
         settings.save();
     }
 
+    /// Refresh the session list dropdown entries from disk.
+    fn refresh_session_list(&mut self) -> Task<Message> {
+        let workspace = self.system_prompt.workspace.1.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || Session::list_entries(&workspace))
+                    .await
+                    .unwrap_or(Ok(Vec::new()))
+            },
+            |result| match result {
+                Ok(entries) => Message::SessionListLoaded(entries),
+                Err(_) => Message::SessionListLoaded(Vec::new()),
+            },
+        )
+    }
+
     fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
         match name {
             TOOLS => Some(&mut self.tools_content),
@@ -934,6 +979,8 @@ impl App {
                 &self.user_prompt,
                 self.workmode,
                 self.streaming,
+                &self.session_options,
+                &self.session.id,
             ),
             divider(),
             center_pane(
@@ -953,7 +1000,7 @@ impl App {
                 &self.last_usage,
                 &self.session.usage,
                 self.session.cost,
-                &self.modified_files,
+                &self.session.modified_files,
                 self.show_restart,
             ),
         ]

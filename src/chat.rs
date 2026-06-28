@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use genai::chat::{ChatRole, ToolCall};
+use genai::chat::ChatRole;
 use gh_emoji::Replacer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -37,6 +37,18 @@ pub struct ToolResult {
     pub result: Result<String, String>,
 }
 
+impl ToolResult {
+    /// If this is a successful `write` or `edit` tool call, return the
+    /// file path that was modified.
+    pub fn get_modified_file(&self) -> Option<&str> {
+        if self.result.is_ok() && (self.name == "write" || self.name == "edit") {
+            self.args.get("path").and_then(|v| v.as_str())
+        } else {
+            None
+        }
+    }
+}
+
 // ── TurnBody ────────────────────────────────────────────────────────
 
 /// Body of a single turn in the conversation.
@@ -46,23 +58,6 @@ pub enum TurnBody {
     Text(TextContent),
     /// Paired tool call and its result.
     Tool(ToolResult),
-}
-
-impl TurnBody {
-    /// Construct a `Text` variant from a content string and optional reasoning.
-    pub fn text(content: String, reasoning: Option<String>) -> Self {
-        TurnBody::Text(TextContent { content, reasoning })
-    }
-
-    /// Construct a `Tool` variant from a genai `ToolCall` and its result.
-    pub fn tool(tc: &ToolCall, result: Result<String, String>) -> Self {
-        TurnBody::Tool(ToolResult {
-            name: tc.fn_name.clone(),
-            call_id: Some(tc.call_id.clone()),
-            args: tc.fn_arguments.clone(),
-            result,
-        })
-    }
 }
 
 // ── Turn ────────────────────────────────────────────────────────────
@@ -89,23 +84,26 @@ pub struct Dialog {
 
 impl Turn {
     pub fn user(content: impl Into<String>) -> Self {
-        let content_str: String = content.into();
-        let content_md = Some(iced::widget::markdown::Content::parse(&content_str));
+        let content: String = content.into();
+        let content_md = Some(iced::widget::markdown::Content::parse(&content));
         Self {
             role: ChatRole::User,
-            body: TurnBody::text(content_str, None),
-            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            body: TurnBody::Text(TextContent {
+                content,
+                reasoning: None,
+            }),
+            timestamp: String::new(),
             content_md,
         }
     }
 
     pub fn assistant(content: impl Into<String>, reasoning: Option<String>) -> Self {
-        let content_str: String = replace_emoji(&content.into());
-        let content_md = Some(iced::widget::markdown::Content::parse(&content_str));
+        let content: String = replace_emoji(&content.into());
+        let content_md = Some(iced::widget::markdown::Content::parse(&content));
         Self {
             role: ChatRole::Assistant,
-            body: TurnBody::text(content_str, reasoning),
-            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            body: TurnBody::Text(TextContent { content, reasoning }),
+            timestamp: String::new(),
             content_md,
         }
     }
@@ -114,7 +112,7 @@ impl Turn {
         Self {
             role: ChatRole::Tool,
             body: TurnBody::Tool(tr),
-            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            timestamp: String::new(),
             content_md: None,
         }
     }

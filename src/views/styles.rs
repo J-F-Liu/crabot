@@ -212,6 +212,22 @@ pub(crate) fn role_badge_style(role: &str) -> impl Fn(&Theme) -> container::Styl
     }
 }
 
+// ── pick_list styles ──────────────────────────────────────────────
+
+/// Muted, non-interactive-looking style for pick_list when disabled.
+pub(crate) fn disabled_pick_list_style(
+    _theme: &Theme,
+    _status: iced::widget::pick_list::Status,
+) -> iced::widget::pick_list::Style {
+    iced::widget::pick_list::Style {
+        text_color: CRABOT_TEXT_MUTED,
+        placeholder_color: CRABOT_TEXT_MUTED,
+        handle_color: CRABOT_TEXT_MUTED,
+        background: iced::Background::Color(CRABOT_SURFACE),
+        border: iced::Border::default(),
+    }
+}
+
 // ── selectable text styles ────────────────────────────────────────
 
 pub(crate) fn sel_default(theme: &Theme) -> SelectionStyle {
