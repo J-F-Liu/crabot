@@ -526,6 +526,10 @@ impl App {
                 self.expanded_turns.clear();
                 self.expanded_dialogs.clear();
                 self.selectable_msgs.clear();
+                // Refresh workspace tree so the system prompt reflects current files.
+                self.system_prompt.files.1 =
+                    workspace::build_files_tree(&self.system_prompt.workspace.1);
+                self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
                 return self.refresh_session_list();
             }
             Message::ToggleTurnExpand(idx) => {

@@ -25,7 +25,7 @@ pub fn get_unix_style_path(path: &Path) -> String {
 
 /// Max directory depth to scan (root = depth 0, its children = depth 1, …).
 const MAX_DEPTH: usize = 3;
-/// Max entries shown per directory; excess middle entries become "… N more".
+/// Max lines shown per directory, including the "… N more" marker.
 const PER_DIR_LIMIT: usize = 12;
 /// Max rendered lines; deeper entries are elided first.
 const LINE_CAP: usize = 120;
@@ -155,11 +155,18 @@ fn render_dir(
     depth: usize,
 ) {
     let indent = "  ".repeat(depth);
-    let limit = PER_DIR_LIMIT.min(children.len());
+    let total = children.len();
+    // If we have more entries than PER_DIR_LIMIT, reserve one line for the marker.
+    let show = if total > PER_DIR_LIMIT {
+        PER_DIR_LIMIT.saturating_sub(1).min(total)
+    } else {
+        total
+    };
 
     // Compute column widths for this directory
     let max_name = children
         .iter()
+        .take(show)
         .map(|e| {
             let name = e.rel_path.rsplit('/').next().unwrap_or(&e.rel_path);
             let suffix = if e.is_dir { "/" } else { "" };
@@ -169,7 +176,7 @@ fn render_dir(
         .unwrap_or(0);
 
     for (i, e) in children.iter().enumerate() {
-        if i >= limit {
+        if i >= show {
             break;
         }
         let name = e.rel_path.rsplit('/').next().unwrap_or(&e.rel_path);
@@ -204,9 +211,9 @@ fn render_dir(
         }
     }
 
-    // "… N more" marker for elided middle entries
-    let dropped = children.len().saturating_sub(limit);
-    if dropped > 0 {
+    // "… N more" marker counts toward PER_DIR_LIMIT budget
+    if total > show {
+        let dropped = total - show;
         lines.push(format!("{}- … {} more", indent, dropped));
     }
 }
