@@ -28,7 +28,6 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
@@ -70,8 +69,7 @@ pub fn main() -> iced::Result {
     );
     let position =
         iced::window::Position::Specific(Point::new(saved.window_pos.0, saved.window_pos.1));
-    SAVED_SETTINGS.set(saved).ok();
-    iced::application(App::boot, App::update, App::view)
+    iced::application(move || App::boot(saved.clone()), App::update, App::view)
         .subscription(App::subscription)
         .theme(|state: &App| state.theme.clone())
         .window_size(size)
@@ -81,8 +79,6 @@ pub fn main() -> iced::Result {
         .exit_on_close_request(false)
         .run()
 }
-
-static SAVED_SETTINGS: OnceLock<settings::Settings> = OnceLock::new();
 
 // ── divider identity ──────────────────────────────────────────────
 
@@ -117,8 +113,8 @@ pub enum FocusedTarget {
 }
 
 struct App {
-    left_w: f32,
-    right_w: f32,
+    left_pane_width: f32,
+    right_pane_width: f32,
     window_size: Size,
     window_pos: Point,
     cursor: Point,
@@ -237,51 +233,55 @@ pub enum Message {
 // ── App impl ──────────────────────────────────────────────────────
 
 impl App {
-    fn boot() -> (Self, Task<Message>) {
+    fn boot(saved: settings::Settings) -> (Self, Task<Message>) {
         let providers = model::try_load_models_from_omp()
             .or_else(|_| model::try_load_models_from_pi())
             .unwrap_or_default();
-        let saved = SAVED_SETTINGS
-            .get()
-            .expect("settings must be loaded in main before boot");
 
-        let dev_tools: IndexMap<DevTool, bool> = saved
-            .dev_tools
-            .iter()
-            .filter_map(|(name, enabled)| DevTool::from_name(name).map(|t| (t, *enabled)))
-            .collect();
-        // Ensure any newly-added tools default to enabled.
         let dev_tools: IndexMap<DevTool, bool> = DevTool::ALL
             .iter()
-            .map(|&t| (t, dev_tools.get(&t).copied().unwrap_or(true)))
+            .map(|&t| {
+                (
+                    t,
+                    saved.builtin_tools.get(t.name()).copied().unwrap_or(true),
+                )
+            })
             .collect();
 
-        let theme = default_theme();
-
-        let model_for_session = saved.selected_model.clone();
-        let workspace_for_session = saved.system_prompt.workspace.1.clone();
-
-        let mut system_prompt = saved.system_prompt.clone();
-        // Load preamble content from the .md file, not from saved settings.
         let preamble_options = system::build_preamble_options();
         let preamble_content = preamble_options
             .iter()
             .find(|e| e.display == saved.selected_preamble)
             .map(|e| std::fs::read_to_string(&e.path).unwrap_or_else(|e| e.to_string()))
             .unwrap_or_default();
-        system_prompt.preamble.1 = preamble_content;
-        system_prompt.files.1 = workspace::build_files_tree(&system_prompt.workspace.1);
-        system_prompt.date.1 = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let files_tree = system_prompt.files.1.clone();
 
-        let show_restart = !workspace_for_session.as_os_str().is_empty()
+        let workspace_path = saved.workspace;
+        let files_tree = workspace::build_files_tree(&workspace_path);
+        let tools_summary = tool::tools_summary(&dev_tools);
+        let rules_content = TextArea::with_text(&saved.rules_text);
+        let files_content = text_editor::Content::with_text(&files_tree);
+        let tools_content = text_editor::Content::with_text(&tools_summary);
+
+        let system_prompt = SystemPrompt {
+            preamble: (saved.preamble_enabled, preamble_content),
+            rules: (saved.rules_enabled, saved.rules_text),
+            tools: (saved.tools_enabled, tools_summary),
+            workspace: (saved.workspace_enabled, workspace_path.clone()),
+            files: (saved.files_enabled, files_tree),
+            date: (
+                saved.date_enabled,
+                chrono::Local::now().format("%Y-%m-%d").to_string(),
+            ),
+        };
+
+        let show_restart = !workspace_path.as_os_str().is_empty()
             && env::current_exe()
                 .ok()
-                .is_some_and(|exe| exe.starts_with(&workspace_for_session));
+                .is_some_and(|exe| exe.starts_with(&workspace_path));
 
         let mut app = Self {
-            left_w: saved.left_w,
-            right_w: saved.right_w,
+            left_pane_width: saved.left_pane_width,
+            right_pane_width: saved.right_pane_width,
             window_size: Size::new(saved.window_size.0, saved.window_size.1),
             window_pos: Point::new(saved.window_pos.0, saved.window_pos.1),
             cursor: Point::ORIGIN,
@@ -289,20 +289,20 @@ impl App {
             providers,
             preamble_options,
             system_prompt,
-            theme,
+            theme: default_theme(),
             selected_model: saved.selected_model.clone(),
-            rules_expanded: saved.rules_expanded,
-            tools_expanded: saved.tools_expanded,
-            files_expanded: saved.files_expanded,
-            selected_preamble: saved.selected_preamble.clone(),
+            rules_expanded: false,
+            tools_expanded: false,
+            files_expanded: false,
+            selected_preamble: saved.selected_preamble,
             workspace_options: system::build_workspace_options(&saved.recent_workspaces),
-            rules_content: TextArea::with_text(&saved.rules_text),
-            files_content: text_editor::Content::with_text(&files_tree),
-            tools_content: text_editor::Content::with_text(&saved.tools_text),
+            rules_content,
+            files_content,
+            tools_content,
             dev_tools,
             user_prompt: TextArea::new(),
-            workmode: saved.workmode,
-            session: Session::new(model_for_session, workspace_for_session),
+            workmode: WorkMode::Code,
+            session: Session::new(saved.selected_model, workspace_path),
             session_options: Vec::new(),
             streaming: StreamState::Idle,
             stream_start_index: 0,
@@ -332,20 +332,20 @@ impl App {
                 let gutter = 2.0 * HANDLE;
                 match drag.which {
                     Divider::Left => {
-                        let max =
-                            (self.window_size.width - self.right_w - gutter - MIN_W).max(MIN_W);
-                        self.left_w = (drag.left_start + delta).clamp(MIN_W, max);
+                        let max = (self.window_size.width - self.right_pane_width - gutter - MIN_W)
+                            .max(MIN_W);
+                        self.left_pane_width = (drag.left_start + delta).clamp(MIN_W, max);
                     }
                     Divider::Right => {
-                        let max =
-                            (self.window_size.width - self.left_w - gutter - MIN_W).max(MIN_W);
-                        self.right_w = (drag.right_start - delta).clamp(MIN_W, max);
+                        let max = (self.window_size.width - self.left_pane_width - gutter - MIN_W)
+                            .max(MIN_W);
+                        self.right_pane_width = (drag.right_start - delta).clamp(MIN_W, max);
                     }
                 }
             }
             Message::LeftPressed => {
-                let left_x = self.left_w;
-                let right_x = self.window_size.width - self.right_w - HANDLE;
+                let left_x = self.left_pane_width;
+                let right_x = self.window_size.width - self.right_pane_width - HANDLE;
 
                 let which = if self.cursor.x >= left_x && self.cursor.x <= left_x + HANDLE {
                     Some(Divider::Left)
@@ -359,8 +359,8 @@ impl App {
                     self.dragging = Some(Drag {
                         which,
                         origin: self.cursor.x,
-                        left_start: self.left_w,
-                        right_start: self.right_w,
+                        left_start: self.left_pane_width,
+                        right_start: self.right_pane_width,
                     });
                 }
             }
@@ -898,16 +898,19 @@ impl App {
     /// Collect current app state into `Settings` and persist to disk.
     fn save_settings(&self) {
         let settings = settings::Settings {
-            left_w: self.left_w,
-            right_w: self.right_w,
+            left_pane_width: self.left_pane_width,
+            right_pane_width: self.right_pane_width,
             window_size: (self.window_size.width, self.window_size.height),
             window_pos: (self.window_pos.x, self.window_pos.y),
             selected_model: self.selected_model.clone(),
-            system_prompt: self.system_prompt.clone(),
-            rules_expanded: self.rules_expanded,
-            tools_expanded: self.tools_expanded,
-            files_expanded: self.files_expanded,
             selected_preamble: self.selected_preamble.clone(),
+            preamble_enabled: self.system_prompt.preamble.0,
+            rules_enabled: self.system_prompt.rules.0,
+            tools_enabled: self.system_prompt.tools.0,
+            workspace_enabled: self.system_prompt.workspace.0,
+            files_enabled: self.system_prompt.files.0,
+            date_enabled: self.system_prompt.date.0,
+            workspace: self.system_prompt.workspace.1.clone(),
             recent_workspaces: self
                 .workspace_options
                 .iter()
@@ -915,14 +918,11 @@ impl App {
                 .map(|e| e.path.clone())
                 .collect(),
             rules_text: self.rules_content.text(),
-            tools_text: self.tools_content.text(),
-            files_text: self.files_content.text(),
-            dev_tools: self
+            builtin_tools: self
                 .dev_tools
                 .iter()
                 .map(|(t, &enabled)| (t.name().to_string(), enabled))
                 .collect(),
-            workmode: self.workmode,
         };
         settings.save();
     }
@@ -976,7 +976,7 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         row![
             left_pane(
-                self.left_w,
+                self.left_pane_width,
                 &self.providers,
                 &self.selected_model,
                 &self.system_prompt,
@@ -1009,7 +1009,7 @@ impl App {
             ),
             divider(),
             right_pane(
-                self.right_w,
+                self.right_pane_width,
                 self.selected_model().map(|(_, m)| m.context_window),
                 &self.last_usage,
                 &self.session.usage,

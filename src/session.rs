@@ -52,7 +52,7 @@ pub struct Session {
     /// Accumulated token usage across all turns.
     #[serde(default)]
     pub usage: TokenAmount,
-    /// Accumulated cost in USD.
+    /// Accumulated token cost.
     #[serde(default)]
     pub cost: f64,
     /// Size of the last prompt in tokens.

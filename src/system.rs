@@ -71,7 +71,7 @@ impl SystemPrompt {
         if let (true, workspace) = &self.workspace
             && workspace.is_dir()
         {
-            let path = crate::workspace::get_unix_style_path(workspace);
+            let path = crate::tools::convert_path_to_unix_style(workspace);
             prompt.push_str(&format!("Current Workspace: {}\n", path));
             prompt.push_str("Use relative paths for files inside the workspace.\n");
         }

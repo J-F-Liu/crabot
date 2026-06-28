@@ -2,31 +2,12 @@ use chrono::DateTime;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Get a Unix-style workspace path for system-prompt display.
-///
-/// Runs `pwd` in a bash shell with `cwd` set to `path`, giving a
-/// representation natural for bash (e.g. `/c/Users/...` on Windows).
-/// Falls back to `path.to_string_lossy()` if bash is unavailable.
-pub fn get_unix_style_path(path: &Path) -> String {
-    std::process::Command::new("bash")
-        .arg("-c")
-        .arg("pwd")
-        .current_dir(path)
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
-        })
-        .unwrap_or_else(|| path.to_string_lossy().to_string())
-}
-
 // ── files tree builder ───────────────────────────────────────────────
 
 /// Max directory depth to scan (root = depth 0, its children = depth 1, …).
 const MAX_DEPTH: usize = 3;
 /// Max lines shown per directory, including the "… N more" marker.
-const PER_DIR_LIMIT: usize = 12;
+const PER_DIR_LIMIT: usize = 15;
 /// Max rendered lines; deeper entries are elided first.
 const LINE_CAP: usize = 120;
 
