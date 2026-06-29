@@ -2,8 +2,6 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::model::ModelConfig;
-
 /// All persistable app-level state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -11,7 +9,7 @@ pub struct Settings {
     pub right_pane_width: f32,
     pub window_size: (f32, f32),
     pub window_pos: (f32, f32),
-    pub selected_model: Option<ModelConfig>,
+    pub selected_model: String,
     pub selected_preamble: String,
     /// Enabled status for each system-prompt component.
     pub preamble_enabled: bool,
@@ -36,7 +34,7 @@ impl Default for Settings {
             right_pane_width: 280.0,
             window_size: (1200.0, 800.0),
             window_pos: (0.0, 0.0),
-            selected_model: None,
+            selected_model: String::new(),
             selected_preamble: String::new(),
             preamble_enabled: true,
             rules_enabled: true,

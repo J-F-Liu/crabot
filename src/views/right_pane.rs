@@ -30,7 +30,7 @@ fn format_cost(amount: f64) -> String {
 
 pub(crate) fn right_pane<'a>(
     pane_width: f32,
-    context_window: Option<u64>,
+    context_window: Option<u32>,
     usage: &genai::chat::Usage,
     amount: &TokenAmount,
     cost: f64,
@@ -56,7 +56,7 @@ pub(crate) fn right_pane<'a>(
         .push(token_row("Cached tokens:", format!("{cached_tokens}")));
 
     if let Some(cw) = context_window.filter(|&cw| cw > 0) {
-        let pct = ((prompt_tokens as u64) * 100).checked_div(cw).unwrap_or(0);
+        let pct = ((prompt_tokens as u32) * 100).checked_div(cw).unwrap_or(0);
         col = col
             .push(token_row("window size:", format!("{cw}")))
             .push(token_row("Window used:", format!("{pct}%")));

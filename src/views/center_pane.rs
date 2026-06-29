@@ -395,7 +395,7 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
         .width(Length::Fill)
         .clip(true),
         button(text("▣").size(14))
-            .on_press(Message::CopySession)
+            .on_press(Message::CopySessionTitle)
             .padding(6)
             .style(icon_button_style),
         button(text("↻").size(14))

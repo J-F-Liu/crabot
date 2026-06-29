@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use genai::chat::{ChatMessage, ChatRole};
-use model::{Model, ModelConfig, ModelList, Provider, TokenAmount};
+use model::{ModelList, TokenAmount};
 use session::{Session, SessionEntry};
 use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use tools::DevTool;
@@ -122,7 +122,7 @@ struct App {
     dragging: Option<Drag>,
     provided_models: ModelList,
     provider_entries: Vec<ProviderEntry>,
-    selected_model: Option<ModelConfig>,
+    selected_model: String,
     theme: Theme,
     system_prompt: SystemPrompt,
     rules_expanded: bool,
@@ -175,16 +175,12 @@ struct App {
 }
 
 #[derive(Debug, Clone)]
-pub enum Message {
+pub(crate) enum Message {
     CursorMoved(Point),
     LeftPressed,
     LeftReleased,
     WindowResized(Size),
     WindowMoved(Point),
-    SelectProvider(String),
-    SelectModel(String),
-    ToggleThinking(bool),
-    SelectThinkingLevel(String),
     ToggleEnabled(&'static str, bool),
     ToggleExpanded(&'static str),
     EditTextField(&'static str, String),
@@ -194,9 +190,8 @@ pub enum Message {
     SelectPreamble(FilepathEntry),
     PreambleFileResult(Result<String, String>),
     ToggleDevTool(String, bool),
-    /// An edit action targeting a specific [`TextArea`]. The [`FocusedTarget`]
-    /// identifies which text area (rules or user prompt) should receive the
-    /// action — a click sets focus, subsequent edits are gated on that focus.
+    /// An edit action targeting a specific [`TextArea`].
+    /// The [`FocusedTarget`] identifies which text area should receive the action.
     EditTextArea(FocusedTarget, textarea::Message),
     /// Global undo/redo shortcut (Ctrl+Z / Ctrl+Y). Routed to whichever
     /// [`TextArea`] currently holds keyboard focus.
@@ -220,7 +215,7 @@ pub enum Message {
     StopStream,
     AppClosing,
     Noop,
-    CopySession,
+    CopySessionTitle,
     ResendLastPrompt,
     Restart,
     /// Fires when the message scrollable's viewport changes.
@@ -230,6 +225,8 @@ pub enum Message {
     ToggleSelectableMode(Option<usize>),
     /// Track whether the Shift key is currently held.
     ShiftHeld(bool),
+    /// Model configuration event (provider/model selection, thinking).
+    ModelConfigEvent(views::model_config::Event),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -245,6 +242,7 @@ impl App {
                 name: p.name.clone(),
             })
             .collect();
+        let selected_model = provided_models.ensure_valid_name(&saved.selected_model);
 
         let dev_tools: IndexMap<DevTool, bool> = DevTool::ALL
             .iter()
@@ -299,19 +297,19 @@ impl App {
             preamble_options,
             system_prompt,
             theme: default_theme(),
-            selected_model: saved.selected_model.clone(),
+            selected_model,
+            selected_preamble: saved.selected_preamble,
+            workspace_options: system::build_workspace_options(&saved.recent_workspaces),
             rules_expanded: false,
             tools_expanded: false,
             files_expanded: false,
-            selected_preamble: saved.selected_preamble,
-            workspace_options: system::build_workspace_options(&saved.recent_workspaces),
             rules_content,
             files_content,
             tools_content,
             dev_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
-            session: Session::new(saved.selected_model, workspace_path),
+            session: Session::new(None, workspace_path),
             session_options: Vec::new(),
             streaming: StreamState::Idle,
             stream_start_index: 0,
@@ -385,38 +383,13 @@ impl App {
             Message::WindowMoved(pos) => {
                 self.window_pos = pos;
             }
-            Message::SelectProvider(id) => {
-                self.selected_model = self.provided_models.providers.get(&id).and_then(|p| {
-                    p.models.first().map(|m| ModelConfig {
-                        provider_id: id.clone(),
-                        model_id: m.id.clone(),
-                        thinking: m.thinking,
-                        thinking_level: m.thinking_levels.first().cloned().unwrap_or_default(),
-                    })
-                });
-            }
-            Message::SelectModel(id) => {
-                if let Some(ref mut cfg) = self.selected_model {
-                    cfg.model_id = id.clone();
-                    cfg.thinking = false;
-                    cfg.thinking_level = String::new();
-                    if let Some(p) = self.provided_models.providers.get(&cfg.provider_id)
-                        && let Some(m) = p.models.iter().find(|m| m.id == id)
-                    {
-                        cfg.thinking = m.thinking;
-                        cfg.thinking_level = m.thinking_levels.first().cloned().unwrap_or_default();
-                    }
-                }
-            }
-            Message::ToggleThinking(enabled) => {
-                let supported = self.selected_model().is_some_and(|(_, m)| m.thinking);
-                if supported && let Some(ref mut cfg) = self.selected_model {
-                    cfg.thinking = enabled;
-                }
-            }
-            Message::SelectThinkingLevel(level) => {
-                if let Some(ref mut cfg) = self.selected_model {
-                    cfg.thinking_level = level;
+            Message::ModelConfigEvent(event) => {
+                if views::model_config::update(
+                    &event,
+                    &mut self.provided_models,
+                    &self.selected_model,
+                ) {
+                    self.provided_models.save();
                 }
             }
             Message::ToggleEnabled(name, enabled) => {
@@ -529,7 +502,7 @@ impl App {
             }
             Message::NewSession => {
                 let workspace = self.system_prompt.workspace.1.clone();
-                self.session = Session::new(self.selected_model.clone(), workspace);
+                self.session = Session::new(None, workspace);
                 self.current_prompt = "New session".into();
                 self.last_usage = genai::chat::Usage::default();
                 self.expanded_turns.clear();
@@ -590,7 +563,10 @@ impl App {
                 let user_prompt = UserPrompt::new(self.workmode, content).get_prompt();
                 self.user_prompt.clear();
                 // Update session state with the selected model and workspace.
-                self.session.model = self.selected_model.clone();
+                self.session.model = self
+                    .provided_models
+                    .get_config(&self.selected_model)
+                    .cloned();
                 self.session.workspace = self.system_prompt.workspace.1.clone();
                 // Auto-collapse all previous dialogs; keep the new one expanded.
                 let new_dialog_idx = self.session.dialogs.len();
@@ -662,13 +638,11 @@ impl App {
             Message::TokenUsage(usage) => {
                 let u = usage.unwrap_or_default();
                 let tokens = TokenAmount::from_genai(&u);
-                let cost = self.selected_model.as_ref().and_then(|cfg| {
-                    self.provided_models
-                        .providers
-                        .get(&cfg.provider_id)
-                        .and_then(|p| p.models.iter().find(|m| m.id == cfg.model_id))
-                        .map(|m| &m.cost)
-                });
+                let cost = self
+                    .session
+                    .model
+                    .as_ref()
+                    .and_then(|cfg| self.provided_models.get_model(cfg).map(|m| m.cost));
                 self.session.accumulate_usage(&tokens, cost);
                 self.session.size = u.prompt_tokens.unwrap_or(0);
                 self.last_usage = u;
@@ -681,7 +655,7 @@ impl App {
                 self.handle_stream_error(err, genai_messages);
                 return self.maybe_scroll_to_end();
             }
-            Message::CopySession => {
+            Message::CopySessionTitle => {
                 return iced::clipboard::write(self.current_prompt.clone());
             }
             Message::Restart => {
@@ -694,9 +668,8 @@ impl App {
                 self.cancel_token.store(true, Ordering::Relaxed);
             }
             Message::MessageViewScrolled(viewport) => {
-                // While streaming, track whether the user has scrolled away
-                // from the bottom (to pause auto-scroll) or back to it (to
-                // resume).
+                // While streaming, track whether the user has scrolled away from the bottom
+                // (to pause auto-scroll) or back to it (to resume).
                 if self.streaming != StreamState::Idle {
                     let y = viewport.relative_offset().y;
                     let at_bottom = if y.is_nan() { true } else { y >= 0.99 };
@@ -829,27 +802,21 @@ impl App {
         self.auto_scroll.store(true, Ordering::Relaxed);
         self.stream_start_index = self.session.total_turns();
 
-        let Some((provider, model)) = self.selected_model() else {
+        let Some(model) = self
+            .session
+            .model
+            .as_ref()
+            .and_then(|cfg| self.provided_models.get_model_info(cfg))
+        else {
             return Task::none();
         };
 
-        let (thinking, thinking_level) = self
-            .selected_model
-            .as_ref()
-            .map(|m| (m.thinking, m.thinking_level.clone()))
-            .unwrap_or_default();
-
         let config = llm::SendConfig {
-            base_url: provider.base_url.clone(),
-            api_type: provider.api_type.clone(),
-            api_key: provider.api_key.clone(),
-            model_id: model.id.clone(),
+            model,
             workspace: self.system_prompt.workspace.1.clone(),
             system_prompt: self.system_prompt.get_prompt(),
             user_prompt,
             tools: DevTool::build_tools(&self.dev_tools),
-            thinking,
-            thinking_level,
         };
 
         let history = self.session.history.clone();
@@ -975,18 +942,11 @@ impl App {
         }
     }
 
-    fn selected_model(&self) -> Option<(&Provider, &Model)> {
-        let cfg = self.selected_model.as_ref()?;
-        let provider = self.provided_models.providers.get(&cfg.provider_id)?;
-        let model = provider.models.iter().find(|m| m.id == cfg.model_id)?;
-        Some((provider, model))
-    }
-
     fn view(&self) -> Element<'_, Message> {
         row![
             left_pane(
                 self.left_pane_width,
-                &self.provided_models.providers,
+                &self.provided_models,
                 &self.provider_entries,
                 &self.selected_model,
                 &self.system_prompt,
@@ -1020,7 +980,11 @@ impl App {
             divider(),
             right_pane(
                 self.right_pane_width,
-                self.selected_model().map(|(_, m)| m.context_window),
+                self.session
+                    .model
+                    .as_ref()
+                    .and_then(|cfg| self.provided_models.get_model(cfg))
+                    .map(|model| model.context_window),
                 &self.last_usage,
                 &self.session.usage,
                 self.session.cost,

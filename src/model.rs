@@ -9,9 +9,76 @@ pub struct ModelList {
     pub models: IndexMap<String, ModelConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl ModelList {
+    pub fn ensure_valid_name(&self, name: &str) -> String {
+        let valid_name = if self.models.contains_key(name) {
+            name
+        } else if let Some(name) = self.models.keys().next() {
+            name
+        } else {
+            if !name.is_empty() { name } else { "Model" }
+        };
+        valid_name.to_string()
+    }
+
+    pub fn get_config(&self, name: &str) -> Option<&ModelConfig> {
+        self.models
+            .get(name)
+            .or_else(|| self.models.values().next())
+    }
+
+    pub fn get_config_mut(&mut self, name: &str) -> Option<&mut ModelConfig> {
+        if !name.is_empty() && !self.models.contains_key(name) {
+            self.models.insert(name.to_string(), ModelConfig::default());
+        }
+        self.models.get_mut(name)
+    }
+
+    pub fn get_provider(&self, name: &str) -> Option<&Provider> {
+        let config = self.get_config(name)?;
+        self.providers.get(&config.provider_id)
+    }
+
+    pub fn get_model(&self, config: &ModelConfig) -> Option<&Model> {
+        let provider = self.providers.get(&config.provider_id)?;
+        provider
+            .models
+            .iter()
+            .find(|model| model.id == config.model_id)
+    }
+
+    pub fn get_model_info(&self, config: &ModelConfig) -> Option<ModelInfo> {
+        let provider = self.providers.get(&config.provider_id)?;
+        let model = provider.models.iter().find(|m| m.id == config.model_id)?;
+        Some(ModelInfo {
+            base_url: provider.base_url.clone(),
+            api_type: provider.api_type.clone(),
+            api_key: provider.api_key.clone(),
+            model_id: model.id.clone(),
+            thinking: config.thinking,
+            thinking_level: config.thinking_level.clone(),
+        })
+    }
+
+    /// Persist to `~/.crabot/models.ron`.
+    pub fn save(&self) {
+        save_models_to_ron(self);
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub provider_id: String,
+    pub model_id: String,
+    pub thinking: bool,
+    pub thinking_level: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub base_url: String,
+    pub api_type: String,
+    pub api_key: String,
     pub model_id: String,
     pub thinking: bool,
     pub thinking_level: String,
@@ -45,8 +112,8 @@ pub struct Model {
     pub thinking: bool,
     pub thinking_levels: Vec<String>,
     pub input: Vec<String>,
-    pub context_window: u64,
-    pub max_tokens: u64,
+    pub context_window: u32,
+    pub max_tokens: u32,
     pub cost: Cost,
 }
 
@@ -64,7 +131,7 @@ impl PartialEq for Model {
 
 // ── Cost ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Cost {
     pub input: f64,
     pub output: f64,
@@ -160,8 +227,16 @@ fn try_load_models_from_omp() -> Result<ModelList, Box<dyn std::error::Error>> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            context_window: v.get("contextWindow").and_then(|v| v.as_u64()).unwrap_or(0),
-            max_tokens: v.get("maxTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            context_window: v
+                .get("contextWindow")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0),
+            max_tokens: v
+                .get("maxTokens")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0),
             cost: v.get("cost").map(parse_cost).unwrap_or_default(),
         }
     }
@@ -268,8 +343,16 @@ fn try_load_models_from_pi() -> Result<ModelList, Box<dyn std::error::Error>> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            context_window: v.get("contextWindow").and_then(|v| v.as_u64()).unwrap_or(0),
-            max_tokens: v.get("maxTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            context_window: v
+                .get("contextWindow")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0),
+            max_tokens: v
+                .get("maxTokens")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(0),
             cost: v.get("cost").map(parse_cost).unwrap_or_default(),
         }
     }

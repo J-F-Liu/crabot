@@ -8,6 +8,7 @@ use genai::chat::{
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
+use crate::model::ModelInfo;
 use crate::tools::DevTool;
 
 // ── StreamState: tracks the current phase of an LLM interaction ────
@@ -28,12 +29,7 @@ const MAX_ITERATIONS: usize = 50;
 
 /// Configuration for a send request to the LLM.
 pub struct SendConfig {
-    pub base_url: String,
-    pub api_type: String,
-    pub api_key: String,
-    pub model_id: String,
-    pub thinking: bool,
-    pub thinking_level: String,
+    pub model: ModelInfo,
     pub workspace: std::path::PathBuf,
     pub system_prompt: String,
     pub user_prompt: Option<String>,
@@ -54,19 +50,14 @@ pub async fn send_stream(
     on_event: &mut (dyn FnMut(crate::Message) -> futures::future::BoxFuture<'static, bool> + Send),
 ) {
     let SendConfig {
-        base_url,
-        api_type,
-        api_key,
-        model_id,
+        model,
         workspace,
         system_prompt,
         user_prompt,
         tools,
-        thinking,
-        thinking_level,
     } = config;
 
-    let client = build_client(&base_url, &api_key, &api_type);
+    let client = build_client(&model.base_url, &model.api_key, &model.api_type);
 
     // Build chat request from genai history directly.
     let mut chat_req = ChatRequest::default()
@@ -91,8 +82,9 @@ pub async fn send_stream(
         .with_capture_usage(true);
 
     // Set reasoning effort, When thinking is off, omit it entirely
-    if thinking {
-        let reasoning_effort = thinking_level
+    if model.thinking {
+        let reasoning_effort = model
+            .thinking_level
             .to_lowercase()
             .parse::<ReasoningEffort>()
             .unwrap_or(ReasoningEffort::Medium);
@@ -106,7 +98,7 @@ pub async fn send_stream(
         on_event(crate::Message::StreamStateChange(StreamState::LlmLoading)).await;
 
         let stream_result = client
-            .exec_chat_stream(&model_id, chat_req.clone(), Some(&chat_options))
+            .exec_chat_stream(&model.model_id, chat_req.clone(), Some(&chat_options))
             .await;
 
         let mut stream = match stream_result {
@@ -289,7 +281,13 @@ fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Client {
     if !base_url.ends_with('/') {
         base_url.push('/');
     }
-    let api_key = api_key.to_string();
+
+    // If api_key is an environment variable, resolve it to the actual value.
+    let api_key = if let Ok(secret) = std::env::var(api_key) {
+        secret
+    } else {
+        api_key.to_string()
+    };
 
     let target_resolver = ServiceTargetResolver::from_resolver_fn(
         move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {

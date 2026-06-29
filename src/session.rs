@@ -140,7 +140,7 @@ impl Session {
     }
 
     /// Accumulate token usage and recalculate cost from the model's pricing.
-    pub fn accumulate_usage(&mut self, tokens: &TokenAmount, cost: Option<&crate::model::Cost>) {
+    pub fn accumulate_usage(&mut self, tokens: &TokenAmount, cost: Option<crate::model::Cost>) {
         self.usage.accumulate(tokens);
         if let Some(c) = cost {
             self.cost += c.calculate(tokens);

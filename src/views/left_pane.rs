@@ -15,7 +15,7 @@ use super::system_prompt::{
 use super::user_prompt::user_prompt_view;
 use crate::Message;
 use crate::llm::StreamState;
-use crate::model::{ModelConfig, Provider};
+use crate::model::ModelList;
 use crate::session::SessionEntry;
 use crate::system::{FilepathEntry, SystemPrompt};
 use crate::tools::DevTool;
@@ -26,9 +26,9 @@ use indexmap::IndexMap;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn left_pane<'a>(
     left_w: f32,
-    providers: &'a IndexMap<String, Provider>,
+    provided_models: &'a ModelList,
     provider_entries: &'a [ProviderEntry],
-    selected_model: &'a Option<ModelConfig>,
+    selected_model: &'a str,
     system_prompt: &'a SystemPrompt,
     rules_expanded: bool,
     tools_expanded: bool,
@@ -47,7 +47,8 @@ pub(crate) fn left_pane<'a>(
     current_session_id: &'a str,
 ) -> Element<'a, Message> {
     let col = column![
-        model_config_view(providers, provider_entries, selected_model),
+        model_config_view(provided_models, provider_entries, selected_model)
+            .map(Message::ModelConfigEvent),
         rule::horizontal(0),
         label("System Prompt", 140.0),
         preamble_field_view(&system_prompt.preamble, preamble_options, selected_preamble,),
