@@ -1,0 +1,206 @@
+(
+    providers: {
+        "bigmodel": (
+            name: "BigModel",
+            base_url: "https://open.bigmodel.cn/api/coding/paas/v4",
+            api_key: "BIGMODEL_API_KEY",
+            api_type: "openai",
+            auth: "apiKey",
+            headers: {},
+            models: [
+                (
+                    id: "glm-5.2",
+                    name: "GLM-5.2",
+                    thinking: true,
+                    thinking_levels: ["none", "high", "max"],
+                    input: [
+                        "text",
+                    ],
+                    context_window: 1048576,
+                    max_tokens: 128000,
+                    cost: (
+                        input: 8.0,
+                        output: 28.0,
+                        cache_read: 2.0,
+                        cache_write: 0.0,
+                    ),
+                ),
+                (
+                    id: "glm-4.7-flash",
+                    name: "GLM-4.7 Flash",
+                    thinking: true,
+                    thinking_levels: [],
+                    input: [
+                        "text",
+                    ],
+                    context_window: 200000,
+                    max_tokens: 128000,
+                    cost: (
+                        input: 0.0,
+                        output: 0.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                    ),
+                ),
+            ],
+        ),
+        "deepseek": (
+            name: "DeepSeek",
+            base_url: "https://api.deepseek.com",
+            api_key: "DEEPSEEK_API_KEY",
+            api_type: "openai",
+            auth: "apiKey",
+            headers: {},
+            models: [
+                (
+                    id: "deepseek-v4-flash",
+                    name: "DeepSeek V4 Flash",
+                    thinking: true,
+                    thinking_levels: [
+                        "high",
+                        "max",
+                    ],
+                    input: [
+                        "text",
+                    ],
+                    context_window: 1048576,
+                    max_tokens: 393216,
+                    cost: (
+                        input: 1.0,
+                        output: 2.0,
+                        cache_read: 0.02,
+                        cache_write: 0.0,
+                    ),
+                ),
+                (
+                    id: "deepseek-v4-pro",
+                    name: "DeepSeek V4 Pro",
+                    thinking: true,
+                    thinking_levels: [
+                        "high",
+                        "max",
+                    ],
+                    input: [
+                        "text",
+                    ],
+                    context_window: 1048576,
+                    max_tokens: 393216,
+                    cost: (
+                        input: 3.0,
+                        output: 6.0,
+                        cache_read: 0.025,
+                        cache_write: 0.0,
+                    ),
+                ),
+            ],
+        ),
+        "gemini": (
+            name: "Gemini",
+            base_url: "https://generativelanguage.googleapis.com/v1beta",
+            api_key: "GEMINI_API_KEY",
+            api_type: "gemini",
+            auth: "apiKey",
+            headers: {},
+            models: [
+                (
+                    id: "gemini-3.5-flash",
+                    name: "Gemini 3.5 Flash",
+                    thinking: true,
+                    thinking_levels: [
+                        "high",
+                        "max",
+                    ],
+                    input: [
+                        "text",
+                    ],
+                    context_window: 1048576,
+                    max_tokens: 65536,
+                    cost: (
+                        input: 0.15,
+                        output: 0.60,
+                        cache_read: 0.0375,
+                        cache_write: 0.0,
+                    ),
+                ),
+                (
+                    id: "gemini-3.1-pro",
+                    name: "Gemini 3.1 Pro",
+                    thinking: true,
+                    thinking_levels: [
+                        "high",
+                        "max",
+                    ],
+                    input: [
+                        "text",
+                    ],
+                    context_window: 1048576,
+                    max_tokens: 65536,
+                    cost: (
+                        input: 1.25,
+                        output: 10.0,
+                        cache_read: 0.3125,
+                        cache_write: 0.0,
+                    ),
+                ),
+            ],
+        ),
+        "openai": (
+            name: "OpenAI",
+            base_url: "https://api.openai.com/v1",
+            api_key: "OPENAI_API_KEY",
+            api_type: "openai",
+            auth: "apiKey",
+            headers: {},
+            models: [
+                (
+                    id: "gpt-5.5",
+                    name: "GPT-5.5",
+                    thinking: false,
+                    thinking_levels: [],
+                    input: [
+                        "text",
+                    ],
+                    context_window: 1048576,
+                    max_tokens: 32768,
+                    cost: (
+                        input: 2.0,
+                        output: 8.0,
+                        cache_read: 0.5,
+                        cache_write: 0.0,
+                    ),
+                ),
+                (
+                    id: "gpt-5.5-pro",
+                    name: "GPT-5.5 Pro",
+                    thinking: false,
+                    thinking_levels: [],
+                    input: [
+                        "text",
+                    ],
+                    context_window: 1048576,
+                    max_tokens: 32768,
+                    cost: (
+                        input: 5.0,
+                        output: 20.0,
+                        cache_read: 1.25,
+                        cache_write: 0.0,
+                    ),
+                ),
+            ],
+        ),
+    },
+    models: {
+        "Pro": (
+            provider_id: "deepseek",
+            model_id: "deepseek-v4-pro",
+            thinking: true,
+            thinking_level: "high",
+        ),
+        "Flash": (
+            provider_id: "deepseek",
+            model_id: "deepseek-v4-flash",
+            thinking: true,
+            thinking_level: "high",
+        ),
+    },
+)

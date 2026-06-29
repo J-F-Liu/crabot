@@ -7,6 +7,7 @@ mod llm;
 mod model;
 mod session;
 mod settings;
+mod setup;
 mod system;
 mod tool;
 mod tools;
@@ -63,6 +64,7 @@ fn crabot_title() {
 }
 
 pub fn main() -> iced::Result {
+    setup::ensure_default_files();
     let saved = settings::Settings::load();
     let size = Size::new(
         saved.window_size.0.max(MIN_W),

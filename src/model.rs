@@ -425,6 +425,8 @@ pub fn load_models() -> ModelList {
             save_models_to_ron(&list);
             return list;
         }
+        let _ = std::fs::write(models_ron_path().unwrap(), crate::setup::MODELS);
+        return try_load_models_from_ron().unwrap_or_default();
     }
     ModelList::default()
 }
