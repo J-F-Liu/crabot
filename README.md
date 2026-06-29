@@ -1,5 +1,9 @@
 # Crabot
 
+[![Crates.io](https://img.shields.io/crates/v/crabot.svg)](https://crates.io/crates/crabot)
+[![Downloads](https://img.shields.io/crates/d/crabot.svg)](https://crates.io/crates/crabot)
+[![CI](https://github.com/J-F-Liu/crabot/actions/workflows/ci.yml/badge.svg)](https://github.com/J-F-Liu/crabot/actions/workflows/ci.yml)
+
 A smart and powerful coding agent.
 
 ## Highlights
@@ -13,10 +17,14 @@ A smart and powerful coding agent.
 
 ## Installation
 
+### From crates.io
+
 ```sh
 cargo install crabot
 ```
-or
+
+### From latest source
+
 ```sh
 cargo install --git https://github.com/J-F-Liu/crabot
 ```
