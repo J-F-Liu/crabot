@@ -2,18 +2,39 @@ use iced::{
     Alignment, Element, Fill, mouse,
     widget::{column, mouse_area, pick_list, row, text, toggler},
 };
+use indexmap::IndexMap;
 
 use crate::Message;
 use crate::model::{Model, ModelConfig, Provider};
 
+/// Pick-list entry pairing a provider id with its display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderEntry {
+    pub id: String,
+    pub name: String,
+}
+
+impl std::fmt::Display for ProviderEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
 pub(crate) fn model_config_view<'a>(
-    providers: &'a [Provider],
+    providers: &'a IndexMap<String, Provider>,
+    provider_entries: &'a [ProviderEntry],
     selected: &Option<ModelConfig>,
 ) -> Element<'a, Message> {
+    let selected_entry: Option<&ProviderEntry> = selected
+        .as_ref()
+        .and_then(|cfg| provider_entries.iter().find(|e| e.id == cfg.provider_id));
+
     let selected_provider = selected
         .as_ref()
-        .and_then(|cfg| providers.iter().find(|p| p.id == cfg.provider_id));
-    let models: &[Model] = selected_provider.map(|p| &*p.models).unwrap_or(&[]);
+        .and_then(|cfg| providers.get(&cfg.provider_id));
+    let models: Vec<&Model> = selected_provider
+        .map(|p| p.models.iter().collect())
+        .unwrap_or_default();
     let selected_model = selected_provider.and_then(|p| {
         selected
             .as_ref()
@@ -62,16 +83,19 @@ pub(crate) fn model_config_view<'a>(
     column![
         row![
             text("Provider").size(14).width(60.0),
-            pick_list(providers, selected_provider, |p| Message::SelectProvider(
-                p.id
-            ))
+            pick_list(provider_entries, selected_entry, move |e| {
+                Message::SelectProvider(e.id.clone())
+            })
             .width(Fill),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
         row![
             text("Model").size(14).width(60.0),
-            pick_list(models, selected_model, |m| Message::SelectModel(m.id)).width(Fill),
+            pick_list(models, selected_model, |m| Message::SelectModel(
+                m.id.clone()
+            ))
+            .width(Fill),
         ]
         .spacing(8)
         .align_y(Alignment::Center),

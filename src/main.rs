@@ -32,11 +32,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use genai::chat::{ChatMessage, ChatRole};
-use model::{Model, ModelConfig, Provider, TokenAmount};
+use model::{Model, ModelConfig, ModelList, Provider, TokenAmount};
 use session::{Session, SessionEntry};
 use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use tools::DevTool;
 use user::{UserPrompt, WorkMode};
+use views::model_config::ProviderEntry;
 use views::theme::{HANDLE, MIN_W, default_theme};
 use views::{center_pane, divider, left_pane, right_pane, scroll_to_end};
 use widgets::textarea::{self, TextArea};
@@ -119,7 +120,8 @@ struct App {
     window_pos: Point,
     cursor: Point,
     dragging: Option<Drag>,
-    providers: Vec<Provider>,
+    provided_models: ModelList,
+    provider_entries: Vec<ProviderEntry>,
     selected_model: Option<ModelConfig>,
     theme: Theme,
     system_prompt: SystemPrompt,
@@ -234,9 +236,15 @@ pub enum Message {
 
 impl App {
     fn boot(saved: settings::Settings) -> (Self, Task<Message>) {
-        let providers = model::try_load_models_from_omp()
-            .or_else(|_| model::try_load_models_from_pi())
-            .unwrap_or_default();
+        let provided_models = model::load_models();
+        let provider_entries: Vec<ProviderEntry> = provided_models
+            .providers
+            .iter()
+            .map(|(id, p)| ProviderEntry {
+                id: id.clone(),
+                name: p.name.clone(),
+            })
+            .collect();
 
         let dev_tools: IndexMap<DevTool, bool> = DevTool::ALL
             .iter()
@@ -286,7 +294,8 @@ impl App {
             window_pos: Point::new(saved.window_pos.0, saved.window_pos.1),
             cursor: Point::ORIGIN,
             dragging: None,
-            providers,
+            provided_models,
+            provider_entries,
             preamble_options,
             system_prompt,
             theme: default_theme(),
@@ -377,9 +386,9 @@ impl App {
                 self.window_pos = pos;
             }
             Message::SelectProvider(id) => {
-                self.selected_model = self.providers.iter().find(|p| p.id == id).and_then(|p| {
+                self.selected_model = self.provided_models.providers.get(&id).and_then(|p| {
                     p.models.first().map(|m| ModelConfig {
-                        provider_id: p.id.clone(),
+                        provider_id: id.clone(),
                         model_id: m.id.clone(),
                         thinking: m.thinking,
                         thinking_level: m.thinking_levels.first().cloned().unwrap_or_default(),
@@ -391,7 +400,7 @@ impl App {
                     cfg.model_id = id.clone();
                     cfg.thinking = false;
                     cfg.thinking_level = String::new();
-                    if let Some(p) = self.providers.iter().find(|p| p.id == cfg.provider_id)
+                    if let Some(p) = self.provided_models.providers.get(&cfg.provider_id)
                         && let Some(m) = p.models.iter().find(|m| m.id == id)
                     {
                         cfg.thinking = m.thinking;
@@ -654,9 +663,9 @@ impl App {
                 let u = usage.unwrap_or_default();
                 let tokens = TokenAmount::from_genai(&u);
                 let cost = self.selected_model.as_ref().and_then(|cfg| {
-                    self.providers
-                        .iter()
-                        .find(|p| p.id == cfg.provider_id)
+                    self.provided_models
+                        .providers
+                        .get(&cfg.provider_id)
                         .and_then(|p| p.models.iter().find(|m| m.id == cfg.model_id))
                         .map(|m| &m.cost)
                 });
@@ -968,7 +977,7 @@ impl App {
 
     fn selected_model(&self) -> Option<(&Provider, &Model)> {
         let cfg = self.selected_model.as_ref()?;
-        let provider = self.providers.iter().find(|p| p.id == cfg.provider_id)?;
+        let provider = self.provided_models.providers.get(&cfg.provider_id)?;
         let model = provider.models.iter().find(|m| m.id == cfg.model_id)?;
         Some((provider, model))
     }
@@ -977,7 +986,8 @@ impl App {
         row![
             left_pane(
                 self.left_pane_width,
-                &self.providers,
+                &self.provided_models.providers,
+                &self.provider_entries,
                 &self.selected_model,
                 &self.system_prompt,
                 self.rules_expanded,

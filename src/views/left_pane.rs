@@ -4,6 +4,7 @@ use iced::{
 };
 
 use super::builtin_tools::dev_tools_view;
+use super::model_config::ProviderEntry;
 use super::model_config::model_config_view;
 use super::session_view::session_view;
 use super::styles::{label, pane_side};
@@ -25,7 +26,8 @@ use indexmap::IndexMap;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn left_pane<'a>(
     left_w: f32,
-    providers: &'a [Provider],
+    providers: &'a IndexMap<String, Provider>,
+    provider_entries: &'a [ProviderEntry],
     selected_model: &'a Option<ModelConfig>,
     system_prompt: &'a SystemPrompt,
     rules_expanded: bool,
@@ -45,7 +47,7 @@ pub(crate) fn left_pane<'a>(
     current_session_id: &'a str,
 ) -> Element<'a, Message> {
     let col = column![
-        model_config_view(providers, selected_model),
+        model_config_view(providers, provider_entries, selected_model),
         rule::horizontal(0),
         label("System Prompt", 140.0),
         preamble_field_view(&system_prompt.preamble, preamble_options, selected_preamble,),

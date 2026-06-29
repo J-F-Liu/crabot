@@ -1,6 +1,13 @@
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelList {
+    pub providers: IndexMap<String, Provider>,
+    pub models: IndexMap<String, ModelConfig>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
@@ -12,9 +19,8 @@ pub struct ModelConfig {
 
 // ── Provider ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Provider {
-    pub id: String,
     pub name: String,
     pub base_url: String,
     pub api_key: String,
@@ -30,15 +36,9 @@ impl std::fmt::Display for Provider {
     }
 }
 
-impl PartialEq for Provider {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
 // ── Model ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Model {
     pub id: String,
     pub name: String,
@@ -64,7 +64,7 @@ impl PartialEq for Model {
 
 // ── Cost ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Cost {
     pub input: f64,
     pub output: f64,
@@ -117,7 +117,7 @@ impl TokenAmount {
 // ── loaders ─────────────────────────────────────────────────────────
 
 /// Loads providers and their models from `~/.omp/agent/models.yml`.
-pub fn try_load_models_from_omp() -> Result<Vec<Provider>, Box<dyn std::error::Error>> {
+fn try_load_models_from_omp() -> Result<ModelList, Box<dyn std::error::Error>> {
     use serde_yaml::Value;
 
     fn omp_models_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -168,7 +168,6 @@ pub fn try_load_models_from_omp() -> Result<Vec<Provider>, Box<dyn std::error::E
 
     fn parse_provider(key: &str, v: &Value) -> Provider {
         Provider {
-            id: key.into(),
             name: v.get("name").and_then(|v| v.as_str()).unwrap_or(key).into(),
             base_url: v
                 .get("baseUrl")
@@ -207,20 +206,26 @@ pub fn try_load_models_from_omp() -> Result<Vec<Provider>, Box<dyn std::error::E
     let raw = std::fs::read_to_string(omp_models_path()?)?;
     let tree: Value = serde_yaml::from_str(&raw)?;
 
-    let providers = tree
+    let providers: IndexMap<String, Provider> = tree
         .get("providers")
         .and_then(|v| v.as_mapping())
         .map(|m| {
             m.iter()
-                .map(|(k, v)| parse_provider(k.as_str().unwrap_or(""), v))
+                .map(|(k, v)| {
+                    let id = k.as_str().unwrap_or("").to_string();
+                    (id.clone(), parse_provider(&id, v))
+                })
                 .collect()
         })
         .unwrap_or_default();
-    Ok(providers)
+    Ok(ModelList {
+        providers,
+        models: IndexMap::new(),
+    })
 }
 
 /// Loads providers and their models from `~/.pi/agent/models.json`.
-pub fn try_load_models_from_pi() -> Result<Vec<Provider>, Box<dyn std::error::Error>> {
+fn try_load_models_from_pi() -> Result<ModelList, Box<dyn std::error::Error>> {
     use serde_json::Value;
 
     fn pi_models_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -271,7 +276,6 @@ pub fn try_load_models_from_pi() -> Result<Vec<Provider>, Box<dyn std::error::Er
 
     fn parse_provider(key: &str, v: &Value) -> Provider {
         Provider {
-            id: key.into(),
             name: v.get("name").and_then(|v| v.as_str()).unwrap_or(key).into(),
             base_url: v
                 .get("baseUrl")
@@ -305,10 +309,66 @@ pub fn try_load_models_from_pi() -> Result<Vec<Provider>, Box<dyn std::error::Er
     let raw = std::fs::read_to_string(pi_models_path()?)?;
     let tree: Value = serde_json::from_str(&raw)?;
 
-    let providers = tree
+    let providers: IndexMap<String, Provider> = tree
         .get("providers")
         .and_then(|v| v.as_object())
-        .map(|m| m.iter().map(|(k, v)| parse_provider(k, v)).collect())
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), parse_provider(k, v)))
+                .collect()
+        })
         .unwrap_or_default();
-    Ok(providers)
+    Ok(ModelList {
+        providers,
+        models: IndexMap::new(),
+    })
+}
+
+/// Loads providers from `~/.crabot/models.ron`, falling back to
+/// OMP (`~/.omp/agent/models.yml`) then PI (`~/.pi/agent/models.json`).
+/// On a successful OMP or PI load the result is persisted to models.ron.
+pub fn load_models() -> ModelList {
+    let ron_exists = models_ron_path().map(|p| p.exists()).unwrap_or(false);
+    if ron_exists {
+        if let Ok(list) = try_load_models_from_ron() {
+            return list;
+        }
+    } else {
+        if let Ok(list) = try_load_models_from_omp() {
+            save_models_to_ron(&list);
+            return list;
+        }
+        if let Ok(list) = try_load_models_from_pi() {
+            save_models_to_ron(&list);
+            return list;
+        }
+    }
+    ModelList::default()
+}
+
+// ── RON load / save ─────────────────────────────────────────────────
+
+fn models_ron_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = home::home_dir().ok_or("cannot determine home directory")?;
+    Ok(home.join(".crabot").join("models.ron"))
+}
+
+fn try_load_models_from_ron() -> Result<ModelList, Box<dyn std::error::Error>> {
+    let path = models_ron_path()?;
+    let text = std::fs::read_to_string(&path)?;
+    let list: ModelList = ron::from_str(&text)?;
+    Ok(list)
+}
+
+fn save_models_to_ron(list: &ModelList) {
+    let path = match models_ron_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = ron::ser::to_string_pretty(list, ron::ser::PrettyConfig::default()) {
+        let _ = std::fs::write(&path, text);
+    }
 }
