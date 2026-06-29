@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod chat;
+mod fonts;
 mod llm;
 mod model;
 mod session;
@@ -65,6 +66,7 @@ fn crabot_title() {
 
 pub fn main() -> iced::Result {
     setup::ensure_default_files();
+    fonts::load_system_fonts();
     let saved = settings::Settings::load();
     let size = Size::new(
         saved.window_size.0.max(MIN_W),
