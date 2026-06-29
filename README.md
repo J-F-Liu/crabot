@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/crabot.svg)](https://crates.io/crates/crabot)
 [![Downloads](https://img.shields.io/crates/d/crabot.svg)](https://crates.io/crates/crabot)
-[![CI](https://github.com/J-F-Liu/crabot/actions/workflows/ci.yml/badge.svg)](https://github.com/J-F-Liu/crabot/actions/workflows/ci.yml)
+[![CI](https://github.com/J-F-Liu/crabot/actions/workflows/ci.yml/badge.svg)](https://github.com/J-F-Liu/crabot/actions/workflows/rust.yml)
 
 A smart and powerful coding agent.
 
