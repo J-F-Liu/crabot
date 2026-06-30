@@ -1,40 +1,10 @@
 use genai::chat::{ChatMessage, ChatRole};
-use json_escape::unescape;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::chat::{Dialog, ToolResult, Turn};
 use crate::model::{ModelConfig, TokenAmount};
-
-// ── SessionEntry ────────────────────────────────────────────────────
-
-/// Lightweight session metadata for dropdown listing.
-#[derive(Debug, Clone)]
-pub struct SessionEntry {
-    pub id: String,
-    pub title: String,
-    pub path: PathBuf,
-}
-
-impl std::fmt::Display for SessionEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.title.is_empty() {
-            write!(f, "{}", self.id)
-        } else {
-            write!(f, "{} — {}", self.id, self.title)
-        }
-    }
-}
-
-impl PartialEq for SessionEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-// ── Session ──────────────────────────────────────────────────────────
 
 /// A conversation session, persisted to `.agent/sessions/`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,22 +38,23 @@ pub struct Session {
 
 impl Session {
     /// Create a new session.
-    pub fn new(model: Option<ModelConfig>, workspace: PathBuf) -> Self {
+    pub fn new() -> Self {
         let now = chrono::Local::now();
         let id = now.format("%Y%m%d-%H%M%S").to_string();
+        let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
         Session {
             id,
             title: String::new(),
-            model,
-            workspace,
+            model: None,
+            workspace: PathBuf::new(),
             history: Vec::new(),
             dialogs: Vec::new(),
             usage: TokenAmount::default(),
             cost: 0.0,
             size: 0,
             modified_files: Vec::new(),
-            created_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
-            updated_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
+            created_at: time.clone(),
+            updated_at: time,
         }
     }
 
@@ -282,67 +253,4 @@ impl Session {
         session.rebuild_dialogs();
         Ok(session)
     }
-
-    /// List session metadata for a workspace (reads only first 8 KiB per file).
-    pub fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String> {
-        let paths = Self::list(workspace)?;
-        let mut entries = Vec::with_capacity(paths.len());
-        let mut buf = vec![0u8; 8192];
-        for path in paths {
-            let (id, title) = match std::fs::File::open(&path) {
-                Ok(mut file) => match file.read(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        let text = String::from_utf8_lossy(&buf[..n]);
-                        (
-                            extract_json_string(&text, "id").unwrap_or_default(),
-                            extract_json_string(&text, "title").unwrap_or_default(),
-                        )
-                    }
-                    _ => (String::new(), String::new()),
-                },
-                Err(_) => (String::new(), String::new()),
-            };
-            entries.push(SessionEntry { id, title, path });
-        }
-        Ok(entries)
-    }
-
-    /// List all saved sessions for a workspace.
-    pub fn list(workspace: &Path) -> Result<Vec<PathBuf>, String> {
-        let dir = workspace.join(".agent").join("sessions");
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
-            .map_err(|e| format!("Failed to read sessions dir: {e}"))?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|ext| ext == "json"))
-            .collect();
-        paths.sort_by(|a, b| b.cmp(a)); // newest first
-        Ok(paths)
-    }
-}
-
-/// Extract a top-level JSON string value for `key` from partial JSON text.
-/// Unescaping (incl. `\uXXXX` surrogate pairs) is handled by `json_escape`;
-/// truncated input yields the portion decoded so far.
-fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    let search = format!("\"{}\"", key);
-    let rest = json.split_once(&search)?.1;
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    // Isolate the quoted string: `unescape` won't stop at a closing quote,
-    // so scan to the first unescaped `"` ourselves.
-    let content = rest.strip_prefix('"')?;
-    let bytes = content.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => break,
-            _ => i += 1,
-        }
-    }
-    let inner = &content[..i.min(content.len())];
-    Some(unescape(inner).display_utf8_lossy().to_string())
 }

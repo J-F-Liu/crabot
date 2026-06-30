@@ -10,10 +10,14 @@ use crate::model::TokenAmount;
 
 /// Label-value row with the value right-aligned via a fill spacer.
 fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
+    let mono = Font {
+        family: font::Family::Monospace,
+        ..Font::DEFAULT
+    };
     iced::widget::row![
         text(label).size(16),
         Space::new().width(Length::Fill),
-        text(value).size(16),
+        text(value).size(16).font(mono),
     ]
     .into()
 }

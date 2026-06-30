@@ -283,7 +283,7 @@ fn turn_block<'a>(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn center_pane<'a>(
-    current_prompt: &'a str,
+    title: &'a str,
     dialogs: &'a [Dialog],
     expanded_turns: &'a std::collections::HashSet<usize>,
     expanded_dialogs: &'a std::collections::HashSet<usize>,
@@ -364,7 +364,7 @@ pub(crate) fn center_pane<'a>(
         .collect();
 
     container(column![
-        session_header(current_prompt),
+        session_header(title),
         scrollable(column(dialog_blocks).spacing(18).padding(14),)
             .height(Fill)
             .id(MESSAGE_SCROLL.clone())

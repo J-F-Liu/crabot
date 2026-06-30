@@ -16,10 +16,10 @@ use super::user_prompt::user_prompt_view;
 use crate::Message;
 use crate::llm::StreamState;
 use crate::model::ModelList;
-use crate::session::SessionEntry;
 use crate::system::{FilepathEntry, SystemPrompt};
 use crate::tools::DevTool;
 use crate::user::WorkMode;
+use crate::views::session_view::SessionEntry;
 use crate::widgets::textarea::TextArea;
 use indexmap::IndexMap;
 

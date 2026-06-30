@@ -21,16 +21,61 @@ fn mono_font() -> Font {
     }
 }
 
+/// Bold weight version of the default font.
+fn bold_font() -> Font {
+    Font {
+        weight: font::Weight::Bold,
+        ..Font::DEFAULT
+    }
+}
+
+/// Background colours for diff-style rows.
+const DIFF_BG_DEL: Color = Color::from_rgb8(0xFF, 0xF0, 0xF0);
+const DIFF_BG_ADD: Color = Color::from_rgb8(0xF0, 0xFA, 0xF4);
+
+/// A labelled, colour-coded row used inside the edits table.
+///
+/// `marker` is the leading glyph (e.g. "−", "+", "⚠"), coloured with
+/// `marker_color`. `content` is rendered as selectable monospace text using
+/// `sel_style`, all on a `bg` background with rounded corners.
+fn diff_row<'a>(
+    marker: &'a str,
+    marker_color: Color,
+    content: String,
+    sel_style: fn(&Theme) -> SelectionStyle,
+    bg: Color,
+) -> Element<'a, Message> {
+    container(
+        row![
+            text(marker).size(13).color(marker_color).font(bold_font()),
+            Space::new().width(6),
+            SelectableText::new(content)
+                .size(12)
+                .style(sel_style)
+                .font(mono_font()),
+        ]
+        .spacing(0),
+    )
+    .padding([4, 8])
+    .width(Fill)
+    .style(move |_theme: &Theme| container::Style {
+        background: Some(bg.into()),
+        border: Border {
+            radius: 4.0.into(),
+            ..Default::default()
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
 /// Single tool-argument key-value row.
 pub(super) fn arg_row<'a>(key: &'a str, value: String) -> Element<'a, Message> {
     row![
         text(format!("{}:", key))
             .size(12)
             .color(CRABOT_TOOL_ACCENT)
-            .font(Font {
-                weight: font::Weight::Bold,
-                ..Font::DEFAULT
-            }),
+            .font(bold_font()),
         Space::new().width(8),
         SelectableText::new(value)
             .size(12)
@@ -47,10 +92,7 @@ fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, 
         text(format!("{}:", key))
             .size(12)
             .color(CRABOT_TEXT_MUTED)
-            .font(Font {
-                weight: font::Weight::Bold,
-                ..Font::DEFAULT
-            }),
+            .font(bold_font()),
         Space::new().width(8),
         text(format!("{} edit(s)", edits.len()))
             .size(12)
@@ -62,11 +104,6 @@ fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, 
         .iter()
         .enumerate()
         .flat_map(|(i, edit)| {
-            let ep: EditParam = serde_json::from_value(edit.clone()).unwrap_or(EditParam {
-                old_text: String::new(),
-                new_text: String::new(),
-            });
-            let EditParam { old_text, new_text } = ep;
             let idx = container(
                 text(format!("Edit #{}", i + 1))
                     .size(11)
@@ -75,59 +112,25 @@ fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, 
             .padding([2, 0])
             .into();
 
-            let old_row = container(
-                row![
-                    text("−").size(13).color(CRABOT_DANGER).font(Font {
-                        weight: font::Weight::Bold,
-                        ..Font::DEFAULT
-                    }),
-                    Space::new().width(6),
-                    SelectableText::new(old_text)
-                        .size(12)
-                        .style(sel_secondary)
-                        .font(mono_font()),
-                ]
-                .spacing(0),
-            )
-            .padding([4, 8])
-            .width(Fill)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(Color::from_rgb8(0xFF, 0xF0, 0xF0).into()),
-                border: Border {
-                    radius: 4.0.into(),
-                    ..Default::default()
-                },
-                ..container::Style::default()
-            })
-            .into();
-
-            let new_row = container(
-                row![
-                    text("+").size(13).color(CRABOT_SUCCESS).font(Font {
-                        weight: font::Weight::Bold,
-                        ..Font::DEFAULT
-                    }),
-                    Space::new().width(6),
-                    SelectableText::new(new_text)
-                        .size(12)
-                        .style(sel_primary)
-                        .font(mono_font()),
-                ]
-                .spacing(0),
-            )
-            .padding([4, 8])
-            .width(Fill)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(Color::from_rgb8(0xF0, 0xFA, 0xF4).into()),
-                border: Border {
-                    radius: 4.0.into(),
-                    ..Default::default()
-                },
-                ..container::Style::default()
-            })
-            .into();
-
-            [idx, old_row, new_row]
+            let items: Vec<Element<'_, Message>> =
+                match serde_json::from_value::<EditParam>(edit.clone()) {
+                    Ok(EditParam { old_text, new_text }) => vec![
+                        idx,
+                        diff_row("−", CRABOT_DANGER, old_text, sel_secondary, DIFF_BG_DEL),
+                        diff_row("+", CRABOT_SUCCESS, new_text, sel_primary, DIFF_BG_ADD),
+                    ],
+                    Err(_) => vec![
+                        idx,
+                        diff_row(
+                            "⚠",
+                            CRABOT_DANGER,
+                            edit.to_string(),
+                            sel_secondary,
+                            DIFF_BG_DEL,
+                        ),
+                    ],
+                };
+            items
         })
         .collect();
 
@@ -230,10 +233,7 @@ pub(super) fn result_text(result: &Result<String, String>) -> Element<'_, Messag
             text(if is_ok { "Result" } else { "Error" })
                 .size(11)
                 .color(accent)
-                .font(Font {
-                    weight: font::Weight::Bold,
-                    ..Font::DEFAULT
-                }),
+                .font(bold_font()),
             SelectableText::new(display)
                 .size(13)
                 .style(move |theme: &Theme| SelectionStyle {
@@ -251,7 +251,7 @@ pub(super) fn result_text(result: &Result<String, String>) -> Element<'_, Messag
             if is_ok {
                 CRABOT_TOOL_CONTENT_BG
             } else {
-                Color::from_rgb8(0xFF, 0xF0, 0xF0)
+                DIFF_BG_DEL
             }
             .into(),
         ),

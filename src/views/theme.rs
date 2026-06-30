@@ -2,8 +2,8 @@ use iced::{Color, Theme};
 
 // ── layout constants ──────────────────────────────────────────────
 
-pub(crate) const MIN_W: f32 = 280.0;
-pub(crate) const HANDLE: f32 = 6.0;
+pub(crate) const MIN_W: f32 = 240.0;
+pub(crate) const HANDLE: f32 = 4.0;
 
 // ── theme colors ─────────────────────────────────────────────
 

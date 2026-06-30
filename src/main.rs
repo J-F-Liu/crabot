@@ -34,12 +34,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use genai::chat::{ChatMessage, ChatRole};
-use model::{ModelList, TokenAmount};
-use session::{Session, SessionEntry};
+use model::{Model, ModelConfig, ModelList, TokenAmount};
+use session::Session;
 use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use tools::DevTool;
 use user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
+use views::session_view::SessionEntry;
 use views::theme::{HANDLE, MIN_W, default_theme};
 use views::{center_pane, divider, left_pane, right_pane, scroll_to_end};
 use widgets::textarea::{self, TextArea};
@@ -115,6 +116,8 @@ pub enum FocusedTarget {
     UserPrompt,
     /// A system-prompt text editor identified by its field name.
     EditText(&'static str),
+    /// The session pick_list in the left pane.
+    SessionPicker,
 }
 
 struct App {
@@ -158,7 +161,7 @@ struct App {
     /// Token usage from the most recent completed LLM response.
     last_usage: genai::chat::Usage,
     /// Last-sent user prompt text, displayed in the center-pane header.
-    current_prompt: String,
+    center_pane_title: String,
     /// Whether to show the Restart button (current_exe within workspace).
     show_restart: bool,
     /// Cancellation token to stop an in-progress stream early.
@@ -231,6 +234,11 @@ pub(crate) enum Message {
     ShiftHeld(bool),
     /// Model configuration event (provider/model selection, thinking).
     ModelConfigEvent(views::model_config::Event),
+    /// Session pick_list gained focus (e.g. via dropdown open).
+    SessionPickerFocused,
+    /// Arrow-key navigation for the session pick_list.
+    /// `true` = up (previous), `false` = down (next).
+    NavigateSession(bool),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -313,14 +321,14 @@ impl App {
             dev_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
-            session: Session::new(None, workspace_path),
+            session: Session::new(),
             session_options: Vec::new(),
             streaming: StreamState::Idle,
             stream_start_index: 0,
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
             last_usage: genai::chat::Usage::default(),
-            current_prompt: "New session".into(),
+            center_pane_title: "New session".into(),
             show_restart,
             cancel_token: Arc::new(AtomicBool::new(false)),
             auto_scroll: Arc::new(AtomicBool::new(true)),
@@ -505,9 +513,8 @@ impl App {
                 self.workmode = mode;
             }
             Message::NewSession => {
-                let workspace = self.system_prompt.workspace.1.clone();
-                self.session = Session::new(None, workspace);
-                self.current_prompt = "New session".into();
+                self.session = Session::new();
+                self.center_pane_title = "New session".into();
                 self.last_usage = genai::chat::Usage::default();
                 self.expanded_turns.clear();
                 self.expanded_dialogs.clear();
@@ -539,39 +546,85 @@ impl App {
                 match Session::load(&entry.path) {
                     Ok(session) => {
                         self.session = session;
-                        self.last_usage = genai::chat::Usage {
-                            prompt_tokens: Some(self.session.size),
-                            ..Default::default()
-                        };
-                        self.current_prompt = self.session.title.clone();
-                        self.expanded_turns.clear();
-                        self.expanded_dialogs.clear();
-                        self.selectable_msgs.clear();
                     }
                     Err(e) => {
+                        self.session = Session::new();
+                        self.session.id = entry.id;
                         eprintln!("Failed to load session: {e}");
                     }
                 }
+                self.last_usage = genai::chat::Usage {
+                    prompt_tokens: Some(self.session.size),
+                    ..Default::default()
+                };
+                self.center_pane_title = self.session.title.clone();
+                self.expanded_turns.clear();
+                self.expanded_dialogs.clear();
+                self.selectable_msgs.clear();
             }
             Message::SessionListLoaded(entries) => {
                 self.session_options = entries;
+            }
+            Message::SessionPickerFocused => {
+                self.focused = Some(FocusedTarget::SessionPicker);
+            }
+            Message::NavigateSession(up) => {
+                if self.focused != Some(FocusedTarget::SessionPicker)
+                    || self.streaming != StreamState::Idle
+                    || self.session_options.is_empty()
+                {
+                    return Task::none();
+                }
+                let current_idx = self
+                    .session_options
+                    .iter()
+                    .position(|e| e.id == self.session.id);
+                let new_entry = match current_idx {
+                    Some(idx) => {
+                        let new_idx = if up {
+                            idx.checked_sub(1)
+                                .unwrap_or(self.session_options.len().saturating_sub(1))
+                        } else {
+                            let next = idx + 1;
+                            if next < self.session_options.len() {
+                                next
+                            } else {
+                                0
+                            }
+                        };
+                        Some(self.session_options[new_idx].clone())
+                    }
+                    None => {
+                        // Current session not in list; select the first (or last) entry.
+                        if up {
+                            self.session_options.last().cloned()
+                        } else {
+                            self.session_options.first().cloned()
+                        }
+                    }
+                };
+                if let Some(entry) = new_entry {
+                    return Task::done(Message::LoadSession(entry));
+                }
             }
             Message::SendPrompt => {
                 let content = self.user_prompt.text();
                 if self.streaming != StreamState::Idle || content.trim().is_empty() {
                     return Task::none();
                 }
+                let Some(model) = self
+                    .provided_models
+                    .get_config(&self.selected_model)
+                    .cloned()
+                else {
+                    return Task::none();
+                };
+
                 let title = Session::derive_title(&content);
-                self.current_prompt = content.clone();
+                self.center_pane_title = content.clone();
 
                 let user_prompt = UserPrompt::new(self.workmode, content).get_prompt();
                 self.user_prompt.clear();
-                // Update session state with the selected model and workspace.
-                self.session.model = self
-                    .provided_models
-                    .get_config(&self.selected_model)
-                    .cloned();
-                self.session.workspace = self.system_prompt.workspace.1.clone();
                 // Auto-collapse all previous dialogs; keep the new one expanded.
                 let new_dialog_idx = self.session.dialogs.len();
                 self.expanded_dialogs.clear();
@@ -579,18 +632,25 @@ impl App {
                 self.session.add_dialog(title);
                 self.session.push_turn(Turn::user(user_prompt.clone()));
 
-                return self.start_dialog(Some(user_prompt));
+                return self.start_dialog(&model, Some(user_prompt));
             }
             Message::ResendLastPrompt => {
-                if self.streaming != StreamState::Idle || self.current_prompt == "New session" {
+                if self.streaming != StreamState::Idle || self.center_pane_title == "New session" {
                     return Task::none();
                 }
+                let Some(model) = self
+                    .provided_models
+                    .get_config(&self.selected_model)
+                    .cloned()
+                else {
+                    return Task::none();
+                };
                 // Collapse all other dialogs; keep the last one expanded during resend.
                 self.expanded_dialogs.clear();
                 if let Some(idx) = self.session.dialogs.len().checked_sub(1) {
                     self.expanded_dialogs.insert(idx);
                 }
-                return self.start_dialog(None);
+                return self.start_dialog(&model, None);
             }
             Message::StreamToolCall(tc) => {
                 self.session.push_turn(Turn::from_tool_call(tc));
@@ -642,11 +702,7 @@ impl App {
             Message::TokenUsage(usage) => {
                 let u = usage.unwrap_or_default();
                 let tokens = TokenAmount::from_genai(&u);
-                let cost = self
-                    .session
-                    .model
-                    .as_ref()
-                    .and_then(|cfg| self.provided_models.get_model(cfg).map(|m| m.cost));
+                let cost = self.get_current_model().map(|m| m.cost);
                 self.session.accumulate_usage(&tokens, cost);
                 self.session.size = u.prompt_tokens.unwrap_or(0);
                 self.last_usage = u;
@@ -660,7 +716,7 @@ impl App {
                 return self.maybe_scroll_to_end();
             }
             Message::CopySessionTitle => {
-                return iced::clipboard::write(self.current_prompt.clone());
+                return iced::clipboard::write(self.center_pane_title.clone());
             }
             Message::Restart => {
                 self.save_settings();
@@ -802,18 +858,19 @@ impl App {
         }
     }
 
-    fn start_dialog(&mut self, user_prompt: Option<String>) -> Task<Message> {
-        self.auto_scroll.store(true, Ordering::Relaxed);
-        self.stream_start_index = self.session.total_turns();
-
-        let Some(model) = self
-            .session
-            .model
-            .as_ref()
-            .and_then(|cfg| self.provided_models.get_model_info(cfg))
-        else {
+    fn start_dialog(
+        &mut self,
+        model_config: &ModelConfig,
+        user_prompt: Option<String>,
+    ) -> Task<Message> {
+        // Update session state with the selected model and workspace.
+        let Some(model) = self.provided_models.get_model_info(model_config) else {
             return Task::none();
         };
+        self.session.model = Some(model_config.clone());
+        self.session.workspace = self.system_prompt.workspace.1.clone();
+        self.stream_start_index = self.session.total_turns();
+        self.auto_scroll.store(true, Ordering::Relaxed);
 
         let config = llm::SendConfig {
             model,
@@ -881,7 +938,7 @@ impl App {
             left_pane_width: self.left_pane_width,
             right_pane_width: self.right_pane_width,
             window_size: (self.window_size.width, self.window_size.height),
-            window_pos: (self.window_pos.x, self.window_pos.y),
+            window_pos: (self.window_pos.x.max(0.0), self.window_pos.y.max(0.0)),
             selected_model: self.selected_model.clone(),
             selected_preamble: self.selected_preamble.clone(),
             preamble_enabled: self.system_prompt.preamble.0,
@@ -912,9 +969,11 @@ impl App {
         let workspace = self.system_prompt.workspace.1.clone();
         Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || Session::list_entries(&workspace))
-                    .await
-                    .unwrap_or(Ok(Vec::new()))
+                tokio::task::spawn_blocking(move || {
+                    crate::views::session_view::list_entries(&workspace)
+                })
+                .await
+                .unwrap_or(Ok(Vec::new()))
             },
             |result| match result {
                 Ok(entries) => Message::SessionListLoaded(entries),
@@ -929,6 +988,14 @@ impl App {
             WORKSPACE_TREE => Some(&mut self.files_content),
             _ => None,
         }
+    }
+
+    fn get_current_model(&self) -> Option<&Model> {
+        self.session
+            .model
+            .as_ref()
+            .or_else(|| self.provided_models.get_config(&self.selected_model))
+            .and_then(|cfg| self.provided_models.get_model(cfg))
     }
 
     fn get_status(&self) -> &str {
@@ -972,7 +1039,7 @@ impl App {
             ),
             divider(),
             center_pane(
-                &self.current_prompt,
+                &self.center_pane_title,
                 self.session.dialogs.as_slice(),
                 &self.expanded_turns,
                 &self.expanded_dialogs,
@@ -984,11 +1051,7 @@ impl App {
             divider(),
             right_pane(
                 self.right_pane_width,
-                self.session
-                    .model
-                    .as_ref()
-                    .and_then(|cfg| self.provided_models.get_model(cfg))
-                    .map(|model| model.context_window),
+                self.get_current_model().map(|model| model.context_window),
                 &self.last_usage,
                 &self.session.usage,
                 self.session.cost,
@@ -1014,6 +1077,14 @@ impl App {
                 }
                 Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size)),
                 Event::Window(window::Event::Moved(pos)) => Some(Message::WindowMoved(pos)),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+                    ..
+                }) => Some(Message::NavigateSession(true)),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+                    ..
+                }) => Some(Message::NavigateSession(false)),
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..
