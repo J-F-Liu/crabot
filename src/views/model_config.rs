@@ -109,11 +109,18 @@ pub(crate) fn model_config_view<'a>(
     let thinking_row: Element<_> = if supported {
         let levels: &[String] = selected_model.map(|m| &*m.thinking_levels).unwrap_or(&[]);
         let selected_level = thinking_level.and_then(|i| levels.get(i));
+        let level_picker: Element<_> = if levels.is_empty() {
+            iced::widget::Space::new().width(Fill).height(30.0).into()
+        } else {
+            pick_list(levels, selected_level, Event::SelectThinkingLevel)
+                .width(Fill)
+                .into()
+        };
         row![
             text("Thinking").size(14).width(60.0),
             toggle,
             text("Level").size(14),
-            pick_list(levels, selected_level, Event::SelectThinkingLevel).width(Fill),
+            level_picker,
         ]
         .spacing(8)
         .align_y(Alignment::Center)

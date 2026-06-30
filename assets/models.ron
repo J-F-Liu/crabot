@@ -155,8 +155,8 @@
                 (
                     id: "gpt-5.5",
                     name: "GPT-5.5",
-                    thinking: false,
-                    thinking_levels: [],
+                    thinking: true,
+                    thinking_levels: ["none", "low", "medium", "high", "xhigh"],
                     input: [
                         "text",
                     ],
@@ -172,8 +172,8 @@
                 (
                     id: "gpt-5.5-pro",
                     name: "GPT-5.5 Pro",
-                    thinking: false,
-                    thinking_levels: [],
+                    thinking: true,
+                    thinking_levels: ["none", "low", "medium", "high", "xhigh"],
                     input: [
                         "text",
                     ],
