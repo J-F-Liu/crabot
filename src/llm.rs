@@ -9,7 +9,7 @@ use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
 use crate::model::ModelInfo;
-use crate::tools::DevTool;
+use crate::tools;
 
 // ── StreamState: tracks the current phase of an LLM interaction ────
 
@@ -217,7 +217,7 @@ pub async fn send_stream(
             // Resolve the tool on this thread so we don't have to clone the
             // name into the blocking closure. Unknown tools short-circuit to
             // an error result without spawning a task.
-            let result = match DevTool::from_name(&tc.fn_name) {
+            let result = match tools::find_tool(&tc.fn_name) {
                 Some(tool) => {
                     // Run tool execution on a blocking thread so the async
                     // task yields while the tool runs – this keeps the iced

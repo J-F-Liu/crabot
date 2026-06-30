@@ -5,55 +5,43 @@ use iced::{
     widget::{checkbox, table},
 };
 
-use crate::{Message, tools::DevTool};
+use crate::{Message, tools};
 
-pub(crate) fn dev_tools_view<'a>(selected: &'a IndexMap<DevTool, bool>) -> Element<'a, Message> {
-    type Row = (DevTool, DevTool, DevTool);
+pub(crate) fn builtin_tools_view<'a>(selected: &'a IndexMap<String, bool>) -> Element<'a, Message> {
+    type Row = (&'static str, &'static str, &'static str);
 
-    let rows: [Row; 1] = [(DevTool::Find, DevTool::Search, DevTool::Bash)];
+    let names: Vec<&'static str> = tools::builtin_tools().keys().copied().collect();
+    let rows: [Row; 1] = [(names[3], names[4], names[5])];
 
-    let header = |tool: DevTool| -> Element<'_, Message> {
-        let checked = selected.get(&tool).copied().unwrap_or(false);
-        Element::from(
-            checkbox(checked)
-                .label(tool.name())
-                .style(crate::views::primary_checkbox)
-                .on_toggle(move |v| Message::ToggleDevTool(tool.name().to_string(), v)),
-        )
-    };
+    let header = |name: &'static str| checkbox_cell(name, selected);
 
     table(
         vec![
-            table::column(header(DevTool::Read), |(t, _, _): Row| {
-                let checked = selected.get(&t).copied().unwrap_or(false);
-                Element::from(
-                    checkbox(checked)
-                        .label(t.name())
-                        .style(crate::views::primary_checkbox)
-                        .on_toggle(move |v| Message::ToggleDevTool(t.name().to_string(), v)),
-                )
+            table::column(header(names[0]), |(t, _, _): Row| {
+                checkbox_cell(t, selected)
             }),
-            table::column(header(DevTool::Write), |(_, t, _): Row| {
-                let checked = selected.get(&t).copied().unwrap_or(false);
-                Element::from(
-                    checkbox(checked)
-                        .label(t.name())
-                        .style(crate::views::primary_checkbox)
-                        .on_toggle(move |v| Message::ToggleDevTool(t.name().to_string(), v)),
-                )
+            table::column(header(names[1]), |(_, t, _): Row| {
+                checkbox_cell(t, selected)
             }),
-            table::column(header(DevTool::Edit), |(_, _, t): Row| {
-                let checked = selected.get(&t).copied().unwrap_or(false);
-                Element::from(
-                    checkbox(checked)
-                        .label(t.name())
-                        .style(crate::views::primary_checkbox)
-                        .on_toggle(move |v| Message::ToggleDevTool(t.name().to_string(), v)),
-                )
+            table::column(header(names[2]), |(_, _, t): Row| {
+                checkbox_cell(t, selected)
             }),
         ],
         rows,
     )
     .separator(0)
     .into()
+}
+
+fn checkbox_cell<'a>(
+    name: &'static str,
+    selected: &'a IndexMap<String, bool>,
+) -> Element<'a, Message> {
+    let checked = selected.get(name).copied().unwrap_or(false);
+    Element::from(
+        checkbox(checked)
+            .label(name)
+            .style(crate::views::primary_checkbox)
+            .on_toggle(move |v| Message::ToggleAgentTool(name.to_string(), v)),
+    )
 }

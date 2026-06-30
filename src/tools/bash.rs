@@ -1,34 +1,47 @@
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::arg_str;
+use super::{Tool, arg_str};
 
 /// Maximum seconds a bash command is allowed to run before being killed.
 const BASH_TIMEOUT_SECONDS: u64 = 120;
 
-pub(super) fn instruction() -> &'static str {
-    "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files. Dedicated tools are available for those operations."
+pub struct BashTool;
+
+impl Tool for BashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "Execute a shell command via Bash. For builds, tests, and Git only; use dedicated tools for file operations."
+    }
+
+    fn instruction(&self) -> &str {
+        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files. Dedicated tools are available for those operations."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Bash shell command to execute. Use only for builds, tests, Git, package managers, and CLI tooling. Never use for file reading, writing, searching, or path-finding — use the dedicated `read`, `write`, `edit`, `search`, and `find` tools instead. Returns combined stdout and stderr."
+                }
+            },
+            "required": ["command"]
+        })
+    }
+
+    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+        execute(args, workspace)
+    }
 }
 
-pub(super) fn description() -> &'static str {
-    "Execute a shell command via Bash. For builds, tests, and Git only; use dedicated tools for file operations."
-}
-
-pub(super) fn schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "Bash shell command to execute. Use only for builds, tests, Git, package managers, and CLI tooling. Never use for file reading, writing, searching, or path-finding — use the dedicated `read`, `write`, `edit`, `search`, and `find` tools instead. Returns combined stdout and stderr."
-            }
-        },
-        "required": ["command"]
-    })
-}
-
-pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<String, String> {
+pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
     let mut cmd = std::process::Command::new("bash");
     cmd.arg("-c")

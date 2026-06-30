@@ -37,7 +37,7 @@ use genai::chat::{ChatMessage, ChatRole};
 use model::{Model, ModelConfig, ModelList, TokenAmount};
 use session::Session;
 use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
-use tools::DevTool;
+
 use user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
 use views::session_view::SessionEntry;
@@ -126,7 +126,7 @@ struct App {
     rules_content: TextArea,
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
-    dev_tools: IndexMap<DevTool, bool>,
+    agent_tools: IndexMap<String, bool>,
     user_prompt: TextArea,
     workmode: WorkMode,
     session: Session,
@@ -180,7 +180,7 @@ pub(crate) enum Message {
     WorkspaceDialogResult(Option<PathBuf>),
     SelectPreamble(FilepathEntry),
     PreambleFileResult(Result<String, String>),
-    ToggleDevTool(String, bool),
+    ToggleAgentTool(String, bool),
     /// An edit action targeting a specific [`TextArea`].
     /// The [`FocusedTarget`] identifies which text area should receive the action.
     EditTextArea(FocusedTarget, textarea::Message),
@@ -240,12 +240,12 @@ impl App {
             .collect();
         let selected_model = provided_models.ensure_valid_name(&saved.selected_model);
 
-        let dev_tools: IndexMap<DevTool, bool> = DevTool::ALL
-            .iter()
-            .map(|&t| {
+        let builtin_tools: IndexMap<String, bool> = tools::builtin_tools()
+            .keys()
+            .map(|&name| {
                 (
-                    t,
-                    saved.builtin_tools.get(t.name()).copied().unwrap_or(true),
+                    name.to_string(),
+                    saved.agent_tools.get(name).copied().unwrap_or(true),
                 )
             })
             .collect();
@@ -259,7 +259,7 @@ impl App {
 
         let workspace_path = saved.workspace;
         let files_tree = workspace::build_files_tree(&workspace_path);
-        let tools_summary = tool::tools_summary(&dev_tools);
+        let tools_summary = tool::tools_summary(&builtin_tools);
         let rules_content = TextArea::with_text(&saved.rules_text);
         let files_content = text_editor::Content::with_text(&files_tree);
         let tools_content = text_editor::Content::with_text(&tools_summary);
@@ -302,7 +302,7 @@ impl App {
             rules_content,
             files_content,
             tools_content,
-            dev_tools,
+            agent_tools: builtin_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
             session: Session::new(),
@@ -395,10 +395,10 @@ impl App {
                     field.0 = enabled;
                 }
             }
-            Message::ToggleDevTool(tool_name, enabled) => {
-                if let Some(tool) = DevTool::ALL.iter().find(|t| t.name() == tool_name) {
-                    self.dev_tools.insert(*tool, enabled);
-                    let summary = tool::tools_summary(&self.dev_tools);
+            Message::ToggleAgentTool(tool_name, enabled) => {
+                if tools::find_tool(&tool_name).is_some() {
+                    self.agent_tools.insert(tool_name, enabled);
+                    let summary = tool::tools_summary(&self.agent_tools);
                     self.system_prompt.tools.1 = summary.clone();
                     self.tools_content = text_editor::Content::with_text(&summary);
                 }
@@ -861,7 +861,7 @@ impl App {
             workspace: self.system_prompt.workspace.1.clone(),
             system_prompt: self.system_prompt.get_prompt(),
             user_prompt,
-            tools: DevTool::build_tools(&self.dev_tools),
+            tools: tools::build_tools(&self.agent_tools),
         };
 
         let history = self.session.history.clone();
@@ -939,11 +939,7 @@ impl App {
                 .map(|e| e.path.clone())
                 .collect(),
             rules_text: self.rules_content.text(),
-            builtin_tools: self
-                .dev_tools
-                .iter()
-                .map(|(t, &enabled)| (t.name().to_string(), enabled))
-                .collect(),
+            agent_tools: self.agent_tools.clone(),
         };
         settings.save();
     }
@@ -1014,7 +1010,7 @@ impl App {
                 &self.rules_content,
                 &self.files_content,
                 &self.tools_content,
-                &self.dev_tools,
+                &self.agent_tools,
                 &self.user_prompt,
                 self.workmode,
                 self.streaming,

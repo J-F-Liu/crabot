@@ -1,33 +1,47 @@
+use std::path::Path;
+
 use serde_json::{Value, json};
 
-use super::{arg_str, resolve_path};
+use super::{Tool, arg_str, resolve_path};
 
-pub(super) fn instruction() -> &'static str {
-    "Find files matching a glob pattern (for example, *.rs or src/**/*.ts). Respects .gitignore rules and returns workspace-relative paths, one per line. Use this tool to discover file locations before attempting to read or modify files."
-}
+pub struct FindTool;
 
-pub(super) fn description() -> &'static str {
-    "Find files matching a glob pattern. Respects .gitignore and returns workspace-relative paths."
-}
+impl Tool for FindTool {
+    fn name(&self) -> &str {
+        "find"
+    }
 
-pub(super) fn schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "pattern": {
-                "type": "string",
-                "description": "Glob pattern to match file paths (e.g. \"*.rs\", \"src/**/*.ts\")"
+    fn description(&self) -> &str {
+        "Find files matching a glob pattern. Respects .gitignore and returns workspace-relative paths."
+    }
+
+    fn instruction(&self) -> &str {
+        "Find files matching a glob pattern (for example, *.rs or src/**/*.ts). Respects .gitignore rules and returns workspace-relative paths, one per line. Use this tool to discover file locations before attempting to read or modify files."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to match file paths (e.g. \"*.rs\", \"src/**/*.ts\")"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Root directory to search within (default: workspace root)"
+                }
             },
-            "path": {
-                "type": "string",
-                "description": "Root directory to search within (default: workspace root)"
-            }
-        },
-        "required": ["pattern"]
-    })
+            "required": ["pattern"]
+        })
+    }
+
+    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+        execute(args, workspace)
+    }
 }
 
-pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<String, String> {
+pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let pattern_str = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
     let search_path = arg_str(args, "path")
         .map(|p| resolve_path(p, workspace))

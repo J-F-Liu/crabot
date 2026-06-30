@@ -1,33 +1,47 @@
+use std::path::Path;
+
 use serde_json::{Value, json};
 
-use super::{arg_str, make_workspace_relative, resolve_path_partial};
+use super::{Tool, arg_str, make_workspace_relative, resolve_path_partial};
 
-pub(super) fn instruction() -> &'static str {
-    "You may use tools multiple times in a single response and continue writing after tool calls. When editing files, group your changes by file. For each file, provide a brief description of the intended changes."
-}
+pub struct WriteTool;
 
-pub(super) fn description() -> &'static str {
-    "Write content to a file, overwriting existing files. Creates parent directories as needed."
-}
+impl Tool for WriteTool {
+    fn name(&self) -> &str {
+        "write"
+    }
 
-pub(super) fn schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "Path to the file (relative to workspace or absolute)"
+    fn description(&self) -> &str {
+        "Write content to a file, overwriting existing files. Creates parent directories as needed."
+    }
+
+    fn instruction(&self) -> &str {
+        "You may use tools multiple times in a single response and continue writing after tool calls. When editing files, group your changes by file. For each file, provide a brief description of the intended changes."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file (relative to workspace or absolute)"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Complete file content to write. Overwrites the file entirely if it already exists."
+                }
             },
-            "content": {
-                "type": "string",
-                "description": "Complete file content to write. Overwrites the file entirely if it already exists."
-            }
-        },
-        "required": ["path", "content"]
-    })
+            "required": ["path", "content"]
+        })
+    }
+
+    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+        execute(args, workspace)
+    }
 }
 
-pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<String, String> {
+pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let path = arg_str(args, "path").ok_or("Missing 'path' argument")?;
     let content = arg_str(args, "content").ok_or("Missing 'content' argument")?;
     let file_path = resolve_path_partial(path, workspace)

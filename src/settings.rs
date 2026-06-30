@@ -23,8 +23,8 @@ pub struct Settings {
     /// Recent workspace paths (most recent first).
     pub recent_workspaces: Vec<PathBuf>,
     pub rules_text: String,
-    /// Enabled builtin tools: tool name → enabled.
-    pub builtin_tools: IndexMap<String, bool>,
+    /// Enabled agent tools: tool name → enabled.
+    pub agent_tools: IndexMap<String, bool>,
 }
 
 impl Default for Settings {
@@ -45,9 +45,9 @@ impl Default for Settings {
             workspace: PathBuf::new(),
             recent_workspaces: Vec::new(),
             rules_text: String::new(),
-            builtin_tools: crate::tools::DevTool::ALL
-                .iter()
-                .map(|t| (t.name().to_string(), true))
+            agent_tools: crate::tools::builtin_tools()
+                .keys()
+                .map(|&name| (name.to_string(), true))
                 .collect(),
         }
     }

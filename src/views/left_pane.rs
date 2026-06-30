@@ -3,7 +3,7 @@ use iced::{
     widget::{column, container, rule, scrollable, text_editor},
 };
 
-use super::builtin_tools::dev_tools_view;
+use super::builtin_tools::builtin_tools_view;
 use super::model_config::ProviderEntry;
 use super::model_config::model_config_view;
 use super::session_view::session_view;
@@ -17,7 +17,6 @@ use crate::Message;
 use crate::llm::StreamState;
 use crate::model::ModelList;
 use crate::system::{FilepathEntry, SystemPrompt};
-use crate::tools::DevTool;
 use crate::user::WorkMode;
 use crate::views::session_view::SessionEntry;
 use crate::widgets::textarea::TextArea;
@@ -39,7 +38,7 @@ pub(crate) fn left_pane<'a>(
     rules_content: &'a TextArea,
     files_content: &'a text_editor::Content,
     tools_content: &'a text_editor::Content,
-    dev_tools: &'a IndexMap<DevTool, bool>,
+    builtin_tools: &'a IndexMap<String, bool>,
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     streaming: StreamState,
@@ -60,7 +59,7 @@ pub(crate) fn left_pane<'a>(
         session_view(streaming, session_options, current_session_id),
         label("User Prompt", 140.0),
         user_prompt_view(user_prompt, workmode),
-        container(column![label("Tools", 140.0), dev_tools_view(dev_tools)].spacing(4))
+        container(column![label("Tools", 140.0), builtin_tools_view(builtin_tools)].spacing(4))
             .padding(iced::padding::top(6.0))
     ]
     .spacing(8);

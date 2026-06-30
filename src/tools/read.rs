@@ -1,16 +1,50 @@
 use std::fmt::Write;
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 
 use serde_json::{Value, json};
 
-use super::{arg_str, arg_u64, make_workspace_relative, resolve_path};
+use super::{Tool, arg_str, arg_u64, make_workspace_relative, resolve_path};
 
-pub(super) fn instruction() -> &'static str {
-    "When reading files, prefer larger, context-rich reads over multiple small consecutive reads. Large files may be truncated with a marker such as \"[213 more lines in file. Use offset=2000 to continue.]\". You can use the `read` tool to load additional content if needed. Never pass the truncation marker to an edit tool. You don't need to read a file if it's already provided in context."
-}
+pub struct ReadTool;
 
-pub(super) fn description() -> &'static str {
-    "Read a file from the filesystem with line-numbered output. Supports offset and line-limit pagination."
+impl Tool for ReadTool {
+    fn name(&self) -> &str {
+        "read"
+    }
+
+    fn description(&self) -> &str {
+        "Read a file from the filesystem with line-numbered output. Supports offset and line-limit pagination."
+    }
+
+    fn instruction(&self) -> &str {
+        "When reading files, prefer larger, context-rich reads over multiple small consecutive reads. Large files may be truncated with a marker such as \"[213 more lines in file. Use offset=2000 to continue.]\". You can use the `read` tool to load additional content if needed. Never pass the truncation marker to an edit tool. You don't need to read a file if it's already provided in context."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file (relative to workspace or absolute)"
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "1-based line number to start reading from (default: 1)"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to read (default: 2000, capped at 2000)"
+                }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+        execute(args, workspace)
+    }
 }
 
 const DEFAULT_MAX_LINES: usize = 2000;
@@ -41,28 +75,7 @@ fn strip_newline(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-pub(super) fn schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "Path to the file (relative to workspace or absolute)"
-            },
-            "offset": {
-                "type": "integer",
-                "description": "1-based line number to start reading from (default: 1)"
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum number of lines to read (default: 2000, capped at 2000)"
-            }
-        },
-        "required": ["path"]
-    })
-}
-
-pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<String, String> {
+pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let path = arg_str(args, "path").ok_or("Missing 'path' argument")?;
     let file_path = resolve_path(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
@@ -218,7 +231,7 @@ enum LimitKind {
 }
 
 /// Verify the path exists and is a regular file before attempting to read it.
-fn check_readable(path: &std::path::Path, display_path: &str) -> Result<(), String> {
+fn check_readable(path: &Path, display_path: &str) -> Result<(), String> {
     match std::fs::metadata(path) {
         Ok(meta) => {
             if meta.is_dir() {

@@ -5,128 +5,66 @@ mod read;
 mod search;
 mod write;
 
-use genai::chat::Tool;
+use std::path::Path;
+use std::sync::LazyLock;
 
+use genai::chat::Tool as GenaiTool;
 use indexmap::IndexMap;
 use serde_json::Value;
-// ── DevTools ────────────────────────────────────────────────────────
 
-/// The six coding-agent devtools exposed to the LLM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum DevTool {
-    Read,
-    Write,
-    Edit,
-    Find,
-    Search,
-    Bash,
-}
+// ── Tool trait ──────────────────────────────────────────────────────
 
-impl DevTool {
-    pub const ALL: &[DevTool] = &[
-        Self::Read,
-        Self::Write,
-        Self::Edit,
-        Self::Find,
-        Self::Search,
-        Self::Bash,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Write => "write",
-            Self::Edit => "edit",
-            Self::Find => "find",
-            Self::Search => "search",
-            Self::Bash => "bash",
-        }
-    }
-
-    /// Instruction text for composing the system prompt.
-    pub fn instruction(self) -> &'static str {
-        instruction(self)
-    }
-
-    pub fn description(self) -> &'static str {
-        description(self)
-    }
+/// Trait implemented by every tool (built-in or custom).
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn instruction(&self) -> &str;
+    fn schema(&self) -> Value;
+    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String>;
 
     /// Full tool declaration suitable for genai ChatRequest.
-    pub fn tool_declaration(self) -> Tool {
-        Tool::new(self.name())
+    fn tool_declaration(&self) -> GenaiTool {
+        GenaiTool::new(self.name())
             .with_description(self.description())
-            .with_schema(schema(self))
-    }
-
-    /// Build the tools list for genai ChatRequest from selected tools.
-    pub fn build_tools(selected: &IndexMap<DevTool, bool>) -> Vec<Tool> {
-        selected
-            .iter()
-            .filter(|(_, enabled)| **enabled)
-            .map(|(tool, _)| tool.tool_declaration())
-            .collect()
-    }
-
-    /// Execute this tool with the given JSON arguments and workspace root.
-    pub fn execute(self, args: &Value, workspace: &std::path::Path) -> Result<String, String> {
-        match self {
-            Self::Read => read::execute(args, workspace),
-            Self::Write => write::execute(args, workspace),
-            Self::Edit => edit::execute(args, workspace),
-            Self::Find => find::execute(args, workspace),
-            Self::Search => search::execute(args, workspace),
-            Self::Bash => bash::execute(args, workspace),
-        }
-    }
-
-    /// Parse tool call from name string.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "read" => Some(Self::Read),
-            "write" => Some(Self::Write),
-            "edit" => Some(Self::Edit),
-            "find" => Some(Self::Find),
-            "search" => Some(Self::Search),
-            "bash" => Some(Self::Bash),
-            _ => None,
-        }
+            .with_schema(self.schema())
     }
 }
 
-// ── schema dispatch ────────────────────────────────────────────────
+// ── Tool registry ───────────────────────────────────────────────────
 
-fn schema(tool: DevTool) -> Value {
-    match tool {
-        DevTool::Read => read::schema(),
-        DevTool::Write => write::schema(),
-        DevTool::Edit => edit::schema(),
-        DevTool::Find => find::schema(),
-        DevTool::Search => search::schema(),
-        DevTool::Bash => bash::schema(),
-    }
+/// Global registry of all built-in tools, keyed by name in insertion order.
+///
+/// Stored as a `LazyLock` so tool lookups return a borrowed `&'static dyn Tool`
+/// without any heap allocation.
+static BUILTIN_TOOLS: LazyLock<IndexMap<&'static str, &'static dyn Tool>> = LazyLock::new(|| {
+    let mut map: IndexMap<&'static str, &'static dyn Tool> = IndexMap::new();
+    map.insert("read", &read::ReadTool);
+    map.insert("write", &write::WriteTool);
+    map.insert("edit", &edit::EditTool);
+    map.insert("find", &find::FindTool);
+    map.insert("search", &search::SearchTool);
+    map.insert("bash", &bash::BashTool);
+    map
+});
+
+/// Borrow the built-in tool registry.
+pub fn builtin_tools() -> &'static IndexMap<&'static str, &'static dyn Tool> {
+    &BUILTIN_TOOLS
 }
 
-fn instruction(tool: DevTool) -> &'static str {
-    match tool {
-        DevTool::Read => read::instruction(),
-        DevTool::Write => write::instruction(),
-        DevTool::Edit => edit::instruction(),
-        DevTool::Find => find::instruction(),
-        DevTool::Search => search::instruction(),
-        DevTool::Bash => bash::instruction(),
-    }
+/// Look up a tool by name. Returns a borrowed reference — no allocation.
+pub fn find_tool(name: &str) -> Option<&'static dyn Tool> {
+    BUILTIN_TOOLS.get(name).copied()
 }
 
-fn description(tool: DevTool) -> &'static str {
-    match tool {
-        DevTool::Read => read::description(),
-        DevTool::Write => write::description(),
-        DevTool::Edit => edit::description(),
-        DevTool::Find => find::description(),
-        DevTool::Search => search::description(),
-        DevTool::Bash => bash::description(),
-    }
+/// Build the genai tools list from the enabled set.
+pub fn build_tools(enabled: &IndexMap<String, bool>) -> Vec<GenaiTool> {
+    let all = &BUILTIN_TOOLS;
+    enabled
+        .iter()
+        .filter(|(_, on)| **on)
+        .filter_map(|(name, _)| all.get(name.as_str()).map(|t| t.tool_declaration()))
+        .collect()
 }
 
 // ── shared helpers ─────────────────────────────────────────────────

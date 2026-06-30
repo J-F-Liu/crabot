@@ -1,33 +1,47 @@
+use std::path::Path;
+
 use serde_json::{Value, json};
 
-use super::{arg_str, resolve_path};
+use super::{Tool, arg_str, resolve_path};
 
-pub(super) fn instruction() -> &'static str {
-    "Search file contents using a regular expression. Returns matches in file:line:content format. Respects .gitignore rules. Use this tool to locate definitions, references, usages, or other patterns across the codebase before reading or editing specific files."
-}
+pub struct SearchTool;
 
-pub(super) fn description() -> &'static str {
-    "Search for a regex pattern in file contents. Returns file:line:content matches. Respects .gitignore."
-}
+impl Tool for SearchTool {
+    fn name(&self) -> &str {
+        "search"
+    }
 
-pub(super) fn schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "pattern": {
-                "type": "string",
-                "description": "Regular expression (RE2 syntax) to match against each line of file contents"
+    fn description(&self) -> &str {
+        "Search for a regex pattern in file contents. Returns file:line:content matches. Respects .gitignore."
+    }
+
+    fn instruction(&self) -> &str {
+        "Search file contents using a regular expression. Returns matches in file:line:content format. Respects .gitignore rules. Use this tool to locate definitions, references, usages, or other patterns across the codebase before reading or editing specific files."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regular expression (RE2 syntax) to match against each line of file contents"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search within (default: workspace root). If a directory, searches recursively."
+                }
             },
-            "path": {
-                "type": "string",
-                "description": "File or directory to search within (default: workspace root). If a directory, searches recursively."
-            }
-        },
-        "required": ["pattern"]
-    })
+            "required": ["pattern"]
+        })
+    }
+
+    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+        execute(args, workspace)
+    }
 }
 
-pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<String, String> {
+pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let pattern = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
     let search_path = arg_str(args, "path")
         .map(|p| resolve_path(p, workspace))

@@ -1,7 +1,9 @@
+use std::path::Path;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{arg_str, make_workspace_relative, resolve_path};
+use super::{Tool, arg_str, make_workspace_relative, resolve_path};
 
 /// A single edit operation with flexible field-name aliases for cross‑model
 /// compatibility (e.g. `old_text` / `old` / `search`).
@@ -18,46 +20,58 @@ pub struct EditParam {
     pub new_text: String,
 }
 
-pub(super) fn instruction() -> &'static str {
-    "Perform exact string replacements in an existing file. Use this tool for precise, localized edits instead of rewriting the entire file. Each old_text must uniquely identify a single location in the file. Include sufficient surrounding context to ensure an exact match. Edits are validated before application and will fail if matches are ambiguous, duplicated, overlapping, or missing."
-}
+pub struct EditTool;
 
-pub(super) fn description() -> &'static str {
-    "Replace exact string matches in a file through an ordered list of edits. Each old_text must appear exactly once in the original file. Edits must not overlap or nested. If two changes touch the same block or nearby lines, merge them into one edit instead."
-}
+impl Tool for EditTool {
+    fn name(&self) -> &str {
+        "edit"
+    }
 
-pub(super) fn schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "Path to the file (relative to workspace or absolute)"
-            },
-            "edits": {
-                "type": "array",
-                "description": "Ordered list of edits. Each old_text must appear exactly once in the original file. Edits must not overlap and are applied simultaneously.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "old_text": {
-                            "type": "string",
-                            "description": "Exact text to search for and replace. Must appear exactly once in the original file."
+    fn description(&self) -> &str {
+        "Replace exact string matches in a file through an ordered list of edits. Each old_text must appear exactly once in the original file. Edits must not overlap or nested. If two changes touch the same block or nearby lines, merge them into one edit instead."
+    }
+
+    fn instruction(&self) -> &str {
+        "Perform exact string replacements in an existing file. Use this tool for precise, localized edits instead of rewriting the entire file. Each old_text must uniquely identify a single location in the file. Include sufficient surrounding context to ensure an exact match. Edits are validated before application and will fail if matches are ambiguous, duplicated, overlapping, or missing."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file (relative to workspace or absolute)"
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "Ordered list of edits. Each old_text must appear exactly once in the original file. Edits must not overlap and are applied simultaneously.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_text": {
+                                "type": "string",
+                                "description": "Exact text to search for and replace. Must appear exactly once in the original file."
+                            },
+                            "new_text": {
+                                "type": "string",
+                                "description": "Replacement text to substitute in place of old_text"
+                            }
                         },
-                        "new_text": {
-                            "type": "string",
-                            "description": "Replacement text to substitute in place of old_text"
-                        }
-                    },
-                    "required": ["old_text", "new_text"]
+                        "required": ["old_text", "new_text"]
+                    }
                 }
-            }
-        },
-        "required": ["path", "edits"]
-    })
+            },
+            "required": ["path", "edits"]
+        })
+    }
+
+    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+        execute(args, workspace)
+    }
 }
 
-pub(super) fn execute(args: &Value, workspace: &std::path::Path) -> Result<String, String> {
+pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let path = arg_str(args, "path").ok_or("Missing 'path' argument")?;
     let file_path = resolve_path(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
