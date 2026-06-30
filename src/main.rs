@@ -396,15 +396,10 @@ impl App {
                 self.window_pos = pos;
             }
             Message::ModelConfigEvent(event) => {
-                if let views::model_config::Event::SelectModelConfig(name) = &event
-                    && name != &self.selected_model
-                {
-                    self.selected_model.clone_from(name);
-                    self.provided_models.save();
-                } else if views::model_config::update(
-                    &event,
+                if views::model_config::update(
+                    event,
                     &mut self.provided_models,
-                    &self.selected_model,
+                    &mut self.selected_model,
                 ) {
                     self.provided_models.save();
                 }

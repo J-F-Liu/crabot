@@ -41,7 +41,7 @@ pub(crate) fn model_config_view<'a>(
 ) -> Element<'a, Event> {
     // ── Tab bar for model config switching ───────────────────────
     let tab_bar: Element<_> = {
-        let names: Vec<&String> = provided_models.models.keys().collect();
+        let names: Vec<String> = provided_models.models.keys().cloned().collect();
         let mut bar = TabBar::new(move |name: String| Event::SelectModelConfig(name))
             .tab_width(Length::Shrink)
             .text_size(13.0)
@@ -67,20 +67,18 @@ pub(crate) fn model_config_view<'a>(
                 ..Default::default()
             });
 
-        for name in &names {
-            bar = bar.push((*name).clone(), TabLabel::Text((*name).clone()));
+        for name in names {
+            bar = bar.push(name.clone(), TabLabel::Text(name));
         }
         bar = bar.set_active_tab(selected);
         bar.into()
     };
 
     let selected_config = provided_models.get_config(selected);
-    let selected_entry: Option<&ProviderEntry> = selected_config
-        .as_ref()
-        .and_then(|cfg| providers.iter().find(|e| e.id == cfg.provider_id));
-    let selected_provider = selected_config
-        .as_ref()
-        .and_then(|cfg| provided_models.providers.get(&cfg.provider_id));
+    let selected_entry: Option<&ProviderEntry> =
+        selected_config.and_then(|cfg| providers.iter().find(|e| e.id == cfg.provider_id));
+    let selected_provider =
+        selected_config.and_then(|cfg| provided_models.providers.get(&cfg.provider_id));
 
     let models: Vec<&Model> = selected_provider
         .map(|p| p.models.iter().collect())
@@ -166,26 +164,32 @@ pub(crate) fn model_config_view<'a>(
     .into()
 }
 
-pub(crate) fn update(event: &Event, provided_models: &mut ModelList, selected_model: &str) -> bool {
+pub(crate) fn update(
+    event: Event,
+    provided_models: &mut ModelList,
+    selected_model: &mut String,
+) -> bool {
     match event {
         Event::SelectModelConfig(name) => {
-            // Just signal that the selected model changed; the caller
-            // (App::update) will set self.selected_model and save.
-            return name != selected_model;
+            if name != *selected_model {
+                *selected_model = name;
+                return true;
+            }
+            return false;
         }
         Event::SelectProvider(id) => {
-            let Some(p) = provided_models.providers.get(id) else {
+            let Some(p) = provided_models.providers.get(&id) else {
                 return false;
             };
             let Some(m) = p.models.first() else {
                 return false;
             };
-            // prepair values to avoid borrowing m
+            // prepare values to avoid borrowing m
             let model_id = m.id.clone();
             let thinking = m.thinking;
             let thinking_level = m.thinking_levels.first().cloned().unwrap_or_default();
             if let Some(cfg) = provided_models.get_config_mut(selected_model) {
-                cfg.provider_id = id.clone();
+                cfg.provider_id = id;
                 cfg.model_id = model_id;
                 cfg.thinking = thinking;
                 cfg.thinking_level = thinking_level;
@@ -200,7 +204,7 @@ pub(crate) fn update(event: &Event, provided_models: &mut ModelList, selected_mo
                 let thinking = m.thinking;
                 let thinking_level = m.thinking_levels.first().cloned().unwrap_or_default();
                 if let Some(cfg) = provided_models.get_config_mut(selected_model) {
-                    cfg.model_id = id.clone();
+                    cfg.model_id = id;
                     cfg.thinking = thinking;
                     cfg.thinking_level = thinking_level;
                     return true;
@@ -209,17 +213,17 @@ pub(crate) fn update(event: &Event, provided_models: &mut ModelList, selected_mo
         }
         Event::ToggleThinking(enabled) => {
             if let Some(cfg) = provided_models.get_config_mut(selected_model)
-                && cfg.thinking != *enabled
+                && cfg.thinking != enabled
             {
-                cfg.thinking = *enabled;
+                cfg.thinking = enabled;
                 return true;
             }
         }
         Event::SelectThinkingLevel(level) => {
             if let Some(cfg) = provided_models.get_config_mut(selected_model)
-                && cfg.thinking_level != *level
+                && cfg.thinking_level != level
             {
-                cfg.thinking_level = level.clone();
+                cfg.thinking_level = level;
                 return true;
             }
         }
