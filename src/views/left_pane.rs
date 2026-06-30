@@ -28,7 +28,7 @@ pub(crate) fn left_pane<'a>(
     left_w: f32,
     provided_models: &'a ModelList,
     provider_entries: &'a [ProviderEntry],
-    selected_model: &'a str,
+    selected_model: &'a String,
     system_prompt: &'a SystemPrompt,
     rules_expanded: bool,
     tools_expanded: bool,
@@ -65,7 +65,7 @@ pub(crate) fn left_pane<'a>(
     ]
     .spacing(8);
 
-    container(scrollable(col.padding(15)))
+    container(scrollable(col.padding([4, 12])))
         .width(Length::Fixed(left_w))
         .height(Fill)
         .style(pane_side)

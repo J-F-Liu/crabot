@@ -225,8 +225,8 @@ pub(crate) enum Message {
     CopySessionTitle,
     ResendLastPrompt,
     Restart,
-    /// Fires when the message scrollable's viewport changes.
-    MessageViewScrolled(Viewport),
+    /// Fires when the center pane scrollable's viewport changes.
+    SessionViewScrolled(Viewport),
     /// Toggle a single message between Markdown and selectable plain-text.
     /// `Some(i)` toggles message `i`; `None` clears all (ESC).
     ToggleSelectableMode(Option<usize>),
@@ -396,7 +396,12 @@ impl App {
                 self.window_pos = pos;
             }
             Message::ModelConfigEvent(event) => {
-                if views::model_config::update(
+                if let views::model_config::Event::SelectModelConfig(name) = &event
+                    && name != &self.selected_model
+                {
+                    self.selected_model.clone_from(name);
+                    self.provided_models.save();
+                } else if views::model_config::update(
                     &event,
                     &mut self.provided_models,
                     &self.selected_model,
@@ -727,7 +732,7 @@ impl App {
             Message::StopStream => {
                 self.cancel_token.store(true, Ordering::Relaxed);
             }
-            Message::MessageViewScrolled(viewport) => {
+            Message::SessionViewScrolled(viewport) => {
                 // While streaming, track whether the user has scrolled away from the bottom
                 // (to pause auto-scroll) or back to it (to resume).
                 if self.streaming != StreamState::Idle {

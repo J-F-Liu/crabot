@@ -1,9 +1,15 @@
+use super::theme::CRABOT_BORDER;
+use crate::model::{Model, ModelList};
 use iced::{
-    Alignment, Element, Fill, mouse,
+    Alignment, Background, Border, Color, Element, Fill, Length,
+    border::Radius,
+    mouse,
     widget::{column, mouse_area, pick_list, row, text, toggler},
 };
-
-use crate::model::{Model, ModelList};
+use iced_aw::{
+    style::{status::Status, tab_bar::Style as TabBarStyle},
+    widget::tab_bar::{TabBar, TabLabel},
+};
 
 /// Pick-list entry pairing a provider id with its display name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +27,7 @@ impl std::fmt::Display for ProviderEntry {
 /// Events emitted by the model config UI.
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
+    SelectModelConfig(String),
     SelectProvider(String),
     SelectModel(String),
     ToggleThinking(bool),
@@ -29,13 +36,48 @@ pub(crate) enum Event {
 
 pub(crate) fn model_config_view<'a>(
     provided_models: &'a ModelList,
-    provider_entries: &'a [ProviderEntry],
-    selected: &'a str,
+    providers: &'a [ProviderEntry],
+    selected: &'a String,
 ) -> Element<'a, Event> {
+    // ── Tab bar for model config switching ───────────────────────
+    let tab_bar: Element<_> = {
+        let names: Vec<&String> = provided_models.models.keys().collect();
+        let mut bar = TabBar::new(move |name: String| Event::SelectModelConfig(name))
+            .tab_width(Length::Shrink)
+            .text_size(13.0)
+            .padding([0, 8])
+            .style(|theme: &iced::Theme, status| TabBarStyle {
+                tab_border_radius: Radius {
+                    top_left: 6.0,
+                    top_right: 6.0,
+                    bottom_right: 0.0,
+                    bottom_left: 0.0,
+                },
+                tab_label_background: match status {
+                    Status::Active => Background::Color(theme.palette().primary),
+                    Status::Hovered => {
+                        Background::Color(theme.extended_palette().primary.weak.color)
+                    }
+                    _ => Background::Color(theme.extended_palette().background.weak.color),
+                },
+                text_color: match status {
+                    Status::Active => Color::WHITE,
+                    _ => theme.palette().text,
+                },
+                ..Default::default()
+            });
+
+        for name in &names {
+            bar = bar.push((*name).clone(), TabLabel::Text((*name).clone()));
+        }
+        bar = bar.set_active_tab(selected);
+        bar.into()
+    };
+
     let selected_config = provided_models.get_config(selected);
     let selected_entry: Option<&ProviderEntry> = selected_config
         .as_ref()
-        .and_then(|cfg| provider_entries.iter().find(|e| e.id == cfg.provider_id));
+        .and_then(|cfg| providers.iter().find(|e| e.id == cfg.provider_id));
     let selected_provider = selected_config
         .as_ref()
         .and_then(|cfg| provided_models.providers.get(&cfg.provider_id));
@@ -61,7 +103,7 @@ pub(crate) fn model_config_view<'a>(
             .style(crate::views::primary_toggler)
             .into()
     } else {
-        mouse_area(toggler(thinking_enabled).style(crate::views::primary_toggler))
+        mouse_area(toggler(false).style(crate::views::primary_toggler))
             .interaction(mouse::Interaction::None)
             .into()
     };
@@ -79,36 +121,58 @@ pub(crate) fn model_config_view<'a>(
         .align_y(Alignment::Center)
         .into()
     } else {
-        row![text("Thinking").size(14).width(60.0), toggle,]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into()
+        row![
+            text("Thinking").size(14).width(60.0),
+            toggle,
+            iced::widget::Space::new().width(Fill).height(30.0),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
     };
 
     column![
-        row![
-            text("Provider").size(14).width(60.0),
-            pick_list(provider_entries, selected_entry, move |e| {
-                Event::SelectProvider(e.id.clone())
-            })
-            .width(Fill),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-        row![
-            text("Model").size(14).width(60.0),
-            pick_list(models, selected_model, |m| Event::SelectModel(m.id.clone())).width(Fill),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-        thinking_row,
+        tab_bar,
+        iced::widget::container(
+            column![
+                row![
+                    pick_list(providers, selected_entry, |e| Event::SelectProvider(e.id))
+                        .width(Fill),
+                    pick_list(models, selected_model, |m| Event::SelectModel(m.id.clone())),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+                thinking_row,
+            ]
+            .spacing(8)
+        )
+        .padding(8)
+        .style(|_theme: &iced::Theme| iced::widget::container::Style {
+            background: None,
+            border: Border {
+                color: CRABOT_BORDER,
+                radius: Radius {
+                    top_left: 0.0,
+                    top_right: 0.0,
+                    bottom_right: 4.0,
+                    bottom_left: 4.0,
+                },
+                width: 2.0,
+            },
+            ..iced::widget::container::Style::default()
+        }),
     ]
-    .spacing(8)
+    .spacing(0)
     .into()
 }
 
 pub(crate) fn update(event: &Event, provided_models: &mut ModelList, selected_model: &str) -> bool {
     match event {
+        Event::SelectModelConfig(name) => {
+            // Just signal that the selected model changed; the caller
+            // (App::update) will set self.selected_model and save.
+            return name != selected_model;
+        }
         Event::SelectProvider(id) => {
             let Some(p) = provided_models.providers.get(id) else {
                 return false;

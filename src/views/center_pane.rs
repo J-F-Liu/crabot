@@ -368,7 +368,7 @@ pub(crate) fn center_pane<'a>(
         scrollable(column(dialog_blocks).spacing(18).padding(14),)
             .height(Fill)
             .id(MESSAGE_SCROLL.clone())
-            .on_scroll(Message::MessageViewScrolled),
+            .on_scroll(Message::SessionViewScrolled),
         status_line(status, streaming),
     ])
     .width(Fill)
