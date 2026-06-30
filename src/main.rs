@@ -45,24 +45,8 @@ use views::theme::{HANDLE, MIN_W, default_theme};
 use views::{center_pane, divider, left_pane, right_pane, scroll_to_end};
 use widgets::textarea::{self, TextArea};
 
-/// Compile-time title embedding the Cargo.toml version via crabtime.
-#[crabtime::expression]
-fn crabot_title() {
-    let cargo_toml = format!("{}/Cargo.toml", crabtime::WORKSPACE_PATH);
-    let content = std::fs::read_to_string(&cargo_toml).unwrap_or_default();
-    let version = content
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            trimmed
-                .strip_prefix("version = \"")
-                .and_then(|rest| rest.strip_suffix('"'))
-        })
-        .unwrap_or("0.0");
-    let title = format!("\"Crabot v{}\"", version);
-    crabtime::output! {
-        {{title}}
-    }
+fn crabot_title() -> &'static str {
+    concat!("Crabot v", env!("CARGO_PKG_VERSION"))
 }
 
 pub fn main() -> iced::Result {
@@ -80,7 +64,7 @@ pub fn main() -> iced::Result {
         .theme(|state: &App| state.theme.clone())
         .window_size(size)
         .position(position)
-        .title(crabot_title!())
+        .title(crabot_title())
         .antialiasing(true)
         .exit_on_close_request(false)
         .run()
