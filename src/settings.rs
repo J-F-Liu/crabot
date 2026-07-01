@@ -24,7 +24,7 @@ pub struct Settings {
     pub recent_workspaces: Vec<PathBuf>,
     pub rules_text: String,
     /// Enabled agent tools: tool name → enabled.
-    pub agent_tools: IndexMap<String, bool>,
+    pub builtin_tools: IndexMap<String, bool>,
 }
 
 impl Default for Settings {
@@ -45,7 +45,7 @@ impl Default for Settings {
             workspace: PathBuf::new(),
             recent_workspaces: Vec::new(),
             rules_text: String::new(),
-            agent_tools: crate::tools::builtin_tools()
+            builtin_tools: crate::tools::builtin_tools()
                 .keys()
                 .map(|&name| (name.to_string(), true))
                 .collect(),

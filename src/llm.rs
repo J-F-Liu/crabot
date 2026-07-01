@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, MessageContent, ReasoningEffort, Tool, ToolCall,
-    ToolResponse,
+    ChatMessage, ChatOptions, ChatRequest, MessageContent, ReasoningEffort, ToolCall, ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
 use crate::model::ModelInfo;
-use crate::tools;
+use crate::tools::{self, ToolRef};
 
 // ── StreamState: tracks the current phase of an LLM interaction ────
 
@@ -33,7 +32,7 @@ pub struct SendConfig {
     pub workspace: std::path::PathBuf,
     pub system_prompt: String,
     pub user_prompt: Option<String>,
-    pub tools: Vec<Tool>,
+    pub tools: Vec<ToolRef>,
 }
 
 /// Stream an LLM interaction with tool-execution loop.
@@ -62,7 +61,7 @@ pub async fn send_stream(
     // Build chat request from genai history directly.
     let mut chat_req = ChatRequest::default()
         .with_system(system_prompt)
-        .with_tools(tools);
+        .with_tools(tools::build_tools(&tools, model.strict));
     chat_req = chat_req.append_messages(history);
 
     // Optionally add a new user message (None when resending history as-is).

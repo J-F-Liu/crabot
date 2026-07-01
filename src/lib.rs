@@ -1,0 +1,16 @@
+use std::collections::HashSet;
+use std::hash::Hash;
+
+pub trait HashSetExt<T> {
+    fn set(&mut self, value: T, enabled: bool);
+}
+
+impl<T: Eq + Hash> HashSetExt<T> for HashSet<T> {
+    fn set(&mut self, value: T, enabled: bool) {
+        if enabled {
+            self.insert(value);
+        } else {
+            self.remove(&value);
+        }
+    }
+}

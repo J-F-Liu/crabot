@@ -5,14 +5,17 @@ mod read;
 mod search;
 mod write;
 
+use std::collections::HashSet;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use genai::chat::Tool as GenaiTool;
 use indexmap::IndexMap;
 use serde_json::Value;
 
 // ── Tool trait ──────────────────────────────────────────────────────
+
+pub type ToolRef = Arc<dyn Tool>;
 
 /// Trait implemented by every tool (built-in or custom).
 pub trait Tool: Send + Sync {
@@ -23,10 +26,11 @@ pub trait Tool: Send + Sync {
     fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String>;
 
     /// Full tool declaration suitable for genai ChatRequest.
-    fn tool_declaration(&self) -> GenaiTool {
+    fn tool_declaration(&self, strict: bool) -> GenaiTool {
         GenaiTool::new(self.name())
             .with_description(self.description())
             .with_schema(self.schema())
+            .with_strict(strict)
     }
 }
 
@@ -36,35 +40,43 @@ pub trait Tool: Send + Sync {
 ///
 /// Stored as a `LazyLock` so tool lookups return a borrowed `&'static dyn Tool`
 /// without any heap allocation.
-static BUILTIN_TOOLS: LazyLock<IndexMap<&'static str, &'static dyn Tool>> = LazyLock::new(|| {
-    let mut map: IndexMap<&'static str, &'static dyn Tool> = IndexMap::new();
-    map.insert("read", &read::ReadTool);
-    map.insert("write", &write::WriteTool);
-    map.insert("edit", &edit::EditTool);
-    map.insert("find", &find::FindTool);
-    map.insert("search", &search::SearchTool);
-    map.insert("bash", &bash::BashTool);
+static BUILTIN_TOOLS: LazyLock<IndexMap<&'static str, ToolRef>> = LazyLock::new(|| {
+    let mut map: IndexMap<&'static str, ToolRef> = IndexMap::new();
+    map.insert("read", Arc::new(read::ReadTool));
+    map.insert("write", Arc::new(write::WriteTool));
+    map.insert("edit", Arc::new(edit::EditTool));
+    map.insert("find", Arc::new(find::FindTool));
+    map.insert("search", Arc::new(search::SearchTool));
+    map.insert("bash", Arc::new(bash::BashTool));
     map
 });
 
 /// Borrow the built-in tool registry.
-pub fn builtin_tools() -> &'static IndexMap<&'static str, &'static dyn Tool> {
+pub fn builtin_tools() -> &'static IndexMap<&'static str, ToolRef> {
     &BUILTIN_TOOLS
 }
 
-/// Look up a tool by name. Returns a borrowed reference — no allocation.
-pub fn find_tool(name: &str) -> Option<&'static dyn Tool> {
-    BUILTIN_TOOLS.get(name).copied()
+/// Look up a tool by name.
+pub fn find_tool(name: &str) -> Option<ToolRef> {
+    BUILTIN_TOOLS.get(name).cloned()
+}
+
+pub fn enabled_tools(enabled: &HashSet<String>) -> Vec<ToolRef> {
+    BUILTIN_TOOLS
+        .iter()
+        .filter_map(|(name, tool)| {
+            if enabled.contains(*name) {
+                Some(Arc::clone(tool))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Build the genai tools list from the enabled set.
-pub fn build_tools(enabled: &IndexMap<String, bool>) -> Vec<GenaiTool> {
-    let all = &BUILTIN_TOOLS;
-    enabled
-        .iter()
-        .filter(|(_, on)| **on)
-        .filter_map(|(name, _)| all.get(name.as_str()).map(|t| t.tool_declaration()))
-        .collect()
+pub fn build_tools(tools: &[ToolRef], strict: bool) -> Vec<GenaiTool> {
+    tools.iter().map(|t| t.tool_declaration(strict)).collect()
 }
 
 // ── shared helpers ─────────────────────────────────────────────────

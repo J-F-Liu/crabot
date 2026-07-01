@@ -54,6 +54,7 @@ impl ModelList {
             base_url: provider.base_url.clone(),
             api_type: provider.api_type.clone(),
             api_key: provider.api_key.clone(),
+            strict: provider.strict_mode,
             model_id: model.id.clone(),
             thinking: config.thinking,
             thinking_level: config.thinking_level.clone(),
@@ -79,6 +80,7 @@ pub struct ModelInfo {
     pub base_url: String,
     pub api_type: String,
     pub api_key: String,
+    pub strict: bool,
     pub model_id: String,
     pub thinking: bool,
     pub thinking_level: String,
@@ -93,6 +95,8 @@ pub struct Provider {
     pub api_key: String,
     pub api_type: String,
     pub auth: String,
+    #[serde(default)]
+    pub strict_mode: bool,
     pub headers: BTreeMap<String, String>,
     pub models: Vec<Model>,
 }
@@ -256,6 +260,7 @@ fn try_load_models_from_omp() -> Result<ModelList, Box<dyn std::error::Error>> {
                 .into(),
             api_type: v.get("api").and_then(|v| v.as_str()).unwrap_or("").into(),
             auth: v.get("auth").and_then(|v| v.as_str()).unwrap_or("").into(),
+            strict_mode: false,
             headers: v
                 .get("headers")
                 .and_then(|v| v.as_mapping())
@@ -372,6 +377,7 @@ fn try_load_models_from_pi() -> Result<ModelList, Box<dyn std::error::Error>> {
                 .into(),
             api_type: v.get("api").and_then(|v| v.as_str()).unwrap_or("").into(),
             auth: v.get("auth").and_then(|v| v.as_str()).unwrap_or("").into(),
+            strict_mode: false,
             headers: v
                 .get("headers")
                 .and_then(|v| v.as_object())

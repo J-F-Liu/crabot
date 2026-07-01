@@ -17,13 +17,13 @@ mod views;
 mod widgets;
 mod workspace;
 
+use crabot::HashSetExt;
 use futures::{SinkExt, future::FutureExt};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{row, text_editor};
 use iced::{
     Element, Event, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window,
 };
-use indexmap::IndexMap;
 use llm::StreamState;
 use std::collections::HashSet;
 use std::env;
@@ -110,7 +110,7 @@ struct App {
     rules_content: TextArea,
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
-    agent_tools: IndexMap<String, bool>,
+    enabled_tools: HashSet<String>,
     user_prompt: TextArea,
     workmode: WorkMode,
     session: Session,
@@ -224,14 +224,10 @@ impl App {
             .collect();
         let selected_model = provided_models.ensure_valid_name(&saved.selected_model);
 
-        let builtin_tools: IndexMap<String, bool> = tools::builtin_tools()
+        let builtin_tools: HashSet<String> = tools::builtin_tools()
             .keys()
-            .map(|&name| {
-                (
-                    name.to_string(),
-                    saved.agent_tools.get(name).copied().unwrap_or(true),
-                )
-            })
+            .filter(|&name| saved.builtin_tools.get(*name).copied().unwrap_or(true))
+            .map(|&name| name.to_string())
             .collect();
 
         let preamble_options = system::build_preamble_options();
@@ -287,7 +283,7 @@ impl App {
             rules_content,
             files_content,
             tools_content,
-            agent_tools: builtin_tools,
+            enabled_tools: builtin_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
             session: Session::new(),
@@ -389,8 +385,8 @@ impl App {
             }
             Message::ToggleAgentTool(tool_name, enabled) => {
                 if tools::find_tool(&tool_name).is_some() {
-                    self.agent_tools.insert(tool_name, enabled);
-                    let summary = tool::tools_summary(&self.agent_tools);
+                    self.enabled_tools.set(tool_name, enabled);
+                    let summary = tool::tools_summary(&self.enabled_tools);
                     self.system_prompt.tools.1 = summary.clone();
                     self.tools_content = text_editor::Content::with_text(&summary);
                 }
@@ -502,18 +498,12 @@ impl App {
                 return self.refresh_session_list();
             }
             Message::ToggleTurnExpand(idx) => {
-                if self.expanded_turns.contains(&idx) {
-                    self.expanded_turns.remove(&idx);
-                } else {
-                    self.expanded_turns.insert(idx);
-                }
+                let present = self.expanded_turns.contains(&idx);
+                self.expanded_turns.set(idx, !present);
             }
             Message::ToggleDialogExpand(idx) => {
-                if self.expanded_dialogs.contains(&idx) {
-                    self.expanded_dialogs.remove(&idx);
-                } else {
-                    self.expanded_dialogs.insert(idx);
-                }
+                let present = self.expanded_dialogs.contains(&idx);
+                self.expanded_dialogs.set(idx, !present);
             }
             Message::LoadSession(entry) => {
                 if self.streaming != StreamState::Idle {
@@ -732,11 +722,8 @@ impl App {
             }
             Message::ToggleSelectableMode(msg_index) => match msg_index {
                 Some(i) => {
-                    if self.selectable_msgs.contains(&i) {
-                        self.selectable_msgs.remove(&i);
-                    } else {
-                        self.selectable_msgs.insert(i);
-                    }
+                    let present = self.selectable_msgs.contains(&i);
+                    self.selectable_msgs.set(i, !present);
                 }
                 None => self.selectable_msgs.clear(),
             },
@@ -853,7 +840,7 @@ impl App {
             workspace: self.system_prompt.workspace.1.clone(),
             system_prompt: self.system_prompt.get_prompt(),
             user_prompt,
-            tools: tools::build_tools(&self.agent_tools),
+            tools: tools::enabled_tools(&self.enabled_tools),
         };
 
         let history = self.session.history.clone();
@@ -931,7 +918,10 @@ impl App {
                 .map(|e| e.path.clone())
                 .collect(),
             rules_text: self.rules_content.text(),
-            agent_tools: self.agent_tools.clone(),
+            builtin_tools: tools::builtin_tools()
+                .keys()
+                .map(|&name| (name.to_string(), self.enabled_tools.contains(name)))
+                .collect(),
         };
         settings.save();
     }
@@ -1002,7 +992,7 @@ impl App {
                 &self.rules_content,
                 &self.files_content,
                 &self.tools_content,
-                &self.agent_tools,
+                &self.enabled_tools,
                 &self.user_prompt,
                 self.workmode,
                 self.streaming,

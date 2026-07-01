@@ -20,7 +20,7 @@ use crate::system::{FilepathEntry, SystemPrompt};
 use crate::user::WorkMode;
 use crate::views::session_view::SessionEntry;
 use crate::widgets::textarea::TextArea;
-use indexmap::IndexMap;
+use std::collections::HashSet;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn left_pane<'a>(
@@ -38,7 +38,7 @@ pub(crate) fn left_pane<'a>(
     rules_content: &'a TextArea,
     files_content: &'a text_editor::Content,
     tools_content: &'a text_editor::Content,
-    builtin_tools: &'a IndexMap<String, bool>,
+    builtin_tools: &'a HashSet<String>,
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     streaming: StreamState,

@@ -1,14 +1,14 @@
-use indexmap::IndexMap;
+use std::collections::HashSet;
 
 use crate::tools;
 
 /// Generate an XML-formatted summary of enabled dev tools.
-pub fn tools_summary(selected: &IndexMap<String, bool>) -> String {
+pub fn tools_summary(selected: &HashSet<String>) -> String {
     let mut result = String::new();
     result.push_str("<available-tools>\n");
 
-    for (name, &enabled) in selected {
-        if enabled && let Some(tool) = tools::find_tool(name) {
+    for (name, tool) in tools::builtin_tools().iter() {
+        if selected.contains(*name) {
             result.push_str(&format!(
                 "<tool name=\"{}\">{}</tool>\n",
                 tool.name(),

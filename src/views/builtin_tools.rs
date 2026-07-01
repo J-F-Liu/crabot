@@ -1,4 +1,4 @@
-use indexmap::IndexMap;
+use std::collections::HashSet;
 
 use iced::{
     Element,
@@ -7,7 +7,7 @@ use iced::{
 
 use crate::{Message, tools};
 
-pub(crate) fn builtin_tools_view<'a>(selected: &'a IndexMap<String, bool>) -> Element<'a, Message> {
+pub(crate) fn builtin_tools_view<'a>(selected: &'a HashSet<String>) -> Element<'a, Message> {
     type Row = (&'static str, &'static str, &'static str);
 
     let names: Vec<&'static str> = tools::builtin_tools().keys().copied().collect();
@@ -33,11 +33,8 @@ pub(crate) fn builtin_tools_view<'a>(selected: &'a IndexMap<String, bool>) -> El
     .into()
 }
 
-fn checkbox_cell<'a>(
-    name: &'static str,
-    selected: &'a IndexMap<String, bool>,
-) -> Element<'a, Message> {
-    let checked = selected.get(name).copied().unwrap_or(false);
+fn checkbox_cell<'a>(name: &'static str, selected: &'a HashSet<String>) -> Element<'a, Message> {
+    let checked = selected.contains(name);
     Element::from(
         checkbox(checked)
             .label(name)
