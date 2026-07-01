@@ -73,7 +73,6 @@ impl SystemPrompt {
         {
             let path = crate::tools::convert_path_to_unix_style(workspace);
             prompt.push_str(&format!("Current Workspace: {}\n", path));
-            prompt.push_str("Use relative paths for files inside the workspace.\n");
         }
         if let (true, files) = &self.files
             && !files.is_empty()
@@ -81,6 +80,7 @@ impl SystemPrompt {
             prompt.push_str("<workspace-tree>\nWorking directory layout (sorted by mtime, recent first; depth ≤ 3):\n");
             prompt.push_str(files);
             prompt.push_str("\n</workspace-tree>\n");
+            prompt.push_str("Use relative paths for files inside the workspace.\n");
         }
         if let (true, date) = &self.date
             && !date.is_empty()
