@@ -182,7 +182,6 @@ pub(crate) fn update(
                 *selected_model = name;
                 return true;
             }
-            return false;
         }
         Event::SelectProvider(id) => {
             let Some(p) = provided_models.providers.get(&id) else {

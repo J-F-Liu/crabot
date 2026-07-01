@@ -8,11 +8,10 @@ pub fn load_system_fonts() {
     // so we only need to pick a CJK family and set it as the sans-serif default.
     // This overrides cosmic-text's built-in "Open Sans" default (usually not installed),
     // and a CJK font provides much broader Unicode coverage than Western UI fonts.
-    const CJK_NAMES: &[&str] = &[
+    const CJK_SANS_NAMES: &[&str] = &[
         "Microsoft YaHei UI",
         "Microsoft YaHei",
         "PingFang SC",
-        "PingFang TC",
         "STHeiti",
         "STXihei",
         "Noto Sans CJK SC",
@@ -22,24 +21,56 @@ pub fn load_system_fonts() {
         "Droid Sans Fallback",
     ];
 
-    let cjk_name: Option<&str> = {
-        // `db_mut()` takes `&mut self` but `query` only needs `&Database`
-        let db = fs.raw().db_mut();
-        let mut found = None;
-        for &name in CJK_NAMES {
+    const CJK_MONO_NAMES: &[&str] = &[
+        "Maple Mono",
+        "Cascadia Code",
+        "Sarasa Mono SC",
+        "Noto Sans Mono CJK SC",
+        "LXGW WenKai Mono",
+        "Source Han Mono",
+    ];
+
+    /// Western monospace fonts. Used as fallback when no CJK mono font is installed.
+    /// These provide proper English monospace glyphs; CJK characters will fall back
+    /// to the sans-serif family or system fonts.
+    const WESTERN_MONO_NAMES: &[&str] = &[
+        "JetBrains Mono",
+        "Fira Code",
+        "Source Code Pro",
+        "Consolas",
+        "Monaco",
+        "Menlo",
+        "DejaVu Sans Mono",
+        "Ubuntu Mono",
+        "Courier New",
+    ];
+
+    fn find_first(db: &fontdb::Database, names: &[&'static str]) -> Option<&'static str> {
+        for &name in names {
             let q = fontdb::Query {
                 families: &[Family::Name(name)],
                 ..Default::default()
             };
             if db.query(&q).is_some() {
-                found = Some(name);
-                break;
+                return Some(name);
             }
         }
-        found
-    };
+        None
+    }
 
-    if let Some(name) = cjk_name {
-        fs.raw().db_mut().set_sans_serif_family(name);
+    let db = fs.raw().db_mut();
+
+    if let Some(name) = find_first(db, CJK_SANS_NAMES) {
+        db.set_sans_serif_family(name);
+    }
+
+    // Monospace priority: ① CJK mono (best: English + CJK in one font)
+    //                    ② Western mono (good English; CJK falls back to system)
+    //                    ③ CJK sans   (last resort: at least CJK renders)
+    if let Some(name) = find_first(db, CJK_MONO_NAMES)
+        .or_else(|| find_first(db, WESTERN_MONO_NAMES))
+        .or_else(|| find_first(db, CJK_SANS_NAMES))
+    {
+        db.set_monospace_family(name);
     }
 }
