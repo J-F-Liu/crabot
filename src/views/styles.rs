@@ -36,10 +36,31 @@ pub(crate) fn label<'a>(text: &'a str, width: impl Into<Length>) -> Element<'a, 
 
 // ── divider ───────────────────────────────────────────────────────
 
-pub(crate) fn divider() -> Element<'static, Message> {
-    mouse_area(rule::vertical(HANDLE))
-        .interaction(iced::mouse::Interaction::ResizingHorizontally)
-        .into()
+/// Per-divider hover + drag state.
+#[derive(Default)]
+pub(crate) struct DividerState {
+    pub(crate) hovered: bool,
+    pub(crate) dragging: bool,
+    pub(crate) origin: f32,
+    pub(crate) start: f32,
+}
+
+pub(crate) fn divider(state: &DividerState) -> Element<'static, Message> {
+    let color = if state.dragging {
+        CRABOT_PRIMARY
+    } else if state.hovered {
+        CRABOT_TEXT_MUTED
+    } else {
+        CRABOT_BORDER
+    };
+    mouse_area(rule::vertical(HANDLE).style(move |_theme| rule::Style {
+        color,
+        fill_mode: rule::FillMode::Full,
+        radius: 0.0.into(),
+        snap: false,
+    }))
+    .interaction(iced::mouse::Interaction::ResizingHorizontally)
+    .into()
 }
 
 // ── button styles ───────────────────────────────────────────────

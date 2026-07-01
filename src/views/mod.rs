@@ -19,4 +19,5 @@ pub(crate) use styles::{
 pub(crate) use center_pane::{center_pane, scroll_to_end};
 pub(crate) use left_pane::left_pane;
 pub(crate) use right_pane::right_pane;
+pub(crate) use styles::DividerState;
 pub(crate) use styles::divider;

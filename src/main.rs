@@ -42,7 +42,7 @@ use user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
 use views::session_view::SessionEntry;
 use views::theme::{HANDLE, MIN_W, default_theme};
-use views::{center_pane, divider, left_pane, right_pane, scroll_to_end};
+use views::{DividerState, center_pane, divider, left_pane, right_pane, scroll_to_end};
 use widgets::textarea::{self, TextArea};
 
 fn crabot_title() -> &'static str {
@@ -70,23 +70,6 @@ pub fn main() -> iced::Result {
         .run()
 }
 
-// ── divider identity ──────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Divider {
-    Left,
-    Right,
-}
-
-// ── drag tracking ─────────────────────────────────────────────────
-
-struct Drag {
-    which: Divider,
-    origin: f32,
-    left_start: f32,
-    right_start: f32,
-}
-
 // ── App ───────────────────────────────────────────────────────────
 
 /// Which widget currently holds keyboard focus.
@@ -110,7 +93,8 @@ struct App {
     window_size: Size,
     window_pos: Point,
     cursor: Point,
-    dragging: Option<Drag>,
+    left_divider: DividerState,
+    right_divider: DividerState,
     provided_models: ModelList,
     provider_entries: Vec<ProviderEntry>,
     selected_model: String,
@@ -287,7 +271,8 @@ impl App {
             window_size: Size::new(saved.window_size.0, saved.window_size.1),
             window_pos: Point::new(saved.window_pos.0, saved.window_pos.1),
             cursor: Point::ORIGIN,
-            dragging: None,
+            left_divider: DividerState::default(),
+            right_divider: DividerState::default(),
             provided_models,
             provider_entries,
             preamble_options,
@@ -328,47 +313,54 @@ impl App {
         match msg {
             Message::CursorMoved(pos) => {
                 self.cursor = pos;
-                let Some(drag) = &self.dragging else {
-                    return Task::none();
-                };
-                let delta = pos.x - drag.origin;
-                let gutter = 2.0 * HANDLE;
-                match drag.which {
-                    Divider::Left => {
-                        let max = (self.window_size.width - self.right_pane_width - gutter - MIN_W)
-                            .max(MIN_W);
-                        self.left_pane_width = (drag.left_start + delta).clamp(MIN_W, max);
-                    }
-                    Divider::Right => {
-                        let max = (self.window_size.width - self.left_pane_width - gutter - MIN_W)
-                            .max(MIN_W);
-                        self.right_pane_width = (drag.right_start - delta).clamp(MIN_W, max);
-                    }
+                self.left_divider.hovered =
+                    pos.x >= self.left_pane_width && pos.x <= self.left_pane_width + HANDLE;
+                let right_x = self.window_size.width - self.right_pane_width - HANDLE;
+                self.right_divider.hovered = pos.x >= right_x && pos.x <= right_x + HANDLE;
+
+                if self.left_divider.dragging {
+                    let delta = pos.x - self.left_divider.origin;
+                    let gutter = 2.0 * HANDLE;
+                    let max = (self.window_size.width - self.right_pane_width - gutter - MIN_W)
+                        .max(MIN_W);
+                    self.left_pane_width = (self.left_divider.start + delta).clamp(MIN_W, max);
+                } else if self.right_divider.dragging {
+                    let delta = pos.x - self.right_divider.origin;
+                    let gutter = 2.0 * HANDLE;
+                    let max =
+                        (self.window_size.width - self.left_pane_width - gutter - MIN_W).max(MIN_W);
+                    let new = (self.right_divider.start - delta).max(0.0);
+                    // Shrink below MIN_W → hide, expand from hidden → snap to MIN_W.
+                    self.right_pane_width = if self.right_divider.start == 0.0 {
+                        if new > 10.0 {
+                            new.clamp(MIN_W, max)
+                        } else {
+                            0.0
+                        }
+                    } else if new < MIN_W - 10.0 {
+                        0.0
+                    } else {
+                        new.min(max)
+                    };
                 }
             }
             Message::LeftPressed => {
                 let left_x = self.left_pane_width;
                 let right_x = self.window_size.width - self.right_pane_width - HANDLE;
 
-                let which = if self.cursor.x >= left_x && self.cursor.x <= left_x + HANDLE {
-                    Some(Divider::Left)
+                if self.cursor.x >= left_x && self.cursor.x <= left_x + HANDLE {
+                    self.left_divider.dragging = true;
+                    self.left_divider.origin = self.cursor.x;
+                    self.left_divider.start = self.left_pane_width;
                 } else if self.cursor.x >= right_x && self.cursor.x <= right_x + HANDLE {
-                    Some(Divider::Right)
-                } else {
-                    None
-                };
-
-                if let Some(which) = which {
-                    self.dragging = Some(Drag {
-                        which,
-                        origin: self.cursor.x,
-                        left_start: self.left_pane_width,
-                        right_start: self.right_pane_width,
-                    });
+                    self.right_divider.dragging = true;
+                    self.right_divider.origin = self.cursor.x;
+                    self.right_divider.start = self.right_pane_width;
                 }
             }
             Message::LeftReleased => {
-                self.dragging = None;
+                self.left_divider.dragging = false;
+                self.right_divider.dragging = false;
             }
             Message::WindowResized(size) => {
                 // Ignore zero-size events (e.g. window minimized on Windows).
@@ -1017,7 +1009,7 @@ impl App {
                 &self.session_options,
                 &self.session.id,
             ),
-            divider(),
+            divider(&self.left_divider),
             center_pane(
                 &self.center_pane_title,
                 self.session.dialogs.as_slice(),
@@ -1028,7 +1020,7 @@ impl App {
                 self.streaming,
                 &self.selectable_msgs,
             ),
-            divider(),
+            divider(&self.right_divider),
             right_pane(
                 self.right_pane_width,
                 self.get_current_model().map(|model| model.context_window),
