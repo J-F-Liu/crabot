@@ -355,9 +355,14 @@ impl App {
                     self.left_divider.origin = self.cursor.x;
                     self.left_divider.start = self.left_pane_width;
                 } else if self.cursor.x >= right_x && self.cursor.x <= right_x + HANDLE {
-                    self.right_divider.dragging = true;
-                    self.right_divider.origin = self.cursor.x;
-                    self.right_divider.start = self.right_pane_width;
+                    // When the right pane is hidden, a single click on the divider shows it
+                    if self.right_pane_width == 0.0 {
+                        self.right_pane_width = MIN_W;
+                    } else {
+                        self.right_divider.dragging = true;
+                        self.right_divider.origin = self.cursor.x;
+                        self.right_divider.start = self.right_pane_width;
+                    }
                 }
             }
             Message::LeftReleased => {
