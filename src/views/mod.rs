@@ -1,4 +1,3 @@
-pub mod builtin_tools;
 pub mod center_pane;
 pub mod left_pane;
 pub mod model_config;
@@ -7,6 +6,7 @@ pub mod session_view;
 pub mod styles;
 pub mod system_prompt;
 pub mod theme;
+pub mod tool_list;
 pub mod tool_message;
 pub mod user_prompt;
 
@@ -21,3 +21,4 @@ pub(crate) use left_pane::left_pane;
 pub(crate) use right_pane::right_pane;
 pub(crate) use styles::DividerState;
 pub(crate) use styles::divider;
+pub(crate) use system_prompt::{build_preamble_options, build_workspace_options};

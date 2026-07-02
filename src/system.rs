@@ -91,64 +91,20 @@ impl SystemPrompt {
     }
 }
 
-pub fn build_preamble_options() -> Vec<FilepathEntry> {
-    let dir = home::home_dir()
-        .unwrap_or_default()
-        .join(".crabot")
-        .join("preamble");
-    let mut entries = Vec::new();
-    if let Ok(read_dir) = std::fs::read_dir(dir) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "md") {
-                let display = path
-                    .file_stem()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                entries.push(FilepathEntry { display, path });
-            }
-        }
-    }
-    entries
-}
+/// Generate an XML-formatted summary of enabled tools.
+pub fn tools_summary(all_tools: &[crate::tools::ToolRef]) -> String {
+    let mut result = String::new();
+    result.push_str("<available-tools>\n");
 
-pub fn build_workspace_options(recent: &[PathBuf]) -> Vec<FilepathEntry> {
-    use std::collections::HashMap;
-
-    let mut entries: Vec<FilepathEntry> = recent
-        .iter()
-        .map(|path| {
-            let display = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            FilepathEntry {
-                display,
-                path: path.clone(),
-            }
-        })
-        .collect();
-
-    // Disambiguate duplicate folder names by prepending parent
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for e in &entries {
-        *counts.entry(e.display.clone()).or_default() += 1;
-    }
-    for e in &mut entries {
-        if counts[&e.display] > 1
-            && let Some(parent) = e.path.parent()
-            && let Some(parent_name) = parent.file_name().and_then(|n| n.to_str())
-        {
-            e.display = format!("{}/{}", parent_name, e.display);
-        }
+    for tool in all_tools {
+        result.push_str(&format!(
+            "<tool name=\"{}\">{}</tool>\n",
+            tool.name(),
+            tool.instruction()
+        ));
     }
 
-    entries.push(FilepathEntry {
-        display: "📁 Select new...".to_string(),
-        path: PathBuf::new(),
-    });
-
-    entries
+    result.push_str("</available-tools>\n");
+    result.push_str("Tools can be enabled or disabled at any time. A tool used earlier in the conversation may no longer be available. Before using a tool, verify that it is currently available. You may also have access to additional tools not listed here.\n");
+    result
 }

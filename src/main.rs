@@ -10,7 +10,6 @@ mod session;
 mod settings;
 mod setup;
 mod system;
-mod tool;
 mod tools;
 mod user;
 mod views;
@@ -111,6 +110,8 @@ struct App {
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
     enabled_tools: HashSet<String>,
+    custom_tool_names: Vec<String>,
+    builtin_tool_names: Vec<String>,
     user_prompt: TextArea,
     workmode: WorkMode,
     session: Session,
@@ -224,13 +225,16 @@ impl App {
             .collect();
         let selected_model = provided_models.ensure_valid_name(&saved.selected_model);
 
-        let builtin_tools: HashSet<String> = tools::builtin_tools()
-            .keys()
-            .filter(|&name| saved.builtin_tools.get(*name).copied().unwrap_or(true))
-            .map(|&name| name.to_string())
+        let custom_tool_list = tools::ToolList::load();
+        tools::register_custom_tools(custom_tool_list.build_tools());
+
+        let enabled_tools: HashSet<String> = tools::builtin_tool_names()
+            .into_iter()
+            .chain(custom_tool_list.names())
+            .filter(|name| saved.agent_tools.get(name).copied().unwrap_or(true))
             .collect();
 
-        let preamble_options = system::build_preamble_options();
+        let preamble_options = views::build_preamble_options();
         let preamble_content = preamble_options
             .iter()
             .find(|e| e.display == saved.selected_preamble)
@@ -239,27 +243,27 @@ impl App {
 
         let workspace_path = saved.workspace;
         let files_tree = workspace::build_files_tree(&workspace_path);
-        let tools_summary = tool::tools_summary(&builtin_tools);
+        let tools_summary = system::tools_summary(&tools::enabled_tools(&enabled_tools));
         let rules_content = TextArea::with_text(&saved.rules_text);
         let files_content = text_editor::Content::with_text(&files_tree);
         let tools_content = text_editor::Content::with_text(&tools_summary);
+
+        let show_restart = !workspace_path.as_os_str().is_empty()
+            && env::current_exe()
+                .ok()
+                .is_some_and(|exe| exe.starts_with(&workspace_path));
 
         let system_prompt = SystemPrompt {
             preamble: (saved.preamble_enabled, preamble_content),
             rules: (saved.rules_enabled, saved.rules_text),
             tools: (saved.tools_enabled, tools_summary),
-            workspace: (saved.workspace_enabled, workspace_path.clone()),
+            workspace: (saved.workspace_enabled, workspace_path),
             files: (saved.files_enabled, files_tree),
             date: (
                 saved.date_enabled,
                 chrono::Local::now().format("%Y-%m-%d").to_string(),
             ),
         };
-
-        let show_restart = !workspace_path.as_os_str().is_empty()
-            && env::current_exe()
-                .ok()
-                .is_some_and(|exe| exe.starts_with(&workspace_path));
 
         let mut app = Self {
             left_pane_width: saved.left_pane_width,
@@ -276,14 +280,16 @@ impl App {
             theme: default_theme(),
             selected_model,
             selected_preamble: saved.selected_preamble,
-            workspace_options: system::build_workspace_options(&saved.recent_workspaces),
+            workspace_options: views::build_workspace_options(&saved.recent_workspaces),
             rules_expanded: false,
             tools_expanded: false,
             files_expanded: false,
             rules_content,
             files_content,
             tools_content,
-            enabled_tools: builtin_tools,
+            enabled_tools,
+            custom_tool_names: custom_tool_list.names(),
+            builtin_tool_names: tools::builtin_tool_names(),
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
             session: Session::new(),
@@ -386,7 +392,7 @@ impl App {
             Message::ToggleAgentTool(tool_name, enabled) => {
                 if tools::find_tool(&tool_name).is_some() {
                     self.enabled_tools.set(tool_name, enabled);
-                    let summary = tool::tools_summary(&self.enabled_tools);
+                    let summary = system::tools_summary(&tools::enabled_tools(&self.enabled_tools));
                     self.system_prompt.tools.1 = summary.clone();
                     self.tools_content = text_editor::Content::with_text(&summary);
                 }
@@ -892,7 +898,7 @@ impl App {
 
         paths.insert(0, path);
         paths.truncate(10);
-        self.workspace_options = system::build_workspace_options(&paths);
+        self.workspace_options = views::build_workspace_options(&paths);
     }
 
     /// Collect current app state into `Settings` and persist to disk.
@@ -918,9 +924,13 @@ impl App {
                 .map(|e| e.path.clone())
                 .collect(),
             rules_text: self.rules_content.text(),
-            builtin_tools: tools::builtin_tools()
-                .keys()
-                .map(|&name| (name.to_string(), self.enabled_tools.contains(name)))
+            agent_tools: tools::builtin_tool_names()
+                .into_iter()
+                .chain(self.custom_tool_names.iter().cloned())
+                .map(|name| {
+                    let enabled = self.enabled_tools.contains(&name);
+                    (name, enabled)
+                })
                 .collect(),
         };
         settings.save();
@@ -993,6 +1003,8 @@ impl App {
                 &self.files_content,
                 &self.tools_content,
                 &self.enabled_tools,
+                &self.builtin_tool_names,
+                &self.custom_tool_names,
                 &self.user_prompt,
                 self.workmode,
                 self.streaming,

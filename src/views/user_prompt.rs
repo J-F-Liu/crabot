@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Element, Length, padding,
     widget::{button, column, pick_list, row, text},
 };
 
@@ -33,5 +33,6 @@ pub(crate) fn user_prompt_view<'a>(
         .align_y(Alignment::Center),
     ]
     .spacing(4)
+    .padding(padding::bottom(4))
     .into()
 }

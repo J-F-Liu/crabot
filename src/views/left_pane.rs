@@ -3,7 +3,6 @@ use iced::{
     widget::{column, container, rule, scrollable, text_editor},
 };
 
-use super::builtin_tools::builtin_tools_view;
 use super::model_config::ProviderEntry;
 use super::model_config::model_config_view;
 use super::session_view::session_view;
@@ -12,6 +11,7 @@ use super::system_prompt::{
     date_field_view, files_field_view, preamble_field_view, rules_field_view, tools_field_view,
     workspace_field_view,
 };
+use super::tool_list::tools_section;
 use super::user_prompt::user_prompt_view;
 use crate::Message;
 use crate::llm::StreamState;
@@ -38,7 +38,9 @@ pub(crate) fn left_pane<'a>(
     rules_content: &'a TextArea,
     files_content: &'a text_editor::Content,
     tools_content: &'a text_editor::Content,
-    builtin_tools: &'a HashSet<String>,
+    enabled_tools: &'a HashSet<String>,
+    builtin_tool_names: &'a [String],
+    custom_tool_names: &'a [String],
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     streaming: StreamState,
@@ -59,8 +61,8 @@ pub(crate) fn left_pane<'a>(
         session_view(streaming, session_options, current_session_id),
         label("User Prompt", 140.0),
         user_prompt_view(user_prompt, workmode),
-        container(column![label("Tools", 140.0), builtin_tools_view(builtin_tools)].spacing(4))
-            .padding(iced::padding::top(6.0))
+        tools_section("Builtin Tools", enabled_tools, builtin_tool_names),
+        tools_section("Custom Tools", enabled_tools, custom_tool_names),
     ]
     .spacing(8);
 

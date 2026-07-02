@@ -1,4 +1,5 @@
 mod bash;
+mod custom;
 pub(crate) mod edit;
 mod find;
 mod read;
@@ -7,11 +8,13 @@ mod write;
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use genai::chat::Tool as GenaiTool;
 use indexmap::IndexMap;
 use serde_json::Value;
+
+pub(crate) use custom::ToolList;
 
 // ── Tool trait ──────────────────────────────────────────────────────
 
@@ -41,8 +44,8 @@ pub trait Tool: Send + Sync {
 // ── Strict schema post-processing ──────────────────────────────────
 
 /// Adjust the schema in-place for strict tool-calling mode:
-/// every property becomes required, and optional properties get
-/// `"type": ["T", "null"]` union types.
+/// every property becomes required, and optional properties get `"type": ["T", "null"]` union types.
+/// "additionalProperties: false" is automatically added by `genai`.
 fn make_strict_schema(schema: &mut Value) {
     process_strict(schema);
 }
@@ -155,18 +158,40 @@ static BUILTIN_TOOLS: LazyLock<IndexMap<&'static str, ToolRef>> = LazyLock::new(
     map
 });
 
+/// Dynamic registry of user-defined custom tools, populated at startup.
+static CUSTOM_TOOLS: LazyLock<RwLock<Vec<ToolRef>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+
+/// Replace the current set of custom tools in the global registry.
+pub fn register_custom_tools(tools: Vec<ToolRef>) {
+    if let Ok(mut guard) = CUSTOM_TOOLS.write() {
+        *guard = tools;
+    }
+}
+
 /// Borrow the built-in tool registry.
 pub fn builtin_tools() -> &'static IndexMap<&'static str, ToolRef> {
     &BUILTIN_TOOLS
 }
 
-/// Look up a tool by name.
+/// Return the names of all built-in tools.
+pub fn builtin_tool_names() -> Vec<String> {
+    BUILTIN_TOOLS.keys().map(|k| k.to_string()).collect()
+}
+
+/// Look up a tool by name (searches built-in first, then custom).
 pub fn find_tool(name: &str) -> Option<ToolRef> {
-    BUILTIN_TOOLS.get(name).cloned()
+    BUILTIN_TOOLS.get(name).cloned().or_else(|| {
+        CUSTOM_TOOLS
+            .read()
+            .ok()?
+            .iter()
+            .find(|t| t.name() == name)
+            .cloned()
+    })
 }
 
 pub fn enabled_tools(enabled: &HashSet<String>) -> Vec<ToolRef> {
-    BUILTIN_TOOLS
+    let mut tools: Vec<ToolRef> = BUILTIN_TOOLS
         .iter()
         .filter_map(|(name, tool)| {
             if enabled.contains(*name) {
@@ -175,7 +200,17 @@ pub fn enabled_tools(enabled: &HashSet<String>) -> Vec<ToolRef> {
                 None
             }
         })
-        .collect()
+        .collect();
+
+    if let Ok(custom) = CUSTOM_TOOLS.read() {
+        for t in custom.iter() {
+            if enabled.contains(t.name()) {
+                tools.push(Arc::clone(t));
+            }
+        }
+    }
+
+    tools
 }
 
 /// Build the genai tools list from the enabled set.
@@ -358,6 +393,38 @@ pub(crate) fn truncate_output(s: String) -> String {
     );
     truncated.push_str(tail);
     truncated
+}
+
+/// Format a process's stdout, stderr, and exit code into a single truncated string.
+///
+/// Combines `stdout` and `stderr` (prefixed with `STDERR:\n`), and appends the
+/// exit code when the process did not succeed. The result is then truncated.
+pub(crate) fn format_command_output(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let mut result = String::new();
+    if !stdout.is_empty() {
+        result.push_str(&stdout);
+    }
+    if !stderr.is_empty() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str("STDERR:\n");
+        result.push_str(&stderr);
+    }
+    if !output.status.success() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        let _ = std::fmt::Write::write_fmt(
+            &mut result,
+            format_args!("Exit code: {}", output.status.code().unwrap_or(-1)),
+        );
+    }
+
+    truncate_output(result)
 }
 
 /// Find the closest valid UTF-8 character boundary at or before `pos`.

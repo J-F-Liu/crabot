@@ -95,31 +95,7 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    let mut result = String::new();
-    if !stdout.is_empty() {
-        result.push_str(&stdout);
-    }
-    if !stderr.is_empty() {
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        result.push_str("STDERR:\n");
-        result.push_str(&stderr);
-    }
-    if !output.status.success() {
-        if !result.is_empty() {
-            result.push('\n');
-        }
-        let _ = std::fmt::Write::write_fmt(
-            &mut result,
-            format_args!("Exit code: {}", output.status.code().unwrap_or(-1)),
-        );
-    }
-
-    Ok(super::truncate_output(result))
+    Ok(super::format_command_output(&output))
 }
 
 /// Kill the process group led by `pgid`.

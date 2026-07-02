@@ -9,8 +9,8 @@ use iced::{
 use crate::FocusedTarget;
 use crate::Message;
 use crate::system::{DATE, FilepathEntry, PREAMBLE, RULES, TOOLS, WORKSPACE, WORKSPACE_TREE};
-use crate::widgets::textarea::TextArea;
 
+use crate::widgets::textarea::TextArea;
 use std::path::PathBuf;
 
 // ── internal helper ──────────────────────────────────────────────────
@@ -173,6 +173,68 @@ pub(crate) fn files_field_view<'a>(
     } else {
         header
     }
+}
+
+pub fn build_preamble_options() -> Vec<FilepathEntry> {
+    let dir = home::home_dir()
+        .unwrap_or_default()
+        .join(".crabot")
+        .join("preamble");
+    let mut entries = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(dir) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "md") {
+                let display = path
+                    .file_stem()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                entries.push(FilepathEntry { display, path });
+            }
+        }
+    }
+    entries
+}
+
+pub fn build_workspace_options(recent: &[PathBuf]) -> Vec<FilepathEntry> {
+    use std::collections::HashMap;
+
+    let mut entries: Vec<FilepathEntry> = recent
+        .iter()
+        .map(|path| {
+            let display = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            FilepathEntry {
+                display,
+                path: path.clone(),
+            }
+        })
+        .collect();
+
+    // Disambiguate duplicate folder names by prepending parent
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for e in &entries {
+        *counts.entry(e.display.clone()).or_default() += 1;
+    }
+    for e in &mut entries {
+        if counts[&e.display] > 1
+            && let Some(parent) = e.path.parent()
+            && let Some(parent_name) = parent.file_name().and_then(|n| n.to_str())
+        {
+            e.display = format!("{}/{}", parent_name, e.display);
+        }
+    }
+
+    entries.push(FilepathEntry {
+        display: "📁 Select new...".to_string(),
+        path: PathBuf::new(),
+    });
+
+    entries
 }
 
 pub(crate) fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
