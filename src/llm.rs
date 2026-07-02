@@ -1,3 +1,4 @@
+use futures::StreamExt;
 use std::sync::Arc;
 
 use genai::adapter::AdapterKind;
@@ -105,7 +106,7 @@ pub async fn send_stream(
             Err(e) => {
                 on_event(crate::Message::StreamError(
                     format!("exec_chat_stream: {e}"),
-                    genai_messages.clone(),
+                    genai_messages,
                 ))
                 .await;
                 return;
@@ -117,7 +118,6 @@ pub async fn send_stream(
         let mut captured_reasoning: Option<String> = None;
         let mut thinking_signaled = false;
 
-        use futures::StreamExt;
         while let Some(event) = stream.next().await {
             match event {
                 Ok(genai::chat::ChatStreamEvent::Chunk(chunk)) => {
@@ -125,8 +125,8 @@ pub async fn send_stream(
                         thinking_signaled = true;
                         on_event(crate::Message::StreamStateChange(StreamState::LlmThinking)).await;
                     }
-                    if !on_event(crate::Message::StreamContent(chunk.content.clone())).await {
-                        on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
+                    if !on_event(crate::Message::StreamContent(chunk.content)).await {
+                        on_event(crate::Message::StreamCancelled(genai_messages)).await;
                         return;
                     }
                 }
@@ -135,8 +135,8 @@ pub async fn send_stream(
                         thinking_signaled = true;
                         on_event(crate::Message::StreamStateChange(StreamState::LlmThinking)).await;
                     }
-                    if !on_event(crate::Message::StreamReasoning(chunk.content.clone())).await {
-                        on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
+                    if !on_event(crate::Message::StreamReasoning(chunk.content)).await {
+                        on_event(crate::Message::StreamCancelled(genai_messages)).await;
                         return;
                     }
                 }
@@ -144,7 +144,7 @@ pub async fn send_stream(
                     captured_content = end.captured_content;
                     captured_reasoning = end.captured_reasoning_content;
                     if !on_event(crate::Message::TokenUsage(end.captured_usage)).await {
-                        on_event(crate::Message::StreamCancelled(genai_messages.clone())).await;
+                        on_event(crate::Message::StreamCancelled(genai_messages)).await;
                         return;
                     }
                 }
@@ -152,7 +152,7 @@ pub async fn send_stream(
                 Err(e) => {
                     on_event(crate::Message::StreamError(
                         format!("stream error: {e}"),
-                        genai_messages.clone(),
+                        genai_messages,
                     ))
                     .await;
                     return;

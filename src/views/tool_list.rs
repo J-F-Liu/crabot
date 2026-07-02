@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use iced::{
-    Element, Length, padding,
-    widget::{Space, checkbox, column, row},
+    Element, padding,
+    widget::{checkbox, column, container, row},
 };
 
 use super::styles::label;
@@ -25,25 +25,32 @@ pub(crate) fn tools_view<'a>(
 ) -> Element<'a, Message> {
     const COLS: usize = 3;
 
-    let rows: Vec<Element<'a, Message>> = names
-        .chunks(COLS)
-        .map(|chunk| {
-            let mut cells: Vec<Element<'a, Message>> = chunk
-                .iter()
+    if names.is_empty() {
+        return column![].into();
+    }
+
+    // Distribute names into columns (column-major: fill down, then across).
+    let n_rows = names.len().div_ceil(COLS);
+    let mut cols: Vec<Vec<&str>> = (0..COLS).map(|_| Vec::with_capacity(n_rows)).collect();
+    for (i, name) in names.iter().enumerate() {
+        let col = i / n_rows;
+        cols[col].push(name.as_str());
+    }
+
+    // Build actual iced columns: each column naturally sizes to its widest
+    // checkbox, giving pixel-perfect alignment without width estimation.
+    let cols: Vec<Element<'a, Message>> = cols
+        .into_iter()
+        .map(|names| {
+            let checkboxes: Vec<Element<'a, Message>> = names
+                .into_iter()
                 .map(|name| checkbox_cell(name, selected))
                 .collect();
-
-            // Fill remaining columns so every cell in a column has the same width.
-            for _ in cells.len()..COLS {
-                cells.push(Space::new().width(Length::Fill).into());
-            }
-
-            row(cells).spacing(12).into()
+            column(checkboxes).spacing(4).into()
         })
         .collect();
 
-    column(rows)
-        .spacing(4)
+    container(row(cols).spacing(12))
         .padding(padding::left(8))
         .max_width(400)
         .into()
@@ -55,7 +62,6 @@ fn checkbox_cell<'a>(name: &'a str, selected: &'a HashSet<String>) -> Element<'a
         checkbox(checked)
             .label(name)
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| Message::ToggleAgentTool(name.to_string(), v))
-            .width(Length::Fill),
+            .on_toggle(move |v| Message::ToggleAgentTool(name.to_string(), v)),
     )
 }

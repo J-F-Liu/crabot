@@ -42,6 +42,8 @@ impl Tool for FindTool {
 }
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
+    const MAX_LINES: usize = 100;
+
     let pattern_str = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
     let search_path = arg_str(args, "path")
         .map(|p| resolve_path(p, workspace))
@@ -80,6 +82,20 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         Ok("No files matched.".into())
     } else {
         results.sort();
+        let total = results.len();
+        if total > MAX_LINES {
+            let skipped = total - MAX_LINES;
+            results.truncate(MAX_LINES);
+            let mut output = results.join("\n");
+            let _ = std::fmt::Write::write_fmt(
+                &mut output,
+                format_args!(
+                    "\n\n... [{skipped} lines truncated ({total} total, shows first {MAX_LINES})] ..."
+                ),
+            );
+            return Ok(output);
+        }
+
         Ok(super::truncate_output(results.join("\n")))
     }
 }

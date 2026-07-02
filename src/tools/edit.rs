@@ -10,11 +10,13 @@ use super::{Tool, arg_str, make_workspace_relative, resolve_path};
 #[derive(Deserialize)]
 pub struct EditParam {
     #[serde(alias = "old")]
+    #[serde(alias = "old_str")]
     #[serde(alias = "old_string")]
     #[serde(alias = "search")]
     pub old_text: String,
 
     #[serde(alias = "new")]
+    #[serde(alias = "new_str")]
     #[serde(alias = "new_string")]
     #[serde(alias = "replace")]
     pub new_text: String,

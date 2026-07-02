@@ -87,11 +87,6 @@ impl Session {
         }
     }
 
-    /// Reference to the last turn across all dialogs.
-    pub fn last_turn(&self) -> Option<&Turn> {
-        self.dialogs.last().and_then(|d| d.turns.last())
-    }
-
     /// Mutable reference to the last turn across all dialogs.
     pub fn last_turn_mut(&mut self) -> Option<&mut Turn> {
         self.dialogs.last_mut().and_then(|d| d.turns.last_mut())

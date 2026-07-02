@@ -232,12 +232,12 @@ mod tests {
 
     #[test]
     fn create_custom_tool() {
-        let crate_info = CustomTool {
-            name: "crate_info".to_string(),
+        let crate_source = CustomTool {
+            name: "crate_source".to_string(),
             description:
                 "Find the local source path for a Rust crate from cargo cache. Returns the cached extraction directory containing the full crate source code. Useful for inspecting a crate's API, reading its implementation, or debugging dependencies." .to_string(),
             instruction:
-                "Look up Rust crate version and source locations. Before inspecting a Rust dependency's source code, use crate_info to find its local path. Use crate_info with --version for an exact version constraint (e.g., '=0.14.0') to pin a specific release." .to_string(),
+                "Look up Rust crate version and source locations. Before inspecting a Rust dependency's source code, use crate_source to find its local path." .to_string(),
             parameters: vec![
                 ToolParameter {
                     name: "crate".to_string(),
@@ -248,26 +248,29 @@ mod tests {
                 ToolParameter {
                     name: "version".to_string(),
                     kind: ParameterType::String,
-                    description: "Semver constraint (e.g., '=0.14.0' for exact, '1.0' for latest compatible, '^0.8' for caret). If omitted, uses the version from the current workspace if the crate is a dependency; otherwise uses the latest published version.".to_string(),
-                    required: false,
+                    description: "Exact semver of the crate (e.g., '0.14.0')".to_string(),
+                    required: true,
                 },
             ],
-            command: "cargo agents crate-info -q {crate} {{ if version }} --version {version} {{ endif }}".to_string(),
+            command: "bash -c \"echo ~/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/{crate}-{version}\"".to_string(),
         };
 
-        let args = json!({"crate": "iced", "version": "0.14"});
-        let result = crate_info.execute(&args, Path::new(".")).unwrap();
+        let args = json!({"crate": "iced", "version": "0.14.0"});
+        let result = crate_source.execute(&args, Path::new(".")).unwrap();
         println!("{}", result);
 
-        let schema = crate_info.schema();
+        let schema = crate_source.schema();
         println!("{}", schema);
 
         let tools = ToolList {
-            custom_tools: vec![crate_info],
+            custom_tools: vec![crate_source],
         };
-        let tmp = Path::new("tmp").join("tools.ron");
+        let tmp = Path::new("tmp");
+        if !tmp.is_dir() {
+            std::fs::create_dir(tmp).unwrap()
+        };
         let text = ron::ser::to_string_pretty(&tools, ron::ser::PrettyConfig::default()).unwrap();
-        std::fs::write(&tmp, text).unwrap();
+        std::fs::write(tmp.join("tools.ron"), text).unwrap();
         println!("Saved tools to {}", tmp.display());
     }
 }

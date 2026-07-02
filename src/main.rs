@@ -629,7 +629,6 @@ impl App {
                 return self.maybe_scroll_to_end();
             }
             Message::StreamContent(chunk) => {
-                self.ensure_assistant_placeholder();
                 if let Some(last) = self.session.last_turn_mut()
                     && let TurnBody::Text(tc) = &mut last.body
                 {
@@ -642,7 +641,6 @@ impl App {
                 return self.maybe_scroll_to_end();
             }
             Message::StreamReasoning(chunk) => {
-                self.ensure_assistant_placeholder();
                 if let Some(last) = self.session.last_turn_mut()
                     && let TurnBody::Text(tc) = &mut last.body
                 {
@@ -716,6 +714,10 @@ impl App {
                 let _ = self.session.save();
             }
             Message::StreamStateChange(state) => {
+                // When the LLM begins thinking, push a new assistant turn placeholder.
+                if state == StreamState::LlmThinking {
+                    self.session.push_turn(Turn::assistant(String::new(), None));
+                }
                 self.streaming = state;
             }
             Message::AppClosing => {
@@ -737,49 +739,40 @@ impl App {
         Task::none()
     }
 
-    /// Ensure the last message is an assistant Text placeholder for streaming.
-    /// If the last message is a Tool message (e.g., after a tool result was
-    /// pushed in a subsequent iteration), create a new assistant placeholder
-    /// so streamed text/reasoning lands in the right place.
-    fn ensure_assistant_placeholder(&mut self) {
-        let needs_placeholder = self.session.last_turn().is_none_or(|m| {
-            !(m.role == ChatRole::Assistant && matches!(m.body, TurnBody::Text(_)))
-        });
-        if needs_placeholder {
-            self.session.push_turn(Turn::assistant(String::new(), None));
-        }
-    }
-
     /// Backfill streaming placeholders with captured content from genai,
     /// extend session history, and persist the session.
     fn handle_stream_done(&mut self, genai_messages: Vec<ChatMessage>) {
         self.streaming = StreamState::Idle;
 
-        // Some providers omit ReasoningChunk events and only expose
-        // reasoning via captured_reasoning_content at stream end.
         let mut genai_asst_iter = genai_messages
             .iter()
             .filter(|m| m.role == genai::chat::ChatRole::Assistant)
-            .filter(|m| {
-                !m.content.joined_texts().unwrap_or_default().is_empty()
-                    || m.content.first_reasoning_content().is_some()
+            .filter_map(|m| {
+                let text = m.content.joined_texts().unwrap_or_default();
+                let reasoning = m.content.first_reasoning_content().map(|s| s.to_string());
+                if !text.is_empty() || reasoning.is_some() {
+                    Some((text, reasoning))
+                } else {
+                    None
+                }
             });
 
-        for msg in self.session.turns_from_mut(self.stream_start_index) {
-            if msg.role != ChatRole::Assistant {
+        for turn in self.session.turns_from_mut(self.stream_start_index) {
+            if turn.role != ChatRole::Assistant {
                 continue;
             }
-            if let TurnBody::Text(tc) = &mut msg.body
-                && let Some(genai_asst) = genai_asst_iter.next()
+            if let TurnBody::Text(tc) = &mut turn.body
+                && let Some((joined_text, reasoning)) = genai_asst_iter.next()
             {
-                tc.content = replace_emoji(&genai_asst.content.joined_texts().unwrap_or_default());
-                if tc.reasoning.is_none() {
-                    tc.reasoning = genai_asst
-                        .content
-                        .first_reasoning_content()
-                        .map(|s| s.to_string());
+                if !joined_text.is_empty() {
+                    tc.content = replace_emoji(&joined_text);
                 }
-                msg.refresh_md_cache();
+                // Some providers omit ReasoningChunk events and only expose
+                // reasoning via captured_reasoning_content at stream end.
+                if tc.reasoning.is_none() {
+                    tc.reasoning = reasoning;
+                }
+                turn.refresh_md_cache();
             }
         }
 
@@ -797,22 +790,23 @@ impl App {
         // so subsequent requests still carry valid context.
         self.session.history.extend(genai_messages);
 
-        let is_empty_placeholder = self.session.last_turn().is_some_and(|m| {
-            m.role == ChatRole::Assistant
-                && matches!(
-                    &m.body,
-                    TurnBody::Text(TextContent { content, reasoning })
-                        if content.is_empty() && reasoning.is_none()
-                )
-        });
+        let error_msg = format!("Error: {err}");
 
-        if is_empty_placeholder {
-            if let Some(last) = self.session.last_turn_mut() {
-                *last = Turn::assistant(format!("Error: {err}"), None);
-            }
+        // Replace an empty assistant placeholder from streaming, or push a new error turn.
+        if let Some(turn) = self.session.last_turn_mut()
+            && turn.role == ChatRole::Assistant
+            && matches!(
+                &turn.body,
+                TurnBody::Text(TextContent { content, reasoning: None })
+                    if content.is_empty()
+            )
+        {
+            turn.body = TurnBody::Text(TextContent {
+                content: error_msg,
+                reasoning: None,
+            });
         } else {
-            self.session
-                .push_turn(Turn::assistant(format!("Error: {err}"), None));
+            self.session.push_turn(Turn::assistant(error_msg, None));
         }
         let _ = self.session.save();
     }
