@@ -9,8 +9,51 @@ use serde_json::Value;
 static EMOJI: LazyLock<Replacer> = LazyLock::new(Replacer::new);
 
 /// Replace GitHub-flavored `:emoji:` codes with Unicode emoji in text.
+/// Use markdown parser to skip inline code and fenced code blocks.
 pub fn replace_emoji(text: &str) -> String {
-    EMOJI.replace_all(text).into()
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+
+    // Collect byte ranges covered by code regions.
+    let mut code_ranges: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut block_start: Option<usize> = None;
+
+    let parser = Parser::new(text).into_offset_iter();
+    for (event, range) in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                block_start = Some(range.start);
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = block_start.take() {
+                    code_ranges.push(start..range.end);
+                }
+            }
+            Event::Code(_) => {
+                code_ranges.push(range);
+            }
+            _ => {}
+        }
+    }
+    // Unclosed code block — extend to end of text.
+    if let Some(start) = block_start.take() {
+        code_ranges.push(start..text.len());
+    }
+
+    // Apply emoji replacement only to regions outside code ranges.
+    let mut result = String::with_capacity(text.len());
+    let mut pos = 0;
+    for range in &code_ranges {
+        if pos < range.start {
+            result.push_str(&EMOJI.replace_all(&text[pos..range.start]));
+        }
+        result.push_str(&text[range.start..range.end]);
+        pos = range.end;
+    }
+    if pos < text.len() {
+        result.push_str(&EMOJI.replace_all(&text[pos..]));
+    }
+
+    result
 }
 
 // ── TextContent ──────────────────────────────────────────────────────
