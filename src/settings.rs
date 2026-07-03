@@ -23,6 +23,8 @@ pub struct Settings {
     /// Recent workspace paths (most recent first).
     pub recent_workspaces: Vec<PathBuf>,
     pub rules_text: String,
+    /// Font scale factor for center pane dialog blocks (0.5 .. 2.0).
+    pub font_scale: f32,
     /// Enabled agent tools: tool name → enabled.
     pub agent_tools: IndexMap<String, bool>,
 }
@@ -45,6 +47,7 @@ impl Default for Settings {
             workspace: PathBuf::new(),
             recent_workspaces: Vec::new(),
             rules_text: String::new(),
+            font_scale: 1.0,
             agent_tools: crate::tools::builtin_tools()
                 .keys()
                 .map(|&name| (name.to_string(), true))

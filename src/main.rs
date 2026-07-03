@@ -145,6 +145,8 @@ struct App {
     /// Whether the Shift key is currently held. Used to distinguish Enter
     /// (send prompt) from Shift+Enter (insert newline) in the text editor.
     shift_held: bool,
+    /// Font scale factor for center pane dialog blocks.
+    font_scale: f32,
     /// Which widget currently holds keyboard focus; `None` when no editable
     /// widget is focused. Setting this implicitly clears focus on all others.
     focused: Option<FocusedTarget>,
@@ -201,6 +203,8 @@ pub(crate) enum Message {
     ToggleSelectableMode(Option<usize>),
     /// Track whether the Shift key is currently held.
     ShiftHeld(bool),
+    /// Zoom the center pane font scale by a delta.
+    Zoom(f32),
     /// Model configuration event (provider/model selection, thinking).
     ModelConfigEvent(views::model_config::Event),
     /// Session pick_list gained focus (e.g. via dropdown open).
@@ -305,6 +309,7 @@ impl App {
             auto_scroll: Arc::new(AtomicBool::new(true)),
             selectable_msgs: HashSet::new(),
             shift_held: false,
+            font_scale: saved.font_scale,
             focused: None,
         };
         let session_task = app.refresh_session_list();
@@ -733,6 +738,9 @@ impl App {
             Message::ShiftHeld(held) => {
                 self.shift_held = held;
             }
+            Message::Zoom(delta) => {
+                self.font_scale = (self.font_scale + delta).clamp(0.5, 2.0);
+            }
             Message::ToggleSelectableMode(msg_index) => match msg_index {
                 Some(i) => {
                     let present = self.selectable_msgs.contains(&i);
@@ -931,6 +939,7 @@ impl App {
                     (name, enabled)
                 })
                 .collect(),
+            font_scale: self.font_scale,
         };
         settings.save();
     }
@@ -1020,6 +1029,7 @@ impl App {
                 &self.theme,
                 self.streaming,
                 &self.selectable_msgs,
+                self.font_scale,
             ),
             divider(&self.right_divider),
             right_pane(
@@ -1065,13 +1075,15 @@ impl App {
                 Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                     if modifiers.command() =>
                 {
-                    match &key {
-                        keyboard::Key::Character(s) if s.as_str() == "z" => {
+                    match key.as_ref() {
+                        keyboard::Key::Character("z") => {
                             Some(Message::UndoRedo(textarea::Message::Undo))
                         }
-                        keyboard::Key::Character(s) if s.as_str() == "y" => {
+                        keyboard::Key::Character("y") => {
                             Some(Message::UndoRedo(textarea::Message::Redo))
                         }
+                        keyboard::Key::Character("=") => Some(Message::Zoom(0.05)),
+                        keyboard::Key::Character("-") => Some(Message::Zoom(-0.05)),
                         _ => None,
                     }
                 }

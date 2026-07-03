@@ -44,13 +44,17 @@ fn diff_row<'a>(
     content: String,
     sel_style: fn(&Theme) -> SelectionStyle,
     bg: Color,
+    font_scale: f32,
 ) -> Element<'a, Message> {
     container(
         row![
-            text(marker).size(13).color(marker_color).font(bold_font()),
+            text(marker)
+                .size(13.0 * font_scale)
+                .color(marker_color)
+                .font(bold_font()),
             Space::new().width(6),
             SelectableText::new(content)
-                .size(12)
+                .size(12.0 * font_scale)
                 .style(sel_style)
                 .font(mono_font()),
         ]
@@ -70,15 +74,15 @@ fn diff_row<'a>(
 }
 
 /// Single tool-argument key-value row.
-pub(super) fn arg_row<'a>(key: &'a str, value: String) -> Element<'a, Message> {
+pub(super) fn arg_row<'a>(key: &'a str, value: String, font_scale: f32) -> Element<'a, Message> {
     row![
         text(format!("{}:", key))
-            .size(12)
+            .size(12.0 * font_scale)
             .color(CRABOT_TOOL_ACCENT)
             .font(bold_font()),
         Space::new().width(8),
         SelectableText::new(value)
-            .size(12)
+            .size(12.0 * font_scale)
             .style(sel_default)
             .font(mono_font()),
     ]
@@ -87,15 +91,19 @@ pub(super) fn arg_row<'a>(key: &'a str, value: String) -> Element<'a, Message> {
 }
 
 /// Embedded table for the `edits` argument — each edit becomes a labelled block.
-fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, Message> {
+fn edits_table<'a>(
+    key: &'a str,
+    edits: &'a [serde_json::Value],
+    font_scale: f32,
+) -> Element<'a, Message> {
     let header = row![
         text(format!("{}:", key))
-            .size(12)
+            .size(12.0 * font_scale)
             .color(CRABOT_TEXT_MUTED)
             .font(bold_font()),
         Space::new().width(8),
         text(format!("{} edit(s)", edits.len()))
-            .size(12)
+            .size(12.0 * font_scale)
             .color(CRABOT_TEXT_MUTED),
     ]
     .spacing(0);
@@ -106,7 +114,7 @@ fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, 
         .flat_map(|(i, edit)| {
             let idx = container(
                 text(format!("Edit #{}", i + 1))
-                    .size(11)
+                    .size(11.0 * font_scale)
                     .color(CRABOT_TEXT_MUTED),
             )
             .padding([2, 0])
@@ -116,8 +124,22 @@ fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, 
                 match serde_json::from_value::<EditParam>(edit.clone()) {
                     Ok(EditParam { old_text, new_text }) => vec![
                         idx,
-                        diff_row("−", CRABOT_DANGER, old_text, sel_secondary, DIFF_BG_DEL),
-                        diff_row("+", CRABOT_SUCCESS, new_text, sel_primary, DIFF_BG_ADD),
+                        diff_row(
+                            "−",
+                            CRABOT_DANGER,
+                            old_text,
+                            sel_secondary,
+                            DIFF_BG_DEL,
+                            font_scale,
+                        ),
+                        diff_row(
+                            "+",
+                            CRABOT_SUCCESS,
+                            new_text,
+                            sel_primary,
+                            DIFF_BG_ADD,
+                            font_scale,
+                        ),
                     ],
                     Err(_) => vec![
                         idx,
@@ -127,6 +149,7 @@ fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, 
                             edit.to_string(),
                             sel_secondary,
                             DIFF_BG_DEL,
+                            font_scale,
                         ),
                     ],
                 };
@@ -141,7 +164,7 @@ fn edits_table<'a>(key: &'a str, edits: &'a [serde_json::Value]) -> Element<'a, 
 }
 
 /// All tool-argument rows.
-pub(super) fn args_rows(args: &serde_json::Value) -> Vec<Element<'_, Message>> {
+pub(super) fn args_rows(args: &serde_json::Value, font_scale: f32) -> Vec<Element<'_, Message>> {
     let Some(map) = args.as_object() else {
         return Vec::new();
     };
@@ -158,7 +181,7 @@ pub(super) fn args_rows(args: &serde_json::Value) -> Vec<Element<'_, Message>> {
             container(
                 row![
                     SelectableText::new(combined)
-                        .size(12)
+                        .size(12.0 * font_scale)
                         .style(sel_secondary)
                         .font(mono_font()),
                 ]
@@ -186,14 +209,14 @@ pub(super) fn args_rows(args: &serde_json::Value) -> Vec<Element<'_, Message>> {
         if k == "edits"
             && let Some(arr) = v.as_array()
         {
-            rows.push(edits_table(k, arr));
+            rows.push(edits_table(k, arr, font_scale));
             continue;
         }
         let val = v
             .as_str()
             .map(|s| s.to_string())
             .unwrap_or_else(|| v.to_string());
-        rows.push(arg_row(k, val));
+        rows.push(arg_row(k, val, font_scale));
     }
     rows
 }
@@ -210,13 +233,19 @@ fn fmt_arg(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Strin
 }
 
 /// Only the "path" argument row, when present.
-pub(super) fn path_arg_row(args: &serde_json::Value) -> Option<Element<'_, Message>> {
+pub(super) fn path_arg_row(
+    args: &serde_json::Value,
+    font_scale: f32,
+) -> Option<Element<'_, Message>> {
     let path = args.as_object()?.get("path")?.as_str()?;
-    Some(arg_row("path", path.to_string()))
+    Some(arg_row("path", path.to_string(), font_scale))
 }
 
 /// Tool result text (success or error).
-pub(super) fn result_text(result: &Result<String, String>) -> Element<'_, Message> {
+pub(super) fn result_text(
+    result: &Result<String, String>,
+    font_scale: f32,
+) -> Element<'_, Message> {
     let display: &str = result
         .as_ref()
         .map(|s| s.as_str())
@@ -231,11 +260,11 @@ pub(super) fn result_text(result: &Result<String, String>) -> Element<'_, Messag
     container(
         column![
             text(if is_ok { "Result" } else { "Error" })
-                .size(11)
+                .size(11.0 * font_scale)
                 .color(accent)
                 .font(bold_font()),
             SelectableText::new(display)
-                .size(13)
+                .size(13.0 * font_scale)
                 .style(move |theme: &Theme| SelectionStyle {
                     color: Some(color_text(theme)),
                     selection: accent,
