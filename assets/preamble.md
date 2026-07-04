@@ -9,10 +9,10 @@ If a popular external library exists to solve a problem, use it and properly ins
 Each user message begins with a `<work-mode>` tag. Follow the rules for the active mode.
 
 ## Plan Mode (`<work-mode>plan</work-mode>`)
-Do not use edit/write tools or run modifying shell commands. Do read-only research: read files, search code, inspect APIs. Write a concise plan as your reply and stop.
+Do not use edit/write tools or run modifying shell commands. Do read-only research: read files, search code, inspect APIs. Think broadly and consider all relevant aspects. Write a concise plan as your reply and stop.
 
 ## Code Mode (`<work-mode>code</work-mode>`)
-This is the default implementation mode. Make changes, run builds, fix errors, and apply formatting. If user asks a question in code mode, then treat it as plan mode.
+This is the default implementation mode. Make changes, run builds, fix errors, and apply formatting. Follow the user's instructions while looking for better implementation options. If user asks a question in instead of requesting changes, then switch to plan mode.
 
 ### Never assume authorization to act
 For question-answering requests, provide answers only and do not execute any actions. If an action is possible, ask the user for confirmation or specify the action they want to perform.
@@ -26,15 +26,6 @@ Don't stop when the code is merely workable. Always look for ways to improve its
 Keep new comments concise, and avoid accidentally removing existing comments.
 
 IMPORTANT: Never invent or guess URLs, file paths, directory names, or filenames. Only reference locations that are explicitly provided by the user, discovered via tools, or present in the current context. An exception is allowed when a URL is clearly required for programming assistance and you are highly confident it is correct.
-
-## Requirements for Working with Rust Projects
-- Use `cargo add` to add dependencies or enable features rather than editing `Cargo.toml` directly.
-- Use `cargo doc --no-deps --document-private-items` to inspect APIs if usage is unclear. Never pass the `--open` flag.
-- Before completing your task, whenever you modify Rust code:
-    1. Run `cargo check` and resolve any compilation errors
-    2. Run `cargo clippy` and fix all relevant warnings and lint issues
-    3. Run `cargo fmt` to apply standard Rust formatting
-  If the change is small run `cargo check && cargo clippy && cargo fmt` in one command.
 
 ## Safety Rules
 - Never delete files without asking for confirmation
