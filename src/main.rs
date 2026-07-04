@@ -35,7 +35,7 @@ use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use genai::chat::{ChatMessage, ChatRole};
 use model::{Model, ModelConfig, ModelList, TokenAmount};
 use session::Session;
-use system::{FilepathEntry, RULES, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
+use system::{FilepathEntry, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 
 use user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
@@ -99,14 +99,14 @@ struct App {
     selected_model: String,
     theme: Theme,
     system_prompt: SystemPrompt,
-    rules_expanded: bool,
     tools_expanded: bool,
     files_expanded: bool,
     selected_preamble: String,
     preamble_options: Vec<FilepathEntry>,
+    selected_rules: String,
+    rules_options: Vec<FilepathEntry>,
     workspace_options: Vec<FilepathEntry>,
     // user-editable Content need to persist between view calls to maintain editor state
-    rules_content: TextArea,
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
     enabled_tools: HashSet<String>,
@@ -167,6 +167,8 @@ pub(crate) enum Message {
     WorkspaceDialogResult(Option<PathBuf>),
     SelectPreamble(FilepathEntry),
     PreambleFileResult(Result<String, String>),
+    SelectRules(FilepathEntry),
+    RulesFileResult(Result<String, String>),
     ToggleAgentTool(String, bool),
     /// An edit action targeting a specific [`TextArea`].
     /// The [`FocusedTarget`] identifies which text area should receive the action.
@@ -238,17 +240,15 @@ impl App {
             .filter(|name| saved.agent_tools.get(name).copied().unwrap_or(true))
             .collect();
 
-        let preamble_options = views::build_preamble_options();
-        let preamble_content = preamble_options
-            .iter()
-            .find(|e| e.display == saved.selected_preamble)
-            .map(|e| std::fs::read_to_string(&e.path).unwrap_or_else(|e| e.to_string()))
-            .unwrap_or_default();
+        let (preamble_options, preamble_content) =
+            views::load_prompt_options("preamble", &saved.selected_preamble);
+
+        let (rules_options, rules_content) =
+            views::load_prompt_options("rules", &saved.selected_rules);
 
         let workspace_path = saved.workspace;
         let files_tree = workspace::build_files_tree(&workspace_path);
         let tools_summary = system::tools_summary(&tools::enabled_tools(&enabled_tools));
-        let rules_content = TextArea::with_text(&saved.rules_text);
         let files_content = text_editor::Content::with_text(&files_tree);
         let tools_content = text_editor::Content::with_text(&tools_summary);
 
@@ -259,7 +259,7 @@ impl App {
 
         let system_prompt = SystemPrompt {
             preamble: (saved.preamble_enabled, preamble_content),
-            rules: (saved.rules_enabled, saved.rules_text),
+            rules: (saved.rules_enabled, rules_content),
             tools: (saved.tools_enabled, tools_summary),
             workspace: (saved.workspace_enabled, workspace_path),
             files: (saved.files_enabled, files_tree),
@@ -280,15 +280,15 @@ impl App {
             provided_models,
             provider_entries,
             preamble_options,
+            rules_options,
             system_prompt,
             theme: default_theme(),
             selected_model,
             selected_preamble: saved.selected_preamble,
+            selected_rules: saved.selected_rules,
             workspace_options: views::build_workspace_options(&saved.recent_workspaces),
-            rules_expanded: false,
             tools_expanded: false,
             files_expanded: false,
-            rules_content,
             files_content,
             tools_content,
             enabled_tools,
@@ -408,7 +408,6 @@ impl App {
                 }
             }
             Message::ToggleExpanded(name) => match name {
-                RULES => self.rules_expanded = !self.rules_expanded,
                 TOOLS => self.tools_expanded = !self.tools_expanded,
                 WORKSPACE_TREE => self.files_expanded = !self.files_expanded,
                 _ => {}
@@ -441,33 +440,18 @@ impl App {
                 } else if self.focused != Some(target) {
                     return Task::none();
                 }
-                match target {
-                    FocusedTarget::UserPrompt => {
-                        // Enter without Shift sends the prompt; Shift+Enter inserts
-                        // a newline.
-                        if msg.is_enter() && !self.shift_held {
-                            return Task::done(Message::SendPrompt);
-                        }
-                        self.user_prompt.update(msg, self.shift_held);
+                if target == FocusedTarget::UserPrompt {
+                    // Enter sends the prompt; Shift+Enter inserts a newline.
+                    if msg.is_enter() && !self.shift_held {
+                        return Task::done(Message::SendPrompt);
                     }
-                    FocusedTarget::EditText(RULES) => {
-                        self.rules_content.update(msg, self.shift_held);
-                        self.system_prompt.rules.1 = self.rules_content.text();
-                    }
-                    _ => {}
+                    self.user_prompt.update(msg, self.shift_held);
                 }
             }
             Message::UndoRedo(msg) => {
                 // Global Ctrl+Z/Y — route to whichever TextArea holds focus.
-                match self.focused {
-                    Some(FocusedTarget::UserPrompt) => {
-                        self.user_prompt.update(msg, self.shift_held);
-                    }
-                    Some(FocusedTarget::EditText(RULES)) => {
-                        self.rules_content.update(msg, self.shift_held);
-                        self.system_prompt.rules.1 = self.rules_content.text();
-                    }
-                    _ => {}
+                if let Some(FocusedTarget::UserPrompt) = self.focused {
+                    self.user_prompt.update(msg, self.shift_held);
                 }
             }
             Message::SelectWorkspace(entry) => {
@@ -486,17 +470,29 @@ impl App {
             }
             Message::WorkspaceDialogResult(None) => {}
             Message::SelectPreamble(entry) => {
-                let FilepathEntry { display, path } = entry;
-                self.selected_preamble = display;
-                return Task::perform(
-                    async move { std::fs::read_to_string(&path).map_err(|e| e.to_string()) },
+                return Self::select_prompt_file(
+                    entry,
+                    &mut self.selected_preamble,
                     Message::PreambleFileResult,
                 );
             }
-            Message::PreambleFileResult(Ok(content)) => {
-                self.system_prompt.preamble.1 = content;
+            Message::PreambleFileResult(result) => {
+                if let Ok(content) = result {
+                    self.system_prompt.preamble.1 = content;
+                }
             }
-            Message::PreambleFileResult(Err(_)) => {}
+            Message::SelectRules(entry) => {
+                return Self::select_prompt_file(
+                    entry,
+                    &mut self.selected_rules,
+                    Message::RulesFileResult,
+                );
+            }
+            Message::RulesFileResult(result) => {
+                if let Ok(content) = result {
+                    self.system_prompt.rules.1 = content;
+                }
+            }
             Message::SelectWorkMode(mode) => {
                 self.workmode = mode;
             }
@@ -917,6 +913,7 @@ impl App {
             window_pos: (self.window_pos.x.max(0.0), self.window_pos.y.max(0.0)),
             selected_model: self.selected_model.clone(),
             selected_preamble: self.selected_preamble.clone(),
+            selected_rules: self.selected_rules.clone(),
             preamble_enabled: self.system_prompt.preamble.0,
             rules_enabled: self.system_prompt.rules.0,
             tools_enabled: self.system_prompt.tools.0,
@@ -930,7 +927,6 @@ impl App {
                 .filter(|e| !e.path.as_os_str().is_empty())
                 .map(|e| e.path.clone())
                 .collect(),
-            rules_text: self.rules_content.text(),
             agent_tools: tools::builtin_tool_names()
                 .into_iter()
                 .chain(self.custom_tool_names.iter().cloned())
@@ -942,6 +938,21 @@ impl App {
             font_scale: self.font_scale,
         };
         settings.save();
+    }
+
+    /// Read a prompt file (preamble or rules) from disk and return a task
+    /// that produces the appropriate `FileResult` message.
+    fn select_prompt_file(
+        entry: FilepathEntry,
+        selected: &mut String,
+        on_load: fn(Result<String, String>) -> Message,
+    ) -> Task<Message> {
+        let FilepathEntry { display, path } = entry;
+        *selected = display;
+        Task::perform(
+            async move { std::fs::read_to_string(&path).map_err(|e| e.to_string()) },
+            on_load,
+        )
     }
 
     /// Refresh the session list dropdown entries from disk.
@@ -1001,13 +1012,13 @@ impl App {
                 &self.provider_entries,
                 &self.selected_model,
                 &self.system_prompt,
-                self.rules_expanded,
                 self.tools_expanded,
                 self.files_expanded,
                 &self.selected_preamble,
                 &self.preamble_options,
+                &self.selected_rules,
+                &self.rules_options,
                 &self.workspace_options,
-                &self.rules_content,
                 &self.files_content,
                 &self.tools_content,
                 &self.enabled_tools,

@@ -6,11 +6,9 @@ use iced::{
     },
 };
 
-use crate::FocusedTarget;
 use crate::Message;
-use crate::system::{DATE, FilepathEntry, PREAMBLE, RULES, TOOLS, WORKSPACE, WORKSPACE_TREE};
+use crate::system::{DATE, FilepathEntry, TOOLS, WORKSPACE, WORKSPACE_TREE};
 
-use crate::widgets::textarea::TextArea;
 use std::path::PathBuf;
 
 // ── internal helper ──────────────────────────────────────────────────
@@ -36,13 +34,14 @@ fn expandable_header<'a>(
 
 // ── field views ──────────────────────────────────────────────────────
 
-pub(crate) fn preamble_field_view<'a>(
+pub(crate) fn file_picker_field_view<'a>(
+    name: &'static str,
     field: &'a (bool, String),
     options: &'a [FilepathEntry],
     selected_display: &'a str,
+    on_select: fn(FilepathEntry) -> Message,
 ) -> Element<'a, Message> {
     let checked = field.0;
-    let name = PREAMBLE;
     let selected = if selected_display.is_empty() {
         None
     } else {
@@ -56,35 +55,13 @@ pub(crate) fn preamble_field_view<'a>(
         checkbox(checked)
             .label(name)
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| Message::ToggleEnabled(name, v)),
-        pick_list(options, selected, Message::SelectPreamble).width(Fill),
+            .on_toggle(move |v| Message::ToggleEnabled(name, v))
+            .width(Fill),
+        pick_list(options, selected, on_select).width(Fill),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
     .into()
-}
-
-pub(crate) fn rules_field_view<'a>(
-    expanded: bool,
-    field: &'a (bool, String),
-    content: &'a TextArea,
-) -> Element<'a, Message> {
-    let header = expandable_header(RULES, field.0, expanded);
-
-    if expanded {
-        column![
-            header,
-            scrollable(
-                content
-                    .view(|msg| Message::EditTextArea(FocusedTarget::EditText(RULES), msg))
-                    .height(Length::Fixed(120.0)),
-            ),
-        ]
-        .spacing(4)
-        .into()
-    } else {
-        header
-    }
 }
 
 pub(crate) fn tools_field_view<'a>(
@@ -127,7 +104,8 @@ pub(crate) fn workspace_field_view<'a>(
         checkbox(checked)
             .label(name)
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| Message::ToggleEnabled(name, v)),
+            .on_toggle(move |v| Message::ToggleEnabled(name, v))
+            .width(Fill),
         pick_list(options, selected, Message::SelectWorkspace).width(Fill),
     ]
     .spacing(4)
@@ -175,11 +153,11 @@ pub(crate) fn files_field_view<'a>(
     }
 }
 
-pub fn build_preamble_options() -> Vec<FilepathEntry> {
+pub fn build_md_file_options(subdir: &str) -> Vec<FilepathEntry> {
     let dir = home::home_dir()
         .unwrap_or_default()
         .join(".crabot")
-        .join("preamble");
+        .join(subdir);
     let mut entries = Vec::new();
     if let Ok(read_dir) = std::fs::read_dir(dir) {
         for entry in read_dir.flatten() {
@@ -195,6 +173,17 @@ pub fn build_preamble_options() -> Vec<FilepathEntry> {
         }
     }
     entries
+}
+
+/// Load options and content for a prompt file picker (preamble / rules).
+pub fn load_prompt_options(subdir: &str, selected: &str) -> (Vec<FilepathEntry>, String) {
+    let options = build_md_file_options(subdir);
+    let content = options
+        .iter()
+        .find(|e| e.display == selected)
+        .map(|e| std::fs::read_to_string(&e.path).unwrap_or_else(|e| e.to_string()))
+        .unwrap_or_default();
+    (options, content)
 }
 
 pub fn build_workspace_options(recent: &[PathBuf]) -> Vec<FilepathEntry> {

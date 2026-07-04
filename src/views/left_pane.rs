@@ -8,7 +8,7 @@ use super::model_config::model_config_view;
 use super::session_view::session_view;
 use super::styles::{label, pane_side};
 use super::system_prompt::{
-    date_field_view, files_field_view, preamble_field_view, rules_field_view, tools_field_view,
+    date_field_view, file_picker_field_view, files_field_view, tools_field_view,
     workspace_field_view,
 };
 use super::tool_list::tools_section;
@@ -29,13 +29,13 @@ pub(crate) fn left_pane<'a>(
     provider_entries: &'a [ProviderEntry],
     selected_model: &'a String,
     system_prompt: &'a SystemPrompt,
-    rules_expanded: bool,
     tools_expanded: bool,
     files_expanded: bool,
     selected_preamble: &'a str,
     preamble_options: &'a [FilepathEntry],
+    selected_rules: &'a str,
+    rules_options: &'a [FilepathEntry],
     workspace_options: &'a [FilepathEntry],
-    rules_content: &'a TextArea,
     files_content: &'a text_editor::Content,
     tools_content: &'a text_editor::Content,
     enabled_tools: &'a HashSet<String>,
@@ -52,8 +52,20 @@ pub(crate) fn left_pane<'a>(
             .map(Message::ModelConfigEvent),
         rule::horizontal(0),
         label("System Prompt", 140.0),
-        preamble_field_view(&system_prompt.preamble, preamble_options, selected_preamble,),
-        rules_field_view(rules_expanded, &system_prompt.rules, rules_content,),
+        file_picker_field_view(
+            crate::system::PREAMBLE,
+            &system_prompt.preamble,
+            preamble_options,
+            selected_preamble,
+            Message::SelectPreamble,
+        ),
+        file_picker_field_view(
+            crate::system::RULES,
+            &system_prompt.rules,
+            rules_options,
+            selected_rules,
+            Message::SelectRules,
+        ),
         tools_field_view(tools_expanded, &system_prompt.tools, tools_content,),
         workspace_field_view(&system_prompt.workspace, workspace_options),
         files_field_view(files_expanded, &system_prompt.files, files_content,),

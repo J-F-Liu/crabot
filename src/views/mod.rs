@@ -21,4 +21,4 @@ pub(crate) use left_pane::left_pane;
 pub(crate) use right_pane::right_pane;
 pub(crate) use styles::DividerState;
 pub(crate) use styles::divider;
-pub(crate) use system_prompt::{build_preamble_options, build_workspace_options};
+pub(crate) use system_prompt::{build_workspace_options, load_prompt_options};

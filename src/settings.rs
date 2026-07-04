@@ -11,6 +11,7 @@ pub struct Settings {
     pub window_pos: (f32, f32),
     pub selected_model: String,
     pub selected_preamble: String,
+    pub selected_rules: String,
     /// Enabled status for each system-prompt component.
     pub preamble_enabled: bool,
     pub rules_enabled: bool,
@@ -22,7 +23,6 @@ pub struct Settings {
     pub workspace: PathBuf,
     /// Recent workspace paths (most recent first).
     pub recent_workspaces: Vec<PathBuf>,
-    pub rules_text: String,
     /// Font scale factor for center pane dialog blocks (0.5 .. 2.0).
     pub font_scale: f32,
     /// Enabled agent tools: tool name → enabled.
@@ -38,6 +38,7 @@ impl Default for Settings {
             window_pos: (0.0, 0.0),
             selected_model: String::new(),
             selected_preamble: String::new(),
+            selected_rules: String::new(),
             preamble_enabled: true,
             rules_enabled: true,
             tools_enabled: true,
@@ -46,7 +47,6 @@ impl Default for Settings {
             date_enabled: true,
             workspace: PathBuf::new(),
             recent_workspaces: Vec::new(),
-            rules_text: String::new(),
             font_scale: 1.0,
             agent_tools: crate::tools::builtin_tools()
                 .keys()

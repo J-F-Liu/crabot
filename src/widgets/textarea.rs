@@ -68,6 +68,7 @@ impl TextArea {
     }
 
     /// Creates a `TextArea` pre-filled with the given text.
+    #[allow(dead_code)]
     pub fn with_text(text: &str) -> Self {
         Self {
             content: text_editor::Content::with_text(text),
