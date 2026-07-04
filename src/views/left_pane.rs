@@ -8,8 +8,8 @@ use super::model_config::model_config_view;
 use super::session_view::session_view;
 use super::styles::{label, pane_side};
 use super::system_prompt::{
-    date_field_view, file_picker_field_view, files_field_view, tools_field_view,
-    workspace_field_view,
+    agents_md_field_view, date_field_view, file_picker_field_view, files_field_view,
+    tools_field_view, workspace_field_view,
 };
 use super::tool_list::tools_section;
 use super::user_prompt::user_prompt_view;
@@ -29,6 +29,7 @@ pub(crate) fn left_pane<'a>(
     provider_entries: &'a [ProviderEntry],
     selected_model: &'a String,
     system_prompt: &'a SystemPrompt,
+    agents_md_exists: bool,
     tools_expanded: bool,
     files_expanded: bool,
     selected_preamble: &'a str,
@@ -47,10 +48,16 @@ pub(crate) fn left_pane<'a>(
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
 ) -> Element<'a, Message> {
-    let col = column![
+    let agents_md: Element<'a, Message> = if agents_md_exists {
+        agents_md_field_view(&system_prompt.agents_md)
+    } else {
+        container(column![]).into()
+    };
+
+    let children: Vec<Element<'a, Message>> = vec![
         model_config_view(provided_models, provider_entries, selected_model)
             .map(Message::ModelConfigEvent),
-        rule::horizontal(0),
+        rule::horizontal(0).into(),
         label("System Prompt", 140.0),
         file_picker_field_view(
             crate::system::PREAMBLE,
@@ -66,17 +73,19 @@ pub(crate) fn left_pane<'a>(
             selected_rules,
             Message::SelectRules,
         ),
-        tools_field_view(tools_expanded, &system_prompt.tools, tools_content,),
+        tools_field_view(tools_expanded, &system_prompt.tools, tools_content),
         workspace_field_view(&system_prompt.workspace, workspace_options),
-        files_field_view(files_expanded, &system_prompt.files, files_content,),
+        agents_md,
+        files_field_view(files_expanded, &system_prompt.files, files_content),
         date_field_view(&system_prompt.date),
         session_view(streaming, session_options, current_session_id),
         label("User Prompt", 140.0),
         user_prompt_view(user_prompt, workmode),
         tools_section("Builtin Tools", enabled_tools, builtin_tool_names),
         tools_section("Custom Tools", enabled_tools, custom_tool_names),
-    ]
-    .spacing(8);
+    ];
+
+    let col = column(children).spacing(8);
 
     container(scrollable(col.padding([4, 12])))
         .width(Length::Fixed(left_w))

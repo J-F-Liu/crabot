@@ -7,7 +7,7 @@ use iced::{
 };
 
 use crate::Message;
-use crate::system::{DATE, FilepathEntry, TOOLS, WORKSPACE, WORKSPACE_TREE};
+use crate::system::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE, WORKSPACE_TREE};
 
 use std::path::PathBuf;
 
@@ -224,6 +224,17 @@ pub fn build_workspace_options(recent: &[PathBuf]) -> Vec<FilepathEntry> {
     });
 
     entries
+}
+
+pub(crate) fn agents_md_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
+    let checked = field.0;
+    let name = AGENTS_MD;
+
+    checkbox(checked)
+        .label(name)
+        .style(crate::views::primary_checkbox)
+        .on_toggle(move |v| Message::ToggleEnabled(name, v))
+        .into()
 }
 
 pub(crate) fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {

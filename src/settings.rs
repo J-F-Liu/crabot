@@ -17,6 +17,7 @@ pub struct Settings {
     pub rules_enabled: bool,
     pub tools_enabled: bool,
     pub workspace_enabled: bool,
+    pub agents_md_enabled: bool,
     pub files_enabled: bool,
     pub date_enabled: bool,
     /// Current workspace path.
@@ -43,6 +44,7 @@ impl Default for Settings {
             rules_enabled: true,
             tools_enabled: true,
             workspace_enabled: true,
+            agents_md_enabled: true,
             files_enabled: true,
             date_enabled: true,
             workspace: PathBuf::new(),

@@ -4,6 +4,7 @@ pub const PREAMBLE: &str = "Preamble";
 pub const RULES: &str = "Rules";
 pub const TOOLS: &str = "Tools";
 pub const WORKSPACE: &str = "Workspace";
+pub const AGENTS_MD: &str = "AGENTS.md";
 pub const WORKSPACE_TREE: &str = "Workspace tree";
 pub const DATE: &str = "Date";
 
@@ -31,6 +32,7 @@ pub struct SystemPrompt {
     pub rules: (bool, String),
     pub tools: (bool, String),
     pub workspace: (bool, PathBuf),
+    pub agents_md: (bool, String),
     pub files: (bool, String),
     pub date: (bool, String),
 }
@@ -41,6 +43,7 @@ impl SystemPrompt {
             PREAMBLE => Some(&mut self.preamble),
             RULES => Some(&mut self.rules),
             TOOLS => Some(&mut self.tools),
+            AGENTS_MD => Some(&mut self.agents_md),
             WORKSPACE_TREE => Some(&mut self.files),
             DATE => Some(&mut self.date),
             _ => None,
@@ -73,6 +76,12 @@ impl SystemPrompt {
         {
             let path = crate::tools::convert_path_to_unix_style(workspace);
             prompt.push_str(&format!("Current Workspace: {}\n", path));
+        }
+        if let (true, agents_md) = &self.agents_md
+            && !agents_md.is_empty()
+        {
+            prompt.push_str(agents_md);
+            prompt.push('\n');
         }
         if let (true, files) = &self.files
             && !files.is_empty()

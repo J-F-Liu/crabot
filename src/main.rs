@@ -106,6 +106,8 @@ struct App {
     selected_rules: String,
     rules_options: Vec<FilepathEntry>,
     workspace_options: Vec<FilepathEntry>,
+    /// Whether an AGENTS.md file exists in the current workspace.
+    agents_md_exists: bool,
     // user-editable Content need to persist between view calls to maintain editor state
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
@@ -248,6 +250,7 @@ impl App {
 
         let workspace_path = saved.workspace;
         let files_tree = workspace::build_files_tree(&workspace_path);
+        let (agents_md_exists, agents_md_content) = load_agents_md(&workspace_path);
         let tools_summary = system::tools_summary(&tools::enabled_tools(&enabled_tools));
         let files_content = text_editor::Content::with_text(&files_tree);
         let tools_content = text_editor::Content::with_text(&tools_summary);
@@ -263,6 +266,7 @@ impl App {
             tools: (saved.tools_enabled, tools_summary),
             workspace: (saved.workspace_enabled, workspace_path),
             files: (saved.files_enabled, files_tree),
+            agents_md: (saved.agents_md_enabled, agents_md_content),
             date: (
                 saved.date_enabled,
                 chrono::Local::now().format("%Y-%m-%d").to_string(),
@@ -287,6 +291,7 @@ impl App {
             selected_preamble: saved.selected_preamble,
             selected_rules: saved.selected_rules,
             workspace_options: views::build_workspace_options(&saved.recent_workspaces),
+            agents_md_exists,
             tools_expanded: false,
             files_expanded: false,
             files_content,
@@ -507,6 +512,9 @@ impl App {
                 self.system_prompt.files.1 =
                     workspace::build_files_tree(&self.system_prompt.workspace.1);
                 self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
+                let (exists, agents_md_content) = load_agents_md(&self.system_prompt.workspace.1);
+                self.agents_md_exists = exists;
+                self.system_prompt.agents_md = (self.agents_md_exists, agents_md_content);
                 return self.refresh_session_list();
             }
             Message::ToggleTurnExpand(idx) => {
@@ -895,6 +903,9 @@ impl App {
         self.system_prompt.workspace.1 = path.clone();
         self.system_prompt.files.1 = workspace::build_files_tree(&path);
         self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
+        let (exists, agents_md_content) = load_agents_md(&path);
+        self.agents_md_exists = exists;
+        self.system_prompt.agents_md = (self.agents_md_exists, agents_md_content);
         self.show_restart = env::current_exe()
             .ok()
             .is_some_and(|exe| exe.starts_with(&path));
@@ -918,6 +929,7 @@ impl App {
             rules_enabled: self.system_prompt.rules.0,
             tools_enabled: self.system_prompt.tools.0,
             workspace_enabled: self.system_prompt.workspace.0,
+            agents_md_enabled: self.system_prompt.agents_md.0,
             files_enabled: self.system_prompt.files.0,
             date_enabled: self.system_prompt.date.0,
             workspace: self.system_prompt.workspace.1.clone(),
@@ -1012,6 +1024,7 @@ impl App {
                 &self.provider_entries,
                 &self.selected_model,
                 &self.system_prompt,
+                self.agents_md_exists,
                 self.tools_expanded,
                 self.files_expanded,
                 &self.selected_preamble,
@@ -1111,4 +1124,16 @@ impl App {
             window::close_requests().map(|_id| Message::AppClosing),
         ])
     }
+}
+
+/// Read `AGENTS.md` from the workspace root, returning (exists, content).
+fn load_agents_md(workspace: &std::path::Path) -> (bool, String) {
+    if !workspace.as_os_str().is_empty() {
+        let path = workspace.join("AGENTS.md");
+        if path.is_file() {
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            return (true, content);
+        }
+    }
+    return (false, String::new());
 }
