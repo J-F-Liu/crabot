@@ -1,3 +1,4 @@
+use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::{Color, Theme};
 
 // ── layout constants ──────────────────────────────────────────────
@@ -38,6 +39,11 @@ pub(crate) fn crabot_palette() -> iced::theme::Palette {
 
 pub(crate) fn default_theme() -> Theme {
     Theme::custom("Crabot Light", crabot_palette())
+}
+
+/// Thin vertical scrollbar direction for all scrollable widgets.
+pub(crate) fn thin_vertical() -> Direction {
+    Direction::Vertical(Scrollbar::new().width(4).scroller_width(4))
 }
 
 // ── palette accessors ─────────────────────────────────────────────

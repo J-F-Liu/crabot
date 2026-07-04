@@ -11,6 +11,7 @@ use super::system_prompt::{
     agents_md_field_view, date_field_view, file_picker_field_view, files_field_view,
     tools_field_view, workspace_field_view,
 };
+use super::theme::thin_vertical;
 use super::tool_list::tools_section;
 use super::user_prompt::user_prompt_view;
 use crate::Message;
@@ -87,7 +88,7 @@ pub(crate) fn left_pane<'a>(
 
     let col = column(children).spacing(8);
 
-    container(scrollable(col.padding([4, 12])))
+    container(scrollable(col.padding([4, 12])).direction(thin_vertical()))
         .width(Length::Fixed(left_w))
         .height(Fill)
         .style(pane_side)

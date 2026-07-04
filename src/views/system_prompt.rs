@@ -9,6 +9,8 @@ use iced::{
 use crate::Message;
 use crate::system::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE, WORKSPACE_TREE};
 
+use super::theme::thin_vertical;
+
 use std::path::PathBuf;
 
 // ── internal helper ──────────────────────────────────────────────────
@@ -79,7 +81,8 @@ pub(crate) fn tools_field_view<'a>(
                 text_editor(content)
                     .on_action(move |a| Message::EditTextContent(name, a))
                     .height(Length::Fixed(120.0)),
-            ),
+            )
+            .direction(thin_vertical()),
         ]
         .spacing(4)
         .into()
@@ -121,7 +124,7 @@ pub(crate) fn files_field_view<'a>(
     let name = WORKSPACE_TREE;
     let header = expandable_header(name, field.0, expanded);
 
-    use iced::widget::scrollable::Direction;
+    use iced::widget::scrollable::{Direction, Scrollbar};
     use iced::widget::text::Wrapping;
 
     if expanded {
@@ -138,8 +141,8 @@ pub(crate) fn files_field_view<'a>(
                     .padding(Padding::new(0.0).bottom(12.0)),
                 )
                 .direction(Direction::Both {
-                    vertical: Default::default(),
-                    horizontal: Default::default(),
+                    vertical: Scrollbar::new().width(4).scroller_width(4),
+                    horizontal: Scrollbar::new().width(4).scroller_width(4),
                 })
                 .height(Length::Fixed(200.0)),
             )

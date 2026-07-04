@@ -13,6 +13,7 @@ use super::styles::{
 };
 use super::theme::{
     CRABOT_BORDER, CRABOT_PRIMARY, CRABOT_TEXT, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text,
+    thin_vertical,
 };
 use super::tool_message::{args_rows, path_arg_row, result_text};
 use crate::Message;
@@ -409,6 +410,7 @@ pub(crate) fn center_pane<'a>(
         session_header(title, font_scale),
         scrollable(column(dialog_blocks).spacing(18).padding(14),)
             .height(Fill)
+            .direction(thin_vertical())
             .id(MESSAGE_SCROLL.clone())
             .on_scroll(Message::SessionViewScrolled),
         status_line(status, streaming, font_scale),

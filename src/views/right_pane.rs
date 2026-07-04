@@ -1,10 +1,11 @@
 use iced::{
-    Element, Fill, Font, Length, alignment, font,
+    Element, Fill, Font, Length, alignment, font, padding,
     widget::{Space, button, column, container, rule, scrollable, text},
 };
 use iced_selection::Text as SelectableText;
 
 use super::styles::{pane_side, primary_button, sel_primary};
+use super::theme::thin_vertical;
 use crate::Message;
 use crate::model::TokenAmount;
 
@@ -111,9 +112,11 @@ pub(crate) fn right_pane<'a>(
         );
     }
 
-    container(scrollable(container(col.padding(20))))
-        .width(Length::Fixed(pane_width))
-        .height(Fill)
-        .style(pane_side)
-        .into()
+    container(
+        scrollable(container(col.padding(padding::all(20).left(16)))).direction(thin_vertical()),
+    )
+    .width(Length::Fixed(pane_width))
+    .height(Fill)
+    .style(pane_side)
+    .into()
 }
