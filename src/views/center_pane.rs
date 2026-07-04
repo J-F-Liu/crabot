@@ -17,8 +17,9 @@ use super::theme::{
 };
 use super::tool_message::{args_rows, path_arg_row, result_text};
 use crate::Message;
-use crate::chat::{Dialog, TextContent, ToolCall, ToolResult, Turn, TurnBody};
+use crate::chat::{Dialog, TextContent, Turn, TurnBody};
 use crate::llm::StreamState;
+use std::collections::HashSet;
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
 
@@ -125,44 +126,81 @@ fn args_preview<'a>(
 }
 
 /// Build a Tool turn block — handles both completed (`Tool`) and pending (`Temp`) calls.
+/// Multiple tool calls from one LLM response are grouped into a single turn
+/// and rendered as stacked sub-items within the same bubble.
 fn tool_turn_block<'a>(
     msg: &'a Turn,
     i: usize,
-    expanded_turns: &std::collections::HashSet<usize>,
+    expanded_turns: &HashSet<(usize, usize)>,
     font_scale: f32,
 ) -> Element<'a, Message> {
-    let (name, args, result) = match &msg.body {
-        TurnBody::Tool(ToolResult {
-            name, args, result, ..
-        }) => (name.as_str(), args, Some(result)),
-        TurnBody::Temp(ToolCall { name, args, .. }) => (name.as_str(), args, None),
+    // Build a unified list of (name, args, result_opt, timestamp) from either variant.
+    type ToolItem<'a> = (
+        &'a str,
+        &'a serde_json::Value,
+        Option<&'a Result<String, String>>,
+        &'a str,
+    );
+    let items: Vec<ToolItem<'a>> = match &msg.body {
+        TurnBody::Tool(trs) => {
+            if trs.is_empty() {
+                // No results yet — avoid rendering an empty bubble.
+                return Space::new().height(0).into();
+            }
+            trs.iter()
+                .map(|tr| {
+                    (
+                        tr.name.as_str(),
+                        &tr.args,
+                        Some(&tr.result),
+                        tr.timestamp.as_str(),
+                    )
+                })
+                .collect()
+        }
+        TurnBody::Temp(tcs) => tcs
+            .iter()
+            .map(|tc| (tc.name.as_str(), &tc.args, None, msg.timestamp.as_str()))
+            .collect(),
         _ => unreachable!("tool_turn_block called on non-tool turn"),
     };
 
-    let badge = role_badge(format!("Tool - {name}"), "Tool", font_scale);
-    let ts_text = text(&msg.timestamp)
-        .size(11.0 * font_scale)
-        .color(CRABOT_TEXT_MUTED);
-    let mut content_col = column![].spacing(8).width(Fill);
+    let mut elements: Vec<Element<'a, Message>> = Vec::new();
 
-    // ── header: expand indicator + status icon (completed) or spinner (pending) ──
-    let header: Element<'a, Message> = if let Some(result) = result {
-        let expanded = expanded_turns.contains(&i);
-        let indicator = if expanded { "▼" } else { "⏵" };
+    for (idx, (name, args, result, ts)) in items.into_iter().enumerate() {
+        if idx > 0 {
+            elements.push(Space::new().height(8).into());
+        }
+
+        let badge = role_badge(format!("Tool - {name}"), "Tool", font_scale);
+        let completed = result.is_some();
+
         let (status_icon, status_color) = match result {
-            Ok(_) => ("✓", super::theme::CRABOT_SUCCESS),
-            Err(_) => ("✗", super::theme::CRABOT_DANGER),
+            Some(Ok(_)) => ("✓", super::theme::CRABOT_SUCCESS),
+            Some(Err(_)) => ("✗", super::theme::CRABOT_DANGER),
+            None => ("⏳", CRABOT_TEXT_MUTED),
         };
-        mouse_area(
-            row![
+        let expanded = completed && expanded_turns.contains(&(i, idx));
+        let indicator = if expanded { "▼" } else { "⏵" };
+
+        let status_text = text(status_icon)
+            .size(12.0 * font_scale)
+            .color(status_color)
+            .font(if completed {
+                Font {
+                    weight: font::Weight::Bold,
+                    ..Font::DEFAULT
+                }
+            } else {
+                Font::DEFAULT
+            });
+
+        let ts_text = text(ts).size(11.0 * font_scale).color(CRABOT_TEXT_MUTED);
+
+        if completed {
+            let header = row![
                 badge,
-                text(status_icon)
-                    .size(12.0 * font_scale)
-                    .color(status_color)
-                    .font(Font {
-                        weight: font::Weight::Bold,
-                        ..Font::DEFAULT
-                    }),
+                status_text,
                 text(indicator)
                     .size(10.0 * font_scale)
                     .color(CRABOT_TOOL_ACCENT),
@@ -170,48 +208,42 @@ fn tool_turn_block<'a>(
                 ts_text,
             ]
             .spacing(6)
-            .align_y(iced::Alignment::Center),
-        )
-        .on_press(Message::ToggleTurnExpand(i))
-        .interaction(iced::mouse::Interaction::Pointer)
-        .into()
-    } else {
-        row![
-            badge,
-            text("⏳").size(12.0 * font_scale).color(CRABOT_TEXT_MUTED),
-            Space::new().width(Length::Fill),
-            ts_text,
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center)
-        .into()
-    };
-    content_col = content_col.push(header);
-
-    // ── body: full args + result when expanded, otherwise a collapsed preview ──
-    match result {
-        Some(result) if expanded_turns.contains(&i) => {
-            for r in args_rows(args, font_scale) {
-                content_col = content_col.push(r);
-            }
-            content_col = content_col.push(result_text(result, font_scale));
+            .align_y(iced::Alignment::Center);
+            elements.push(
+                mouse_area(header)
+                    .on_press(Message::ToggleTurnExpand(i, idx))
+                    .interaction(iced::mouse::Interaction::Pointer)
+                    .into(),
+            );
+        } else {
+            let header = row![
+                badge,
+                status_text,
+                Space::new().width(Length::Fill),
+                ts_text,
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+            elements.push(header.into());
         }
-        _ => {
-            for r in args_preview(name, args, font_scale) {
-                content_col = content_col.push(r);
-            }
+
+        if expanded {
+            elements.extend(args_rows(args, font_scale));
+            elements.push(result_text(result.unwrap(), font_scale));
+        } else {
+            elements.extend(args_preview(name, args, font_scale));
         }
     }
 
-    wrap_bubble(content_col, tool_bubble_style)
+    wrap_bubble(column(elements).spacing(8).width(Fill), tool_bubble_style)
 }
 
 /// Build a complete Text turn block (header + body + bubble).
 fn text_turn_block<'a>(
     msg: &'a Turn,
     i: usize,
-    expanded_turns: &std::collections::HashSet<usize>,
-    selectable_msgs: &std::collections::HashSet<usize>,
+    expanded_turns: &HashSet<(usize, usize)>,
+    selectable_msgs: &HashSet<usize>,
     theme: &'a Theme,
     font_scale: f32,
 ) -> Element<'a, Message> {
@@ -234,7 +266,7 @@ fn text_turn_block<'a>(
     // ── header: badge + (indicator if reasoning) + timestamp ──
     if reasoning.is_some() {
         // Reasoning by default is expanded so inverse membership.
-        let expanded = !expanded_turns.contains(&i);
+        let expanded = !expanded_turns.contains(&(i, 0));
         let indicator = if expanded { "▼" } else { "⏵" };
         let header = row![
             badge,
@@ -248,7 +280,7 @@ fn text_turn_block<'a>(
         .align_y(iced::Alignment::Center);
         content_col = content_col.push(
             mouse_area(header)
-                .on_press(Message::ToggleTurnExpand(i))
+                .on_press(Message::ToggleTurnExpand(i, 0))
                 .interaction(iced::mouse::Interaction::Pointer),
         );
     } else {
@@ -260,7 +292,7 @@ fn text_turn_block<'a>(
     // ── body: reasoning + content ──
     if let Some(reasoning) = reasoning {
         // Default expanded; badge-row click toggles collapse.
-        if !expanded_turns.contains(&i) {
+        if !expanded_turns.contains(&(i, 0)) {
             content_col = content_col.push(
                 SelectableText::new(reasoning)
                     .size(13.0 * font_scale)
@@ -306,8 +338,8 @@ fn text_turn_block<'a>(
 fn turn_block<'a>(
     msg: &'a Turn,
     i: usize,
-    expanded_turns: &'a std::collections::HashSet<usize>,
-    selectable_msgs: &std::collections::HashSet<usize>,
+    expanded_turns: &'a HashSet<(usize, usize)>,
+    selectable_msgs: &HashSet<usize>,
     theme: &'a Theme,
     font_scale: f32,
 ) -> Element<'a, Message> {
@@ -325,12 +357,12 @@ fn turn_block<'a>(
 pub(crate) fn center_pane<'a>(
     title: &'a str,
     dialogs: &'a [Dialog],
-    expanded_turns: &'a std::collections::HashSet<usize>,
-    expanded_dialogs: &'a std::collections::HashSet<usize>,
+    expanded_turns: &'a HashSet<(usize, usize)>,
+    expanded_dialogs: &'a HashSet<usize>,
     status: &'a str,
     theme: &'a Theme,
     streaming: StreamState,
-    selectable_msgs: &std::collections::HashSet<usize>,
+    selectable_msgs: &HashSet<usize>,
     font_scale: f32,
 ) -> Element<'a, Message> {
     // Flatten dialogs into turns with a running flat index per dialog.

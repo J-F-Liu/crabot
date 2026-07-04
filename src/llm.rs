@@ -194,25 +194,25 @@ pub async fn send_stream(
         // and re-render before we proceed to tool execution.
         tokio::task::yield_now().await;
 
+        // Notify the UI of ALL pending tool calls at once
+        let calls: Vec<crate::chat::ToolCall> = tool_calls
+            .iter()
+            .map(|tc| crate::chat::ToolCall {
+                name: tc.fn_name.clone(),
+                call_id: Some(tc.call_id.clone()),
+                args: tc.fn_arguments.clone(),
+            })
+            .collect();
+        if !on_event(crate::Message::StreamToolCalls(calls)).await {
+            on_event(crate::Message::StreamCancelled(genai_messages)).await;
+            return;
+        }
+
         // Execute each tool call and record results.
         // Unknown tools are reported back to the LLM as an error result
         // rather than aborting the loop, giving the model a chance to recover.
         let mut tool_responses: Vec<ToolResponse> = Vec::with_capacity(tool_calls.len());
         for tc in tool_calls {
-            // Notify UI of the pending tool call *before* execution
-            // so it can render a placeholder turn with just the args.
-            if !on_event(crate::Message::StreamToolCall(crate::chat::ToolCall {
-                name: tc.fn_name.clone(),
-                call_id: Some(tc.call_id.clone()),
-                args: tc.fn_arguments.clone(),
-            }))
-            .await
-            {
-                genai_messages.push(ChatMessage::from(tool_responses));
-                on_event(crate::Message::StreamCancelled(genai_messages)).await;
-                return;
-            }
-
             // Resolve the tool on this thread so we don't have to clone the
             // name into the blocking closure. Unknown tools short-circuit to
             // an error result without spawning a task.
@@ -240,6 +240,7 @@ pub async fn send_stream(
                 call_id: Some(tc.call_id),
                 args: tc.fn_arguments,
                 result,
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             };
             if !on_event(crate::Message::StreamToolResult(tr)).await {
                 genai_messages.push(ChatMessage::from(tool_responses));

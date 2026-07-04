@@ -186,6 +186,9 @@ impl Session {
                         push_or_new(&mut dialogs, Turn::assistant(text, reasoning));
                     }
 
+                    // Collect all tool calls from this assistant message into
+                    // a single Turn, matching the live-stream grouping behaviour.
+                    let mut trs: Vec<ToolResult> = Vec::new();
                     for tc in msg.content.tool_calls() {
                         let result = results.remove(&tc.call_id).unwrap_or_default();
                         let tr = ToolResult {
@@ -193,6 +196,7 @@ impl Session {
                             call_id: Some(tc.call_id.clone()),
                             args: tc.fn_arguments.clone(),
                             result: Ok(result),
+                            timestamp: String::new(),
                         };
                         // Track files modified by write / edit tools.
                         if let Some(path_str) = tr.get_modified_file()
@@ -200,7 +204,10 @@ impl Session {
                         {
                             modified.push(path_str.to_string());
                         }
-                        let turn = Turn::from_tool_result(tr);
+                        trs.push(tr);
+                    }
+                    if !trs.is_empty() {
+                        let turn = Turn::from_tool_results(trs);
                         push_or_new(&mut dialogs, turn);
                     }
                 }

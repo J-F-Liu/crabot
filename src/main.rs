@@ -125,7 +125,7 @@ struct App {
     /// content/reasoning into the right display messages.
     stream_start_index: usize,
     /// Indices of turns whose collapsible body (tool result / reasoning) is expanded.
-    expanded_turns: HashSet<usize>,
+    expanded_turns: HashSet<(usize, usize)>,
     /// Indices of dialogs that are expanded.
     expanded_dialogs: HashSet<usize>,
     /// Token usage from the most recent completed LLM response.
@@ -184,9 +184,9 @@ pub(crate) enum Message {
     SendPrompt,
     /// Result of the "empty workspace" confirmation dialog shown before sending.
     EmptyWorkspaceConfirm(bool),
-    ToggleTurnExpand(usize),
+    ToggleTurnExpand(usize, usize),
     ToggleDialogExpand(usize),
-    StreamToolCall(ToolCall),
+    StreamToolCalls(Vec<ToolCall>),
     StreamContent(String),
     StreamReasoning(String),
     StreamToolResult(ToolResult),
@@ -518,9 +518,10 @@ impl App {
                 self.system_prompt.agents_md = (self.agents_md_exists, agents_md_content);
                 return self.refresh_session_list();
             }
-            Message::ToggleTurnExpand(idx) => {
-                let present = self.expanded_turns.contains(&idx);
-                self.expanded_turns.set(idx, !present);
+            Message::ToggleTurnExpand(idx, sub) => {
+                let key = (idx, sub);
+                let present = self.expanded_turns.contains(&key);
+                self.expanded_turns.set(key, !present);
             }
             Message::ToggleDialogExpand(idx) => {
                 let present = self.expanded_dialogs.contains(&idx);
@@ -619,7 +620,7 @@ impl App {
                                     .set_title("Empty Workspace")
                                     .set_level(rfd::MessageLevel::Warning)
                                     .set_buttons(rfd::MessageButtons::YesNo)
-                                    .set_description(&format!(
+                                    .set_description(format!(
                                         "Workspace path is empty. Continue with the default \
                                          workspace?\n\n{}",
                                         default_path.display()
@@ -673,8 +674,10 @@ impl App {
                 }
                 return self.start_dialog(&model, None);
             }
-            Message::StreamToolCall(tc) => {
-                self.session.push_turn(Turn::from_tool_call(tc));
+            Message::StreamToolCalls(tcs) => {
+                // Empty Tool turn to accumulate results + Temp turn to show pending calls.
+                self.session.push_turn(Turn::from_tool_results(vec![]));
+                self.session.push_turn(Turn::from_tool_calls(tcs));
                 return self.maybe_scroll_to_end();
             }
             Message::StreamContent(chunk) => {
@@ -682,9 +685,6 @@ impl App {
                     && let TurnBody::Text(tc) = &mut last.body
                 {
                     tc.content.push_str(&chunk);
-                }
-                // Refresh the markdown cache for the last message.
-                if let Some(last) = self.session.last_turn_mut() {
                     last.refresh_md_cache();
                 }
                 return self.maybe_scroll_to_end();
@@ -697,10 +697,6 @@ impl App {
                         .get_or_insert_with(String::new)
                         .push_str(&chunk);
                 }
-                // Refresh the markdown cache for the last message.
-                if let Some(last) = self.session.last_turn_mut() {
-                    last.refresh_md_cache();
-                }
                 return self.maybe_scroll_to_end();
             }
             Message::StreamToolResult(tr) => {
@@ -710,11 +706,8 @@ impl App {
                 {
                     self.session.modified_files.push(path_str.to_string());
                 }
-                // Replace the pending Temp placeholder with the completed Tool turn.
-                if let Some(last) = self.session.last_turn_mut() {
-                    last.body = TurnBody::Tool(tr);
-                } else {
-                    self.session.push_turn(Turn::from_tool_result(tr));
+                if let Some(dialog) = self.session.dialogs.last_mut() {
+                    dialog.push_tool_result(tr);
                 }
                 return self.maybe_scroll_to_end();
             }
