@@ -7,11 +7,14 @@ mod search;
 mod write;
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, RwLock};
+use std::time::{Duration, Instant};
 
 use genai::chat::Tool as GenaiTool;
 use indexmap::IndexMap;
+use interprocess::unnamed_pipe;
 use serde_json::Value;
 
 pub(crate) use custom::ToolList;
@@ -439,4 +442,262 @@ fn find_char_boundary(s: &str, pos: usize) -> usize {
             .find(|&i| s.is_char_boundary(i))
             .unwrap_or(0)
     }
+}
+
+// ── Process execution helpers ──────────────────────────────────────
+
+/// Default timeout (in seconds) for external commands spawned by tools.
+pub(crate) const COMMAND_TIMEOUT_SECONDS: u64 = 120;
+
+/// Maximum allowed timeout (in milliseconds) for a single command.
+pub(crate) const MAX_COMMAND_TIMEOUT_MS: u64 = 600_000; // 10 minutes
+
+/// Create an unnamed pipe pair for capturing child process output.
+///
+/// `label` is used in the error message (e.g. `"stdout"`, `"stderr"`).
+fn create_pipe_pair(label: &str) -> Result<(unnamed_pipe::Sender, unnamed_pipe::Recver), String> {
+    unnamed_pipe::pipe().map_err(|e| format!("Failed to create {label} pipe: {e}"))
+}
+
+/// Forcibly kill a process and its entire descendant tree.
+///
+/// On Unix the child should have been started with `process_group(0)` so it is
+/// the leader of a new process group; sending the signal to `-pid` kills the
+/// whole group, including any grandchildren the shell spawned.
+///
+/// On Windows, `taskkill /F /T` forcibly terminates the process and its whole
+/// descendant tree.
+pub(crate) fn kill_process_tree(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &format!("-{pid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .status();
+    }
+}
+
+/// Convert an unnamed pipe `Sender` to `std::process::Stdio` for child process
+/// stdout/stderr.
+pub(crate) fn sender_to_stdio(sender: unnamed_pipe::Sender) -> std::process::Stdio {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::OwnedFd;
+        std::process::Stdio::from(OwnedFd::from(sender))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::OwnedHandle;
+        std::process::Stdio::from(OwnedHandle::from(sender))
+    }
+}
+
+/// Set a pipe receiver to non-blocking mode.
+///
+/// On Unix, uses `interprocess`'s `UnnamedPipeExt::set_nonblocking`.
+/// On Windows, uses `SetNamedPipeHandleState` with `PIPE_NOWAIT`.
+///
+/// Returns an error if the mode cannot be set — a blocking pipe would
+/// deadlock the polling loop, so the caller must treat this as fatal.
+fn set_recver_nonblocking(recver: &unnamed_pipe::Recver) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use interprocess::os::unix::unnamed_pipe::UnnamedPipeExt;
+        recver
+            .set_nonblocking(true)
+            .map_err(|e| format!("Failed to set non-blocking mode: {e}"))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        // PIPE_NOWAIT is deprecated by Microsoft but still functional for
+        // anonymous pipes. There is no direct replacement without switching
+        // to overlapped I/O, which would require a much larger refactor.
+        let handle = recver.as_raw_handle() as isize;
+        let mut mode = win32::PIPE_NOWAIT;
+        let ok = unsafe {
+            win32::SetNamedPipeHandleState(
+                handle,
+                &mut mode,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(format!(
+                "Failed to set pipe non-blocking mode: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Wait for a child process to finish, with a hard timeout.
+///
+/// The pipe receivers (`stdout`, `stderr`) are created with the `interprocess`
+/// crate and switched to non-blocking mode so that they can be drained directly
+/// in the polling loop — no reader threads are spawned. This avoids the
+/// thread-leak problem where a surviving grandchild keeps a pipe write-end open
+/// and blocks a detached reader thread forever.
+///
+/// On timeout the process — and, if `kill_tree` is set, its whole group/tree —
+/// is killed and reaped *without* blocking on pipe EOF.
+///
+/// `kill_tree` should be `true` only when the child was started as a
+/// process-group leader (e.g. bash with `process_group(0)` on Unix). Otherwise
+/// `kill -9 -pid` would target an unrelated process group.
+pub(crate) fn wait_with_timeout(
+    mut child: std::process::Child,
+    mut stdout: Option<unnamed_pipe::Recver>,
+    mut stderr: Option<unnamed_pipe::Recver>,
+    timeout: Duration,
+    kill_tree: bool,
+) -> Result<std::process::Output, String> {
+    let pid = child.id();
+
+    // Switch the pipe receivers to non-blocking mode so we can drain them in
+    // the polling loop without spawning reader threads. A blocking pipe would
+    // deadlock the loop, so propagate any failure.
+    if let Some(ref r) = stdout {
+        set_recver_nonblocking(r)?;
+    }
+    if let Some(ref r) = stderr {
+        set_recver_nonblocking(r)?;
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    let mut tmp = [0u8; 8192];
+
+    // Poll until the process exits or the deadline passes, draining pipe output
+    // along the way to prevent the child from blocking on a full pipe buffer.
+    let status = loop {
+        drain_pipe(stdout.as_mut(), &mut stdout_buf, &mut tmp);
+        drain_pipe(stderr.as_mut(), &mut stderr_buf, &mut tmp);
+
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    if kill_tree {
+                        // kill_process_tree already terminates the child and
+                        // all descendants; no need for a separate child.kill().
+                        kill_process_tree(pid);
+                    } else {
+                        let _ = child.kill();
+                    }
+                    let _ = child.wait();
+                    let mut msg = format!("Command timed out after {}ms", timeout.as_millis());
+                    if !stdout_buf.is_empty() {
+                        msg.push_str("\n--- partial stdout ---\n");
+                        msg.push_str(&String::from_utf8_lossy(&stdout_buf));
+                    }
+                    if !stderr_buf.is_empty() {
+                        msg.push_str("\n--- partial stderr ---\n");
+                        msg.push_str(&String::from_utf8_lossy(&stderr_buf));
+                    }
+                    return Err(msg);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("Failed to wait on command: {e}"));
+            }
+        }
+    };
+
+    // Final drain: the process has exited, so the pipe write-ends should be
+    // closed (unless a grandchild inherited them). Give the pipes up to 2
+    // seconds to reach EOF; if a grandchild still holds them open, return
+    // whatever output was collected so far.
+    let drain_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let stdout_done = drain_pipe(stdout.as_mut(), &mut stdout_buf, &mut tmp);
+        let stderr_done = drain_pipe(stderr.as_mut(), &mut stderr_buf, &mut tmp);
+        if stdout_done && stderr_done {
+            break;
+        }
+        if Instant::now() >= drain_deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    Ok(std::process::Output {
+        status,
+        stdout: stdout_buf,
+        stderr: stderr_buf,
+    })
+}
+
+/// Read all currently-available bytes from `reader` into `buf`.
+///
+/// Returns `true` if the pipe has reached EOF (or there is no reader), `false`
+/// if it is still open but has no data available right now (non-blocking
+/// `WouldBlock`).
+fn drain_pipe(
+    reader: Option<&mut unnamed_pipe::Recver>,
+    buf: &mut Vec<u8>,
+    tmp: &mut [u8],
+) -> bool {
+    let Some(reader) = reader else {
+        return true;
+    };
+    loop {
+        match reader.read(tmp) {
+            Ok(0) => return true, // EOF — write end closed
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(ref e) if is_would_block(e) => return false,
+            Err(_) => return true, // treat unexpected errors as EOF
+        }
+    }
+}
+
+/// Check whether an I/O error means "no data available right now" in
+/// non-blocking mode.
+fn is_would_block(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    // On Windows, `PIPE_NOWAIT` mode causes `ReadFile` to fail with
+    // `ERROR_NO_DATA` when no data is available yet.
+    #[cfg(windows)]
+    if e.raw_os_error() == Some(win32::ERROR_NO_DATA) {
+        return true;
+    }
+    false
+}
+
+/// Minimal Win32 constants and FFI for named-pipe non-blocking mode.
+#[cfg(windows)]
+mod win32 {
+    unsafe extern "system" {
+        pub(crate) fn SetNamedPipeHandleState(
+            hNamedPipe: isize,
+            lpMode: *mut u32,
+            lpMaxCollectionCount: *mut u32,
+            lpCollectDataTimeout: *mut u64,
+        ) -> i32;
+    }
+
+    pub(crate) const PIPE_NOWAIT: u32 = 0x0000_0001;
+
+    /// `ERROR_NO_DATA` (232) — returned by `ReadFile` on a `PIPE_NOWAIT` pipe
+    /// when no data is currently available.
+    pub(crate) const ERROR_NO_DATA: i32 = 232;
 }

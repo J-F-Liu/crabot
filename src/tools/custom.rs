@@ -153,17 +153,28 @@ impl Tool for CustomTool {
             .split_first()
             .ok_or_else(|| "Empty command template".to_string())?;
 
+        // Create unnamed pipe pairs for stdout and stderr.
+        let (stdout_tx, stdout_rx) = super::create_pipe_pair("stdout")?;
+        let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
+
         let child = Command::new(exe)
             .args(args)
             .current_dir(workspace)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdout(super::sender_to_stdio(stdout_tx))
+            .stderr(super::sender_to_stdio(stderr_tx))
             .spawn()
             .map_err(|e| format!("Failed to execute custom tool '{}': {e}", self.name))?;
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("Failed to wait on custom tool '{}': {e}", self.name))?;
+        let output = super::wait_with_timeout(
+            child,
+            Some(stdout_rx),
+            Some(stderr_rx),
+            std::time::Duration::from_secs(super::COMMAND_TIMEOUT_SECONDS),
+            false, // custom tools don't run in their own process group; only
+                   // kill the direct child on timeout to avoid signalling an
+                   // unrelated process group.
+        )
+        .map_err(|e| format!("Custom tool '{}': {e}", self.name))?;
 
         Ok(super::format_command_output(&output))
     }

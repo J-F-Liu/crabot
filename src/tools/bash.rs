@@ -3,10 +3,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str};
-
-/// Maximum seconds a bash command is allowed to run before being killed.
-const BASH_TIMEOUT_SECONDS: u64 = 120;
+use super::{COMMAND_TIMEOUT_SECONDS, MAX_COMMAND_TIMEOUT_MS, Tool, arg_str, wait_with_timeout};
 
 pub struct BashTool;
 
@@ -20,7 +17,7 @@ impl Tool for BashTool {
     }
 
     fn instruction(&self) -> &str {
-        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files. Dedicated tools are available for those operations."
+        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files, dedicated tools are available for those operations."
     }
 
     fn schema(&self) -> Value {
@@ -30,6 +27,12 @@ impl Tool for BashTool {
                 "command": {
                     "type": "string",
                     "description": "Bash shell command to execute. Use only for builds, tests, Git, package managers, and CLI tooling. Never use for file reading, writing, searching, or path-finding — use the dedicated `read`, `write`, `edit`, `search`, and `find` tools instead. Returns combined stdout and stderr."
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in milliseconds for the command. Defaults to 120000 (2 minutes) if not provided. Values below 1000 are clamped up; maximum is 600000 (10 minutes).",
+                    "minimum": 1000,
+                    "maximum": MAX_COMMAND_TIMEOUT_MS
                 }
             },
             "required": ["command"]
@@ -43,12 +46,21 @@ impl Tool for BashTool {
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
+    let timeout_ms = super::arg_u64(args, "timeout")
+        .map(|v| v.clamp(1000, MAX_COMMAND_TIMEOUT_MS))
+        .unwrap_or(COMMAND_TIMEOUT_SECONDS * 1000);
+    let timeout = Duration::from_millis(timeout_ms);
+
+    // Create unnamed pipe pairs for stdout and stderr.
+    let (stdout_tx, stdout_rx) = super::create_pipe_pair("stdout")?;
+    let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
+
     let mut cmd = std::process::Command::new("bash");
     cmd.arg("-c")
         .arg(command)
         .current_dir(workspace)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdout(super::sender_to_stdio(stdout_tx))
+        .stderr(super::sender_to_stdio(stderr_tx));
 
     // Make the child the leader of a new process group so that, on timeout,
     // we can kill the entire group (bash + any grandchildren it spawned)
@@ -68,62 +80,13 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         .spawn()
         .map_err(|e| format!("Failed to execute command: {e}"))?;
 
-    let pid = child.id();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        let result = child.wait_with_output();
-        let _ = tx.send(result);
-    });
-
-    let output = match rx.recv_timeout(Duration::from_secs(BASH_TIMEOUT_SECONDS)) {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => return Err(format!("Failed to wait on command: {e}")),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            // Kill the whole process group (bash + children), then wait for
-            // the worker thread to finish so we don't leak a live thread that
-            // is still blocked on `wait_with_output`.
-            kill_process_group(pid);
-            let _ = handle.join();
-            return Err(format!("Command timed out after {BASH_TIMEOUT_SECONDS}s"));
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            // The worker thread ended without sending a result (e.g. it
-            // panicked). Make sure no process is left running.
-            kill_process_group(pid);
-            let _ = handle.join();
-            return Err("Command process terminated unexpectedly".to_string());
-        }
-    };
+    let output = wait_with_timeout(
+        child,
+        Some(stdout_rx),
+        Some(stderr_rx),
+        timeout,
+        true, // bash runs in its own process group → kill the whole group
+    )?;
 
     Ok(super::format_command_output(&output))
-}
-
-/// Kill the process group led by `pgid`.
-///
-/// On Unix the child is started with `process_group(0)`, making it the leader
-/// of a new process group whose ID equals the child's PID. Sending the signal
-/// to `-pgid` therefore kills the entire group, including any grandchildren
-/// the shell spawned — not just the bash process itself.
-///
-/// On Windows, `taskkill /F /T` forcibly terminates the process and its whole
-/// descendant tree.
-fn kill_process_group(pgid: u32) {
-    #[cfg(unix)]
-    {
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &format!("-{pgid}")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pgid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .status();
-    }
 }

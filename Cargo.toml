@@ -33,3 +33,4 @@ iced_aw = { version = "0.14.1", features = ["tab_bar"] }
 tinytemplate = "1.2.1"
 shell-words = "1.1.1"
 pulldown-cmark = "0.12"
+interprocess = "2"
