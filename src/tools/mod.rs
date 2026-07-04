@@ -1,6 +1,6 @@
 mod bash;
 mod custom;
-pub(crate) mod edit;
+pub mod edit;
 mod find;
 mod read;
 mod search;
@@ -17,7 +17,7 @@ use indexmap::IndexMap;
 use interprocess::unnamed_pipe;
 use serde_json::Value;
 
-pub(crate) use custom::ToolList;
+pub use custom::ToolList;
 
 // ── Tool trait ──────────────────────────────────────────────────────
 
@@ -318,7 +318,7 @@ fn convert_path_to_windows_style(path: &str) -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(native))
 }
 
-pub(crate) fn resolve_path(
+pub fn resolve_path(
     path: &str,
     workspace: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {
@@ -329,7 +329,7 @@ pub(crate) fn resolve_path(
 ///
 /// Canonicalizes the nearest existing ancestor, then appends the remaining
 /// (possibly non‑existent) tail components.
-pub(crate) fn resolve_path_partial(
+pub fn resolve_path_partial(
     path: &str,
     workspace: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {

@@ -10,13 +10,12 @@ mod session;
 mod settings;
 mod setup;
 mod system;
-mod tools;
 mod user;
 mod views;
 mod widgets;
 mod workspace;
 
-use crabot::HashSetExt;
+use crabot::{HashSetExt, tools};
 use futures::{SinkExt, future::FutureExt};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{row, text_editor};
@@ -183,6 +182,8 @@ pub(crate) enum Message {
     LoadSession(SessionEntry),
     SessionListLoaded(Vec<SessionEntry>),
     SendPrompt,
+    /// Result of the "empty workspace" confirmation dialog shown before sending.
+    EmptyWorkspaceConfirm(bool),
     ToggleTurnExpand(usize),
     ToggleDialogExpand(usize),
     StreamToolCall(ToolCall),
@@ -606,6 +607,31 @@ impl App {
                     return Task::none();
                 };
 
+                // If no workspace is set, ask the user whether to continue with
+                // the default `~/.crabot` workspace before sending the prompt.
+                if self.system_prompt.workspace.1.as_os_str().is_empty() {
+                    return window::oldest()
+                        .and_then(|id| {
+                            window::run(id, |window| {
+                                let default_path =
+                                    home::home_dir().unwrap_or_default().join(".crabot");
+                                rfd::MessageDialog::new()
+                                    .set_title("Empty Workspace")
+                                    .set_level(rfd::MessageLevel::Warning)
+                                    .set_buttons(rfd::MessageButtons::YesNo)
+                                    .set_description(&format!(
+                                        "Workspace path is empty. Continue with the default \
+                                         workspace?\n\n{}",
+                                        default_path.display()
+                                    ))
+                                    .set_parent(window)
+                                    .show()
+                                    == rfd::MessageDialogResult::Yes
+                            })
+                        })
+                        .map(Message::EmptyWorkspaceConfirm);
+                }
+
                 let title = Session::derive_title(&content);
                 self.center_pane_title = content.clone();
 
@@ -619,6 +645,15 @@ impl App {
                 self.session.push_turn(Turn::user(user_prompt.clone()));
 
                 return self.start_dialog(&model, Some(user_prompt));
+            }
+            Message::EmptyWorkspaceConfirm(confirmed) => {
+                if !confirmed {
+                    return Task::none();
+                }
+                let default_path = home::home_dir().unwrap_or_default().join(".crabot");
+                self.set_workspace(default_path);
+                // Re-enter the send-prompt flow now that a workspace is set.
+                return Task::done(Message::SendPrompt);
             }
             Message::ResendLastPrompt => {
                 if self.streaming != StreamState::Idle || self.center_pane_title == "New session" {
@@ -849,6 +884,7 @@ impl App {
         };
         self.session.model = Some(model_config.clone());
         self.session.workspace = self.system_prompt.workspace.1.clone();
+        self.session.save().ok();
         self.stream_start_index = self.session.total_turns();
         self.auto_scroll.store(true, Ordering::Relaxed);
 
@@ -1135,5 +1171,5 @@ fn load_agents_md(workspace: &std::path::Path) -> (bool, String) {
             return (true, content);
         }
     }
-    return (false, String::new());
+    (false, String::new())
 }

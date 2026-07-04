@@ -29,7 +29,7 @@ impl Tool for SearchTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory to search within (default: workspace root). If a directory, searches recursively."
+                    "description": "File or directory to search within, defaults to '.', i.e, search inside workspace. If path is directory, the search is recursive and depth-first, respects .gitignore rules."
                 }
             },
             "required": ["pattern"]
