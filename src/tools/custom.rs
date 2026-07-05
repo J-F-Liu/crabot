@@ -256,17 +256,11 @@ mod tests {
                     description: "Name of the Rust crate to find (e.g., 'bevy', 'serde', 'nalgebra')".to_string(),
                     required: true,
                 },
-                ToolParameter {
-                    name: "version".to_string(),
-                    kind: ParameterType::String,
-                    description: "Exact semver of the crate (e.g., '0.14.0')".to_string(),
-                    required: true,
-                },
             ],
-            command: "bash -c \"echo ~/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/{crate}-{version}\"".to_string(),
+            command: "bash -c \"version=$(cargo tree -i {crate} | sed -n '1s/^.* v//p') && echo ~/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/{crate}-\\$version\"".to_string(),
         };
 
-        let args = json!({"crate": "iced", "version": "0.14.0"});
+        let args = json!({"crate": "iced"});
         let result = crate_source.execute(&args, Path::new(".")).unwrap();
         println!("{}", result);
 
