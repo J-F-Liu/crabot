@@ -1,3 +1,24 @@
+# Crabot v0.3.0
+
+- User-defined **custom tools** via `~/.crabot/tools.ron` — CLI commands with TinyTemplate argument substitution and JSON Schema parameters, toggleable in the UI alongside built-in tools.
+- **Model tab bar** for one-click switching between configured models — replaces the dropdown with always-visible tabs.
+- **OpenAI strict mode** support for tool calling — models receive strict-mode-compatible JSON schemas when enabled in the provider config.
+- Bundled **default coding rules** (`rust.md`, `web.md`) for zero-config first boot, selectable from a dropdown picker.
+- **AGENTS.md auto-detection** — if an `AGENTS.md` file is present in the workspace, Crabot offers a checkbox to inject it into the system prompt.
+- **Bash tool per-call timeout** — configurable timeout parameter with more reliable process-group termination.
+- **Grouped tool calls** — multiple tool calls from a single assistant response now display as one collapsible turn group.
+- **Interrupt & resend** — send a new prompt while the agent is streaming; the current stream cancels and the new prompt starts immediately.
+- **Collapsible right pane** — drag below minimum width to hide, single-click the divider to restore. Divider handles now have hover feedback.
+- **Font size shortcuts** — `Ctrl +` / `Ctrl -` adjust the chat font size. A **monospace font** family improves code display.
+- **Session picker keyboard navigation** — arrow through and select sessions without the mouse.
+- **Thinner vertical scrollbars** — less obtrusive in all panes.
+- **Emoji shortcode fix** — `:emoji:` conversion now correctly skips inline code and fenced code blocks.
+- **Workspace fallback confirmation** — Crabot prompts before defaulting to `~/.crabot` when no workspace is set.
+- **Updated system preamble** with latest conventions and tool descriptions.
+- **GitHub Actions release CI** — releases are auto-created when a version tag is pushed.
+
+**Full Changelog**: [`v0.2.0...v0.3.0`](https://github.com/J-F-Liu/crabot/compare/v0.2.0...v0.3.0)
+
 # Crabot v0.2.0
 
 ## What's New
