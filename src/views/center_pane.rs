@@ -68,7 +68,8 @@ fn turn_count_badge(count: usize, font_scale: f32) -> Element<'static, Message> 
             count,
             if count == 1 { "" } else { "s" }
         ))
-        .size(10.0 * font_scale),
+        .size(10.0 * font_scale)
+        .center(),
     )
     .padding([2, 8])
     .style(|_theme: &Theme| container::Style {
@@ -364,6 +365,7 @@ pub(crate) fn center_pane<'a>(
     streaming: StreamState,
     selectable_msgs: &HashSet<usize>,
     font_scale: f32,
+    pending_user_prompt: Option<&'a str>,
 ) -> Element<'a, Message> {
     // Flatten dialogs into turns with a running flat index per dialog.
     let mut flat_idx: usize = 0;
@@ -390,21 +392,22 @@ pub(crate) fn center_pane<'a>(
                     ..Font::DEFAULT
                 }),
             ]
+            .width(Length::Fill)
             .spacing(8)
             .align_y(iced::Alignment::Center);
 
-            let mut header_row = row![title_row]
-                .spacing(10)
-                .align_y(iced::Alignment::Center)
-                .width(Fill);
-            if collapsed && turn_count > 0 {
-                header_row = header_row.push(Space::new().width(Length::Fill));
-                header_row = header_row.push(turn_count_badge(turn_count, font_scale));
-            }
-
-            let header = mouse_area(container(header_row).width(Fill).padding([8, 12]))
-                .on_press(Message::ToggleDialogExpand(di))
-                .interaction(iced::mouse::Interaction::Pointer);
+            let header = mouse_area(
+                container(
+                    row![title_row, turn_count_badge(turn_count, font_scale)]
+                        .spacing(10)
+                        .align_y(iced::Alignment::Center)
+                        .width(Fill),
+                )
+                .width(Fill)
+                .padding([8, 12]),
+            )
+            .on_press(Message::ToggleDialogExpand(di))
+            .interaction(iced::mouse::Interaction::Pointer);
 
             // ── turn blocks (only built when expanded) ────────────
             let turn_blocks: Vec<Element<'_, Message>> = if collapsed {
@@ -439,7 +442,8 @@ pub(crate) fn center_pane<'a>(
         .collect();
 
     container(column![
-        session_header(title, font_scale),
+        session_header(title),
+        pending_header(pending_user_prompt),
         scrollable(column(dialog_blocks).spacing(18).padding(14),)
             .height(Fill)
             .direction(thin_vertical())
@@ -457,39 +461,67 @@ pub(crate) fn center_pane<'a>(
 
 /// Header bar at the top of the center pane: prompt text or "New session",
 /// plus copy-to-clipboard and resend action icons on the far right.
-fn session_header<'a>(prompt: &'a str, font_scale: f32) -> Element<'a, Message> {
+fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
     use iced_selection::text::Style as SelectionStyle;
 
-    let header =
-        row![
-            container(SelectableText::new(prompt).size(14.0 * font_scale).style(
-                |theme: &Theme| {
+    let header = row![
+        container(
+            SelectableText::new(prompt)
+                .size(14.0)
+                .style(|theme: &Theme| {
                     let p = theme.extended_palette();
                     SelectionStyle {
                         color: Some(CRABOT_TEXT),
                         selection: p.primary.base.color,
                     }
-                }
-            ),)
-            .width(Length::Fill)
-            .clip(true),
-            button(text("▣").size(14.0 * font_scale))
-                .on_press(Message::CopySessionTitle)
-                .padding(6)
-                .style(icon_button_style),
-            button(text("↻").size(14.0 * font_scale))
-                .on_press(Message::ResendLastPrompt)
-                .padding(6)
-                .style(icon_button_style),
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
+                }),
+        )
+        .width(Length::Fill)
+        .clip(true),
+        button(text("▣").size(14.0))
+            .on_press(Message::CopySessionTitle)
+            .padding(6)
+            .style(icon_button_style),
+        button(text("↻").size(14.0))
+            .on_press(Message::ResendLastPrompt)
+            .padding(6)
+            .style(icon_button_style),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
 
-    container(header)
-        .width(Fill)
-        .padding([10, 14])
-        .style(bordered_bar_style)
+    header_container(
+        container(header)
+            .width(Fill)
+            .padding([10, 14])
+            .style(bordered_bar_style),
+        200.0,
+    )
+}
+
+/// Wraps content in a bordered container that scrolls vertically
+/// when its natural height exceeds `max_h`.
+fn header_container<'a>(
+    content: impl Into<Element<'a, Message>>,
+    max_h: f32,
+) -> Element<'a, Message> {
+    container(scrollable(content).height(Length::Shrink))
+        .max_height(max_h)
         .into()
+}
+
+/// Displays the pending prompt text with a muted style.
+fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, Message> {
+    let Some(prompt) = prompt else {
+        return row![].into();
+    };
+    header_container(
+        container(text(prompt).size(13.0).color(CRABOT_TEXT_MUTED))
+            .width(Fill)
+            .padding([6, 14])
+            .style(bordered_bar_style),
+        200.0,
+    )
 }
 
 // ── status line ───────────────────────────────────────────────────

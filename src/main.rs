@@ -28,6 +28,7 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
@@ -136,6 +137,10 @@ struct App {
     show_restart: bool,
     /// Cancellation token to stop an in-progress stream early.
     cancel_token: Arc<AtomicBool>,
+    /// Shared slot for a user prompt injected during streaming.
+    pending_user_prompt: Arc<Mutex<Option<String>>>,
+    /// UI-side mirror of `pending_user_prompt`, updated alongside it.
+    pending_prompt_display: Option<String>,
     /// Whether to auto-scroll the message view to the bottom during streaming.
     /// Set `true` when a new prompt is sent; `on_scroll` toggles it based on
     /// whether the user has manually scrolled away from or to the bottom.
@@ -190,6 +195,8 @@ pub(crate) enum Message {
     StreamContent(String),
     StreamReasoning(String),
     StreamToolResult(ToolResult),
+    /// A user prompt injected during streaming (consumed by `send_stream`).
+    StreamUserPrompt(String),
     TokenUsage(Option<genai::chat::Usage>),
     StreamDone(Vec<ChatMessage>),
     StreamError(String, Vec<ChatMessage>),
@@ -312,6 +319,8 @@ impl App {
             center_pane_title: "New session".into(),
             show_restart,
             cancel_token: Arc::new(AtomicBool::new(false)),
+            pending_user_prompt: Arc::new(Mutex::new(None)),
+            pending_prompt_display: None,
             auto_scroll: Arc::new(AtomicBool::new(true)),
             selectable_msgs: HashSet::new(),
             shift_held: false,
@@ -597,9 +606,21 @@ impl App {
             }
             Message::SendPrompt => {
                 let content = self.user_prompt.text();
-                if self.streaming != StreamState::Idle || content.trim().is_empty() {
+                if content.trim().is_empty() {
                     return Task::none();
                 }
+                let user_prompt = UserPrompt::new(self.workmode, content.clone()).get_prompt();
+                self.user_prompt.clear();
+
+                // During streaming: stash the prompt for the agent loop to pick up.
+                if self.streaming != StreamState::Idle {
+                    if let Ok(mut pending) = self.pending_user_prompt.lock() {
+                        *pending = Some(user_prompt.clone());
+                    }
+                    self.pending_prompt_display = Some(content);
+                    return Task::none();
+                }
+
                 let Some(model) = self
                     .provided_models
                     .get_config(&self.selected_model)
@@ -634,10 +655,7 @@ impl App {
                 }
 
                 let title = Session::derive_title(&content);
-                self.center_pane_title = content.clone();
-
-                let user_prompt = UserPrompt::new(self.workmode, content).get_prompt();
-                self.user_prompt.clear();
+                self.center_pane_title = content;
                 // Auto-collapse all previous dialogs; keep the new one expanded.
                 let new_dialog_idx = self.session.dialogs.len();
                 self.expanded_dialogs.clear();
@@ -711,6 +729,11 @@ impl App {
                 }
                 return self.maybe_scroll_to_end();
             }
+            Message::StreamUserPrompt(content) => {
+                self.session.push_turn(Turn::user(content));
+                self.pending_prompt_display = None;
+                return self.maybe_scroll_to_end();
+            }
             Message::TokenUsage(usage) => {
                 let u = usage.unwrap_or_default();
                 let tokens = TokenAmount::from_genai(&u);
@@ -750,6 +773,14 @@ impl App {
             }
             Message::StreamCancelled(genai_messages) => {
                 self.streaming = StreamState::Idle;
+                // Put any pending prompt back into the textarea so the user doesn't lose what they typed.
+                if let Ok(mut pending) = self.pending_user_prompt.lock()
+                    && let Some(prompt) = pending.take()
+                {
+                    let raw = UserPrompt::strip_mode_tag(&prompt);
+                    self.user_prompt.set_text(raw);
+                }
+                self.pending_prompt_display = None;
                 // Preserve partial assistant/tool messages in history so
                 // subsequent requests still carry valid context.
                 self.session.history.extend(genai_messages);
@@ -878,6 +909,11 @@ impl App {
         self.session.model = Some(model_config.clone());
         self.session.workspace = self.system_prompt.workspace.1.clone();
         self.session.save().ok();
+        // Clear any stale pending prompt from a previous stream.
+        if let Ok(mut pending) = self.pending_user_prompt.lock() {
+            *pending = None;
+        }
+        self.pending_prompt_display = None;
         self.stream_start_index = self.session.total_turns();
         self.auto_scroll.store(true, Ordering::Relaxed);
 
@@ -887,6 +923,7 @@ impl App {
             system_prompt: self.system_prompt.get_prompt(),
             user_prompt,
             tools: tools::enabled_tools(&self.enabled_tools),
+            pending_user_prompt: self.pending_user_prompt.clone(),
         };
 
         let history = self.session.history.clone();
@@ -1083,6 +1120,7 @@ impl App {
                 self.streaming,
                 &self.selectable_msgs,
                 self.font_scale,
+                self.pending_prompt_display.as_deref(),
             ),
             divider(&self.right_divider),
             right_pane(

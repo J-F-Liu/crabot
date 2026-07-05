@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
@@ -34,6 +34,8 @@ pub struct SendConfig {
     pub system_prompt: String,
     pub user_prompt: Option<String>,
     pub tools: Vec<ToolRef>,
+    /// Shared slot for a user prompt injected during streaming (tool execution / thinking).
+    pub pending_user_prompt: Arc<Mutex<Option<String>>>,
 }
 
 /// Stream an LLM interaction with tool-execution loop.
@@ -55,6 +57,7 @@ pub async fn send_stream(
         system_prompt,
         user_prompt,
         tools,
+        pending_user_prompt,
     } = config;
 
     let client = build_client(&model.base_url, &model.api_key, &model.api_type);
@@ -69,7 +72,7 @@ pub async fn send_stream(
     let mut genai_messages: Vec<ChatMessage> = Vec::new();
     if let Some(prompt) = &user_prompt {
         let user_msg = ChatMessage::user(prompt);
-        chat_req = chat_req.append_message(user_msg.clone());
+        chat_req.messages.push(user_msg.clone());
         genai_messages.push(user_msg);
     }
 
@@ -93,6 +96,28 @@ pub async fn send_stream(
 
     // Agent loop: keep calling the LLM until it responds without tool calls.
     let mut finished = false;
+
+    /// Check for and inject a user prompt stashed during streaming.
+    async fn inject_user_prompt(
+        pending: &Mutex<Option<String>>,
+        chat_req: &mut ChatRequest,
+        genai_messages: &mut Vec<ChatMessage>,
+        on_event: &mut (
+                 dyn FnMut(crate::Message) -> futures::future::BoxFuture<'static, bool> + Send
+             ),
+    ) -> Option<bool> {
+        let prompt = pending.lock().unwrap().take()?;
+        let user_msg = ChatMessage::user(prompt.clone());
+        chat_req.messages.push(user_msg.clone());
+        genai_messages.push(user_msg);
+        if !on_event(crate::Message::StreamUserPrompt(prompt)).await {
+            let drained = std::mem::take(genai_messages);
+            on_event(crate::Message::StreamCancelled(drained)).await;
+            return Some(false);
+        }
+        Some(true)
+    }
+
     for _ in 0..MAX_ITERATIONS {
         // Signal that we're connecting to the LLM.
         on_event(crate::Message::StreamStateChange(StreamState::LlmLoading)).await;
@@ -177,6 +202,19 @@ pub async fn send_stream(
         genai_messages.push(assistant_msg);
 
         if tool_calls.is_empty() {
+            // Check for a user prompt sent during LlmLoading / LlmThinking.
+            let result = inject_user_prompt(
+                &pending_user_prompt,
+                &mut chat_req,
+                &mut genai_messages,
+                on_event,
+            )
+            .await;
+            match result {
+                Some(true) => continue,
+                Some(false) => return,
+                None => {}
+            }
             // Final assistant response — no more tool calls.
             finished = true;
             break;
@@ -252,6 +290,18 @@ pub async fn send_stream(
         // Append tool responses to the request and genai history.
         chat_req = chat_req.append_message(tool_responses.clone());
         genai_messages.push(ChatMessage::from(tool_responses));
+
+        // Inject any user prompt sent during tool execution.
+        let result = inject_user_prompt(
+            &pending_user_prompt,
+            &mut chat_req,
+            &mut genai_messages,
+            on_event,
+        )
+        .await;
+        if let Some(false) = result {
+            return;
+        }
     }
 
     if finished {

@@ -137,6 +137,13 @@ impl TextArea {
         self.redo_stack.clear();
     }
 
+    /// Replaces all text content and resets the undo/redo history.
+    pub fn set_text(&mut self, text: &str) {
+        self.content = text_editor::Content::with_text(text);
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
     // ── private helpers ────────────────────────────────────────────────
 
     fn perform(&mut self, action: text_editor::Action) {

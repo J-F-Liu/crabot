@@ -33,4 +33,12 @@ impl UserPrompt {
         prompt.push_str(&format!("{}\n", &self.content));
         prompt
     }
+
+    /// Strip the leading `<work-mode>…</work-mode>\n` tag
+    pub fn strip_mode_tag(prompt: &str) -> &str {
+        prompt
+            .find("</work-mode>\n")
+            .map(|idx| &prompt[idx + "</work-mode>\n".len()..])
+            .unwrap_or(prompt)
+    }
 }

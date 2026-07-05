@@ -165,12 +165,7 @@ impl Session {
                 ChatRole::System => {}
                 ChatRole::User => {
                     let text = msg.content.joined_texts().unwrap_or_default();
-                    // Strip the leading <work-mode>…</work-mode>\n tag so the
-                    // title reflects the actual user message, not the mode annotation.
-                    let text_for_title = text
-                        .find("</work-mode>\n")
-                        .map(|idx| &text[idx + "</work-mode>\n".len()..])
-                        .unwrap_or(&text);
+                    let text_for_title = crate::user::UserPrompt::strip_mode_tag(&text);
                     let title = Self::derive_title(text_for_title);
                     let turn = Turn::user(text);
                     dialogs.push(Dialog {
