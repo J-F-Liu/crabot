@@ -156,6 +156,8 @@ struct App {
     /// Which widget currently holds keyboard focus; `None` when no editable
     /// widget is focused. Setting this implicitly clears focus on all others.
     focused: Option<FocusedTarget>,
+    /// Whether to show the in-app empty-workspace confirmation dialog.
+    show_workspace_dialog: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -188,7 +190,7 @@ pub(crate) enum Message {
     SessionListLoaded(Vec<SessionEntry>),
     SendPrompt,
     /// Result of the "empty workspace" confirmation dialog shown before sending.
-    EmptyWorkspaceConfirm(bool),
+    EmptyWorkspaceConfirm(Option<PathBuf>),
     ToggleTurnExpand(usize, usize),
     ToggleDialogExpand(usize),
     StreamToolCalls(Vec<ToolCall>),
@@ -326,6 +328,7 @@ impl App {
             shift_held: false,
             font_scale: saved.font_scale,
             focused: None,
+            show_workspace_dialog: false,
         };
         let session_task = app.refresh_session_list();
         (app, session_task)
@@ -479,11 +482,12 @@ impl App {
                 self.set_workspace(entry.path);
                 return self.refresh_session_list();
             }
-            Message::WorkspaceDialogResult(Some(path)) => {
-                self.set_workspace(path);
-                return self.refresh_session_list();
+            Message::WorkspaceDialogResult(path) => {
+                if let Some(path) = path {
+                    self.set_workspace(path);
+                    return self.refresh_session_list();
+                }
             }
-            Message::WorkspaceDialogResult(None) => {}
             Message::SelectPreamble(entry) => {
                 return Self::select_prompt_file(
                     entry,
@@ -609,17 +613,6 @@ impl App {
                 if content.trim().is_empty() {
                     return Task::none();
                 }
-                let user_prompt = UserPrompt::new(self.workmode, content.clone()).get_prompt();
-                self.user_prompt.clear();
-
-                // During streaming: stash the prompt for the agent loop to pick up.
-                if self.streaming != StreamState::Idle {
-                    if let Ok(mut pending) = self.pending_user_prompt.lock() {
-                        *pending = Some(user_prompt.clone());
-                    }
-                    self.pending_prompt_display = Some(content);
-                    return Task::none();
-                }
 
                 let Some(model) = self
                     .provided_models
@@ -632,26 +625,20 @@ impl App {
                 // If no workspace is set, ask the user whether to continue with
                 // the default `~/.crabot` workspace before sending the prompt.
                 if self.system_prompt.workspace.1.as_os_str().is_empty() {
-                    return window::oldest()
-                        .and_then(|id| {
-                            window::run(id, |window| {
-                                let default_path =
-                                    home::home_dir().unwrap_or_default().join(".crabot");
-                                rfd::MessageDialog::new()
-                                    .set_title("Empty Workspace")
-                                    .set_level(rfd::MessageLevel::Warning)
-                                    .set_buttons(rfd::MessageButtons::YesNo)
-                                    .set_description(format!(
-                                        "Workspace path is empty. Continue with the default \
-                                         workspace?\n\n{}",
-                                        default_path.display()
-                                    ))
-                                    .set_parent(window)
-                                    .show()
-                                    == rfd::MessageDialogResult::Yes
-                            })
-                        })
-                        .map(Message::EmptyWorkspaceConfirm);
+                    self.show_workspace_dialog = true;
+                    return Task::none();
+                }
+
+                let user_prompt = UserPrompt::new(self.workmode, content.clone()).get_prompt();
+                self.user_prompt.clear();
+
+                // During streaming: stash the prompt for the agent loop to pick up.
+                if self.streaming != StreamState::Idle {
+                    if let Ok(mut pending) = self.pending_user_prompt.lock() {
+                        *pending = Some(user_prompt.clone());
+                    }
+                    self.pending_prompt_display = Some(content);
+                    return Task::none();
                 }
 
                 let title = Session::derive_title(&content);
@@ -665,12 +652,12 @@ impl App {
 
                 return self.start_dialog(&model, Some(user_prompt));
             }
-            Message::EmptyWorkspaceConfirm(confirmed) => {
-                if !confirmed {
+            Message::EmptyWorkspaceConfirm(path) => {
+                self.show_workspace_dialog = false;
+                let Some(path) = path else {
                     return Task::none();
-                }
-                let default_path = home::home_dir().unwrap_or_default().join(".crabot");
-                self.set_workspace(default_path);
+                };
+                self.set_workspace(path);
                 // Re-enter the send-prompt flow now that a workspace is set.
                 return Task::done(Message::SendPrompt);
             }
@@ -1083,7 +1070,7 @@ impl App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        row![
+        let main_content: Element<_> = row![
             left_pane(
                 self.left_pane_width,
                 &self.provided_models,
@@ -1134,7 +1121,13 @@ impl App {
             ),
         ]
         .spacing(0)
-        .into()
+        .into();
+
+        if self.show_workspace_dialog {
+            iced::widget::stack![main_content, views::workspace_modal()].into()
+        } else {
+            main_content
+        }
     }
 
     fn subscription(_state: &Self) -> Subscription<Message> {

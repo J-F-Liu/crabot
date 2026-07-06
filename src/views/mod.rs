@@ -1,5 +1,6 @@
 pub mod center_pane;
 pub mod left_pane;
+pub mod modal;
 pub mod model_config;
 pub mod right_pane;
 pub mod session_view;
@@ -18,6 +19,7 @@ pub(crate) use styles::{
 // Re-export the pane constructors and helpers used by `App::view` / `App::update`.
 pub(crate) use center_pane::{center_pane, scroll_to_end};
 pub(crate) use left_pane::left_pane;
+pub(crate) use modal::workspace_modal;
 pub(crate) use right_pane::right_pane;
 pub(crate) use styles::DividerState;
 pub(crate) use styles::divider;
