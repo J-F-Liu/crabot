@@ -26,6 +26,13 @@ pub(crate) const CRABOT_TOOL_CONTENT_BORDER: Color = Color::from_rgb8(0xF4, 0xF0
 pub(crate) const CRABOT_SUCCESS: Color = Color::from_rgb8(0x2E, 0xB6, 0x7F);
 pub(crate) const CRABOT_DANGER: Color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
 
+// ── dialog / modal constants ──────────────────────────────────────
+
+pub(crate) const CRABOT_DIALOG_BG: Color = Color::WHITE;
+pub(crate) const CRABOT_DIALOG_RADIUS: f32 = 10.0;
+/// Semi-transparent scrim drawn behind in-app modal dialogs.
+pub(crate) const CRABOT_MODAL_SCRIM: Color = Color::from_rgba(0.0, 0.0, 0.0, 0.5);
+
 pub(crate) fn crabot_palette() -> iced::theme::Palette {
     iced::theme::Palette {
         background: CRABOT_BG,

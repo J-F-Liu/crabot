@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use include_dir::{Dir, include_dir};
 
 static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
@@ -10,9 +12,14 @@ pub fn default_models() -> &'static str {
         .unwrap_or("")
 }
 
+/// The default workspace path (`~/.crabot`) used when no workspace is set.
+pub(crate) fn default_workspace_path() -> PathBuf {
+    home::home_dir().unwrap_or_default().join(".crabot")
+}
+
 /// On first boot, seed `~/.crabot/` with compiled-in default assets.
 pub fn ensure_default_files() {
-    let crabot_dir = home::home_dir().unwrap_or_default().join(".crabot");
+    let crabot_dir = default_workspace_path();
 
     let preamble_dir = crabot_dir.join("preamble");
     if !preamble_dir.is_dir() {

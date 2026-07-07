@@ -12,8 +12,8 @@ use super::styles::{
     sel_secondary, tool_bubble_style, user_bubble_style,
 };
 use super::theme::{
-    CRABOT_BORDER, CRABOT_PRIMARY, CRABOT_TEXT, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text,
-    thin_vertical,
+    CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_TEXT,
+    CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text, thin_vertical,
 };
 use super::tool_message::{args_rows, path_arg_row, result_text};
 use crate::Message;
@@ -33,16 +33,13 @@ pub(crate) fn scroll_to_end() -> Task<Message> {
 
 // ── dialog styles ─────────────────────────────────────────────────
 
-const DIALOG_BG: Color = Color::WHITE;
-const DIALOG_RADIUS: f32 = 10.0;
-
 fn dialog_container_style(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(DIALOG_BG.into()),
+        background: Some(CRABOT_DIALOG_BG.into()),
         border: Border {
             color: Color::TRANSPARENT,
             width: 0.0,
-            radius: DIALOG_RADIUS.into(),
+            radius: CRABOT_DIALOG_RADIUS.into(),
         },
         ..container::Style::default()
     }

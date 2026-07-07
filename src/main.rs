@@ -158,6 +158,8 @@ struct App {
     focused: Option<FocusedTarget>,
     /// Whether to show the in-app empty-workspace confirmation dialog.
     show_workspace_dialog: bool,
+    /// Cached default workspace path shown in the confirmation dialog.
+    default_workspace_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +331,7 @@ impl App {
             font_scale: saved.font_scale,
             focused: None,
             show_workspace_dialog: false,
+            default_workspace_path: setup::default_workspace_path(),
         };
         let session_task = app.refresh_session_list();
         (app, session_task)
@@ -1124,7 +1127,11 @@ impl App {
         .into();
 
         if self.show_workspace_dialog {
-            iced::widget::stack![main_content, views::workspace_modal()].into()
+            iced::widget::stack![
+                main_content,
+                views::workspace_modal(&self.default_workspace_path)
+            ]
+            .into()
         } else {
             main_content
         }

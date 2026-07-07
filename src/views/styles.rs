@@ -89,6 +89,34 @@ pub(crate) fn primary_button(_theme: &Theme, status: button::Status) -> button::
     }
 }
 
+/// Neutral / secondary button style — light surface background with a border.
+pub(crate) fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: Some(CRABOT_SURFACE.into()),
+        text_color: CRABOT_TEXT,
+        border: iced::Border::default()
+            .rounded(6)
+            .width(1)
+            .color(CRABOT_BORDER),
+        ..button::Style::default()
+    };
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(Color::from_rgb8(0xD8, 0xD8, 0xD8).into()),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Color::from_rgb8(0xC8, 0xC8, 0xC8).into()),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            background: Some(CRABOT_SURFACE.scale_alpha(0.5).into()),
+            ..base
+        },
+    }
+}
+
 pub(crate) fn primary_toggler(_theme: &Theme, status: toggler::Status) -> toggler::Style {
     let base = toggler::Style {
         background: CRABOT_SURFACE.into(),
