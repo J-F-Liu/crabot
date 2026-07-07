@@ -8,11 +8,11 @@ use super::model_config::model_config_view;
 use super::session_view::session_view;
 use super::styles::{label, pane_side};
 use super::system_prompt::{
-    agents_md_field_view, date_field_view, file_picker_field_view, files_field_view,
-    tools_field_view, workspace_field_view,
+    PromptSectionState, agents_md_field_view, date_field_view, file_picker_field_view,
+    files_field_view, tools_field_view, workspace_field_view,
 };
 use super::theme::thin_vertical;
-use super::tool_list::tools_section;
+use super::tool_list::{BUILTIN_TOOLS, CUSTOM_TOOLS, ToolListState, tools_section};
 use super::user_prompt::user_prompt_view;
 use crate::Message;
 use crate::llm::StreamState;
@@ -31,8 +31,8 @@ pub(crate) fn left_pane<'a>(
     selected_model: &'a String,
     system_prompt: &'a SystemPrompt,
     agents_md_exists: bool,
-    tools_expanded: bool,
-    files_expanded: bool,
+    prompt_section_state: &'a PromptSectionState,
+    tool_list_state: &'a ToolListState,
     selected_preamble: &'a str,
     preamble_options: &'a [FilepathEntry],
     selected_rules: &'a str,
@@ -74,16 +74,34 @@ pub(crate) fn left_pane<'a>(
             selected_rules,
             Message::SelectRules,
         ),
-        tools_field_view(tools_expanded, &system_prompt.tools, tools_content),
+        tools_field_view(
+            prompt_section_state.tools_expanded,
+            &system_prompt.tools,
+            tools_content,
+        ),
         workspace_field_view(&system_prompt.workspace, workspace_options),
         agents_md,
-        files_field_view(files_expanded, &system_prompt.files, files_content),
+        files_field_view(
+            prompt_section_state.files_expanded,
+            &system_prompt.files,
+            files_content,
+        ),
         date_field_view(&system_prompt.date),
         session_view(streaming, session_options, current_session_id),
         label("User Prompt", 140.0),
         user_prompt_view(user_prompt, workmode),
-        tools_section("Builtin Tools", enabled_tools, builtin_tool_names),
-        tools_section("Custom Tools", enabled_tools, custom_tool_names),
+        tools_section(
+            BUILTIN_TOOLS,
+            tool_list_state.builtin_expanded,
+            enabled_tools,
+            builtin_tool_names,
+        ),
+        tools_section(
+            CUSTOM_TOOLS,
+            tool_list_state.custom_expanded,
+            enabled_tools,
+            custom_tool_names,
+        ),
     ];
 
     let col = column(children).spacing(8);

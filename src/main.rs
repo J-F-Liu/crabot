@@ -40,7 +40,9 @@ use system::{FilepathEntry, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
 use views::session_view::SessionEntry;
+use views::system_prompt::PromptSectionState;
 use views::theme::{HANDLE, MIN_W, default_theme};
+use views::tool_list::ToolListState;
 use views::{DividerState, center_pane, divider, left_pane, right_pane, scroll_to_end};
 use widgets::textarea::{self, TextArea};
 
@@ -99,8 +101,8 @@ struct App {
     selected_model: String,
     theme: Theme,
     system_prompt: SystemPrompt,
-    tools_expanded: bool,
-    files_expanded: bool,
+    prompt_section_state: PromptSectionState,
+    tool_list_state: ToolListState,
     selected_preamble: String,
     preamble_options: Vec<FilepathEntry>,
     selected_rules: String,
@@ -304,8 +306,8 @@ impl App {
             selected_rules: saved.selected_rules,
             workspace_options: views::build_workspace_options(&saved.recent_workspaces),
             agents_md_exists,
-            tools_expanded: false,
-            files_expanded: false,
+            prompt_section_state: PromptSectionState::default(),
+            tool_list_state: ToolListState::default(),
             files_content,
             tools_content,
             enabled_tools,
@@ -428,11 +430,11 @@ impl App {
                     self.tools_content = text_editor::Content::with_text(&summary);
                 }
             }
-            Message::ToggleExpanded(name) => match name {
-                TOOLS => self.tools_expanded = !self.tools_expanded,
-                WORKSPACE_TREE => self.files_expanded = !self.files_expanded,
-                _ => {}
-            },
+            Message::ToggleExpanded(name) => {
+                if !self.prompt_section_state.update(name) {
+                    self.tool_list_state.update(name);
+                }
+            }
             Message::EditTextField(name, value) => {
                 if let Some(field) = self.system_prompt.get_mut(name) {
                     field.1 = value;
@@ -1081,8 +1083,8 @@ impl App {
                 &self.selected_model,
                 &self.system_prompt,
                 self.agents_md_exists,
-                self.tools_expanded,
-                self.files_expanded,
+                &self.prompt_section_state,
+                &self.tool_list_state,
                 &self.selected_preamble,
                 &self.preamble_options,
                 &self.selected_rules,

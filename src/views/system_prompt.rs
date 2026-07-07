@@ -13,6 +13,30 @@ use super::theme::thin_vertical;
 
 use std::path::PathBuf;
 
+/// Collapse/expand state for the expandable sections in the system prompt
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PromptSectionState {
+    pub tools_expanded: bool,
+    pub files_expanded: bool,
+}
+
+impl PromptSectionState {
+    /// Handle a `ToggleExpanded` message for prompt section titles.
+    pub(crate) fn update(&mut self, name: &str) -> bool {
+        match name {
+            TOOLS => {
+                self.tools_expanded = !self.tools_expanded;
+                true
+            }
+            WORKSPACE_TREE => {
+                self.files_expanded = !self.files_expanded;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 // ── internal helper ──────────────────────────────────────────────────
 
 fn expandable_header<'a>(
