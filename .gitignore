@@ -2,5 +2,7 @@
 /tmp
 /.agent
 /.reasonix
+/tests
+ops.txt
 reasonix.toml
 nul
