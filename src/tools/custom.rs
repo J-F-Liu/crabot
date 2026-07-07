@@ -257,12 +257,12 @@ mod tests {
                     required: true,
                 },
             ],
-            command: "bash -c \"version=$(cargo tree -i {crate} | sed -n '1s/^.* v//p') && echo ~/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/{crate}-\\$version\"".to_string(),
+            command: "bash -c \"registry=$(ls -1dt ~/.cargo/registry/src/* | head -n1);crate=$(cargo tree -i {crate} | sed -n '1s/ v/-/p');echo \\$registry/\\$crate\"".to_string(),
         };
 
         let args = json!({"crate": "iced"});
         let result = crate_source.execute(&args, Path::new(".")).unwrap();
-        println!("{}", result);
+        println!("{:?}", result);
 
         let schema = crate_source.schema();
         println!("{}", schema);
@@ -270,12 +270,9 @@ mod tests {
         let tools = ToolList {
             custom_tools: vec![crate_source],
         };
-        let tmp = Path::new("tmp");
-        if !tmp.is_dir() {
-            std::fs::create_dir(tmp).unwrap()
-        };
+        let assets = Path::new("assets");
         let text = ron::ser::to_string_pretty(&tools, ron::ser::PrettyConfig::default()).unwrap();
-        std::fs::write(tmp.join("tools.ron"), text).unwrap();
-        println!("Saved tools to {}", tmp.display());
+        std::fs::write(assets.join("tools.ron"), text).unwrap();
+        println!("Saved tools to {}", assets.display());
     }
 }

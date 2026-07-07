@@ -36,4 +36,12 @@ pub fn ensure_default_files() {
             let _ = rules.extract(&crabot_dir);
         }
     }
+
+    let tools_file = crabot_dir.join("tools.ron");
+    if !tools_file.is_file() {
+        let _ = std::fs::create_dir_all(&crabot_dir);
+        if let Some(file) = ASSETS.get_file("tools.ron") {
+            let _ = std::fs::write(&tools_file, file.contents());
+        }
+    }
 }
