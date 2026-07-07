@@ -106,11 +106,11 @@ pub fn tools_summary(all_tools: &[crate::tools::ToolRef]) -> String {
     result.push_str("<available-tools>\n");
 
     for tool in all_tools {
-        result.push_str(&format!(
-            "<tool name=\"{}\">{}</tool>\n",
-            tool.name(),
-            tool.instruction()
-        ));
+        let inst = tool.instruction();
+        if inst.is_empty() {
+            continue;
+        }
+        result.push_str(&format!("<tool name=\"{}\">{}</tool>\n", tool.name(), inst));
     }
 
     result.push_str("</available-tools>\n");

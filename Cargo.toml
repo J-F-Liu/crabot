@@ -38,3 +38,9 @@ shell-words = "1.1.1"
 pulldown-cmark = "0.12"
 interprocess = "2"
 include_dir = "0.7.4"
+rmcp = { version = "2", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client",
+    "transport-streamable-http-client-reqwest",
+] }

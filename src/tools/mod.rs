@@ -2,6 +2,7 @@ mod bash;
 mod custom;
 pub mod edit;
 mod find;
+pub mod mcp;
 mod read;
 mod search;
 mod write;
@@ -103,6 +104,13 @@ fn process_strict(value: &mut Value) {
                 }
             }
         }
+
+        // Change to string type to accept arbitrary key-value data in strict mode.
+        if !obj.contains_key("properties")
+            && let Some(type_val) = obj.get_mut("type")
+        {
+            *type_val = Value::String("string".into());
+        }
     }
 
     // Recurse into every child value
@@ -120,7 +128,9 @@ fn make_nullable(value: &mut Value) {
 
     if let Some(type_val) = obj.get_mut("type") {
         match type_val {
-            Value::String(s) if s != "null" => {
+            Value::String(s)
+                if ["string", "number", "integer", "boolean"].contains(&s.as_str()) =>
+            {
                 *type_val =
                     Value::Array(vec![Value::String(s.clone()), Value::String("null".into())]);
             }
@@ -164,9 +174,19 @@ static BUILTIN_TOOLS: LazyLock<IndexMap<&'static str, ToolRef>> = LazyLock::new(
 /// Dynamic registry of user-defined custom tools, populated at startup.
 static CUSTOM_TOOLS: LazyLock<RwLock<Vec<ToolRef>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
+/// Dynamic registry of MCP-discovered tools, populated at startup.
+static MCP_TOOLS: LazyLock<RwLock<Vec<ToolRef>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+
 /// Replace the current set of custom tools in the global registry.
 pub fn register_custom_tools(tools: Vec<ToolRef>) {
     if let Ok(mut guard) = CUSTOM_TOOLS.write() {
+        *guard = tools;
+    }
+}
+
+/// Replace the current set of MCP-discovered tools in the global registry.
+pub fn register_mcp_tools(tools: Vec<ToolRef>) {
+    if let Ok(mut guard) = MCP_TOOLS.write() {
         *guard = tools;
     }
 }
@@ -179,18 +199,6 @@ pub fn builtin_tools() -> &'static IndexMap<&'static str, ToolRef> {
 /// Return the names of all built-in tools.
 pub fn builtin_tool_names() -> Vec<String> {
     BUILTIN_TOOLS.keys().map(|k| k.to_string()).collect()
-}
-
-/// Look up a tool by name (searches built-in first, then custom).
-pub fn find_tool(name: &str) -> Option<ToolRef> {
-    BUILTIN_TOOLS.get(name).cloned().or_else(|| {
-        CUSTOM_TOOLS
-            .read()
-            .ok()?
-            .iter()
-            .find(|t| t.name() == name)
-            .cloned()
-    })
 }
 
 pub fn enabled_tools(enabled: &HashSet<String>) -> Vec<ToolRef> {
@@ -213,7 +221,23 @@ pub fn enabled_tools(enabled: &HashSet<String>) -> Vec<ToolRef> {
         }
     }
 
+    if let Ok(mcp) = MCP_TOOLS.read() {
+        for t in mcp.iter() {
+            if enabled.contains(t.name()) {
+                tools.push(Arc::clone(t));
+            }
+        }
+    }
+
     tools
+}
+
+/// Return names of all MCP-discovered tools.
+pub fn mcp_tool_names() -> Vec<String> {
+    MCP_TOOLS
+        .read()
+        .map(|guard| guard.iter().map(|t| t.name().to_string()).collect())
+        .unwrap_or_default()
 }
 
 /// Build the genai tools list from the enabled set.

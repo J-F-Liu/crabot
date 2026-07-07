@@ -1,0 +1,10 @@
+(
+    servers: [
+        (
+            name: "codebase-memory-mcp",
+            transport: Stdio("D:/Software/codebase-memory-mcp-ui-windows-amd64/codebase-memory-mcp.exe"),
+            qualify_tool_names: false,
+            env: {},
+        ),
+    ],
+)

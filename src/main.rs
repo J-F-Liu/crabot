@@ -16,12 +16,14 @@ mod widgets;
 mod workspace;
 
 use crabot::{HashSetExt, tools};
+
 use futures::{SinkExt, future::FutureExt};
 use iced::widget::scrollable::Viewport;
 use iced::widget::{row, text_editor};
 use iced::{
     Element, Event, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window,
 };
+use indexmap::IndexMap;
 use llm::StreamState;
 use std::collections::HashSet;
 use std::env;
@@ -115,7 +117,10 @@ struct App {
     tools_content: text_editor::Content,
     enabled_tools: HashSet<String>,
     custom_tool_names: Vec<String>,
+    mcp_tool_names: Vec<String>,
     builtin_tool_names: Vec<String>,
+    /// Snapshot of saved agent-tool enable states.
+    saved_agent_tools: IndexMap<String, bool>,
     user_prompt: TextArea,
     workmode: WorkMode,
     session: Session,
@@ -164,7 +169,7 @@ struct App {
     default_workspace_path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) enum Message {
     CursorMoved(Point),
     LeftPressed,
@@ -182,6 +187,8 @@ pub(crate) enum Message {
     SelectRules(FilepathEntry),
     RulesFileResult(Result<String, String>),
     ToggleAgentTool(String, bool),
+    /// MCP tools discovered from configured servers.
+    McpToolsDiscovered(Vec<crabot::tools::ToolRef>),
     /// An edit action targeting a specific [`TextArea`].
     /// The [`FocusedTarget`] identifies which text area should receive the action.
     EditTextArea(FocusedTarget, textarea::Message),
@@ -250,6 +257,8 @@ impl App {
         let custom_tool_list = tools::ToolList::load();
         tools::register_custom_tools(custom_tool_list.build_tools());
 
+        let mcp_list = tools::mcp::McpList::load();
+
         let enabled_tools: HashSet<String> = tools::builtin_tool_names()
             .into_iter()
             .chain(custom_tool_list.names())
@@ -312,7 +321,9 @@ impl App {
             tools_content,
             enabled_tools,
             custom_tool_names: custom_tool_list.names(),
+            mcp_tool_names: Vec::new(),
             builtin_tool_names: tools::builtin_tool_names(),
+            saved_agent_tools: saved.agent_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
             session: Session::new(),
@@ -336,7 +347,16 @@ impl App {
             default_workspace_path: setup::default_workspace_path(),
         };
         let session_task = app.refresh_session_list();
-        (app, session_task)
+        let mcp_servers = mcp_list.servers.clone();
+        let discover_task = if mcp_servers.is_empty() {
+            Task::none()
+        } else {
+            Task::perform(
+                async move { tools::mcp::discover_mcp_tools(mcp_servers).await },
+                Message::McpToolsDiscovered,
+            )
+        };
+        (app, session_task.chain(discover_task))
     }
 
     fn update(&mut self, msg: Message) -> Task<Message> {
@@ -423,12 +443,23 @@ impl App {
                 }
             }
             Message::ToggleAgentTool(tool_name, enabled) => {
-                if tools::find_tool(&tool_name).is_some() {
-                    self.enabled_tools.set(tool_name, enabled);
-                    let summary = system::tools_summary(&tools::enabled_tools(&self.enabled_tools));
-                    self.system_prompt.tools.1 = summary.clone();
-                    self.tools_content = text_editor::Content::with_text(&summary);
+                self.enabled_tools.set(tool_name, enabled);
+                let summary = system::tools_summary(&tools::enabled_tools(&self.enabled_tools));
+                self.system_prompt.tools.1 = summary.clone();
+                self.tools_content = text_editor::Content::with_text(&summary);
+            }
+            Message::McpToolsDiscovered(tools) => {
+                // Store names and register tools in the global MCP registry.
+                self.mcp_tool_names = tools.iter().map(|t| t.name().to_string()).collect();
+                for name in &self.mcp_tool_names {
+                    if self.saved_agent_tools.get(name).copied().unwrap_or(false) {
+                        self.enabled_tools.insert(name.clone());
+                    }
                 }
+                tools::register_mcp_tools(tools);
+                let summary = system::tools_summary(&tools::enabled_tools(&self.enabled_tools));
+                self.system_prompt.tools.1 = summary.clone();
+                self.tools_content = text_editor::Content::with_text(&summary);
             }
             Message::ToggleExpanded(name) => {
                 if !self.prompt_section_state.update(name) {
@@ -1000,6 +1031,7 @@ impl App {
             agent_tools: tools::builtin_tool_names()
                 .into_iter()
                 .chain(self.custom_tool_names.iter().cloned())
+                .chain(self.mcp_tool_names.iter().cloned())
                 .map(|name| {
                     let enabled = self.enabled_tools.contains(&name);
                     (name, enabled)
@@ -1095,6 +1127,7 @@ impl App {
                 &self.enabled_tools,
                 &self.builtin_tool_names,
                 &self.custom_tool_names,
+                &self.mcp_tool_names,
                 &self.user_prompt,
                 self.workmode,
                 self.streaming,

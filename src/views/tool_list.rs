@@ -9,12 +9,14 @@ use crate::Message;
 
 pub const BUILTIN_TOOLS: &str = "Builtin Tools";
 pub const CUSTOM_TOOLS: &str = "Custom Tools";
+pub const MCP_TOOLS: &str = "MCP Tools";
 
 /// Collapse/expand state for the tools sections in the left pane.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolListState {
     pub builtin_expanded: bool,
     pub custom_expanded: bool,
+    pub mcp_expanded: bool,
 }
 
 impl Default for ToolListState {
@@ -22,6 +24,7 @@ impl Default for ToolListState {
         Self {
             builtin_expanded: true,
             custom_expanded: true,
+            mcp_expanded: true,
         }
     }
 }
@@ -36,6 +39,10 @@ impl ToolListState {
             }
             CUSTOM_TOOLS => {
                 self.custom_expanded = !self.custom_expanded;
+                true
+            }
+            MCP_TOOLS => {
+                self.mcp_expanded = !self.mcp_expanded;
                 true
             }
             _ => false,
@@ -80,11 +87,11 @@ pub(crate) fn tools_view<'a>(
 ) -> Element<'a, Message> {
     const COLS: usize = 3;
 
-    // Distribute names into columns (column-major: fill down, then across).
+    // Distribute names into columns (row-major: fill across, then down).
     let n_rows = names.len().div_ceil(COLS);
     let mut cols: Vec<Vec<&str>> = (0..COLS).map(|_| Vec::with_capacity(n_rows)).collect();
     for (i, name) in names.iter().enumerate() {
-        let col = i / n_rows;
+        let col = i % COLS;
         cols[col].push(name.as_str());
     }
 

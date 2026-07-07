@@ -12,7 +12,7 @@ use super::system_prompt::{
     files_field_view, tools_field_view, workspace_field_view,
 };
 use super::theme::thin_vertical;
-use super::tool_list::{BUILTIN_TOOLS, CUSTOM_TOOLS, ToolListState, tools_section};
+use super::tool_list::{BUILTIN_TOOLS, CUSTOM_TOOLS, MCP_TOOLS, ToolListState, tools_section};
 use super::user_prompt::user_prompt_view;
 use crate::Message;
 use crate::llm::StreamState;
@@ -43,6 +43,7 @@ pub(crate) fn left_pane<'a>(
     enabled_tools: &'a HashSet<String>,
     builtin_tool_names: &'a [String],
     custom_tool_names: &'a [String],
+    mcp_tool_names: &'a [String],
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     streaming: StreamState,
@@ -101,6 +102,12 @@ pub(crate) fn left_pane<'a>(
             tool_list_state.custom_expanded,
             enabled_tools,
             custom_tool_names,
+        ),
+        tools_section(
+            MCP_TOOLS,
+            tool_list_state.mcp_expanded,
+            enabled_tools,
+            mcp_tool_names,
         ),
     ];
 
