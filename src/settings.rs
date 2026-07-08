@@ -50,10 +50,7 @@ impl Default for Settings {
             workspace: PathBuf::new(),
             recent_workspaces: Vec::new(),
             font_scale: 1.0,
-            agent_tools: crate::tools::builtin_tools()
-                .keys()
-                .map(|&name| (name.to_string(), true))
-                .collect(),
+            agent_tools: IndexMap::new(),
         }
     }
 }

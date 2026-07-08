@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use rmcp::model::{
@@ -20,7 +20,7 @@ use serde_json::{Map, Value};
 use shell_words::split;
 use tokio::process::Command;
 
-use super::{Tool, ToolRef};
+use super::Tool;
 
 /// Timeout for establishing an MCP connection (process spawn + JSON-RPC
 /// initialize handshake). `npx`-based servers may need to download packages on
@@ -50,7 +50,7 @@ pub struct McpServer {
     pub name: String,
     /// Transport method: `Stdio("npx -y @org/server")` or `Http("http://...")`.
     pub transport: McpTransport,
-    /// If true, tool names are prefixed with `{server_name}/`.
+    /// If true, tool names are prefixed with `{server_name}_`.
     pub qualify_tool_names: bool,
     /// Extra environment variables for the child process.
     #[serde(default)]
@@ -96,8 +96,9 @@ impl McpList {
 /// A tool discovered from an MCP server, implementing the local `Tool` trait.
 ///
 /// Tool calls are dispatched to the remote server via the retained `Peer`.
+#[derive(Clone)]
 pub struct McpTool {
-    /// Qualified name (e.g. `"filesystem/read_file"` or bare name).
+    /// Qualified name (e.g. `"filesystem_read_file"` or bare name).
     /// This is what the LLM sees and uses when calling the tool.
     name: String,
     /// Original tool name, used in execute requests to the remote server.
@@ -119,7 +120,7 @@ impl McpTool {
     ) -> Self {
         let remote_name = remote.name.to_string();
         let name = if qualify {
-            format!("{server_name}/{remote_name}")
+            format!("{server_name}_{remote_name}")
         } else {
             remote_name.clone()
         };
@@ -385,8 +386,8 @@ async fn connect_http(server: &McpServer, url: &str) -> Result<McpConnection, St
 
 /// Connect to all configured servers, discover their tools, and return
 /// `McpTool` wrappers ready for registration.
-pub async fn discover_mcp_tools(servers: Vec<McpServer>) -> Vec<ToolRef> {
-    let mut tools: Vec<ToolRef> = Vec::new();
+pub async fn discover_mcp_tools(servers: Vec<McpServer>) -> Vec<McpTool> {
+    let mut tools: Vec<McpTool> = Vec::new();
 
     for server in servers {
         let server_name = server.name.clone();
@@ -412,9 +413,8 @@ pub async fn discover_mcp_tools(servers: Vec<McpServer>) -> Vec<ToolRef> {
             Ok(Ok(result)) => {
                 let peer = conn.peer();
                 for remote_tool in result.tools {
-                    dbg!(&remote_tool.name);
                     let tool = McpTool::new(&server_name, qualify, &remote_tool, peer.clone());
-                    tools.push(Arc::new(tool));
+                    tools.push(tool);
                 }
                 // Keep the connection alive for the lifetime of the tools.
                 if let Ok(mut conns) = MCP_CONNECTIONS.lock() {

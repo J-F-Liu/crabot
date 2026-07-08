@@ -1,5 +1,5 @@
 mod bash;
-mod custom;
+pub mod custom;
 pub mod edit;
 mod find;
 pub mod mcp;
@@ -10,15 +10,12 @@ mod write;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use genai::chat::Tool as GenaiTool;
-use indexmap::IndexMap;
 use interprocess::unnamed_pipe;
 use serde_json::Value;
-
-pub use custom::ToolList;
 
 // ── Tool trait ──────────────────────────────────────────────────────
 
@@ -156,91 +153,112 @@ fn make_nullable(value: &mut Value) {
 
 // ── Tool registry ───────────────────────────────────────────────────
 
-/// Global registry of all built-in tools, keyed by name in insertion order.
-///
-/// Stored as a `LazyLock` so tool lookups return a borrowed `&'static dyn Tool`
-/// without any heap allocation.
-static BUILTIN_TOOLS: LazyLock<IndexMap<&'static str, ToolRef>> = LazyLock::new(|| {
-    let mut map: IndexMap<&'static str, ToolRef> = IndexMap::new();
-    map.insert("read", Arc::new(read::ReadTool));
-    map.insert("write", Arc::new(write::WriteTool));
-    map.insert("edit", Arc::new(edit::EditTool));
-    map.insert("find", Arc::new(find::FindTool));
-    map.insert("search", Arc::new(search::SearchTool));
-    map.insert("bash", Arc::new(bash::BashTool));
-    map
-});
+/// Owned registry of all tools (built-in, custom, and MCP-discovered).
+pub struct ToolRegistry {
+    builtin: Vec<ToolRef>,
+    custom: Vec<ToolRef>,
+    mcp: Vec<ToolRef>,
+    builtin_names: Vec<String>,
+    custom_names: Vec<String>,
+    mcp_names: Vec<String>,
+}
 
-/// Dynamic registry of user-defined custom tools, populated at startup.
-static CUSTOM_TOOLS: LazyLock<RwLock<Vec<ToolRef>>> = LazyLock::new(|| RwLock::new(Vec::new()));
-
-/// Dynamic registry of MCP-discovered tools, populated at startup.
-static MCP_TOOLS: LazyLock<RwLock<Vec<ToolRef>>> = LazyLock::new(|| RwLock::new(Vec::new()));
-
-/// Replace the current set of custom tools in the global registry.
-pub fn register_custom_tools(tools: Vec<ToolRef>) {
-    if let Ok(mut guard) = CUSTOM_TOOLS.write() {
-        *guard = tools;
+impl ToolRegistry {
+    /// Create a new registry pre-populated with the six built-in tools.
+    pub fn new() -> Self {
+        let builtin: Vec<ToolRef> = vec![
+            Arc::new(read::ReadTool),
+            Arc::new(write::WriteTool),
+            Arc::new(edit::EditTool),
+            Arc::new(find::FindTool),
+            Arc::new(search::SearchTool),
+            Arc::new(bash::BashTool),
+        ];
+        Self {
+            builtin_names: builtin.iter().map(|t| t.name().to_string()).collect(),
+            builtin,
+            custom: Vec::new(),
+            mcp: Vec::new(),
+            custom_names: Vec::new(),
+            mcp_names: Vec::new(),
+        }
     }
-}
 
-/// Replace the current set of MCP-discovered tools in the global registry.
-pub fn register_mcp_tools(tools: Vec<ToolRef>) {
-    if let Ok(mut guard) = MCP_TOOLS.write() {
-        *guard = tools;
+    /// Replace the custom tools in the registry.
+    pub fn register_custom(&mut self, tool_list: custom::ToolList) {
+        self.custom_names = tool_list
+            .custom_tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        self.custom = tool_list
+            .custom_tools
+            .into_iter()
+            .map(|t| Arc::new(t) as ToolRef)
+            .collect();
     }
-}
 
-/// Borrow the built-in tool registry.
-pub fn builtin_tools() -> &'static IndexMap<&'static str, ToolRef> {
-    &BUILTIN_TOOLS
-}
+    /// Replace the MCP-discovered tools in the registry.
+    pub fn register_mcp(&mut self, tools: Vec<mcp::McpTool>) {
+        self.mcp_names = tools.iter().map(|t| t.name().to_string()).collect();
+        self.mcp = tools.into_iter().map(|t| Arc::new(t) as ToolRef).collect();
+    }
 
-/// Return the names of all built-in tools.
-pub fn builtin_tool_names() -> Vec<String> {
-    BUILTIN_TOOLS.keys().map(|k| k.to_string()).collect()
-}
+    /// Return the names of all built-in tools.
+    pub fn builtin_names(&self) -> &[String] {
+        &self.builtin_names
+    }
 
-pub fn enabled_tools(enabled: &HashSet<String>) -> Vec<ToolRef> {
-    let mut tools: Vec<ToolRef> = BUILTIN_TOOLS
-        .iter()
-        .filter_map(|(name, tool)| {
-            if enabled.contains(*name) {
-                Some(Arc::clone(tool))
-            } else {
-                None
+    /// Return the names of all custom tools.
+    pub fn custom_names(&self) -> &[String] {
+        &self.custom_names
+    }
+
+    /// Return the names of all MCP-discovered tools.
+    pub fn mcp_names(&self) -> &[String] {
+        &self.mcp_names
+    }
+
+    /// Return names of all registered tools (built-in + custom + MCP).
+    pub fn all_names(&self) -> impl Iterator<Item = &String> {
+        self.builtin_names
+            .iter()
+            .chain(self.custom_names.iter())
+            .chain(self.mcp_names.iter())
+    }
+
+    /// Collect every tool whose name appears in `enabled`.
+    pub fn enabled_tools(&self, enabled: &HashSet<String>) -> Vec<ToolRef> {
+        let mut tools: Vec<ToolRef> = Vec::new();
+
+        for tool in self.builtin.iter() {
+            if enabled.contains(tool.name()) {
+                tools.push(Arc::clone(tool));
             }
-        })
-        .collect();
+        }
 
-    if let Ok(custom) = CUSTOM_TOOLS.read() {
-        for t in custom.iter() {
+        for t in &self.custom {
             if enabled.contains(t.name()) {
                 tools.push(Arc::clone(t));
             }
         }
-    }
-
-    if let Ok(mcp) = MCP_TOOLS.read() {
-        for t in mcp.iter() {
+        for t in &self.mcp {
             if enabled.contains(t.name()) {
                 tools.push(Arc::clone(t));
             }
         }
+
+        tools
     }
-
-    tools
 }
 
-/// Return names of all MCP-discovered tools.
-pub fn mcp_tool_names() -> Vec<String> {
-    MCP_TOOLS
-        .read()
-        .map(|guard| guard.iter().map(|t| t.name().to_string()).collect())
-        .unwrap_or_default()
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-/// Build the genai tools list from the enabled set.
+/// Build the genai tools list from a set of tool refs.
 pub fn build_tools(tools: &[ToolRef], strict: bool) -> Vec<GenaiTool> {
     tools.iter().map(|t| t.tool_declaration(strict)).collect()
 }

@@ -1,13 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use shell_words::split;
 use tinytemplate::TinyTemplate;
 
-use super::{Tool, ToolRef};
+use super::Tool;
 
 // ── Parameter types ─────────────────────────────────────────────────
 
@@ -226,14 +225,6 @@ impl ToolList {
         if let Ok(text) = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
             let _ = std::fs::write(&path, text);
         }
-    }
-
-    /// Convert configs into runtime `ToolRef` instances.
-    pub fn build_tools(&self) -> Vec<ToolRef> {
-        self.custom_tools
-            .iter()
-            .map(|t| Arc::new(t.clone()) as ToolRef)
-            .collect()
     }
 
     /// Return the names of every custom tool.

@@ -18,6 +18,7 @@ use crate::Message;
 use crate::llm::StreamState;
 use crate::model::ModelList;
 use crate::system::{FilepathEntry, SystemPrompt};
+use crate::tools;
 use crate::user::WorkMode;
 use crate::views::session_view::SessionEntry;
 use crate::widgets::textarea::TextArea;
@@ -41,9 +42,7 @@ pub(crate) fn left_pane<'a>(
     files_content: &'a text_editor::Content,
     tools_content: &'a text_editor::Content,
     enabled_tools: &'a HashSet<String>,
-    builtin_tool_names: &'a [String],
-    custom_tool_names: &'a [String],
-    mcp_tool_names: &'a [String],
+    tool_registry: &'a tools::ToolRegistry,
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     streaming: StreamState,
@@ -95,19 +94,19 @@ pub(crate) fn left_pane<'a>(
             BUILTIN_TOOLS,
             tool_list_state.builtin_expanded,
             enabled_tools,
-            builtin_tool_names,
+            tool_registry.builtin_names(),
         ),
         tools_section(
             CUSTOM_TOOLS,
             tool_list_state.custom_expanded,
             enabled_tools,
-            custom_tool_names,
+            tool_registry.custom_names(),
         ),
         tools_section(
             MCP_TOOLS,
             tool_list_state.mcp_expanded,
             enabled_tools,
-            mcp_tool_names,
+            tool_registry.mcp_names(),
         ),
     ];
 

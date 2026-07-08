@@ -110,7 +110,7 @@ pub(crate) fn tools_view<'a>(
 
     container(row(cols).spacing(12))
         .padding(padding::left(8))
-        .max_width(400)
+        .width(Length::Fill)
         .into()
 }
 

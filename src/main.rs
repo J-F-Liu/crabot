@@ -116,9 +116,7 @@ struct App {
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
     enabled_tools: HashSet<String>,
-    custom_tool_names: Vec<String>,
-    mcp_tool_names: Vec<String>,
-    builtin_tool_names: Vec<String>,
+    tool_registry: tools::ToolRegistry,
     /// Snapshot of saved agent-tool enable states.
     saved_agent_tools: IndexMap<String, bool>,
     user_prompt: TextArea,
@@ -188,7 +186,7 @@ pub(crate) enum Message {
     RulesFileResult(Result<String, String>),
     ToggleAgentTool(String, bool),
     /// MCP tools discovered from configured servers.
-    McpToolsDiscovered(Vec<crabot::tools::ToolRef>),
+    McpToolsDiscovered(Vec<crabot::tools::mcp::McpTool>),
     /// An edit action targeting a specific [`TextArea`].
     /// The [`FocusedTarget`] identifies which text area should receive the action.
     EditTextArea(FocusedTarget, textarea::Message),
@@ -254,14 +252,17 @@ impl App {
             .collect();
         let selected_model = provided_models.ensure_valid_name(&saved.selected_model);
 
-        let custom_tool_list = tools::ToolList::load();
-        tools::register_custom_tools(custom_tool_list.build_tools());
-
+        let custom_tool_list = tools::custom::ToolList::load();
         let mcp_list = tools::mcp::McpList::load();
 
-        let enabled_tools: HashSet<String> = tools::builtin_tool_names()
-            .into_iter()
-            .chain(custom_tool_list.names())
+        let mut tool_registry = tools::ToolRegistry::new();
+        tool_registry.register_custom(custom_tool_list);
+
+        let enabled_tools: HashSet<String> = tool_registry
+            .builtin_names()
+            .iter()
+            .cloned()
+            .chain(tool_registry.custom_names().iter().cloned())
             .filter(|name| saved.agent_tools.get(name).copied().unwrap_or(true))
             .collect();
 
@@ -274,7 +275,7 @@ impl App {
         let workspace_path = saved.workspace;
         let files_tree = workspace::build_files_tree(&workspace_path);
         let (agents_md_exists, agents_md_content) = load_agents_md(&workspace_path);
-        let tools_summary = system::tools_summary(&tools::enabled_tools(&enabled_tools));
+        let tools_summary = system::tools_summary(&tool_registry.enabled_tools(&enabled_tools));
         let files_content = text_editor::Content::with_text(&files_tree);
         let tools_content = text_editor::Content::with_text(&tools_summary);
 
@@ -319,10 +320,8 @@ impl App {
             tool_list_state: ToolListState::default(),
             files_content,
             tools_content,
+            tool_registry,
             enabled_tools,
-            custom_tool_names: custom_tool_list.names(),
-            mcp_tool_names: Vec::new(),
-            builtin_tool_names: tools::builtin_tool_names(),
             saved_agent_tools: saved.agent_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
@@ -444,20 +443,20 @@ impl App {
             }
             Message::ToggleAgentTool(tool_name, enabled) => {
                 self.enabled_tools.set(tool_name, enabled);
-                let summary = system::tools_summary(&tools::enabled_tools(&self.enabled_tools));
+                let summary =
+                    system::tools_summary(&self.tool_registry.enabled_tools(&self.enabled_tools));
                 self.system_prompt.tools.1 = summary.clone();
                 self.tools_content = text_editor::Content::with_text(&summary);
             }
             Message::McpToolsDiscovered(tools) => {
-                // Store names and register tools in the global MCP registry.
-                self.mcp_tool_names = tools.iter().map(|t| t.name().to_string()).collect();
-                for name in &self.mcp_tool_names {
+                self.tool_registry.register_mcp(tools);
+                for name in self.tool_registry.mcp_names() {
                     if self.saved_agent_tools.get(name).copied().unwrap_or(false) {
                         self.enabled_tools.insert(name.clone());
                     }
                 }
-                tools::register_mcp_tools(tools);
-                let summary = system::tools_summary(&tools::enabled_tools(&self.enabled_tools));
+                let summary =
+                    system::tools_summary(&self.tool_registry.enabled_tools(&self.enabled_tools));
                 self.system_prompt.tools.1 = summary.clone();
                 self.tools_content = text_editor::Content::with_text(&summary);
             }
@@ -564,7 +563,7 @@ impl App {
                 self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
                 let (exists, agents_md_content) = load_agents_md(&self.system_prompt.workspace.1);
                 self.agents_md_exists = exists;
-                self.system_prompt.agents_md = (self.agents_md_exists, agents_md_content);
+                self.system_prompt.agents_md.1 = agents_md_content;
                 return self.refresh_session_list();
             }
             Message::ToggleTurnExpand(idx, sub) => {
@@ -946,7 +945,7 @@ impl App {
             workspace: self.system_prompt.workspace.1.clone(),
             system_prompt: self.system_prompt.get_prompt(),
             user_prompt,
-            tools: tools::enabled_tools(&self.enabled_tools),
+            tools: self.tool_registry.enabled_tools(&self.enabled_tools),
             pending_user_prompt: self.pending_user_prompt.clone(),
         };
 
@@ -1029,13 +1028,12 @@ impl App {
                 .filter(|e| !e.path.as_os_str().is_empty())
                 .map(|e| e.path.clone())
                 .collect(),
-            agent_tools: tools::builtin_tool_names()
-                .into_iter()
-                .chain(self.custom_tool_names.iter().cloned())
-                .chain(self.mcp_tool_names.iter().cloned())
+            agent_tools: self
+                .tool_registry
+                .all_names()
                 .map(|name| {
-                    let enabled = self.enabled_tools.contains(&name);
-                    (name, enabled)
+                    let enabled = self.enabled_tools.contains(name);
+                    (name.clone(), enabled)
                 })
                 .collect(),
             font_scale: self.font_scale,
@@ -1126,9 +1124,7 @@ impl App {
                 &self.files_content,
                 &self.tools_content,
                 &self.enabled_tools,
-                &self.builtin_tool_names,
-                &self.custom_tool_names,
-                &self.mcp_tool_names,
+                &self.tool_registry,
                 &self.user_prompt,
                 self.workmode,
                 self.streaming,
