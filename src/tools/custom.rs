@@ -157,11 +157,18 @@ impl Tool for CustomTool {
         let (stdout_tx, stdout_rx) = super::create_pipe_pair("stdout")?;
         let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
 
-        let child = Command::new(exe)
-            .args(args)
+        let mut cmd = Command::new(exe);
+        cmd.args(args)
             .current_dir(workspace)
             .stdout(super::sender_to_stdio(stdout_tx))
-            .stderr(super::sender_to_stdio(stderr_tx))
+            .stderr(super::sender_to_stdio(stderr_tx));
+        // Prevent a visible console window from flashing on Windows.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let child = cmd
             .spawn()
             .map_err(|e| format!("Failed to execute custom tool '{}': {e}", self.name))?;
 

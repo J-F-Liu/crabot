@@ -337,13 +337,19 @@ async fn connect_stdio(server: &McpServer, command: &str) -> Result<McpConnectio
     for (k, v) in &server.env {
         cmd.env(k, v);
     }
-    // Ensure stdout/stdin are piped for the JSON-RPC protocol.
-    cmd.stdin(std::process::Stdio::piped());
-    cmd.stdout(std::process::Stdio::piped());
-    // Discard server stderr. Inheriting the parent's stderr is problematic for a GUI binary.
-    cmd.stderr(std::process::Stdio::null());
+    // Prevent a visible console window from flashing on Windows.
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-    let transport = TokioChildProcess::new(cmd)
+    // Use the builder so we can force stderr to null.
+    // TokioChildProcess::new() defaults stderr to inherit(), which would
+    // leak child process errors into the parent console.
+    let transport = TokioChildProcess::builder(cmd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|(proc, _stderr)| proc)
         .map_err(|e| format!("Failed to spawn '{}': {e}", server.name))?;
 
     let service = make_client_info()
