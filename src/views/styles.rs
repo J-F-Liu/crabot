@@ -242,6 +242,19 @@ pub(crate) fn tool_bubble_style(_theme: &Theme) -> container::Style {
     }
 }
 
+/// Subtle inset container for reasoning text inside assistant bubbles.
+pub(crate) fn reasoning_box_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.035).into()),
+        border: Border {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.06),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 /// Small role badge (User / Assistant / Tool).
 pub(crate) fn role_badge_style(role: &str) -> impl Fn(&Theme) -> container::Style + '_ {
     let (fg, bg) = match role {

@@ -726,7 +726,7 @@ impl App {
                     && let TurnBody::Text(tc) = &mut last.body
                 {
                     tc.content.push_str(&chunk);
-                    last.refresh_md_cache();
+                    tc.refresh_md_cache();
                 }
                 return self.maybe_scroll_to_end();
             }
@@ -737,6 +737,7 @@ impl App {
                     tc.reasoning
                         .get_or_insert_with(String::new)
                         .push_str(&chunk);
+                    tc.refresh_md_cache();
                 }
                 return self.maybe_scroll_to_end();
             }
@@ -871,7 +872,7 @@ impl App {
                 if tc.reasoning.is_none() {
                     tc.reasoning = reasoning;
                 }
-                turn.refresh_md_cache();
+                tc.refresh_md_cache();
             }
         }
 
@@ -896,13 +897,13 @@ impl App {
             && turn.role == ChatRole::Assistant
             && matches!(
                 &turn.body,
-                TurnBody::Text(TextContent { content, reasoning: None })
+                TurnBody::Text(TextContent { content, reasoning: None, .. })
                     if content.is_empty()
             )
         {
             turn.body = TurnBody::Text(TextContent {
                 content: error_msg,
-                reasoning: None,
+                ..Default::default()
             });
         } else {
             self.session.push_turn(Turn::assistant(error_msg, None));

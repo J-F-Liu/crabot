@@ -8,8 +8,8 @@ use iced::{
 use iced_selection::Text as SelectableText;
 
 use super::styles::{
-    assistant_bubble_style, icon_button_style, pane_center, role_badge_style, sel_default,
-    sel_secondary, tool_bubble_style, user_bubble_style,
+    assistant_bubble_style, icon_button_style, pane_center, reasoning_box_style, role_badge_style,
+    sel_default, sel_secondary, tool_bubble_style, user_bubble_style,
 };
 use super::theme::{
     CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_TEXT,
@@ -17,7 +17,7 @@ use super::theme::{
 };
 use super::tool_message::{args_rows, path_arg_row, result_text};
 use crate::Message;
-use crate::chat::{Dialog, TextContent, Turn, TurnBody};
+use crate::chat::{Dialog, Turn, TurnBody};
 use crate::llm::StreamState;
 use std::collections::HashSet;
 
@@ -236,6 +236,32 @@ fn tool_turn_block<'a>(
     wrap_bubble(column(elements).spacing(8).width(Fill), tool_bubble_style)
 }
 
+/// Render parsed markdown as a double-click-to-select element with
+/// transparent inline-code styling (shared by content and reasoning bodies).
+fn markdown_element<'a>(
+    md: &'a markdown::Content,
+    theme: &'a Theme,
+    i: usize,
+    text_size: f32,
+    code_size: f32,
+) -> Element<'a, Message> {
+    let mut md_style = markdown::Style::from(theme.clone());
+    md_style.inline_code_highlight = Highlight {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+    };
+    md_style.inline_code_padding = 0.into();
+    md_style.inline_code_color = color_text(theme);
+    md_style.code_block_font = Font::MONOSPACE;
+    let md_settings = markdown::Settings {
+        code_size: code_size.into(),
+        ..markdown::Settings::with_text_size(text_size, md_style)
+    };
+    mouse_area(markdown::view(md.items(), md_settings).map(|_| Message::Noop))
+        .on_double_click(Message::ToggleSelectableMode(Some(i)))
+        .into()
+}
+
 /// Build a complete Text turn block (header + body + bubble).
 fn text_turn_block<'a>(
     msg: &'a Turn,
@@ -245,7 +271,7 @@ fn text_turn_block<'a>(
     theme: &'a Theme,
     font_scale: f32,
 ) -> Element<'a, Message> {
-    let TurnBody::Text(TextContent { content, reasoning }) = &msg.body else {
+    let TurnBody::Text(tc) = &msg.body else {
         unreachable!("text_turn_block called on non-Text turn")
     };
 
@@ -262,7 +288,7 @@ fn text_turn_block<'a>(
     let mut content_col = column![].spacing(8).width(Fill);
 
     // ── header: badge + (indicator if reasoning) + timestamp ──
-    if reasoning.is_some() {
+    if tc.reasoning.is_some() {
         // Reasoning by default is expanded so inverse membership.
         let expanded = !expanded_turns.contains(&(i, 0));
         let indicator = if expanded { "▼" } else { "⏵" };
@@ -288,42 +314,45 @@ fn text_turn_block<'a>(
     }
 
     // ── body: reasoning + content ──
-    if let Some(reasoning) = reasoning {
+    if let Some(reasoning) = &tc.reasoning {
         // Default expanded; badge-row click toggles collapse.
         if !expanded_turns.contains(&(i, 0)) {
-            content_col = content_col.push(
+            let reasoning_body: Element<'_, Message> = if !selectable_msgs.contains(&i)
+                && let Some(md) = &tc.reasoning_md
+            {
+                markdown_element(md, theme, i, 13.0 * font_scale, 12.0 * font_scale)
+            } else {
                 SelectableText::new(reasoning)
                     .size(13.0 * font_scale)
-                    .style(sel_secondary),
+                    .style(sel_secondary)
+                    .into()
+            };
+            content_col = content_col.push(
+                container(reasoning_body)
+                    .style(reasoning_box_style)
+                    .width(Length::Fill)
+                    .padding(Padding {
+                        top: 6.0,
+                        right: 10.0,
+                        bottom: 6.0,
+                        left: 10.0,
+                    }),
             );
         }
     }
-    if selectable_msgs.contains(&i) {
-        content_col = content_col.push(
-            SelectableText::new(content)
-                .size(14.0 * font_scale)
-                .style(sel_default),
-        );
-    } else if let Some(md) = &msg.content_md {
-        let mut md_style = markdown::Style::from(theme.clone());
-        md_style.inline_code_highlight = Highlight {
-            background: Background::Color(Color::TRANSPARENT),
-            border: Border::default(),
-        };
-        md_style.inline_code_padding = 0.into();
-        md_style.inline_code_color = color_text(theme);
-        md_style.code_block_font = Font::MONOSPACE;
-        let md_settings = markdown::Settings {
-            code_size: (13.0 * font_scale).into(),
-            ..markdown::Settings::with_text_size(14.0 * font_scale, md_style)
-        };
-        content_col = content_col.push(
-            mouse_area(markdown::view(md.items(), md_settings).map(|_| Message::Noop))
-                .on_double_click(Message::ToggleSelectableMode(Some(i))),
-        );
+    if !selectable_msgs.contains(&i)
+        && let Some(md) = &tc.content_md
+    {
+        content_col = content_col.push(markdown_element(
+            md,
+            theme,
+            i,
+            14.0 * font_scale,
+            13.0 * font_scale,
+        ));
     } else {
         content_col = content_col.push(
-            SelectableText::new(content)
+            SelectableText::new(&tc.content)
                 .size(14.0 * font_scale)
                 .style(sel_default),
         );

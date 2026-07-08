@@ -8,11 +8,53 @@ use serde_json::Value;
 // ── TextContent ──────────────────────────────────────────────────────
 
 /// Plain-text message content (User or Assistant role).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct TextContent {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Cached parsed Markdown for the text content.
+    #[serde(skip)]
+    pub content_md: Option<Box<iced::widget::markdown::Content>>,
+    /// Cached parsed Markdown for the reasoning text (if any).
+    #[serde(skip)]
+    pub reasoning_md: Option<Box<iced::widget::markdown::Content>>,
+}
+
+impl Clone for TextContent {
+    fn clone(&self) -> Self {
+        let mut cloned = Self {
+            content: self.content.clone(),
+            reasoning: self.reasoning.clone(),
+            ..Default::default()
+        };
+        cloned.refresh_md_cache();
+        cloned
+    }
+}
+
+impl TextContent {
+    /// Create a new text content, parsing markdown caches immediately.
+    pub fn new(content: String, reasoning: Option<String>) -> Self {
+        let mut tc = Self {
+            content,
+            reasoning,
+            ..Default::default()
+        };
+        tc.refresh_md_cache();
+        tc
+    }
+
+    /// Ensure the markdown cache is up to date with the raw text content.
+    pub fn refresh_md_cache(&mut self) {
+        self.content_md = Some(Box::new(iced::widget::markdown::Content::parse(
+            &self.content,
+        )));
+        self.reasoning_md = self
+            .reasoning
+            .as_deref()
+            .map(|r| Box::new(iced::widget::markdown::Content::parse(r)));
+    }
 }
 
 // ── ToolResult ───────────────────────────────────────────────────────
@@ -75,9 +117,6 @@ pub struct Turn {
     pub role: ChatRole,
     pub body: TurnBody,
     pub timestamp: String,
-    /// Cached parsed Markdown for the text content (if any).
-    #[serde(skip)]
-    pub content_md: Option<iced::widget::markdown::Content>,
 }
 
 // ── Dialog ──────────────────────────────────────────────────────────
@@ -111,27 +150,18 @@ impl Dialog {
 
 impl Turn {
     pub fn user(content: impl Into<String>) -> Self {
-        let content: String = content.into();
-        let content_md = Some(iced::widget::markdown::Content::parse(&content));
         Self {
             role: ChatRole::User,
-            body: TurnBody::Text(TextContent {
-                content,
-                reasoning: None,
-            }),
+            body: TurnBody::Text(TextContent::new(content.into(), None)),
             timestamp: String::new(),
-            content_md,
         }
     }
 
     pub fn assistant(content: impl Into<String>, reasoning: Option<String>) -> Self {
-        let content: String = replace_emoji(&content.into());
-        let content_md = Some(iced::widget::markdown::Content::parse(&content));
         Self {
             role: ChatRole::Assistant,
-            body: TurnBody::Text(TextContent { content, reasoning }),
+            body: TurnBody::Text(TextContent::new(replace_emoji(&content.into()), reasoning)),
             timestamp: String::new(),
-            content_md,
         }
     }
 
@@ -140,7 +170,6 @@ impl Turn {
             role: ChatRole::Tool,
             body: TurnBody::Tool(results),
             timestamp: String::new(),
-            content_md: None,
         }
     }
 
@@ -149,28 +178,17 @@ impl Turn {
             role: ChatRole::Tool,
             body: TurnBody::Temp(calls),
             timestamp: String::new(),
-            content_md: None,
-        }
-    }
-
-    /// Ensure the markdown cache is up to date with the raw text content.
-    pub fn refresh_md_cache(&mut self) {
-        if let TurnBody::Text(tc) = &self.body {
-            self.content_md = Some(iced::widget::markdown::Content::parse(&tc.content));
         }
     }
 }
 
 impl Clone for Turn {
     fn clone(&self) -> Self {
-        let mut cloned = Self {
+        Self {
             role: self.role.clone(),
             body: self.body.clone(),
             timestamp: self.timestamp.clone(),
-            content_md: None,
-        };
-        cloned.refresh_md_cache();
-        cloned
+        }
     }
 }
 
