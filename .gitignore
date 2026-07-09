@@ -2,6 +2,7 @@
 /tmp
 /.agent
 /.reasonix
+/.codebase-memory
 /tests
 ops.txt
 reasonix.toml

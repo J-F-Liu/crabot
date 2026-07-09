@@ -726,6 +726,7 @@ dependencies = [
  "gh-emoji",
  "glob",
  "home",
+ "http",
  "iced",
  "iced_aw",
  "iced_runtime",

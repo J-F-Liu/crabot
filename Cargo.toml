@@ -44,3 +44,4 @@ rmcp = { version = "2", default-features = false, features = [
     "transport-streamable-http-client",
     "transport-streamable-http-client-reqwest",
 ] }
+http = "1.4.2"

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, ClientCapabilities, ClientInfo, ContentBlock, Implementation,
-    ListToolsResult, ResourceContents,
+    ResourceContents,
 };
 use rmcp::service::{Peer, RoleClient, RunningService, ServiceExt as _};
 use rmcp::transport::child_process::TokioChildProcess;
@@ -38,9 +38,21 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum McpTransport {
     /// Stdio transport (spawns a child process).
-    Stdio(String),
+    Stdio {
+        /// The command to spawn (e.g. "npx -y @org/server").
+        cmd: String,
+        /// Extra environment variables for the child process.
+        #[serde(default)]
+        env_vars: HashMap<String, String>,
+    },
     /// Streamable HTTP transport.
-    Http(String),
+    Http {
+        /// The server URL (e.g. "http://localhost:8000/mcp").
+        url: String,
+        /// Custom HTTP headers to include with every request.
+        #[serde(default)]
+        headers: HashMap<String, String>,
+    },
 }
 
 /// A single MCP server definition in `~/.crabot/mcp.ron`.
@@ -48,13 +60,10 @@ pub enum McpTransport {
 pub struct McpServer {
     /// Human-readable identifier for this server.
     pub name: String,
-    /// Transport method: `Stdio("npx -y @org/server")` or `Http("http://...")`.
+    /// Transport method used to communicate with the MCP server.
     pub transport: McpTransport,
     /// If true, tool names are prefixed with `{server_name}_`.
     pub qualify_tool_names: bool,
-    /// Extra environment variables for the child process.
-    #[serde(default)]
-    pub env: HashMap<String, String>,
 }
 
 /// Persistable list of configured MCP servers.
@@ -302,9 +311,9 @@ impl McpConnection {
         self.peer.clone()
     }
 
-    /// List all tools from this server's peer.
-    pub async fn list_tools(&self) -> Result<ListToolsResult, rmcp::service::ServiceError> {
-        self.peer.list_tools(None).await
+    /// List all tools from this server's peer, handling pagination automatically.
+    pub async fn list_tools(&self) -> Result<Vec<rmcp::model::Tool>, rmcp::service::ServiceError> {
+        self.peer.list_all_tools().await
     }
 }
 
@@ -320,13 +329,17 @@ impl McpServer {
     /// Connect to this MCP server and return a `McpConnection`.
     pub async fn connect(&self) -> Result<McpConnection, String> {
         match &self.transport {
-            McpTransport::Stdio(cmd) => connect_stdio(self, cmd).await,
-            McpTransport::Http(url) => connect_http(self, url).await,
+            McpTransport::Stdio { cmd, env_vars } => connect_stdio(self, cmd, env_vars).await,
+            McpTransport::Http { url, headers } => connect_http(self, url, headers).await,
         }
     }
 }
 
-async fn connect_stdio(server: &McpServer, command: &str) -> Result<McpConnection, String> {
+async fn connect_stdio(
+    server: &McpServer,
+    command: &str,
+    env_vars: &HashMap<String, String>,
+) -> Result<McpConnection, String> {
     let parts =
         split(command).map_err(|e| format!("Failed to parse command '{}': {e}", command))?;
     let (exe, args) = parts
@@ -335,7 +348,7 @@ async fn connect_stdio(server: &McpServer, command: &str) -> Result<McpConnectio
 
     let mut cmd = Command::new(exe);
     cmd.args(args);
-    for (k, v) in &server.env {
+    for (k, v) in env_vars {
         cmd.env(k, v);
     }
     // Prevent a visible console window from flashing on Windows.
@@ -367,8 +380,27 @@ async fn connect_stdio(server: &McpServer, command: &str) -> Result<McpConnectio
     })
 }
 
-async fn connect_http(server: &McpServer, url: &str) -> Result<McpConnection, String> {
-    let transport = StreamableHttpClientTransport::from_uri(url);
+async fn connect_http(
+    server: &McpServer,
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Result<McpConnection, String> {
+    use http::{HeaderName, HeaderValue};
+
+    let custom_headers: HashMap<HeaderName, HeaderValue> = headers
+        .iter()
+        .filter_map(|(k, v)| {
+            let name = HeaderName::from_bytes(k.as_bytes()).ok()?;
+            let value = HeaderValue::from_str(v).ok()?;
+            Some((name, value))
+        })
+        .collect();
+
+    let config =
+        rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
+            .custom_headers(custom_headers);
+
+    let transport = StreamableHttpClientTransport::from_config(config);
 
     let service = make_client_info()
         .serve(transport)
@@ -407,10 +439,9 @@ pub async fn discover_mcp_server(server: McpServer) -> Option<(String, Vec<McpTo
 
     let list_result = tokio::time::timeout(CONNECT_TIMEOUT, conn.list_tools()).await;
     match list_result {
-        Ok(Ok(result)) => {
+        Ok(Ok(tools)) => {
             let peer = conn.peer();
-            let server_tools: Vec<McpTool> = result
-                .tools
+            let mcp_tools: Vec<McpTool> = tools
                 .iter()
                 .map(|remote_tool| McpTool::new(&server_name, qualify, remote_tool, peer.clone()))
                 .collect();
@@ -418,10 +449,10 @@ pub async fn discover_mcp_server(server: McpServer) -> Option<(String, Vec<McpTo
             if let Ok(mut conns) = MCP_CONNECTIONS.lock() {
                 conns.push(conn);
             }
-            if server_tools.is_empty() {
+            if mcp_tools.is_empty() {
                 None
             } else {
-                Some((server_name, server_tools))
+                Some((server_name, mcp_tools))
             }
         }
         Ok(Err(e)) => {

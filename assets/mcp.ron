@@ -1,10 +1,20 @@
 (
     servers: [
         (
-            name: "codebase-memory-mcp",
-            transport: Stdio("D:/Software/codebase-memory-mcp-ui-windows-amd64/codebase-memory-mcp.exe"),
+            name: "codebase",
+            transport: Stdio(
+                cmd: "codebase-memory-mcp",
+                env_vars: {},
+            ),
+            qualify_tool_names: true,
+        ),
+        (
+            name: "exa",
+            transport: Http(
+                url: "https://mcp.exa.ai/mcp",
+                headers: {},
+            ),
             qualify_tool_names: false,
-            env: {},
         ),
     ],
 )
