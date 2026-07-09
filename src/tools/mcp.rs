@@ -112,6 +112,8 @@ pub struct McpTool {
     pub name: String,
     /// Original tool name, used in execute requests to the remote server.
     pub remote_name: String,
+    /// A human-readable title for the tool, if provided by the server.
+    pub title: Option<String>,
     /// Description from the remote tool.
     pub description: String,
     /// JSON Schema for the tool's input parameters.
@@ -124,7 +126,7 @@ impl McpTool {
     fn new(
         server_name: &str,
         qualify: bool,
-        remote: &rmcp::model::Tool,
+        remote: rmcp::model::Tool,
         peer: Peer<RoleClient>,
     ) -> Self {
         let remote_name = remote.name.to_string();
@@ -133,20 +135,22 @@ impl McpTool {
         } else {
             remote_name.clone()
         };
-        let description = remote
-            .description
-            .clone()
-            .unwrap_or_else(|| "MCP tool".into());
+        let description = remote.description.unwrap_or_else(|| "MCP tool".into());
         // Convert `Arc<JsonObject>` → `Value`
         let schema = Value::Object(remote.input_schema.as_ref().clone());
 
         Self {
             name,
             remote_name,
+            title: remote.title,
             description: description.into_owned(),
             schema,
             peer,
         }
+    }
+    /// Display label: the MCP `title` if provided, otherwise the bare name.
+    pub fn title(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.remote_name)
     }
 }
 
@@ -442,7 +446,7 @@ pub async fn discover_mcp_server(server: McpServer) -> Option<(String, Vec<McpTo
         Ok(Ok(tools)) => {
             let peer = conn.peer();
             let mcp_tools: Vec<McpTool> = tools
-                .iter()
+                .into_iter()
                 .map(|remote_tool| McpTool::new(&server_name, qualify, remote_tool, peer.clone()))
                 .collect();
             // Keep the connection alive for the lifetime of the tools.

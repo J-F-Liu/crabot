@@ -107,7 +107,7 @@ pub(crate) fn left_pane<'a>(
         mcp_tools_section(
             tool_list_state.mcp_expanded,
             enabled_tools,
-            tool_registry.mcp_server_groups(),
+            tool_registry.mcp_tools(),
         ),
     ];
 
