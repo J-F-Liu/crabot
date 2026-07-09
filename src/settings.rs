@@ -26,6 +26,8 @@ pub struct Settings {
     pub recent_workspaces: Vec<PathBuf>,
     /// Font scale factor for center pane dialog blocks (0.5 .. 2.0).
     pub font_scale: f32,
+    /// Enabled MCP servers: server name → enabled.
+    pub mcp_servers: IndexMap<String, bool>,
     /// Enabled agent tools: tool name → enabled.
     pub agent_tools: IndexMap<String, bool>,
 }
@@ -50,6 +52,7 @@ impl Default for Settings {
             workspace: PathBuf::new(),
             recent_workspaces: Vec::new(),
             font_scale: 1.0,
+            mcp_servers: IndexMap::new(),
             agent_tools: IndexMap::new(),
         }
     }

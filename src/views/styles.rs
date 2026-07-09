@@ -166,9 +166,25 @@ pub(crate) fn primary_checkbox(_theme: &Theme, status: checkbox::Status) -> chec
         text_color: Some(CRABOT_TEXT),
     };
     match status {
-        checkbox::Status::Active { is_checked }
-        | checkbox::Status::Hovered { is_checked }
-        | checkbox::Status::Disabled { is_checked } => {
+        checkbox::Status::Disabled { is_checked } => {
+            let mut style = base;
+            if is_checked {
+                style.background = Color::from_rgb8(0xA0, 0xA0, 0xA0).into();
+                style.border = iced::Border::default()
+                    .rounded(4)
+                    .width(1)
+                    .color(Color::from_rgb8(0xA0, 0xA0, 0xA0));
+                style.icon_color = Color::from_rgb8(0xE0, 0xE0, 0xE0);
+            } else {
+                style.border = iced::Border::default()
+                    .rounded(4)
+                    .width(1)
+                    .color(Color::from_rgb8(0xD0, 0xD0, 0xD0));
+            }
+            style.text_color = Some(CRABOT_TEXT_MUTED);
+            style
+        }
+        checkbox::Status::Active { is_checked } | checkbox::Status::Hovered { is_checked } => {
             let mut style = base;
             if is_checked {
                 style.background = CRABOT_PRIMARY.into();

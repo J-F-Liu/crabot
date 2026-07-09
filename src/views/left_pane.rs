@@ -50,6 +50,7 @@ pub(crate) fn left_pane<'a>(
     streaming: StreamState,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
+    enabled_mcp_servers: &'a indexmap::IndexMap<String, bool>,
 ) -> Element<'a, Message> {
     let agents_md: Element<'a, Message> = if agents_md_exists {
         agents_md_field_view(&system_prompt.agents_md)
@@ -108,6 +109,7 @@ pub(crate) fn left_pane<'a>(
             tool_list_state.mcp_expanded,
             enabled_tools,
             tool_registry.mcp_tools(),
+            enabled_mcp_servers,
         ),
     ];
 

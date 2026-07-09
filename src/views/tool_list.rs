@@ -4,8 +4,10 @@ use iced::{
     Alignment, Element, Length, padding,
     widget::{Space, checkbox, column, container, mouse_area, row, text, text::Wrapping},
 };
+use indexmap::IndexMap;
 
 use crate::Message;
+use crate::is_server_enabled;
 use crate::tools::mcp::McpTool;
 
 pub const BUILTIN_TOOLS: &str = "Builtin Tools";
@@ -103,7 +105,7 @@ pub(crate) fn tools_view<'a>(
         .map(|names| {
             let checkboxes: Vec<Element<'a, Message>> = names
                 .into_iter()
-                .map(|name| checkbox_cell(name, None, selected))
+                .map(|name| checkbox_cell(name, None, selected, true))
                 .collect();
             column(checkboxes).spacing(4).into()
         })
@@ -121,6 +123,7 @@ pub(crate) fn mcp_tools_section<'a>(
     expanded: bool,
     selected: &'a HashSet<String>,
     groups: &'a [(String, Vec<McpTool>)],
+    enabled_mcp_servers: &'a IndexMap<String, bool>,
 ) -> Element<'a, Message> {
     if groups.is_empty() {
         return column![].into();
@@ -140,7 +143,10 @@ pub(crate) fn mcp_tools_section<'a>(
     if expanded {
         let group_cols: Vec<Element<'a, Message>> = groups
             .iter()
-            .map(|(server, tools)| mcp_server_group_view(server, selected, tools))
+            .map(|(server, tools)| {
+                let enabled = is_server_enabled(enabled_mcp_servers, server);
+                mcp_server_group_view(server, enabled, selected, tools)
+            })
             .collect();
         column![
             header,
@@ -155,20 +161,27 @@ pub(crate) fn mcp_tools_section<'a>(
 
 fn mcp_server_group_view<'a>(
     server: &'a str,
+    enabled: bool,
     selected: &'a HashSet<String>,
     tools: &'a [McpTool],
 ) -> Element<'a, Message> {
     if tools.is_empty() {
         return column![].into();
     }
-    let label = text(server).size(13).style(|_theme| text::Style {
-        color: Some(crate::views::theme::CRABOT_TEXT_MUTED),
-    });
-    let checkboxes = mcp_tools_view(selected, tools);
-    column![label, checkboxes].spacing(2).into()
+    let server_cb = checkbox(enabled)
+        .label(server)
+        .style(crate::views::primary_checkbox)
+        .text_wrapping(Wrapping::None)
+        .on_toggle(move |v| Message::ToggleMcpServer(server.to_string(), v));
+    let checkboxes = mcp_tools_view(selected, tools, enabled);
+    column![server_cb, checkboxes].spacing(2).into()
 }
 
-fn mcp_tools_view<'a>(selected: &'a HashSet<String>, tools: &'a [McpTool]) -> Element<'a, Message> {
+fn mcp_tools_view<'a>(
+    selected: &'a HashSet<String>,
+    tools: &'a [McpTool],
+    enabled: bool,
+) -> Element<'a, Message> {
     const COLS: usize = 3;
 
     let n_rows = tools.len().div_ceil(COLS);
@@ -183,7 +196,7 @@ fn mcp_tools_view<'a>(selected: &'a HashSet<String>, tools: &'a [McpTool]) -> El
         .map(|tools| {
             let checkboxes: Vec<Element<'a, Message>> = tools
                 .into_iter()
-                .map(|tool| checkbox_cell(&tool.name, tool.title.as_deref(), selected))
+                .map(|tool| checkbox_cell(&tool.name, tool.title.as_deref(), selected, enabled))
                 .collect();
             column(checkboxes).spacing(4).into()
         })
@@ -199,14 +212,16 @@ fn checkbox_cell<'a>(
     name: &'a str,
     title: Option<&'a str>,
     selected: &'a HashSet<String>,
+    enabled: bool,
 ) -> Element<'a, Message> {
     let checked = selected.contains(name);
     let label = title.unwrap_or(name);
-    Element::from(
-        checkbox(checked)
-            .label(label)
-            .style(crate::views::primary_checkbox)
-            .text_wrapping(Wrapping::None)
-            .on_toggle(move |v| Message::ToggleAgentTool(name.to_string(), v)),
-    )
+    let mut cb = checkbox(checked)
+        .label(label)
+        .style(crate::views::primary_checkbox)
+        .text_wrapping(Wrapping::None);
+    if enabled {
+        cb = cb.on_toggle(move |v| Message::ToggleAgentTool(name.to_string(), v));
+    }
+    Element::from(cb)
 }

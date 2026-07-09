@@ -247,7 +247,12 @@ impl ToolRegistry {
     }
 
     /// Collect every tool whose name appears in `enabled`.
-    pub fn enabled_tools(&self, enabled: &HashSet<String>) -> Vec<ToolRef> {
+    /// MCP tools are further filtered by `enabled_servers` (server name must be present).
+    pub fn enabled_tools(
+        &self,
+        enabled: &HashSet<String>,
+        enabled_servers: &HashSet<String>,
+    ) -> Vec<ToolRef> {
         let mut tools: Vec<ToolRef> = Vec::new();
 
         for tool in self.builtin.iter() {
@@ -260,7 +265,10 @@ impl ToolRegistry {
                 tools.push(Arc::new(t.clone()));
             }
         }
-        for (_server, group) in &self.mcp {
+        for (server, group) in &self.mcp {
+            if !enabled_servers.contains(server) {
+                continue;
+            }
             for t in group {
                 if enabled.contains(&t.name) {
                     tools.push(Arc::new(t.clone()));

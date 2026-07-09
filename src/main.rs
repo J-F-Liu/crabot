@@ -117,6 +117,8 @@ struct App {
     tools_content: text_editor::Content,
     enabled_tools: HashSet<String>,
     tool_registry: tools::ToolRegistry,
+    /// Snapshot of saved MCP-server enable states.
+    saved_mcp_servers: IndexMap<String, bool>,
     /// Snapshot of saved agent-tool enable states.
     saved_agent_tools: IndexMap<String, bool>,
     user_prompt: TextArea,
@@ -184,6 +186,7 @@ pub(crate) enum Message {
     PreambleFileResult(Result<String, String>),
     SelectRules(FilepathEntry),
     RulesFileResult(Result<String, String>),
+    ToggleMcpServer(String, bool),
     ToggleAgentTool(String, bool),
     /// MCP tools discovered from a single server, delivered incrementally.
     McpToolsDiscovered(Option<(String, Vec<crabot::tools::mcp::McpTool>)>),
@@ -275,7 +278,9 @@ impl App {
         let workspace_path = saved.workspace;
         let files_tree = workspace::build_files_tree(&workspace_path);
         let (agents_md_exists, agents_md_content) = load_agents_md(&workspace_path);
-        let tools_summary = system::tools_summary(&tool_registry.enabled_tools(&enabled_tools));
+        let enabled_servers = enabled_server_names(&saved.mcp_servers);
+        let tools_summary =
+            system::tools_summary(&tool_registry.enabled_tools(&enabled_tools, &enabled_servers));
         let files_content = text_editor::Content::with_text(&files_tree);
         let tools_content = text_editor::Content::with_text(&tools_summary);
 
@@ -322,6 +327,7 @@ impl App {
             tools_content,
             tool_registry,
             enabled_tools,
+            saved_mcp_servers: saved.mcp_servers,
             saved_agent_tools: saved.agent_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
@@ -361,6 +367,18 @@ impl App {
                 .fold(Task::none(), Task::chain)
         };
         (app, session_task.chain(discover_task))
+    }
+
+    /// Rebuild the tools summary and refresh all UI fields that depend on it.
+    fn refresh_tools_summary(&mut self) {
+        let enabled_servers = enabled_server_names(&self.saved_mcp_servers);
+        let summary = system::tools_summary(
+            &self
+                .tool_registry
+                .enabled_tools(&self.enabled_tools, &enabled_servers),
+        );
+        self.tools_content = text_editor::Content::with_text(&summary);
+        self.system_prompt.tools.1 = summary;
     }
 
     fn update(&mut self, msg: Message) -> Task<Message> {
@@ -446,27 +464,27 @@ impl App {
                     field.0 = enabled;
                 }
             }
+            Message::ToggleMcpServer(server, enabled) => {
+                self.saved_mcp_servers.insert(server, enabled);
+                self.refresh_tools_summary();
+            }
             Message::ToggleAgentTool(tool_name, enabled) => {
                 self.enabled_tools.set(tool_name, enabled);
-                let summary =
-                    system::tools_summary(&self.tool_registry.enabled_tools(&self.enabled_tools));
-                self.system_prompt.tools.1 = summary.clone();
-                self.tools_content = text_editor::Content::with_text(&summary);
+                self.refresh_tools_summary();
             }
             Message::McpToolsDiscovered(group) => {
                 if let Some((server_name, tools)) = group {
+                    let server_enabled = is_server_enabled(&self.saved_mcp_servers, &server_name);
                     let new_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
                     self.tool_registry.register_mcp_group(server_name, tools);
-                    for name in &new_names {
-                        if self.saved_agent_tools.get(name).copied().unwrap_or(false) {
-                            self.enabled_tools.insert(name.clone());
+                    if server_enabled {
+                        for name in &new_names {
+                            if self.saved_agent_tools.get(name).copied().unwrap_or(false) {
+                                self.enabled_tools.insert(name.clone());
+                            }
                         }
                     }
-                    let summary = system::tools_summary(
-                        &self.tool_registry.enabled_tools(&self.enabled_tools),
-                    );
-                    self.system_prompt.tools.1 = summary.clone();
-                    self.tools_content = text_editor::Content::with_text(&summary);
+                    self.refresh_tools_summary();
                 }
             }
             Message::ToggleExpanded(name) => {
@@ -954,7 +972,10 @@ impl App {
             workspace: self.system_prompt.workspace.1.clone(),
             system_prompt: self.system_prompt.get_prompt(),
             user_prompt,
-            tools: self.tool_registry.enabled_tools(&self.enabled_tools),
+            tools: self.tool_registry.enabled_tools(
+                &self.enabled_tools,
+                &enabled_server_names(&self.saved_mcp_servers),
+            ),
             pending_user_prompt: self.pending_user_prompt.clone(),
             user_agent: crabot_title().to_string(),
         };
@@ -1038,6 +1059,8 @@ impl App {
                 .filter(|e| !e.path.as_os_str().is_empty())
                 .map(|e| e.path.clone())
                 .collect(),
+            font_scale: self.font_scale,
+            mcp_servers: self.saved_mcp_servers.clone(),
             agent_tools: self
                 .tool_registry
                 .all_names()
@@ -1046,7 +1069,6 @@ impl App {
                     (name.clone(), enabled)
                 })
                 .collect(),
-            font_scale: self.font_scale,
         };
         settings.save();
     }
@@ -1140,6 +1162,7 @@ impl App {
                 self.streaming,
                 &self.session_options,
                 &self.session.id,
+                &self.saved_mcp_servers,
             ),
             divider(&self.left_divider),
             center_pane(
@@ -1245,4 +1268,17 @@ fn load_agents_md(workspace: &std::path::Path) -> (bool, String) {
         }
     }
     (false, String::new())
+}
+
+/// Check whether a single MCP server is enabled in the given map.
+pub(crate) fn is_server_enabled(map: &IndexMap<String, bool>, name: &str) -> bool {
+    map.get(name).copied().unwrap_or(false)
+}
+
+/// Collect the names of all enabled MCP servers from a `name → enabled` map.
+fn enabled_server_names(map: &IndexMap<String, bool>) -> HashSet<String> {
+    map.iter()
+        .filter(|(_, enabled)| **enabled)
+        .map(|(name, _)| name.clone())
+        .collect()
 }
