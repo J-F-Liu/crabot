@@ -100,13 +100,13 @@ impl McpList {
 pub struct McpTool {
     /// Qualified name (e.g. `"filesystem_read_file"` or bare name).
     /// This is what the LLM sees and uses when calling the tool.
-    name: String,
+    pub name: String,
     /// Original tool name, used in execute requests to the remote server.
-    remote_name: String,
+    pub remote_name: String,
     /// Description from the remote tool.
-    description: String,
+    pub description: String,
     /// JSON Schema for the tool's input parameters.
-    schema: Value,
+    pub schema: Value,
     /// Handle for calling the remote server.
     peer: Peer<RoleClient>,
 }
@@ -384,54 +384,56 @@ async fn connect_http(server: &McpServer, url: &str) -> Result<McpConnection, St
     })
 }
 
-/// Connect to all configured servers, discover their tools, and return
-/// `McpTool` wrappers ready for registration.
-pub async fn discover_mcp_tools(servers: Vec<McpServer>) -> Vec<McpTool> {
-    let mut tools: Vec<McpTool> = Vec::new();
+/// Connect to a single MCP server, discover its tools, and return
+/// `McpTool` wrappers grouped under the server name.
+pub async fn discover_mcp_server(server: McpServer) -> Option<(String, Vec<McpTool>)> {
+    let server_name = server.name.clone();
+    let qualify = server.qualify_tool_names;
+    let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, server.connect()).await;
+    let conn = match connect_result {
+        Ok(Ok(conn)) => conn,
+        Ok(Err(e)) => {
+            eprintln!("Failed to connect to MCP server '{server_name}': {e}");
+            return None;
+        }
+        Err(_) => {
+            eprintln!(
+                "Timed out connecting to MCP server '{server_name}' after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            );
+            return None;
+        }
+    };
 
-    for server in servers {
-        let server_name = server.name.clone();
-        let qualify = server.qualify_tool_names;
-        let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, server.connect()).await;
-        let conn = match connect_result {
-            Ok(Ok(conn)) => conn,
-            Ok(Err(e)) => {
-                eprintln!("Failed to connect to MCP server '{server_name}': {e}");
-                continue;
+    let list_result = tokio::time::timeout(CONNECT_TIMEOUT, conn.list_tools()).await;
+    match list_result {
+        Ok(Ok(result)) => {
+            let peer = conn.peer();
+            let server_tools: Vec<McpTool> = result
+                .tools
+                .iter()
+                .map(|remote_tool| McpTool::new(&server_name, qualify, remote_tool, peer.clone()))
+                .collect();
+            // Keep the connection alive for the lifetime of the tools.
+            if let Ok(mut conns) = MCP_CONNECTIONS.lock() {
+                conns.push(conn);
             }
-            Err(_) => {
-                eprintln!(
-                    "Timed out connecting to MCP server '{server_name}' after {}s",
-                    CONNECT_TIMEOUT.as_secs()
-                );
-                continue;
-            }
-        };
-
-        let list_result = tokio::time::timeout(CONNECT_TIMEOUT, conn.list_tools()).await;
-        match list_result {
-            Ok(Ok(result)) => {
-                let peer = conn.peer();
-                for remote_tool in result.tools {
-                    let tool = McpTool::new(&server_name, qualify, &remote_tool, peer.clone());
-                    tools.push(tool);
-                }
-                // Keep the connection alive for the lifetime of the tools.
-                if let Ok(mut conns) = MCP_CONNECTIONS.lock() {
-                    conns.push(conn);
-                }
-            }
-            Ok(Err(e)) => {
-                eprintln!("Failed to list tools from MCP server '{server_name}': {e}");
-            }
-            Err(_) => {
-                eprintln!(
-                    "Timed out listing tools from MCP server '{server_name}' after {}s",
-                    CONNECT_TIMEOUT.as_secs()
-                );
+            if server_tools.is_empty() {
+                None
+            } else {
+                Some((server_name, server_tools))
             }
         }
+        Ok(Err(e)) => {
+            eprintln!("Failed to list tools from MCP server '{server_name}': {e}");
+            None
+        }
+        Err(_) => {
+            eprintln!(
+                "Timed out listing tools from MCP server '{server_name}' after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            );
+            None
+        }
     }
-
-    tools
 }

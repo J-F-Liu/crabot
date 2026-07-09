@@ -185,8 +185,8 @@ pub(crate) enum Message {
     SelectRules(FilepathEntry),
     RulesFileResult(Result<String, String>),
     ToggleAgentTool(String, bool),
-    /// MCP tools discovered from configured servers.
-    McpToolsDiscovered(Vec<crabot::tools::mcp::McpTool>),
+    /// MCP tools discovered from a single server, delivered incrementally.
+    McpToolsDiscovered(Option<(String, Vec<crabot::tools::mcp::McpTool>)>),
     /// An edit action targeting a specific [`TextArea`].
     /// The [`FocusedTarget`] identifies which text area should receive the action.
     EditTextArea(FocusedTarget, textarea::Message),
@@ -350,10 +350,15 @@ impl App {
         let discover_task = if mcp_servers.is_empty() {
             Task::none()
         } else {
-            Task::perform(
-                async move { tools::mcp::discover_mcp_tools(mcp_servers).await },
-                Message::McpToolsDiscovered,
-            )
+            mcp_servers
+                .into_iter()
+                .map(|s| {
+                    Task::perform(
+                        async move { tools::mcp::discover_mcp_server(s).await },
+                        Message::McpToolsDiscovered,
+                    )
+                })
+                .fold(Task::none(), Task::chain)
         };
         (app, session_task.chain(discover_task))
     }
@@ -448,17 +453,21 @@ impl App {
                 self.system_prompt.tools.1 = summary.clone();
                 self.tools_content = text_editor::Content::with_text(&summary);
             }
-            Message::McpToolsDiscovered(tools) => {
-                self.tool_registry.register_mcp(tools);
-                for name in self.tool_registry.mcp_names() {
-                    if self.saved_agent_tools.get(name).copied().unwrap_or(false) {
-                        self.enabled_tools.insert(name.clone());
+            Message::McpToolsDiscovered(group) => {
+                if let Some((server_name, tools)) = group {
+                    let new_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+                    self.tool_registry.register_mcp_group(server_name, tools);
+                    for name in &new_names {
+                        if self.saved_agent_tools.get(name).copied().unwrap_or(false) {
+                            self.enabled_tools.insert(name.clone());
+                        }
                     }
+                    let summary = system::tools_summary(
+                        &self.tool_registry.enabled_tools(&self.enabled_tools),
+                    );
+                    self.system_prompt.tools.1 = summary.clone();
+                    self.tools_content = text_editor::Content::with_text(&summary);
                 }
-                let summary =
-                    system::tools_summary(&self.tool_registry.enabled_tools(&self.enabled_tools));
-                self.system_prompt.tools.1 = summary.clone();
-                self.tools_content = text_editor::Content::with_text(&summary);
             }
             Message::ToggleExpanded(name) => {
                 if !self.prompt_section_state.update(name) {

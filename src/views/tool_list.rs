@@ -81,6 +81,59 @@ pub(crate) fn tools_section<'a>(
     }
 }
 
+/// A labelled section for MCP tools, with server sub-groups nested under a
+/// single collapsible "MCP Tools" header.
+pub(crate) fn mcp_tools_section<'a>(
+    expanded: bool,
+    selected: &'a HashSet<String>,
+    groups: &'a [(String, Vec<String>)],
+) -> Element<'a, Message> {
+    if groups.is_empty() {
+        return column![].into();
+    }
+
+    let arrow = if expanded { "▼" } else { "⯈" };
+    let header = mouse_area(
+        row![
+            text(MCP_TOOLS).size(14),
+            Space::new().width(Length::Fill),
+            text(arrow).size(12),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .on_press(Message::ToggleExpanded(MCP_TOOLS));
+
+    if expanded {
+        let group_cols: Vec<Element<'a, Message>> = groups
+            .iter()
+            .map(|(server, names)| server_group_view(server, selected, names))
+            .collect();
+        column![
+            header,
+            column(group_cols).spacing(4).padding(padding::left(4))
+        ]
+        .spacing(4)
+        .into()
+    } else {
+        column![header].into()
+    }
+}
+
+fn server_group_view<'a>(
+    server: &'a str,
+    selected: &'a HashSet<String>,
+    names: &'a [String],
+) -> Element<'a, Message> {
+    if names.is_empty() {
+        return column![].into();
+    }
+    let label = text(server).size(13).style(|_theme| text::Style {
+        color: Some(crate::views::theme::CRABOT_TEXT_MUTED),
+    });
+    let checkboxes = tools_view(selected, names);
+    column![label, checkboxes].spacing(2).into()
+}
+
 pub(crate) fn tools_view<'a>(
     selected: &'a HashSet<String>,
     names: &'a [String],

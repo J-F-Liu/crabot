@@ -157,10 +157,12 @@ fn make_nullable(value: &mut Value) {
 pub struct ToolRegistry {
     builtin: Vec<ToolRef>,
     custom: Vec<ToolRef>,
-    mcp: Vec<ToolRef>,
+    /// MCP tools grouped by server name: `(server_name, tools)`.
+    mcp: Vec<(String, Vec<ToolRef>)>,
     builtin_names: Vec<String>,
     custom_names: Vec<String>,
-    mcp_names: Vec<String>,
+    /// MCP tool names grouped by server name: `(server_name, tool_names)`.
+    mcp_groups: Vec<(String, Vec<String>)>,
 }
 
 impl ToolRegistry {
@@ -180,7 +182,7 @@ impl ToolRegistry {
             custom: Vec::new(),
             mcp: Vec::new(),
             custom_names: Vec::new(),
-            mcp_names: Vec::new(),
+            mcp_groups: Vec::new(),
         }
     }
 
@@ -198,10 +200,20 @@ impl ToolRegistry {
             .collect();
     }
 
-    /// Replace the MCP-discovered tools in the registry.
-    pub fn register_mcp(&mut self, tools: Vec<mcp::McpTool>) {
-        self.mcp_names = tools.iter().map(|t| t.name().to_string()).collect();
-        self.mcp = tools.into_iter().map(|t| Arc::new(t) as ToolRef).collect();
+    /// Add one MCP server's tools to the registry (incremental).
+    /// If a group with the same server name already exists, it is replaced.
+    pub fn register_mcp_group(&mut self, server_name: String, tools: Vec<mcp::McpTool>) {
+        let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        let refs: Vec<ToolRef> = tools.into_iter().map(|t| Arc::new(t) as ToolRef).collect();
+
+        // Replace existing group with the same server name, or append.
+        if let Some(pos) = self.mcp_groups.iter().position(|(n, _)| n == &server_name) {
+            self.mcp_groups[pos] = (server_name.clone(), names);
+            self.mcp[pos] = (server_name, refs);
+        } else {
+            self.mcp_groups.push((server_name.clone(), names));
+            self.mcp.push((server_name, refs));
+        }
     }
 
     /// Return the names of all built-in tools.
@@ -214,9 +226,16 @@ impl ToolRegistry {
         &self.custom_names
     }
 
-    /// Return the names of all MCP-discovered tools.
-    pub fn mcp_names(&self) -> &[String] {
-        &self.mcp_names
+    /// Return MCP tools grouped by server: `(server_name, tool_names)`.
+    pub fn mcp_server_groups(&self) -> &[(String, Vec<String>)] {
+        &self.mcp_groups
+    }
+
+    /// Return the names of all MCP-discovered tools (flat).
+    pub fn mcp_names(&self) -> impl Iterator<Item = &String> {
+        self.mcp_groups
+            .iter()
+            .flat_map(|(_server, names)| names.iter())
     }
 
     /// Return names of all registered tools (built-in + custom + MCP).
@@ -224,7 +243,7 @@ impl ToolRegistry {
         self.builtin_names
             .iter()
             .chain(self.custom_names.iter())
-            .chain(self.mcp_names.iter())
+            .chain(self.mcp_groups.iter().flat_map(|(_s, names)| names.iter()))
     }
 
     /// Collect every tool whose name appears in `enabled`.
@@ -242,9 +261,11 @@ impl ToolRegistry {
                 tools.push(Arc::clone(t));
             }
         }
-        for t in &self.mcp {
-            if enabled.contains(t.name()) {
-                tools.push(Arc::clone(t));
+        for (_server, group) in &self.mcp {
+            for t in group {
+                if enabled.contains(t.name()) {
+                    tools.push(Arc::clone(t));
+                }
             }
         }
 
