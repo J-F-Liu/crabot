@@ -36,6 +36,7 @@ pub struct SendConfig {
     pub tools: Vec<ToolRef>,
     /// Shared slot for a user prompt injected during streaming (tool execution / thinking).
     pub pending_user_prompt: Arc<Mutex<Option<String>>>,
+    pub user_agent: String,
 }
 
 /// Stream an LLM interaction with tool-execution loop.
@@ -58,6 +59,7 @@ pub async fn send_stream(
         user_prompt,
         tools,
         pending_user_prompt,
+        user_agent,
     } = config;
 
     let client = build_client(&model.base_url, &model.api_key, &model.api_type);
@@ -82,7 +84,8 @@ pub async fn send_stream(
         .with_capture_content(true)
         .with_capture_reasoning_content(true)
         .with_capture_tool_calls(true)
-        .with_capture_usage(true);
+        .with_capture_usage(true)
+        .with_extra_headers(("user-agent", user_agent));
 
     // Set reasoning effort, When thinking is off, omit it entirely
     if model.thinking {

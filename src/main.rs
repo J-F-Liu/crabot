@@ -956,6 +956,7 @@ impl App {
             user_prompt,
             tools: self.tool_registry.enabled_tools(&self.enabled_tools),
             pending_user_prompt: self.pending_user_prompt.clone(),
+            user_agent: crabot_title().to_string(),
         };
 
         let history = self.session.history.clone();
