@@ -155,14 +155,15 @@ fn make_nullable(value: &mut Value) {
 
 /// Owned registry of all tools (built-in, custom, and MCP-discovered).
 pub struct ToolRegistry {
-    builtin: Vec<ToolRef>,
-    custom: Vec<custom::CustomTool>,
+    pub builtin: Vec<ToolRef>,
+    pub custom: Vec<custom::CustomTool>,
     /// MCP tools grouped by server name: `(server_name, tools)`.
-    mcp: Vec<(String, Vec<mcp::McpTool>)>,
-    builtin_names: Vec<String>,
-    custom_names: Vec<String>,
+    pub mcp: Vec<(String, Vec<mcp::McpTool>)>,
+    pub builtin_names: Vec<String>,
+    pub custom_names: Vec<String>,
+    pub mcp_servers: Vec<mcp::McpServer>,
     /// MCP tool names grouped by server name: `(server_name, tool_names)`.
-    mcp_groups: Vec<(String, Vec<String>)>,
+    pub mcp_groups: Vec<(String, Vec<String>)>,
 }
 
 impl ToolRegistry {
@@ -182,6 +183,7 @@ impl ToolRegistry {
             custom: Vec::new(),
             mcp: Vec::new(),
             custom_names: Vec::new(),
+            mcp_servers: Vec::new(),
             mcp_groups: Vec::new(),
         }
     }
@@ -211,33 +213,6 @@ impl ToolRegistry {
         }
     }
 
-    /// Return the names of all built-in tools.
-    pub fn builtin_names(&self) -> &[String] {
-        &self.builtin_names
-    }
-
-    /// Return the names of all custom tools.
-    pub fn custom_names(&self) -> &[String] {
-        &self.custom_names
-    }
-
-    /// Return MCP tools grouped by server: `(server_name, McpTool list)`.
-    pub fn mcp_tools(&self) -> &[(String, Vec<mcp::McpTool>)] {
-        &self.mcp
-    }
-
-    /// Return MCP tools grouped by server: `(server_name, tool_names)`.
-    pub fn mcp_server_groups(&self) -> &[(String, Vec<String>)] {
-        &self.mcp_groups
-    }
-
-    /// Return the names of all MCP-discovered tools (flat).
-    pub fn mcp_names(&self) -> impl Iterator<Item = &String> {
-        self.mcp_groups
-            .iter()
-            .flat_map(|(_server, names)| names.iter())
-    }
-
     /// Return names of all registered tools (built-in + custom + MCP).
     pub fn all_names(&self) -> impl Iterator<Item = &String> {
         self.builtin_names
@@ -254,7 +229,6 @@ impl ToolRegistry {
         enabled_servers: &HashSet<String>,
     ) -> Vec<ToolRef> {
         let mut tools: Vec<ToolRef> = Vec::new();
-
         for tool in self.builtin.iter() {
             if enabled.contains(tool.name()) {
                 tools.push(Arc::clone(tool));
@@ -275,7 +249,6 @@ impl ToolRegistry {
                 }
             }
         }
-
         tools
     }
 }

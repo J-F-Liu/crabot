@@ -64,6 +64,9 @@ pub struct McpServer {
     pub transport: McpTransport,
     /// If true, tool names are prefixed with `{server_name}_`.
     pub qualify_tool_names: bool,
+    /// Prompt text injected into the system prompt when the server is enabled.
+    #[serde(default)]
+    pub prompt: String,
 }
 
 /// Persistable list of configured MCP servers.
@@ -422,7 +425,7 @@ async fn connect_http(
 
 /// Connect to a single MCP server, discover its tools, and return
 /// `McpTool` wrappers grouped under the server name.
-pub async fn discover_mcp_server(server: McpServer) -> Option<(String, Vec<McpTool>)> {
+pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
     let server_name = server.name.clone();
     let qualify = server.qualify_tool_names;
     let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, server.connect()).await;
@@ -430,14 +433,14 @@ pub async fn discover_mcp_server(server: McpServer) -> Option<(String, Vec<McpTo
         Ok(Ok(conn)) => conn,
         Ok(Err(e)) => {
             eprintln!("Failed to connect to MCP server '{server_name}': {e}");
-            return None;
+            return (server_name, vec![]);
         }
         Err(_) => {
             eprintln!(
                 "Timed out connecting to MCP server '{server_name}' after {}s",
                 CONNECT_TIMEOUT.as_secs()
             );
-            return None;
+            return (server_name, vec![]);
         }
     };
 
@@ -453,22 +456,18 @@ pub async fn discover_mcp_server(server: McpServer) -> Option<(String, Vec<McpTo
             if let Ok(mut conns) = MCP_CONNECTIONS.lock() {
                 conns.push(conn);
             }
-            if mcp_tools.is_empty() {
-                None
-            } else {
-                Some((server_name, mcp_tools))
-            }
+            (server_name, mcp_tools)
         }
         Ok(Err(e)) => {
             eprintln!("Failed to list tools from MCP server '{server_name}': {e}");
-            None
+            (server_name, vec![])
         }
         Err(_) => {
             eprintln!(
                 "Timed out listing tools from MCP server '{server_name}' after {}s",
                 CONNECT_TIMEOUT.as_secs()
             );
-            None
+            (server_name, vec![])
         }
     }
 }

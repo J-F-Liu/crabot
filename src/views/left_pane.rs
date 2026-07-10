@@ -50,7 +50,7 @@ pub(crate) fn left_pane<'a>(
     streaming: StreamState,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
-    enabled_mcp_servers: &'a indexmap::IndexMap<String, bool>,
+    enabled_mcp_servers: &'a HashSet<String>,
 ) -> Element<'a, Message> {
     let agents_md: Element<'a, Message> = if agents_md_exists {
         agents_md_field_view(&system_prompt.agents_md)
@@ -97,18 +97,18 @@ pub(crate) fn left_pane<'a>(
             BUILTIN_TOOLS,
             tool_list_state.builtin_expanded,
             enabled_tools,
-            tool_registry.builtin_names(),
+            &tool_registry.builtin_names,
         ),
         tools_section(
             CUSTOM_TOOLS,
             tool_list_state.custom_expanded,
             enabled_tools,
-            tool_registry.custom_names(),
+            &tool_registry.custom_names,
         ),
         mcp_tools_section(
             tool_list_state.mcp_expanded,
             enabled_tools,
-            tool_registry.mcp_tools(),
+            &tool_registry.mcp,
             enabled_mcp_servers,
         ),
     ];

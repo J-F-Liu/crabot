@@ -1,4 +1,7 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
+
+use crate::tools::ToolRegistry;
 
 pub const PREAMBLE: &str = "Preamble";
 pub const RULES: &str = "Rules";
@@ -101,11 +104,16 @@ impl SystemPrompt {
 }
 
 /// Generate an XML-formatted summary of enabled tools.
-pub fn tools_summary(all_tools: &[crate::tools::ToolRef]) -> String {
+pub fn tools_summary(
+    tool_registry: &ToolRegistry,
+    enabled_tools: &HashSet<String>,
+    enabled_servers: &HashSet<String>,
+) -> String {
+    let all_tools = tool_registry.enabled_tools(enabled_tools, enabled_servers);
     let mut result = String::new();
     result.push_str("<available-tools>\n");
 
-    for tool in all_tools {
+    for tool in &all_tools {
         let inst = tool.instruction();
         if inst.is_empty() {
             continue;
@@ -113,6 +121,12 @@ pub fn tools_summary(all_tools: &[crate::tools::ToolRef]) -> String {
         result.push_str(&format!("<tool name=\"{}\">{}</tool>\n", tool.name(), inst));
     }
 
+    // Build the MCP tools prompt section for the system prompt.
+    for server in &tool_registry.mcp_servers {
+        if enabled_servers.contains(&server.name) && !server.prompt.is_empty() {
+            result.push_str(&server.prompt);
+        }
+    }
     result.push_str("</available-tools>\n");
     result.push_str("Tools can be enabled or disabled at any time. A tool used earlier in the conversation may no longer be available. Before using a tool, verify that it is currently available. You may also have access to additional tools not listed here.\n");
     result

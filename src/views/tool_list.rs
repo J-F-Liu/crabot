@@ -4,10 +4,8 @@ use iced::{
     Alignment, Element, Length, padding,
     widget::{Space, checkbox, column, container, mouse_area, row, text, text::Wrapping},
 };
-use indexmap::IndexMap;
 
 use crate::Message;
-use crate::is_server_enabled;
 use crate::tools::mcp::McpTool;
 
 pub const BUILTIN_TOOLS: &str = "Builtin Tools";
@@ -123,7 +121,7 @@ pub(crate) fn mcp_tools_section<'a>(
     expanded: bool,
     selected: &'a HashSet<String>,
     groups: &'a [(String, Vec<McpTool>)],
-    enabled_mcp_servers: &'a IndexMap<String, bool>,
+    enabled_mcp_servers: &'a HashSet<String>,
 ) -> Element<'a, Message> {
     if groups.is_empty() {
         return column![].into();
@@ -144,7 +142,7 @@ pub(crate) fn mcp_tools_section<'a>(
         let group_cols: Vec<Element<'a, Message>> = groups
             .iter()
             .map(|(server, tools)| {
-                let enabled = is_server_enabled(enabled_mcp_servers, server);
+                let enabled = enabled_mcp_servers.contains(server);
                 mcp_server_group_view(server, enabled, selected, tools)
             })
             .collect();

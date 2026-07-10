@@ -115,10 +115,9 @@ struct App {
     // user-editable Content need to persist between view calls to maintain editor state
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
-    enabled_tools: HashSet<String>,
     tool_registry: tools::ToolRegistry,
-    /// Snapshot of saved MCP-server enable states.
-    saved_mcp_servers: IndexMap<String, bool>,
+    enabled_tools: HashSet<String>,
+    enabled_mcp_servers: HashSet<String>,
     /// Snapshot of saved agent-tool enable states.
     saved_agent_tools: IndexMap<String, bool>,
     user_prompt: TextArea,
@@ -189,7 +188,7 @@ pub(crate) enum Message {
     ToggleMcpServer(String, bool),
     ToggleAgentTool(String, bool),
     /// MCP tools discovered from a single server, delivered incrementally.
-    McpToolsDiscovered(Option<(String, Vec<crabot::tools::mcp::McpTool>)>),
+    McpToolsDiscovered((String, Vec<crabot::tools::mcp::McpTool>)),
     /// An edit action targeting a specific [`TextArea`].
     /// The [`FocusedTarget`] identifies which text area should receive the action.
     EditTextArea(FocusedTarget, textarea::Message),
@@ -260,12 +259,13 @@ impl App {
 
         let mut tool_registry = tools::ToolRegistry::new();
         tool_registry.register_custom(custom_tool_list);
+        tool_registry.mcp_servers = mcp_list.servers.clone();
 
         let enabled_tools: HashSet<String> = tool_registry
-            .builtin_names()
+            .builtin_names
             .iter()
             .cloned()
-            .chain(tool_registry.custom_names().iter().cloned())
+            .chain(tool_registry.custom_names.iter().cloned())
             .filter(|name| saved.agent_tools.get(name).copied().unwrap_or(true))
             .collect();
 
@@ -278,9 +278,14 @@ impl App {
         let workspace_path = saved.workspace;
         let files_tree = workspace::build_files_tree(&workspace_path);
         let (agents_md_exists, agents_md_content) = load_agents_md(&workspace_path);
-        let enabled_servers = enabled_server_names(&saved.mcp_servers);
+        let enabled_mcp_servers: HashSet<_> = saved
+            .mcp_servers
+            .iter()
+            .filter(|(_, enabled)| **enabled)
+            .map(|(name, _)| name.clone())
+            .collect();
         let tools_summary =
-            system::tools_summary(&tool_registry.enabled_tools(&enabled_tools, &enabled_servers));
+            system::tools_summary(&tool_registry, &enabled_tools, &enabled_mcp_servers);
         let files_content = text_editor::Content::with_text(&files_tree);
         let tools_content = text_editor::Content::with_text(&tools_summary);
 
@@ -327,7 +332,7 @@ impl App {
             tools_content,
             tool_registry,
             enabled_tools,
-            saved_mcp_servers: saved.mcp_servers,
+            enabled_mcp_servers,
             saved_agent_tools: saved.agent_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
@@ -352,11 +357,11 @@ impl App {
             default_workspace_path: setup::default_workspace_path(),
         };
         let session_task = app.refresh_session_list();
-        let mcp_servers = mcp_list.servers.clone();
-        let discover_task = if mcp_servers.is_empty() {
+        let discover_task = if mcp_list.servers.is_empty() {
             Task::none()
         } else {
-            mcp_servers
+            mcp_list
+                .servers
                 .into_iter()
                 .map(|s| {
                     Task::perform(
@@ -371,11 +376,10 @@ impl App {
 
     /// Rebuild the tools summary and refresh all UI fields that depend on it.
     fn refresh_tools_summary(&mut self) {
-        let enabled_servers = enabled_server_names(&self.saved_mcp_servers);
         let summary = system::tools_summary(
-            &self
-                .tool_registry
-                .enabled_tools(&self.enabled_tools, &enabled_servers),
+            &self.tool_registry,
+            &self.enabled_tools,
+            &self.enabled_mcp_servers,
         );
         self.tools_content = text_editor::Content::with_text(&summary);
         self.system_prompt.tools.1 = summary;
@@ -465,27 +469,26 @@ impl App {
                 }
             }
             Message::ToggleMcpServer(server, enabled) => {
-                self.saved_mcp_servers.insert(server, enabled);
+                self.enabled_mcp_servers.set(server, enabled);
                 self.refresh_tools_summary();
             }
             Message::ToggleAgentTool(tool_name, enabled) => {
                 self.enabled_tools.set(tool_name, enabled);
                 self.refresh_tools_summary();
             }
-            Message::McpToolsDiscovered(group) => {
-                if let Some((server_name, tools)) = group {
-                    let server_enabled = is_server_enabled(&self.saved_mcp_servers, &server_name);
-                    let new_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+            Message::McpToolsDiscovered((server_name, tools)) => {
+                if tools.is_empty() {
+                    self.enabled_mcp_servers.remove(&server_name);
+                } else if self.enabled_mcp_servers.contains(&server_name) {
+                    let new_names: Vec<_> = tools.iter().map(|t| t.name.clone()).collect();
                     self.tool_registry.register_mcp_group(server_name, tools);
-                    if server_enabled {
-                        for name in &new_names {
-                            if self.saved_agent_tools.get(name).copied().unwrap_or(false) {
-                                self.enabled_tools.insert(name.clone());
-                            }
-                        }
-                    }
-                    self.refresh_tools_summary();
+                    self.enabled_tools.extend(
+                        new_names.into_iter().filter(|name| {
+                            self.saved_agent_tools.get(name).copied().unwrap_or(false)
+                        }),
+                    );
                 }
+                self.refresh_tools_summary();
             }
             Message::ToggleExpanded(name) => {
                 if !self.prompt_section_state.update(name) {
@@ -972,10 +975,9 @@ impl App {
             workspace: self.system_prompt.workspace.1.clone(),
             system_prompt: self.system_prompt.get_prompt(),
             user_prompt,
-            tools: self.tool_registry.enabled_tools(
-                &self.enabled_tools,
-                &enabled_server_names(&self.saved_mcp_servers),
-            ),
+            tools: self
+                .tool_registry
+                .enabled_tools(&self.enabled_tools, &self.enabled_mcp_servers),
             pending_user_prompt: self.pending_user_prompt.clone(),
             user_agent: crabot_title().to_string(),
         };
@@ -1060,7 +1062,12 @@ impl App {
                 .map(|e| e.path.clone())
                 .collect(),
             font_scale: self.font_scale,
-            mcp_servers: self.saved_mcp_servers.clone(),
+            mcp_servers: self
+                .tool_registry
+                .mcp_servers
+                .iter()
+                .map(|s| (s.name.clone(), self.enabled_mcp_servers.contains(&s.name)))
+                .collect(),
             agent_tools: self
                 .tool_registry
                 .all_names()
@@ -1162,7 +1169,7 @@ impl App {
                 self.streaming,
                 &self.session_options,
                 &self.session.id,
-                &self.saved_mcp_servers,
+                &self.enabled_mcp_servers,
             ),
             divider(&self.left_divider),
             center_pane(
@@ -1268,17 +1275,4 @@ fn load_agents_md(workspace: &std::path::Path) -> (bool, String) {
         }
     }
     (false, String::new())
-}
-
-/// Check whether a single MCP server is enabled in the given map.
-pub(crate) fn is_server_enabled(map: &IndexMap<String, bool>, name: &str) -> bool {
-    map.get(name).copied().unwrap_or(false)
-}
-
-/// Collect the names of all enabled MCP servers from a `name → enabled` map.
-fn enabled_server_names(map: &IndexMap<String, bool>) -> HashSet<String> {
-    map.iter()
-        .filter(|(_, enabled)| **enabled)
-        .map(|(name, _)| name.clone())
-        .collect()
 }
