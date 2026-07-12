@@ -18,7 +18,6 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use shell_words::split;
-use tokio::process::Command;
 
 use super::Tool;
 
@@ -353,7 +352,14 @@ async fn connect_stdio(
         .split_first()
         .ok_or_else(|| format!("Empty command for server '{}'", server.name))?;
 
-    let mut cmd = Command::new(exe);
+    // Resolve the executable via PATH so that bare names like `npx` work
+    // reliably across all platforms (especially Windows `.cmd` shims).
+    let mut cmd = rmcp::transport::which_command(exe).map_err(|e| {
+        format!(
+            "Command '{}' not found in PATH for server '{}': {e}",
+            exe, server.name
+        )
+    })?;
     cmd.args(args);
     for (k, v) in env_vars {
         cmd.env(k, v);

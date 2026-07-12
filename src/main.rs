@@ -357,20 +357,16 @@ impl App {
             default_workspace_path: setup::default_workspace_path(),
         };
         let session_task = app.refresh_session_list();
-        let discover_task = if mcp_list.servers.is_empty() {
-            Task::none()
-        } else {
-            mcp_list
-                .servers
-                .into_iter()
-                .map(|s| {
-                    Task::perform(
-                        async move { tools::mcp::discover_mcp_server(s).await },
-                        Message::McpToolsDiscovered,
-                    )
-                })
-                .fold(Task::none(), Task::chain)
-        };
+        let discover_task = mcp_list
+            .servers
+            .into_iter()
+            .map(|s| {
+                Task::perform(
+                    async move { tools::mcp::discover_mcp_server(s).await },
+                    Message::McpToolsDiscovered,
+                )
+            })
+            .fold(Task::none(), Task::chain);
         (app, session_task.chain(discover_task))
     }
 
