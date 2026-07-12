@@ -61,10 +61,10 @@ pub(crate) fn right_pane<'a>(
         .push(token_row("Cached tokens:", format!("{cached_tokens}")));
 
     if let Some(cw) = context_window.filter(|&cw| cw > 0) {
-        let pct = ((prompt_tokens as u32) * 100).checked_div(cw).unwrap_or(0);
+        let pct = (prompt_tokens as f64) * 100.0 / cw as f64;
         col = col
             .push(token_row("window size:", format!("{cw}")))
-            .push(token_row("Window used:", format!("{pct}%")));
+            .push(token_row("Window used:", format!("{:.1}%", pct)));
     }
 
     // ── cumulative token usage and cost ───────────────────────────────────────────
