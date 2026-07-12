@@ -1,3 +1,23 @@
+# Crabot v0.4.0
+
+- **MCP (Model Context Protocol) support** — connect to external MCP servers via Stdio or HTTP transport. Tools are auto-discovered from each server, displayed grouped by server name in the tools UI, with per-server toggle checkboxes. Configure servers in `~/.crabot/mcp.ron`.
+- **MCP custom prompts** — MCP servers can inject custom prompt text directly into the system prompt, giving tools access to usage instructions.
+- **MCP custom HTTP headers** — set per-server headers (e.g. API keys) directly in the MCP server config.
+- **Unified ToolRegistry** — all tools (built-in, custom, MCP) are now managed by a central `ToolRegistry`, replacing the old static globals. Enables consistent tool lifecycle and toggle logic.
+- **Immediate Stop** — the Stop button now cancels in-progress bash, custom, *and* MCP tool executions instantly.
+- **Session search** — `Ctrl+F` opens a search bar for finding keywords in session dialogs. Navigate between matches with arrow buttons and hit counters.
+- **Syntax highlighting** — both assistant responses and reasoning blocks are now rendered as full Markdown with syntax highlighting in fenced code blocks.
+- **In-app modal dialogs** — replaced the external `rfd::MessageDialog` with native iced modals for workspace confirmation and other prompts, matching Crabot's visual style.
+- **Collapsible tool sections** — built-in and custom tool lists are independently collapsible, giving you finer control over the left pane layout.
+- **Context window precision** — the window usage percentage now shows one decimal place for more accurate tracking.
+- **No console flash on Windows** — MCP Stdio servers and custom tools no longer flash a visible console window at startup.
+- **PATH resolution for MCP commands** — bare command names in MCP server configs (e.g. `npx`) now resolve via the system PATH.
+- **Bug fix: tool toggle enforcement** — tool enable/disable checkboxes are now correctly respected during agent tool execution.
+- **Default tools.ron** — a default `~/.crabot/tools.ron` is auto-created on first boot alongside the other config files.
+- **Architecture docs** — a comprehensive `AGENTS.md` now documents the codebase architecture, data flow, and conventions for contributors.
+
+**Full Changelog**: [`v0.3.0...v0.4.0`](https://github.com/J-F-Liu/crabot/compare/v0.3.0...v0.4.0)
+
 # Crabot v0.3.0
 
 - User-defined **custom tools** via `~/.crabot/tools.ron` — CLI commands with TinyTemplate argument substitution and JSON Schema parameters, toggleable in the UI alongside built-in tools.
