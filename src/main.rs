@@ -6,6 +6,7 @@ mod chat;
 mod fonts;
 mod llm;
 mod model;
+mod search;
 mod session;
 mod settings;
 mod setup;
@@ -45,7 +46,9 @@ use views::session_view::SessionEntry;
 use views::system_prompt::PromptSectionState;
 use views::theme::{HANDLE, MIN_W, default_theme};
 use views::tool_list::ToolListState;
-use views::{DividerState, center_pane, divider, left_pane, right_pane, scroll_to_end};
+use views::{
+    DividerState, SEARCH_INPUT, center_pane, divider, left_pane, right_pane, scroll_to_end,
+};
 use widgets::textarea::{self, TextArea};
 
 fn crabot_title() -> &'static str {
@@ -166,6 +169,8 @@ struct App {
     show_workspace_dialog: bool,
     /// Cached default workspace path shown in the confirmation dialog.
     default_workspace_path: PathBuf,
+    /// Center-pane search UI state and measurement cache.
+    search: search::SearchState,
 }
 
 #[derive(Clone)]
@@ -237,6 +242,19 @@ pub(crate) enum Message {
     /// Arrow-key navigation for the session pick_list.
     /// `true` = up (previous), `false` = down (next).
     NavigateSession(bool),
+    /// Toggle the search bar in the center pane.
+    ToggleSearch,
+    /// Search query text changed.
+    SearchQueryChanged(String),
+    /// Execute the search (Enter key).
+    SearchSubmit,
+    /// Navigate to previous (-1) or next (+1) search result.
+    SearchNavigate(i32),
+    /// Escape key pressed. Closes search bar if visible, otherwise
+    /// clears selectable-text mode.
+    EscapePressed,
+    /// Result of measuring turn offsets from the widget tree.
+    TurnOffsetsMeasured(u64, Vec<f32>),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -332,7 +350,7 @@ impl App {
             tools_content,
             tool_registry,
             enabled_tools,
-            enabled_mcp_servers,
+            enabled_mcp_servers: enabled_mcp_servers.clone(),
             saved_agent_tools: saved.agent_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::Code,
@@ -355,6 +373,7 @@ impl App {
             focused: None,
             show_workspace_dialog: false,
             default_workspace_path: setup::default_workspace_path(),
+            search: search::SearchState::default(),
         };
         let session_task = app.refresh_session_list();
         let discover_task = mcp_list
@@ -443,6 +462,7 @@ impl App {
                 // Ignore zero-size events (e.g. window minimized on Windows).
                 if size.width > 0.0 && size.height > 0.0 {
                     self.window_size = size;
+                    self.search.invalidate_offsets();
                 }
             }
             Message::WindowMoved(pos) => {
@@ -465,8 +485,31 @@ impl App {
                 }
             }
             Message::ToggleMcpServer(server, enabled) => {
-                self.enabled_mcp_servers.set(server, enabled);
+                self.enabled_mcp_servers.set(server.clone(), enabled);
+                // When enabling a server whose tools haven't been discovered yet
+                // (e.g. it was disabled at startup), trigger discovery now.
+                let discovery = if enabled
+                    && !self
+                        .tool_registry
+                        .mcp
+                        .iter()
+                        .any(|(name, _)| name == &server)
+                {
+                    self.tool_registry
+                        .mcp_servers
+                        .iter()
+                        .find(|s| s.name == server)
+                        .cloned()
+                } else {
+                    None
+                };
                 self.refresh_tools_summary();
+                if let Some(s) = discovery {
+                    return Task::perform(
+                        async move { tools::mcp::discover_mcp_server(s).await },
+                        Message::McpToolsDiscovered,
+                    );
+                }
             }
             Message::ToggleAgentTool(tool_name, enabled) => {
                 self.enabled_tools.set(tool_name, enabled);
@@ -475,9 +518,11 @@ impl App {
             Message::McpToolsDiscovered((server_name, tools)) => {
                 if tools.is_empty() {
                     self.enabled_mcp_servers.remove(&server_name);
-                } else if self.enabled_mcp_servers.contains(&server_name) {
+                } else {
                     let new_names: Vec<_> = tools.iter().map(|t| t.name.clone()).collect();
                     self.tool_registry.register_mcp_group(server_name, tools);
+                    // Auto-enable tools that were previously saved as enabled.
+                    // New tools default to disabled (opt-in).
                     self.enabled_tools.extend(
                         new_names.into_iter().filter(|name| {
                             self.saved_agent_tools.get(name).copied().unwrap_or(false)
@@ -583,6 +628,7 @@ impl App {
                 self.expanded_turns.clear();
                 self.expanded_dialogs.clear();
                 self.selectable_msgs.clear();
+                self.search.reset();
                 // Refresh workspace tree so the system prompt reflects current files.
                 self.system_prompt.files.1 =
                     workspace::build_files_tree(&self.system_prompt.workspace.1);
@@ -596,10 +642,12 @@ impl App {
                 let key = (idx, sub);
                 let present = self.expanded_turns.contains(&key);
                 self.expanded_turns.set(key, !present);
+                self.search.invalidate_offsets();
             }
             Message::ToggleDialogExpand(idx) => {
                 let present = self.expanded_dialogs.contains(&idx);
                 self.expanded_dialogs.set(idx, !present);
+                self.search.invalidate_offsets();
             }
             Message::LoadSession(entry) => {
                 if self.streaming != StreamState::Idle {
@@ -623,6 +671,7 @@ impl App {
                 self.expanded_turns.clear();
                 self.expanded_dialogs.clear();
                 self.selectable_msgs.clear();
+                self.search.reset();
             }
             Message::SessionListLoaded(entries) => {
                 self.session_options = entries;
@@ -753,6 +802,7 @@ impl App {
                     tc.content.push_str(&chunk);
                     tc.refresh_md_cache();
                 }
+                self.search.invalidate_offsets();
                 return self.maybe_scroll_to_end();
             }
             Message::StreamReasoning(chunk) => {
@@ -764,6 +814,7 @@ impl App {
                         .push_str(&chunk);
                     tc.refresh_md_cache();
                 }
+                self.search.invalidate_offsets();
                 return self.maybe_scroll_to_end();
             }
             Message::StreamToolResult(tr) => {
@@ -793,10 +844,12 @@ impl App {
             }
             Message::StreamDone(genai_messages) => {
                 self.handle_stream_done(genai_messages);
+                self.search.invalidate_offsets();
                 return self.maybe_scroll_to_end();
             }
             Message::StreamError(err, genai_messages) => {
                 self.handle_stream_error(err, genai_messages);
+                self.search.invalidate_offsets();
                 return self.maybe_scroll_to_end();
             }
             Message::CopySessionTitle => {
@@ -852,6 +905,14 @@ impl App {
             }
             Message::Zoom(delta) => {
                 self.font_scale = (self.font_scale + delta).clamp(0.5, 2.0);
+                self.search.invalidate_offsets();
+            }
+            Message::EscapePressed => {
+                if self.search.visible {
+                    self.search.visible = false;
+                } else {
+                    self.selectable_msgs.clear();
+                }
             }
             Message::ToggleSelectableMode(msg_index) => match msg_index {
                 Some(i) => {
@@ -860,6 +921,49 @@ impl App {
                 }
                 None => self.selectable_msgs.clear(),
             },
+            Message::ToggleSearch => {
+                self.search.visible = !self.search.visible;
+                if self.search.visible {
+                    return iced::widget::operation::focus(SEARCH_INPUT.clone());
+                }
+            }
+            Message::SearchQueryChanged(q) => {
+                self.search.set_query(q);
+            }
+            Message::SearchSubmit => {
+                if let Some(target) = self.search.submit(&self.session) {
+                    let q = self.search.query.clone();
+                    search::expand_result(
+                        &self.session,
+                        &mut self.expanded_dialogs,
+                        &mut self.expanded_turns,
+                        target,
+                        &q,
+                    );
+                    let total = self.session.total_turns();
+                    return self.search.measure_and_scroll(total, target);
+                }
+            }
+            Message::SearchNavigate(delta) => {
+                if let Some(target) = self.search.navigate(delta) {
+                    let q = self.search.query.clone();
+                    let changed = search::expand_result(
+                        &self.session,
+                        &mut self.expanded_dialogs,
+                        &mut self.expanded_turns,
+                        target,
+                        &q,
+                    );
+                    if !changed && let Some(task) = self.search.scroll_to_target(target) {
+                        return task;
+                    }
+                    let total = self.session.total_turns();
+                    return self.search.measure_and_scroll(total, target);
+                }
+            }
+            Message::TurnOffsetsMeasured(generation, offsets) => {
+                self.search.handle_offsets(generation, offsets);
+            }
         }
         Task::none()
     }
@@ -1179,6 +1283,7 @@ impl App {
                 &self.selectable_msgs,
                 self.font_scale,
                 self.pending_prompt_display.as_deref(),
+                &self.search,
             ),
             divider(&self.right_divider),
             right_pane(
@@ -1230,7 +1335,7 @@ impl App {
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::Escape),
                     ..
-                }) => Some(Message::ToggleSelectableMode(None)),
+                }) => Some(Message::EscapePressed),
                 Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                     if modifiers.command() =>
                 {
@@ -1241,6 +1346,7 @@ impl App {
                         keyboard::Key::Character("y") => {
                             Some(Message::UndoRedo(textarea::Message::Redo))
                         }
+                        keyboard::Key::Character("f") => Some(Message::ToggleSearch),
                         keyboard::Key::Character("=") => Some(Message::Zoom(0.05)),
                         keyboard::Key::Character("-") => Some(Message::Zoom(-0.05)),
                         _ => None,

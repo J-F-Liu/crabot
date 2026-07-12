@@ -1,6 +1,6 @@
 use iced::{
     Border, Color, Element, Fill, Font, Theme, font,
-    widget::{Space, column, container, row, text},
+    widget::{Space, column, container, rich_text, row, span, text},
 };
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
@@ -12,6 +12,57 @@ use super::theme::{
 };
 use crate::Message;
 use crate::tools::edit::EditParam;
+
+/// Color used for search keyword highlighting within text.
+const SEARCH_HIGHLIGHT_BG: Color = Color::from_rgba(1.0, 0.92, 0.0, 0.35);
+
+/// Build a vector of `Span`s from `content` where occurrences of `query` are
+/// case-insensitively highlighted. Spans own their text (static lifetime).
+pub(super) fn highlighted_spans(
+    content: &str,
+    query: &str,
+) -> Vec<iced::widget::text::Span<'static, (), iced::Font>> {
+    if query.trim().is_empty() {
+        return vec![span(content.to_string())];
+    }
+
+    let lower_content = content.to_lowercase();
+    let lower_query = query.to_lowercase();
+    let query_len = query.len();
+
+    let mut spans: Vec<iced::widget::text::Span<'static, (), iced::Font>> = Vec::new();
+    let mut last_end = 0;
+
+    for (start, _) in lower_content.match_indices(&lower_query) {
+        if start > last_end {
+            spans.push(span(content[last_end..start].to_string()));
+        }
+        let end = start + query_len;
+        spans.push(span(content[start..end].to_string()).background(SEARCH_HIGHLIGHT_BG));
+        last_end = end;
+    }
+
+    if last_end < content.len() {
+        spans.push(span(content[last_end..].to_string()));
+    }
+
+    if spans.is_empty() {
+        spans.push(span(content.to_string()));
+    }
+
+    spans
+}
+
+/// Build text with inline search keyword highlighting.
+/// Returns a `rich_text` element when a query is active, or plain `text` otherwise.
+pub(super) fn highlighted_text(content: &str, query: &str, size: f32) -> Element<'static, Message> {
+    if query.trim().is_empty() {
+        return text(content.to_string()).size(size).into();
+    }
+    rich_text(highlighted_spans(content, query))
+        .size(size)
+        .into()
+}
 
 /// Monospace font stack for paths and code snippets.
 fn mono_font() -> Font {
@@ -45,6 +96,7 @@ fn diff_row<'a>(
     sel_style: fn(&Theme) -> SelectionStyle,
     bg: Color,
     font_scale: f32,
+    search_query: &str,
 ) -> Element<'a, Message> {
     container(
         row![
@@ -53,10 +105,15 @@ fn diff_row<'a>(
                 .color(marker_color)
                 .font(bold_font()),
             Space::new().width(6),
-            SelectableText::new(content)
-                .size(12.0 * font_scale)
-                .style(sel_style)
-                .font(mono_font()),
+            if search_query.trim().is_empty() {
+                SelectableText::new(content)
+                    .size(12.0 * font_scale)
+                    .style(sel_style)
+                    .font(mono_font())
+                    .into()
+            } else {
+                highlighted_text(&content, search_query, 12.0 * font_scale)
+            },
         ]
         .spacing(0),
     )
@@ -74,17 +131,27 @@ fn diff_row<'a>(
 }
 
 /// Single tool-argument key-value row.
-pub(super) fn arg_row<'a>(key: &'a str, value: String, font_scale: f32) -> Element<'a, Message> {
+pub(super) fn arg_row<'a>(
+    key: &'a str,
+    value: String,
+    font_scale: f32,
+    search_query: &str,
+) -> Element<'a, Message> {
     row![
         text(format!("{}:", key))
             .size(12.0 * font_scale)
             .color(CRABOT_TOOL_ACCENT)
             .font(bold_font()),
         Space::new().width(8),
-        SelectableText::new(value)
-            .size(12.0 * font_scale)
-            .style(sel_default)
-            .font(mono_font()),
+        if search_query.trim().is_empty() {
+            SelectableText::new(value)
+                .size(12.0 * font_scale)
+                .style(sel_default)
+                .font(mono_font())
+                .into()
+        } else {
+            highlighted_text(&value, search_query, 12.0 * font_scale)
+        },
     ]
     .spacing(0)
     .into()
@@ -95,6 +162,7 @@ fn edits_table<'a>(
     key: &'a str,
     edits: &'a [serde_json::Value],
     font_scale: f32,
+    search_query: &str,
 ) -> Element<'a, Message> {
     let header = row![
         text(format!("{}:", key))
@@ -131,6 +199,7 @@ fn edits_table<'a>(
                             sel_secondary,
                             DIFF_BG_DEL,
                             font_scale,
+                            search_query,
                         ),
                         diff_row(
                             "+",
@@ -139,6 +208,7 @@ fn edits_table<'a>(
                             sel_primary,
                             DIFF_BG_ADD,
                             font_scale,
+                            search_query,
                         ),
                     ],
                     Err(_) => vec![
@@ -150,6 +220,7 @@ fn edits_table<'a>(
                             sel_secondary,
                             DIFF_BG_DEL,
                             font_scale,
+                            search_query,
                         ),
                     ],
                 };
@@ -164,7 +235,11 @@ fn edits_table<'a>(
 }
 
 /// All tool-argument rows.
-pub(super) fn args_rows(args: &serde_json::Value, font_scale: f32) -> Vec<Element<'_, Message>> {
+pub(super) fn args_rows<'a>(
+    args: &'a serde_json::Value,
+    font_scale: f32,
+    search_query: &str,
+) -> Vec<Element<'a, Message>> {
     let Some(map) = args.as_object() else {
         return Vec::new();
     };
@@ -179,12 +254,15 @@ pub(super) fn args_rows(args: &serde_json::Value, font_scale: f32) -> Vec<Elemen
         let combined = format!("offset: {}  limit: {}", off, lim);
         rows.push(
             container(
-                row![
+                row![if search_query.trim().is_empty() {
                     SelectableText::new(combined)
                         .size(12.0 * font_scale)
                         .style(sel_secondary)
-                        .font(mono_font()),
-                ]
+                        .font(mono_font())
+                        .into()
+                } else {
+                    highlighted_text(&combined, search_query, 12.0 * font_scale)
+                },]
                 .spacing(0),
             )
             .padding([4, 8])
@@ -209,14 +287,14 @@ pub(super) fn args_rows(args: &serde_json::Value, font_scale: f32) -> Vec<Elemen
         if k == "edits"
             && let Some(arr) = v.as_array()
         {
-            rows.push(edits_table(k, arr, font_scale));
+            rows.push(edits_table(k, arr, font_scale, search_query));
             continue;
         }
         let val = v
             .as_str()
             .map(|s| s.to_string())
             .unwrap_or_else(|| v.to_string());
-        rows.push(arg_row(k, val, font_scale));
+        rows.push(arg_row(k, val, font_scale, search_query));
     }
     rows
 }
@@ -233,19 +311,21 @@ fn fmt_arg(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Strin
 }
 
 /// Only the "path" argument row, when present.
-pub(super) fn path_arg_row(
-    args: &serde_json::Value,
+pub(super) fn path_arg_row<'a>(
+    args: &'a serde_json::Value,
     font_scale: f32,
-) -> Option<Element<'_, Message>> {
+    search_query: &str,
+) -> Option<Element<'a, Message>> {
     let path = args.as_object()?.get("path")?.as_str()?;
-    Some(arg_row("path", path.to_string(), font_scale))
+    Some(arg_row("path", path.to_string(), font_scale, search_query))
 }
 
 /// Tool result text (success or error).
-pub(super) fn result_text(
-    result: &Result<String, String>,
+pub(super) fn result_text<'a>(
+    result: &'a Result<String, String>,
     font_scale: f32,
-) -> Element<'_, Message> {
+    search_query: &str,
+) -> Element<'a, Message> {
     let display: &str = result
         .as_ref()
         .map(|s| s.as_str())
@@ -257,19 +337,26 @@ pub(super) fn result_text(
         CRABOT_DANGER
     };
 
+    let body: Element<'_, Message> = if search_query.trim().is_empty() {
+        SelectableText::new(display)
+            .size(13.0 * font_scale)
+            .style(move |theme: &Theme| SelectionStyle {
+                color: Some(color_text(theme)),
+                selection: accent,
+            })
+            .font(mono_font())
+            .into()
+    } else {
+        highlighted_text(display, search_query, 13.0 * font_scale)
+    };
+
     container(
         column![
             text(if is_ok { "Result" } else { "Error" })
                 .size(11.0 * font_scale)
                 .color(accent)
                 .font(bold_font()),
-            SelectableText::new(display)
-                .size(13.0 * font_scale)
-                .style(move |theme: &Theme| SelectionStyle {
-                    color: Some(color_text(theme)),
-                    selection: accent,
-                })
-                .font(mono_font()),
+            body,
         ]
         .spacing(4)
         .width(Fill),

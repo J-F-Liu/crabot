@@ -1,7 +1,8 @@
 use iced::widget;
 use iced::{
-    Background, Border, Color, Element, Fill, Font, Length, Padding, Task, Theme,
+    Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task, Theme,
     advanced::text::Highlight,
+    advanced::widget::operation::{Operation, Outcome},
     alignment, font,
     widget::{Space, button, column, container, markdown, mouse_area, row, scrollable, text},
 };
@@ -15,19 +16,91 @@ use super::theme::{
     CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_TEXT,
     CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text, thin_vertical,
 };
-use super::tool_message::{args_rows, path_arg_row, result_text};
+use super::tool_message::{args_rows, highlighted_text, path_arg_row, result_text};
 use crate::Message;
 use crate::chat::{Dialog, Turn, TurnBody};
 use crate::llm::StreamState;
+use crate::search::SearchState;
 use std::collections::HashSet;
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
+pub(crate) const SEARCH_INPUT: widget::Id = widget::Id::new("search-input");
 
 /// Snap the message scroll to the end unconditionally.
 pub(crate) fn scroll_to_end() -> Task<Message> {
     iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::snap_to(
         MESSAGE_SCROLL.clone(),
         scrollable::RelativeOffset::END.into(),
+    ))
+}
+
+/// Measure the y-offsets of all turns in the scrollable content.
+/// Returns a `Vec<f32>` where index `i` is the content-relative y-offset of turn `i`.
+pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> {
+    struct MeasureAll {
+        scrollable_id: widget::Id,
+        turn_ids: Vec<widget::Id>, // turn_ids[i] = id for turn i
+        scrollable_bounds: Option<Rectangle>,
+        offsets: Vec<f32>,
+    }
+
+    impl Operation<Vec<f32>> for MeasureAll {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<Vec<f32>>)) {
+            operate(self);
+        }
+
+        fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle) {
+            if let Some(id) = id
+                && let Some(idx) = self.turn_ids.iter().position(|tid| tid == id)
+                && let Some(sb) = self.scrollable_bounds
+            {
+                // `bounds` is the absolute layout position (screen-relative,
+                // WITHOUT scroll translation — iced applies the translation
+                // separately during rendering via `renderer.with_translation`).
+                // So `bounds.y - sb.y` gives the content-relative y-offset,
+                // which is exactly what `scroll_to(AbsoluteOffset { y })` expects.
+                let y = bounds.y - sb.y;
+                if idx >= self.offsets.len() {
+                    self.offsets.resize(idx + 1, 0.0);
+                }
+                self.offsets[idx] = y;
+            }
+        }
+
+        fn scrollable(
+            &mut self,
+            id: Option<&widget::Id>,
+            bounds: Rectangle,
+            _content_bounds: Rectangle,
+            _translation: iced::Vector,
+            _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+        ) {
+            if id == Some(&self.scrollable_id) {
+                self.scrollable_bounds = Some(bounds);
+            }
+        }
+
+        fn finish(&self) -> Outcome<Vec<f32>> {
+            Outcome::Some(self.offsets.clone())
+        }
+    }
+
+    iced_runtime::task::widget(MeasureAll {
+        scrollable_id: MESSAGE_SCROLL.clone(),
+        turn_ids,
+        scrollable_bounds: None,
+        offsets: Vec::new(),
+    })
+}
+
+/// Scroll to a turn using a pre-measured offset.
+pub(crate) fn scroll_to_turn_at(y: f32) -> Task<Message> {
+    iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::scroll_to(
+        MESSAGE_SCROLL.clone(),
+        scrollable::AbsoluteOffset {
+            x: None,
+            y: Some(y),
+        },
     ))
 }
 
@@ -115,11 +188,14 @@ fn args_preview<'a>(
     name: &str,
     args: &'a serde_json::Value,
     font_scale: f32,
+    search_query: &str,
 ) -> Vec<Element<'a, Message>> {
     if name == "edit" || name == "write" {
-        path_arg_row(args, font_scale).into_iter().collect()
+        path_arg_row(args, font_scale, search_query)
+            .into_iter()
+            .collect()
     } else {
-        args_rows(args, font_scale)
+        args_rows(args, font_scale, search_query)
     }
 }
 
@@ -131,6 +207,7 @@ fn tool_turn_block<'a>(
     i: usize,
     expanded_turns: &HashSet<(usize, usize)>,
     font_scale: f32,
+    search_query: &str,
 ) -> Element<'a, Message> {
     // Build a unified list of (name, args, result_opt, timestamp) from either variant.
     type ToolItem<'a> = (
@@ -226,10 +303,10 @@ fn tool_turn_block<'a>(
         }
 
         if expanded {
-            elements.extend(args_rows(args, font_scale));
-            elements.push(result_text(result.unwrap(), font_scale));
+            elements.extend(args_rows(args, font_scale, search_query));
+            elements.push(result_text(result.unwrap(), font_scale, search_query));
         } else {
-            elements.extend(args_preview(name, args, font_scale));
+            elements.extend(args_preview(name, args, font_scale, search_query));
         }
     }
 
@@ -270,6 +347,7 @@ fn text_turn_block<'a>(
     selectable_msgs: &HashSet<usize>,
     theme: &'a Theme,
     font_scale: f32,
+    search_query: &str,
 ) -> Element<'a, Message> {
     let TurnBody::Text(tc) = &msg.body else {
         unreachable!("text_turn_block called on non-Text turn")
@@ -317,7 +395,10 @@ fn text_turn_block<'a>(
     if let Some(reasoning) = &tc.reasoning {
         // Default expanded; badge-row click toggles collapse.
         if !expanded_turns.contains(&(i, 0)) {
-            let reasoning_body: Element<'_, Message> = if !selectable_msgs.contains(&i)
+            let reasoning_body: Element<'_, Message> = if !search_query.trim().is_empty() {
+                // When searching, use highlighted plain text instead of markdown.
+                highlighted_text(reasoning, search_query, 13.0 * font_scale)
+            } else if !selectable_msgs.contains(&i)
                 && let Some(md) = &tc.reasoning_md
             {
                 markdown_element(md, theme, i, 13.0 * font_scale, 12.0 * font_scale)
@@ -340,7 +421,13 @@ fn text_turn_block<'a>(
             );
         }
     }
-    if !selectable_msgs.contains(&i)
+    if !search_query.trim().is_empty() {
+        content_col = content_col.push(highlighted_text(
+            &tc.content,
+            search_query,
+            14.0 * font_scale,
+        ));
+    } else if !selectable_msgs.contains(&i)
         && let Some(md) = &tc.content_md
     {
         content_col = content_col.push(markdown_element(
@@ -369,14 +456,21 @@ fn turn_block<'a>(
     selectable_msgs: &HashSet<usize>,
     theme: &'a Theme,
     font_scale: f32,
+    search_query: &str,
 ) -> Element<'a, Message> {
     match &msg.body {
         TurnBody::Tool(_) | TurnBody::Temp(_) => {
-            tool_turn_block(msg, i, expanded_turns, font_scale)
+            tool_turn_block(msg, i, expanded_turns, font_scale, search_query)
         }
-        TurnBody::Text(_) => {
-            text_turn_block(msg, i, expanded_turns, selectable_msgs, theme, font_scale)
-        }
+        TurnBody::Text(_) => text_turn_block(
+            msg,
+            i,
+            expanded_turns,
+            selectable_msgs,
+            theme,
+            font_scale,
+            search_query,
+        ),
     }
 }
 
@@ -392,7 +486,15 @@ pub(crate) fn center_pane<'a>(
     selectable_msgs: &HashSet<usize>,
     font_scale: f32,
     pending_user_prompt: Option<&'a str>,
+    search_state: &'a SearchState,
 ) -> Element<'a, Message> {
+    // Ensure turn widget IDs match the current dialog layout so that
+    // scroll-to-match measurement can find each turn by its ID.
+    let total: usize = dialogs.iter().map(|d| d.turns.len()).sum();
+    search_state.ensure_turn_ids(total);
+    let turn_ids = search_state.turn_ids();
+    let search_query: &str = &search_state.query;
+    let search_results: &[usize] = &search_state.results;
     // Flatten dialogs into turns with a running flat index per dialog.
     let mut flat_idx: usize = 0;
     let dialog_blocks: Vec<Element<'_, Message>> = dialogs
@@ -446,7 +548,32 @@ pub(crate) fn center_pane<'a>(
                     .map(|msg| {
                         let i = flat_idx;
                         flat_idx += 1;
-                        turn_block(msg, i, expanded_turns, selectable_msgs, theme, font_scale)
+                        let is_match = search_results.contains(&i);
+                        let is_current = is_match
+                            && !search_results.is_empty()
+                            && search_results[search_state.current] == i;
+                        let block = turn_block(
+                            msg,
+                            i,
+                            expanded_turns,
+                            selectable_msgs,
+                            theme,
+                            font_scale,
+                            search_query,
+                        );
+                        let style: fn(&Theme) -> container::Style = if is_current {
+                            search_current_style
+                        } else if is_match {
+                            search_match_style
+                        } else {
+                            |_| container::Style::default()
+                        };
+                        container(block)
+                            .width(Fill)
+                            .padding(2)
+                            .style(style)
+                            .id(turn_ids[i].clone())
+                            .into()
                     })
                     .collect()
             };
@@ -470,6 +597,11 @@ pub(crate) fn center_pane<'a>(
     container(column![
         session_header(title),
         pending_header(pending_user_prompt),
+        if search_state.visible {
+            search_bar(search_query, search_results, search_state.current)
+        } else {
+            row![].into()
+        },
         scrollable(column(dialog_blocks).spacing(18).padding(14),)
             .height(Fill)
             .direction(thin_vertical())
@@ -548,6 +680,93 @@ fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, Message> {
             .style(bordered_bar_style),
         200.0,
     )
+}
+
+// ── search bar ────────────────────────────────────────────────────
+
+/// Style for a turn that matches the search query (not the current match).
+fn search_match_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.08).into()),
+        border: Border {
+            color: Color::from_rgba(0.1, 0.6, 0.55, 0.3),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Style for the currently-focused search match.
+fn search_current_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.15).into()),
+        border: Border {
+            color: CRABOT_PRIMARY,
+            width: 2.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Search bar displayed between the session header and the scrollable content.
+fn search_bar<'a>(query: &'a str, results: &[usize], current: usize) -> Element<'a, Message> {
+    use iced::widget::text_input;
+
+    let total = results.len();
+    let label = if query.is_empty() {
+        String::new()
+    } else if total == 0 {
+        "0/0".into()
+    } else {
+        format!("{}/{}", current + 1, total)
+    };
+
+    let input = text_input("Search…", query)
+        .id(SEARCH_INPUT.clone())
+        .on_input(Message::SearchQueryChanged)
+        .on_submit(Message::SearchSubmit)
+        .padding([4, 8])
+        .size(13.0);
+
+    let label_text = if !label.is_empty() {
+        text(label).size(12.0).color(CRABOT_TEXT_MUTED)
+    } else {
+        text("").size(12.0)
+    };
+
+    let prev_btn = button(text("▲").size(11.0))
+        .on_press(Message::SearchNavigate(-1))
+        .padding([2, 6])
+        .style(icon_button_style);
+
+    let next_btn = button(text("▼").size(11.0))
+        .on_press(Message::SearchNavigate(1))
+        .padding([2, 6])
+        .style(icon_button_style);
+
+    let close_btn = button(text("✕").size(12.0))
+        .on_press(Message::ToggleSearch)
+        .padding([2, 6])
+        .style(icon_button_style);
+
+    container(
+        row![
+            text("🔍").size(12.0),
+            input.width(Length::Fill),
+            label_text,
+            prev_btn,
+            next_btn,
+            close_btn,
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center),
+    )
+    .width(Fill)
+    .padding([6, 10])
+    .style(bordered_bar_style)
+    .into()
 }
 
 // ── status line ───────────────────────────────────────────────────

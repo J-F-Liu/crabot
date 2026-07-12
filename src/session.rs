@@ -130,6 +130,45 @@ impl Session {
         self.dialogs.is_empty()
     }
 
+    /// Case-insensitive search across all turns in all dialogs.
+    /// Returns flat turn indices (matching `center_pane`'s `flat_idx` numbering)
+    /// for turns whose content matches the query.
+    pub fn search(&self, query: &str) -> Vec<usize> {
+        if query.trim().is_empty() {
+            return Vec::new();
+        }
+        let q = query.to_lowercase();
+        let mut results = Vec::new();
+        let mut flat_idx: usize = 0;
+        for dialog in &self.dialogs {
+            for turn in &dialog.turns {
+                let hit = match &turn.body {
+                    crate::chat::TurnBody::Text(tc) => {
+                        tc.content.to_lowercase().contains(&q)
+                            || tc
+                                .reasoning
+                                .as_deref()
+                                .is_some_and(|r| r.to_lowercase().contains(&q))
+                    }
+                    crate::chat::TurnBody::Tool(trs) => trs.iter().any(|tr| {
+                        tr.name.to_lowercase().contains(&q)
+                            || tr.args.to_string().to_lowercase().contains(&q)
+                            || match &tr.result {
+                                Ok(s) => s.to_lowercase().contains(&q),
+                                Err(e) => e.to_lowercase().contains(&q),
+                            }
+                    }),
+                    crate::chat::TurnBody::Temp(_) => false,
+                };
+                if hit {
+                    results.push(flat_idx);
+                }
+                flat_idx += 1;
+            }
+        }
+        results
+    }
+
     /// Reconstruct the `dialogs` Vec from the raw `history`.
     /// Called after loading a session from disk (since `dialogs` is `#[serde(skip)]`).
     pub fn rebuild_dialogs(&mut self) {
