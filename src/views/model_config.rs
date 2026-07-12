@@ -1,5 +1,5 @@
 use super::theme::CRABOT_BORDER;
-use crate::model::{Model, ModelList};
+use crabot::model::{Model, ModelList};
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Length,
     border::Radius,

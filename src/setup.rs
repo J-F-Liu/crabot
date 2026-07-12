@@ -13,7 +13,7 @@ pub fn default_models() -> &'static str {
 }
 
 /// The default workspace path (`~/.crabot`) used when no workspace is set.
-pub(crate) fn default_workspace_path() -> PathBuf {
+pub fn default_workspace_path() -> PathBuf {
     home::home_dir().unwrap_or_default().join(".crabot")
 }
 

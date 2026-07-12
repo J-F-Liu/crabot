@@ -5,8 +5,8 @@ use iced::{
 
 use crate::FocusedTarget;
 use crate::Message;
-use crate::user::WorkMode;
 use crate::widgets::textarea::TextArea;
+use crabot::user::WorkMode;
 
 pub(crate) fn user_prompt_view<'a>(
     user_prompt: &'a TextArea,

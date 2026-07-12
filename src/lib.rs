@@ -1,4 +1,10 @@
+pub mod model;
+pub mod settings;
+pub mod setup;
+pub mod system;
 pub mod tools;
+pub mod user;
+pub mod workspace;
 
 use std::collections::HashSet;
 use std::hash::Hash;

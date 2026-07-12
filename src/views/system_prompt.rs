@@ -7,7 +7,7 @@ use iced::{
 };
 
 use crate::Message;
-use crate::system::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE, WORKSPACE_TREE};
+use crabot::system::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE, WORKSPACE_TREE};
 
 use super::theme::thin_vertical;
 

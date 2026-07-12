@@ -9,8 +9,8 @@ use genai::chat::{
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
-use crate::model::ModelInfo;
 use crate::tools::{self, ToolRef};
+use crabot::model::ModelInfo;
 
 // ── StreamState: tracks the current phase of an LLM interaction ────
 

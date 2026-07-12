@@ -5,18 +5,12 @@
 mod chat;
 mod fonts;
 mod llm;
-mod model;
 mod search;
 mod session;
-mod settings;
-mod setup;
-mod system;
-mod user;
 mod views;
 mod widgets;
-mod workspace;
 
-use crabot::{HashSetExt, tools};
+use crabot::{HashSetExt, model, settings, setup, system, tools, workspace};
 
 use futures::{SinkExt, future::FutureExt};
 use iced::widget::scrollable::Viewport;
@@ -35,12 +29,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
+use crabot::model::{Model, ModelConfig, ModelList, TokenAmount};
+use crabot::system::{FilepathEntry, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 use genai::chat::{ChatMessage, ChatRole};
-use model::{Model, ModelConfig, ModelList, TokenAmount};
 use session::Session;
-use system::{FilepathEntry, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
 
-use user::{UserPrompt, WorkMode};
+use crabot::user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
 use views::session_view::SessionEntry;
 use views::system_prompt::PromptSectionState;

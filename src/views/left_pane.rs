@@ -18,12 +18,12 @@ use super::tool_list::{
 use super::user_prompt::user_prompt_view;
 use crate::Message;
 use crate::llm::StreamState;
-use crate::model::ModelList;
-use crate::system::{FilepathEntry, SystemPrompt};
 use crate::tools;
-use crate::user::WorkMode;
 use crate::views::session_view::SessionEntry;
 use crate::widgets::textarea::TextArea;
+use crabot::model::ModelList;
+use crabot::system::{FilepathEntry, SystemPrompt};
+use crabot::user::WorkMode;
 use std::collections::HashSet;
 
 #[allow(clippy::too_many_arguments)]
@@ -64,14 +64,14 @@ pub(crate) fn left_pane<'a>(
         rule::horizontal(0).into(),
         label("System Prompt", 140.0),
         file_picker_field_view(
-            crate::system::PREAMBLE,
+            crabot::system::PREAMBLE,
             &system_prompt.preamble,
             preamble_options,
             selected_preamble,
             Message::SelectPreamble,
         ),
         file_picker_field_view(
-            crate::system::RULES,
+            crabot::system::RULES,
             &system_prompt.rules,
             rules_options,
             selected_rules,

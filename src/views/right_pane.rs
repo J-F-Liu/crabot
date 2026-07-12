@@ -7,7 +7,7 @@ use iced_selection::Text as SelectableText;
 use super::styles::{pane_side, primary_button, sel_primary};
 use super::theme::thin_vertical;
 use crate::Message;
-use crate::model::TokenAmount;
+use crabot::model::TokenAmount;
 
 /// Label-value row with the value right-aligned via a fill spacer.
 fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
