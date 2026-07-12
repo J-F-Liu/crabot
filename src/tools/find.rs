@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 use serde_json::{Value, json};
 
@@ -36,7 +37,12 @@ impl Tool for FindTool {
         })
     }
 
-    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+    fn execute_inner(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        _cancel: &AtomicBool,
+    ) -> Result<String, String> {
         execute(args, workspace)
     }
 }

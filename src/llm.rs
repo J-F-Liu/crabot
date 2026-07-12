@@ -1,4 +1,5 @@
 use futures::StreamExt;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use genai::adapter::AdapterKind;
@@ -37,6 +38,8 @@ pub struct SendConfig {
     /// Shared slot for a user prompt injected during streaming (tool execution / thinking).
     pub pending_user_prompt: Arc<Mutex<Option<String>>>,
     pub user_agent: String,
+    /// When set to `true`, in-progress tool execution is cancelled.
+    pub cancel_token: Arc<AtomicBool>,
 }
 
 /// Stream an LLM interaction with tool-execution loop.
@@ -60,6 +63,7 @@ pub async fn send_stream(
         tools,
         pending_user_prompt,
         user_agent,
+        cancel_token,
     } = config;
 
     let client = build_client(&model.base_url, &model.api_key, &model.api_type);
@@ -265,9 +269,12 @@ pub async fn send_stream(
                     // painted.
                     let fn_args = tc.fn_arguments.clone();
                     let workspace = workspace.clone();
-                    tokio::task::spawn_blocking(move || tool.execute(&fn_args, &workspace))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
+                    let cancel = cancel_token.clone();
+                    tokio::task::spawn_blocking(move || {
+                        tool.execute(&fn_args, &workspace, cancel.as_ref())
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
                 }
                 None => Err(format!("Unknown tool: {}", tc.fn_name)),
             };
@@ -283,16 +290,18 @@ pub async fn send_stream(
                 result,
                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             };
-            if !on_event(crate::Message::StreamToolResult(tr)).await {
-                genai_messages.push(ChatMessage::from(tool_responses));
-                on_event(crate::Message::StreamCancelled(genai_messages)).await;
-                return;
-            }
+            on_event(crate::Message::StreamToolResult(tr)).await;
         }
 
         // Append tool responses to the request and genai history.
         chat_req = chat_req.append_message(tool_responses.clone());
         genai_messages.push(ChatMessage::from(tool_responses));
+
+        // Check cancellation before executing tool calls.
+        if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
+            on_event(crate::Message::StreamCancelled(genai_messages)).await;
+            return;
+        }
 
         // Inject any user prompt sent during tool execution.
         let result = inject_user_prompt(

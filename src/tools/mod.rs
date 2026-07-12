@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use genai::chat::Tool as GenaiTool;
@@ -27,7 +28,30 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn instruction(&self) -> &str;
     fn schema(&self) -> Value;
-    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String>;
+
+    /// Cancel-aware wrapper: checks the cancellation flag *before* delegating to
+    /// [`execute_inner`](Self::execute_inner). Individual tools may also
+    /// honour the flag during long-running operations.
+    fn execute(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled by user".into());
+        }
+        self.execute_inner(args, workspace, cancel)
+    }
+
+    /// Implement this instead of [`execute`](Self::execute) — the default
+    /// `execute` wrapper already handles the pre-execution cancel check.
+    fn execute_inner(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<String, String>;
 
     /// Full tool declaration suitable for genai ChatRequest.
     fn tool_declaration(&self, strict: bool) -> GenaiTool {
@@ -240,12 +264,11 @@ impl ToolRegistry {
             }
         }
         for (server, group) in &self.mcp {
-            if !enabled_servers.contains(server) {
-                continue;
-            }
-            for t in group {
-                if enabled.contains(&t.name) {
-                    tools.push(Arc::new(t.clone()));
+            if enabled_servers.contains(server) {
+                for t in group {
+                    if enabled.contains(&t.name) {
+                        tools.push(Arc::new(t.clone()));
+                    }
                 }
             }
         }
@@ -607,6 +630,7 @@ pub(crate) fn wait_with_timeout(
     mut stderr: Option<unnamed_pipe::Recver>,
     timeout: Duration,
     kill_tree: bool,
+    cancel: &AtomicBool,
 ) -> Result<std::process::Output, String> {
     let pid = child.id();
 
@@ -625,34 +649,37 @@ pub(crate) fn wait_with_timeout(
     let mut stderr_buf = Vec::new();
     let mut tmp = [0u8; 8192];
 
-    // Poll until the process exits or the deadline passes, draining pipe output
-    // along the way to prevent the child from blocking on a full pipe buffer.
+    // Poll until the process exits, the deadline passes, or cancellation is
+    // requested. Drain pipe output along the way to prevent the child from
+    // blocking on a full pipe buffer.
     let status = loop {
         drain_pipe(stdout.as_mut(), &mut stdout_buf, &mut tmp);
         drain_pipe(stderr.as_mut(), &mut stderr_buf, &mut tmp);
+
+        // Check for user cancellation before trying the child.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(kill_and_error(
+                &mut child,
+                pid,
+                kill_tree,
+                &stdout_buf,
+                &stderr_buf,
+                "Cancelled by user",
+            ));
+        }
 
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    if kill_tree {
-                        // kill_process_tree already terminates the child and
-                        // all descendants; no need for a separate child.kill().
-                        kill_process_tree(pid);
-                    } else {
-                        let _ = child.kill();
-                    }
-                    let _ = child.wait();
-                    let mut msg = format!("Command timed out after {}ms", timeout.as_millis());
-                    if !stdout_buf.is_empty() {
-                        msg.push_str("\n--- partial stdout ---\n");
-                        msg.push_str(&String::from_utf8_lossy(&stdout_buf));
-                    }
-                    if !stderr_buf.is_empty() {
-                        msg.push_str("\n--- partial stderr ---\n");
-                        msg.push_str(&String::from_utf8_lossy(&stderr_buf));
-                    }
-                    return Err(msg);
+                    return Err(kill_and_error(
+                        &mut child,
+                        pid,
+                        kill_tree,
+                        &stdout_buf,
+                        &stderr_buf,
+                        &format!("Command timed out after {}ms", timeout.as_millis()),
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -724,6 +751,39 @@ fn is_would_block(e: &std::io::Error) -> bool {
         return true;
     }
     false
+}
+
+/// Append partial stdout/stderr content to an error message.
+fn append_partial_output(msg: &mut String, stdout: &[u8], stderr: &[u8]) {
+    if !stdout.is_empty() {
+        msg.push_str("\n--- partial stdout ---\n");
+        msg.push_str(&String::from_utf8_lossy(stdout));
+    }
+    if !stderr.is_empty() {
+        msg.push_str("\n--- partial stderr ---\n");
+        msg.push_str(&String::from_utf8_lossy(stderr));
+    }
+}
+
+/// Kill a child process (optionally its whole tree), reap it, and build an
+/// error message with the given reason and any partial output collected.
+fn kill_and_error(
+    child: &mut std::process::Child,
+    pid: u32,
+    kill_tree: bool,
+    stdout: &[u8],
+    stderr: &[u8],
+    reason: &str,
+) -> String {
+    if kill_tree {
+        kill_process_tree(pid);
+    } else {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    let mut msg = reason.to_string();
+    append_partial_output(&mut msg, stdout, stderr);
+    msg
 }
 
 /// Minimal Win32 constants and FFI for named-pipe non-blocking mode.

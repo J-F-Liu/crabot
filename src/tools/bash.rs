@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -39,12 +40,21 @@ impl Tool for BashTool {
         })
     }
 
-    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
-        execute(args, workspace)
+    fn execute_inner(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
+        execute(args, workspace, cancel)
     }
 }
 
-pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
+pub(super) fn execute(
+    args: &Value,
+    workspace: &Path,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
     let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
     let timeout_ms = super::arg_u64(args, "timeout")
         .map(|v| v.clamp(1000, MAX_COMMAND_TIMEOUT_MS))
@@ -86,6 +96,7 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         Some(stderr_rx),
         timeout,
         true, // bash runs in its own process group → kill the whole group
+        cancel,
     )?;
 
     Ok(super::format_command_output(&output))

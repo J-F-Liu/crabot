@@ -863,6 +863,7 @@ impl App {
             }
             Message::StopStream => {
                 self.cancel_token.store(true, Ordering::Relaxed);
+                self.session.save().ok();
             }
             Message::SessionViewScrolled(viewport) => {
                 // While streaming, track whether the user has scrolled away from the bottom
@@ -1080,6 +1081,7 @@ impl App {
                 .enabled_tools(&self.enabled_tools, &self.enabled_mcp_servers),
             pending_user_prompt: self.pending_user_prompt.clone(),
             user_agent: crabot_title().to_string(),
+            cancel_token: self.cancel_token.clone(),
         };
 
         let history = self.session.history.clone();

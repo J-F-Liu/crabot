@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -126,7 +127,12 @@ impl Tool for CustomTool {
         build_schema(&self.parameters)
     }
 
-    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+    fn execute_inner(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
         // Build context: all defined params default to null,
         // then overlay with actual args.
         let mut ctx = serde_json::Map::new();
@@ -176,9 +182,8 @@ impl Tool for CustomTool {
             Some(stdout_rx),
             Some(stderr_rx),
             std::time::Duration::from_secs(super::COMMAND_TIMEOUT_SECONDS),
-            false, // custom tools don't run in their own process group; only
-                   // kill the direct child on timeout to avoid signalling an
-                   // unrelated process group.
+            false, // custom tools don't run in their own process group
+            cancel,
         )
         .map_err(|e| format!("Custom tool '{}': {e}", self.name))?;
 
@@ -259,7 +264,9 @@ mod tests {
         };
 
         let args = json!({"crate": "iced"});
-        let result = crate_source.execute(&args, Path::new(".")).unwrap();
+        let result = crate_source
+            .execute(&args, Path::new("."), &AtomicBool::new(false))
+            .unwrap();
         println!("{:?}", result);
 
         let schema = crate_source.schema();

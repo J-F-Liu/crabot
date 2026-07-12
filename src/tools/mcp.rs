@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
@@ -137,7 +138,9 @@ impl McpTool {
         } else {
             remote_name.clone()
         };
-        let description = remote.description.unwrap_or_else(|| "MCP tool".into());
+        let description = remote
+            .description
+            .unwrap_or_else(|| "No description provided.".into());
         // Convert `Arc<JsonObject>` → `Value`
         let schema = Value::Object(remote.input_schema.as_ref().clone());
 
@@ -153,6 +156,19 @@ impl McpTool {
     /// Display label: the MCP `title` if provided, otherwise the bare name.
     pub fn title(&self) -> &str {
         self.title.as_deref().unwrap_or(&self.remote_name)
+    }
+}
+
+/// Poll a cancellation flag, resolving when it becomes `true`.
+///
+/// Used in `tokio::select!` to race against in-flight MCP tool calls so
+/// that user-initiated cancellation can interrupt them promptly.
+async fn wait_for_cancel(cancel: &AtomicBool) {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -173,7 +189,12 @@ impl Tool for McpTool {
         self.schema.clone()
     }
 
-    fn execute(&self, args: &Value, _workspace: &Path) -> Result<String, String> {
+    fn execute_inner(
+        &self,
+        args: &Value,
+        _workspace: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
         let arguments: Map<String, Value> = args.as_object().cloned().unwrap_or_default();
 
         let params = CallToolRequestParams::new(self.remote_name.clone()).with_arguments(arguments);
@@ -185,13 +206,20 @@ impl Tool for McpTool {
         let result: Result<rmcp::model::CallToolResult, String> =
             tokio::task::block_in_place(move || {
                 handle.block_on(async move {
-                    match tokio::time::timeout(CALL_TIMEOUT, peer.call_tool(params)).await {
-                        Ok(Ok(result)) => Ok(result),
-                        Ok(Err(e)) => Err(e.to_string()),
-                        Err(_) => Err(format!(
-                            "MCP tool '{name}' timed out after {}s",
-                            CALL_TIMEOUT.as_secs()
-                        )),
+                    tokio::select! {
+                        result = tokio::time::timeout(CALL_TIMEOUT, peer.call_tool(params)) => {
+                            match result {
+                                Ok(Ok(result)) => Ok(result),
+                                Ok(Err(e)) => Err(e.to_string()),
+                                Err(_) => Err(format!(
+                                    "Tool '{name}' timed out after {}s",
+                                    CALL_TIMEOUT.as_secs()
+                                )),
+                            }
+                        }
+                        _ = wait_for_cancel(cancel) => {
+                            Err(format!("Tool '{name}' cancelled by user"))
+                        }
                     }
                 })
             });

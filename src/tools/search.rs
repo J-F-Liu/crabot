@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 use serde_json::{Value, json};
 
@@ -36,12 +37,19 @@ impl Tool for SearchTool {
         })
     }
 
-    fn execute(&self, args: &Value, workspace: &Path) -> Result<String, String> {
+    fn execute_inner(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        _cancel: &AtomicBool,
+    ) -> Result<String, String> {
         execute(args, workspace)
     }
 }
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
+    const MAX_LINES: usize = 500;
+
     let pattern = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
     let search_path = arg_str(args, "path")
         .map(|p| resolve_path(p, workspace))
@@ -52,7 +60,9 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     let re = regex::Regex::new(pattern).map_err(|e| format!("Invalid regex: {e}"))?;
 
     let mut out = String::new();
+    let mut out_lines: usize = 0;
     let mut found = false;
+    let mut truncated = false;
 
     if search_path.is_file() {
         let path_string = super::make_workspace_relative(&search_path, workspace);
@@ -60,11 +70,17 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             .map_err(|e| format!("Failed to read {}: {e}", &path_string))?;
         for (i, line) in content.lines().enumerate() {
             if re.is_match(line) {
-                let _ = std::fmt::Write::write_fmt(
-                    &mut out,
-                    format_args!("{}:{}:{}\n", &path_string, i + 1, line),
-                );
                 found = true;
+                if out_lines < MAX_LINES {
+                    let _ = std::fmt::Write::write_fmt(
+                        &mut out,
+                        format_args!("{}:{}:{}\n", &path_string, i + 1, line),
+                    );
+                    out_lines += 1;
+                } else {
+                    truncated = true;
+                    break;
+                }
             }
         }
     } else if search_path.is_dir() {
@@ -72,6 +88,9 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             .standard_filters(true)
             .build();
         for entry in walker {
+            if out_lines >= MAX_LINES {
+                break;
+            }
             let entry = match entry {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -87,17 +106,31 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             let path_string = super::make_workspace_relative(file_path, workspace);
             for (i, line) in content.lines().enumerate() {
                 if re.is_match(line) {
-                    let _ = std::fmt::Write::write_fmt(
-                        &mut out,
-                        format_args!("{}:{}:{}\n", &path_string, i + 1, line),
-                    );
                     found = true;
+                    if out_lines < MAX_LINES {
+                        let _ = std::fmt::Write::write_fmt(
+                            &mut out,
+                            format_args!("{}:{}:{}\n", &path_string, i + 1, line),
+                        );
+                        out_lines += 1;
+                    } else {
+                        truncated = true;
+                        break;
+                    }
                 }
             }
         }
     }
     if !found {
         Ok("No matches found.".into())
+    } else if truncated {
+        let _ = std::fmt::Write::write_fmt(
+            &mut out,
+            format_args!(
+                "\n... [output truncated at {MAX_LINES} lines; more matches exist but were omitted] ...\n"
+            ),
+        );
+        Ok(super::truncate_output(out))
     } else {
         Ok(super::truncate_output(out))
     }
