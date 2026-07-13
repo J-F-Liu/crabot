@@ -9,18 +9,19 @@ use iced::{
 use iced_selection::Text as SelectableText;
 
 use super::styles::{
-    assistant_bubble_style, icon_button_style, pane_center, reasoning_box_style, role_badge_style,
-    sel_default, sel_secondary, tool_bubble_style, user_bubble_style,
+    assistant_bubble_style, bordered_bar_style, icon_button_style, pane_center,
+    reasoning_box_style, role_badge_style, sel_default, sel_secondary, tool_bubble_style,
+    user_bubble_style,
 };
 use super::theme::{
-    CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_TEXT,
-    CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text, thin_vertical,
+    CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_TEXT, CRABOT_TEXT_MUTED,
+    CRABOT_TOOL_ACCENT, color_text, thin_vertical,
 };
 use super::tool_message::{args_rows, highlighted_text, path_arg_row, result_text};
 use crate::Message;
 use crate::chat::{Dialog, Turn, TurnBody};
-use crate::llm::StreamState;
-use crate::search::SearchState;
+use crate::llm::DialogPhase;
+use crate::views::search_bar::SearchState;
 use std::collections::HashSet;
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
@@ -118,13 +119,29 @@ fn dialog_container_style(_theme: &Theme) -> container::Style {
     }
 }
 
-fn bordered_bar_style(_theme: &Theme) -> container::Style {
+// ── search match styles ───────────────────────────────────────────
+
+/// Style for a turn that matches the search query (not the current match).
+fn search_match_style(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Color::WHITE.into()),
+        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.08).into()),
         border: Border {
-            color: CRABOT_BORDER,
+            color: Color::from_rgba(0.1, 0.6, 0.55, 0.3),
             width: 1.0,
-            radius: 0.0.into(),
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Style for the currently-focused search match.
+fn search_current_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.15).into()),
+        border: Border {
+            color: CRABOT_PRIMARY,
+            width: 2.0,
+            radius: 4.0.into(),
         },
         ..container::Style::default()
     }
@@ -482,7 +499,7 @@ pub(crate) fn center_pane<'a>(
     expanded_dialogs: &'a HashSet<usize>,
     status: &'a str,
     theme: &'a Theme,
-    streaming: StreamState,
+    streaming: DialogPhase,
     selectable_msgs: &HashSet<usize>,
     font_scale: f32,
     pending_user_prompt: Option<&'a str>,
@@ -598,7 +615,8 @@ pub(crate) fn center_pane<'a>(
         session_header(title),
         pending_header(pending_user_prompt),
         if search_state.visible {
-            search_bar(search_query, search_results, search_state.current)
+            super::search_bar::view(search_query, search_results, search_state.current)
+                .map(Message::SearchEvent)
         } else {
             row![].into()
         },
@@ -682,98 +700,11 @@ fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, Message> {
     )
 }
 
-// ── search bar ────────────────────────────────────────────────────
-
-/// Style for a turn that matches the search query (not the current match).
-fn search_match_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.08).into()),
-        border: Border {
-            color: Color::from_rgba(0.1, 0.6, 0.55, 0.3),
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Style for the currently-focused search match.
-fn search_current_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.15).into()),
-        border: Border {
-            color: CRABOT_PRIMARY,
-            width: 2.0,
-            radius: 4.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Search bar displayed between the session header and the scrollable content.
-fn search_bar<'a>(query: &'a str, results: &[usize], current: usize) -> Element<'a, Message> {
-    use iced::widget::text_input;
-
-    let total = results.len();
-    let label = if query.is_empty() {
-        String::new()
-    } else if total == 0 {
-        "0/0".into()
-    } else {
-        format!("{}/{}", current + 1, total)
-    };
-
-    let input = text_input("Search…", query)
-        .id(SEARCH_INPUT.clone())
-        .on_input(Message::SearchQueryChanged)
-        .on_submit(Message::SearchSubmit)
-        .padding([4, 8])
-        .size(13.0);
-
-    let label_text = if !label.is_empty() {
-        text(label).size(12.0).color(CRABOT_TEXT_MUTED)
-    } else {
-        text("").size(12.0)
-    };
-
-    let prev_btn = button(text("▲").size(11.0))
-        .on_press(Message::SearchNavigate(-1))
-        .padding([2, 6])
-        .style(icon_button_style);
-
-    let next_btn = button(text("▼").size(11.0))
-        .on_press(Message::SearchNavigate(1))
-        .padding([2, 6])
-        .style(icon_button_style);
-
-    let close_btn = button(text("✕").size(12.0))
-        .on_press(Message::ToggleSearch)
-        .padding([2, 6])
-        .style(icon_button_style);
-
-    container(
-        row![
-            text("🔍").size(12.0),
-            input.width(Length::Fill),
-            label_text,
-            prev_btn,
-            next_btn,
-            close_btn,
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center),
-    )
-    .width(Fill)
-    .padding([6, 10])
-    .style(bordered_bar_style)
-    .into()
-}
-
 // ── status line ───────────────────────────────────────────────────
 
 fn status_line<'a>(
     status_text: &'a str,
-    streaming: StreamState,
+    streaming: DialogPhase,
     font_scale: f32,
 ) -> Element<'a, Message> {
     let mut row = row![
@@ -783,10 +714,12 @@ fn status_line<'a>(
     ]
     .align_y(iced::Alignment::Center)
     .spacing(8);
-    if streaming != StreamState::Idle {
+    if streaming != DialogPhase::Idle {
         row = row.push(
             button(text("⏹ Stop").size(11.0 * font_scale))
-                .on_press(Message::StopStream)
+                .on_press(Message::StreamEvent(
+                    crate::views::session_state::SessionEvent::Stop,
+                ))
                 .padding([4, 10])
                 .style(icon_button_style),
         );

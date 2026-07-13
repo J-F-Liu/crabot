@@ -7,6 +7,19 @@ use iced_selection::text::Style as SelectionStyle;
 use super::theme::*;
 use crate::Message;
 
+/// White background with a thin border, used for status bars and the search bar.
+pub(crate) fn bordered_bar_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::WHITE.into()),
+        border: Border {
+            color: CRABOT_BORDER,
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 // ── pane styles ───────────────────────────────────────────────────
 
 pub(crate) fn pane_side(_theme: &Theme) -> container::Style {

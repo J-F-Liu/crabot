@@ -3,11 +3,16 @@ use std::collections::HashSet;
 
 use iced::Task;
 use iced::widget::Id;
+use iced::widget::{button, container, row, text, text_input};
+use iced::{Alignment, Element, Length};
+
+use super::styles::{bordered_bar_style, icon_button_style};
+use super::theme::CRABOT_TEXT_MUTED;
 
 use crate::Message;
 use crate::chat::TurnBody;
 use crate::session::Session;
-use crate::views::{measure_turn_offsets, scroll_to_turn_at};
+use crate::views::{SEARCH_INPUT, measure_turn_offsets, scroll_to_turn_at};
 
 /// UI state and widget bookkeeping for center-pane search.
 pub(crate) struct SearchState {
@@ -127,6 +132,56 @@ impl SearchState {
     }
 }
 
+/// Events emitted by the search bar UI.
+#[derive(Debug, Clone)]
+pub(crate) enum SearchEvent {
+    ToggleSearch,
+    QueryChanged(String),
+    Submit,
+    Navigate(i32),
+}
+
+/// Handle a search event, mutating search state and dialog/turn expansion as needed.
+pub(crate) fn update(
+    event: SearchEvent,
+    state: &mut SearchState,
+    session: &Session,
+    expanded_dialogs: &mut HashSet<usize>,
+    expanded_turns: &mut HashSet<(usize, usize)>,
+) -> Task<Message> {
+    match event {
+        SearchEvent::ToggleSearch => {
+            state.visible = !state.visible;
+            if state.visible {
+                return iced::widget::operation::focus(SEARCH_INPUT.clone());
+            }
+        }
+        SearchEvent::QueryChanged(q) => {
+            state.set_query(q);
+        }
+        SearchEvent::Submit => {
+            if let Some(target) = state.submit(session) {
+                let q = state.query.clone();
+                expand_result(session, expanded_dialogs, expanded_turns, target, &q);
+                let total = session.total_turns();
+                return state.measure_and_scroll(total, target);
+            }
+        }
+        SearchEvent::Navigate(delta) => {
+            if let Some(target) = state.navigate(delta) {
+                let q = state.query.clone();
+                let changed = expand_result(session, expanded_dialogs, expanded_turns, target, &q);
+                if !changed && let Some(task) = state.scroll_to_target(target) {
+                    return task;
+                }
+                let total = session.total_turns();
+                return state.measure_and_scroll(total, target);
+            }
+        }
+    }
+    Task::none()
+}
+
 /// Expand the dialog and turn body for the given flat turn index so the user can
 /// see the matching content. Only matching tool items are expanded.
 ///
@@ -176,4 +231,65 @@ pub(crate) fn expand_result(
         remaining -= dialog.turns.len();
     }
     false
+}
+
+/// Search bar widget displayed between the session header and the scrollable content.
+pub(crate) fn view<'a>(
+    query: &'a str,
+    results: &[usize],
+    current: usize,
+) -> Element<'a, SearchEvent> {
+    let total = results.len();
+    let label = if query.is_empty() {
+        String::new()
+    } else if total == 0 {
+        "0/0".into()
+    } else {
+        format!("{}/{}", current + 1, total)
+    };
+
+    let input = text_input("Search…", query)
+        .id(SEARCH_INPUT.clone())
+        .on_input(SearchEvent::QueryChanged)
+        .on_submit(SearchEvent::Submit)
+        .padding([4, 8])
+        .size(13.0);
+
+    let label_text = if !label.is_empty() {
+        text(label).size(12.0).color(CRABOT_TEXT_MUTED)
+    } else {
+        text("").size(12.0)
+    };
+
+    let prev_btn = button(text("▲").size(11.0))
+        .on_press(SearchEvent::Navigate(-1))
+        .padding([2, 6])
+        .style(icon_button_style);
+
+    let next_btn = button(text("▼").size(11.0))
+        .on_press(SearchEvent::Navigate(1))
+        .padding([2, 6])
+        .style(icon_button_style);
+
+    let close_btn = button(text("✕").size(12.0))
+        .on_press(SearchEvent::ToggleSearch)
+        .padding([2, 6])
+        .style(icon_button_style);
+
+    container(
+        row![
+            text("🔍").size(12.0),
+            input.width(Length::Fill),
+            label_text,
+            prev_btn,
+            next_btn,
+            close_btn,
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding([6, 10])
+    .style(bordered_bar_style)
+    .into()
 }

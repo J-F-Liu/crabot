@@ -17,7 +17,7 @@ use super::tool_list::{
 };
 use super::user_prompt::user_prompt_view;
 use crate::Message;
-use crate::llm::StreamState;
+use crate::llm::DialogPhase;
 use crate::tools;
 use crate::views::session_view::SessionEntry;
 use crate::widgets::textarea::TextArea;
@@ -47,7 +47,7 @@ pub(crate) fn left_pane<'a>(
     tool_registry: &'a tools::ToolRegistry,
     user_prompt: &'a TextArea,
     workmode: WorkMode,
-    streaming: StreamState,
+    streaming: DialogPhase,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
     enabled_mcp_servers: &'a HashSet<String>,

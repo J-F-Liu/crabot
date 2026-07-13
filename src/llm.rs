@@ -1,21 +1,23 @@
-use futures::StreamExt;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use futures::{StreamExt, future::BoxFuture};
+use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, MessageContent, ReasoningEffort, ToolCall, ToolResponse,
+    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, ReasoningEffort,
+    ToolCall, ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
+use crate::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult};
 use crate::tools::{self, ToolRef};
+use crate::views::session_state::SessionEvent;
 use crabot::model::ModelInfo;
 
-// ── StreamState: tracks the current phase of an LLM interaction ────
+// ── DialogPhase: tracks the current phase of an LLM interaction ────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamState {
+pub enum DialogPhase {
     Idle,
     /// Establishing connection / sending request to the LLM server.
     LlmLoading,
@@ -48,12 +50,12 @@ pub struct SendConfig {
 /// Tool calls are executed after the stream ends for that turn, and results
 /// are emitted. The loop continues until the LLM responds without tool calls.
 ///
-/// The callback receives each [`crate::Message`] and returns a future. If the
+/// The callback receives each [`Event`] and returns a future. If the
 /// future resolves to `false`, streaming stops early.
 pub async fn send_stream(
     config: SendConfig,
     history: Vec<ChatMessage>,
-    on_event: &mut (dyn FnMut(crate::Message) -> futures::future::BoxFuture<'static, bool> + Send),
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) {
     let SendConfig {
         model,
@@ -109,17 +111,15 @@ pub async fn send_stream(
         pending: &Mutex<Option<String>>,
         chat_req: &mut ChatRequest,
         genai_messages: &mut Vec<ChatMessage>,
-        on_event: &mut (
-                 dyn FnMut(crate::Message) -> futures::future::BoxFuture<'static, bool> + Send
-             ),
+        on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
     ) -> Option<bool> {
         let prompt = pending.lock().unwrap().take()?;
         let user_msg = ChatMessage::user(prompt.clone());
         chat_req.messages.push(user_msg.clone());
         genai_messages.push(user_msg);
-        if !on_event(crate::Message::StreamUserPrompt(prompt)).await {
+        if !on_event(SessionEvent::UserPrompt(prompt)).await {
             let drained = std::mem::take(genai_messages);
-            on_event(crate::Message::StreamCancelled(drained)).await;
+            on_event(SessionEvent::Cancelled(drained)).await;
             return Some(false);
         }
         Some(true)
@@ -127,7 +127,7 @@ pub async fn send_stream(
 
     for _ in 0..MAX_ITERATIONS {
         // Signal that we're connecting to the LLM.
-        on_event(crate::Message::StreamStateChange(StreamState::LlmLoading)).await;
+        on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await;
 
         let stream_result = client
             .exec_chat_stream(&model.model_id, chat_req.clone(), Some(&chat_options))
@@ -136,7 +136,7 @@ pub async fn send_stream(
         let mut stream = match stream_result {
             Ok(chat_res) => chat_res.stream,
             Err(e) => {
-                on_event(crate::Message::StreamError(
+                on_event(SessionEvent::Error(
                     format!("exec_chat_stream: {e}"),
                     genai_messages,
                 ))
@@ -152,37 +152,37 @@ pub async fn send_stream(
 
         while let Some(event) = stream.next().await {
             match event {
-                Ok(genai::chat::ChatStreamEvent::Chunk(chunk)) => {
+                Ok(ChatStreamEvent::Chunk(chunk)) => {
                     if !thinking_signaled {
                         thinking_signaled = true;
-                        on_event(crate::Message::StreamStateChange(StreamState::LlmThinking)).await;
+                        on_event(SessionEvent::PhaseChange(DialogPhase::LlmThinking)).await;
                     }
-                    if !on_event(crate::Message::StreamContent(chunk.content)).await {
-                        on_event(crate::Message::StreamCancelled(genai_messages)).await;
+                    if !on_event(SessionEvent::Content(chunk.content)).await {
+                        on_event(SessionEvent::Cancelled(genai_messages)).await;
                         return;
                     }
                 }
-                Ok(genai::chat::ChatStreamEvent::ReasoningChunk(chunk)) => {
+                Ok(ChatStreamEvent::ReasoningChunk(chunk)) => {
                     if !thinking_signaled {
                         thinking_signaled = true;
-                        on_event(crate::Message::StreamStateChange(StreamState::LlmThinking)).await;
+                        on_event(SessionEvent::PhaseChange(DialogPhase::LlmThinking)).await;
                     }
-                    if !on_event(crate::Message::StreamReasoning(chunk.content)).await {
-                        on_event(crate::Message::StreamCancelled(genai_messages)).await;
+                    if !on_event(SessionEvent::Reasoning(chunk.content)).await {
+                        on_event(SessionEvent::Cancelled(genai_messages)).await;
                         return;
                     }
                 }
-                Ok(genai::chat::ChatStreamEvent::End(end)) => {
+                Ok(ChatStreamEvent::End(end)) => {
                     captured_content = end.captured_content;
                     captured_reasoning = end.captured_reasoning_content;
-                    if !on_event(crate::Message::TokenUsage(end.captured_usage)).await {
-                        on_event(crate::Message::StreamCancelled(genai_messages)).await;
+                    if !on_event(SessionEvent::TokenUsage(end.captured_usage)).await {
+                        on_event(SessionEvent::Cancelled(genai_messages)).await;
                         return;
                     }
                 }
                 Ok(_) => {} // ignore Start, ThoughtSignature, ToolCallChunk
                 Err(e) => {
-                    on_event(crate::Message::StreamError(
+                    on_event(SessionEvent::Error(
                         format!("stream error: {e}"),
                         genai_messages,
                     ))
@@ -230,26 +230,23 @@ pub async fn send_stream(
         // Signal tool execution state to the UI *before* we start
         // executing so the status bar updates even when tools run
         // synchronously on a worker thread.
-        on_event(crate::Message::StreamStateChange(
-            StreamState::ToolExecuting,
-        ))
-        .await;
+        on_event(SessionEvent::PhaseChange(DialogPhase::ToolExecuting)).await;
 
         // Yield once so the iced event loop can pick up the state change
         // and re-render before we proceed to tool execution.
         tokio::task::yield_now().await;
 
         // Notify the UI of ALL pending tool calls at once
-        let calls: Vec<crate::chat::ToolCall> = tool_calls
+        let calls: Vec<ChatToolCall> = tool_calls
             .iter()
-            .map(|tc| crate::chat::ToolCall {
+            .map(|tc| ChatToolCall {
                 name: tc.fn_name.clone(),
                 call_id: Some(tc.call_id.clone()),
                 args: tc.fn_arguments.clone(),
             })
             .collect();
-        if !on_event(crate::Message::StreamToolCalls(calls)).await {
-            on_event(crate::Message::StreamCancelled(genai_messages)).await;
+        if !on_event(SessionEvent::ToolCalls(calls)).await {
+            on_event(SessionEvent::Cancelled(genai_messages)).await;
             return;
         }
 
@@ -283,14 +280,14 @@ pub async fn send_stream(
             let result_flat = result.clone().unwrap_or_else(|e| e);
             tool_responses.push(ToolResponse::from_tool_call(&tc, result_flat));
 
-            let tr = crate::chat::ToolResult {
+            let tr = ChatToolResult {
                 name: tc.fn_name,
                 call_id: Some(tc.call_id),
                 args: tc.fn_arguments,
                 result,
                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             };
-            on_event(crate::Message::StreamToolResult(tr)).await;
+            on_event(SessionEvent::ToolResult(tr)).await;
         }
 
         // Append tool responses to the request and genai history.
@@ -299,7 +296,7 @@ pub async fn send_stream(
 
         // Check cancellation before executing tool calls.
         if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
-            on_event(crate::Message::StreamCancelled(genai_messages)).await;
+            on_event(SessionEvent::Cancelled(genai_messages)).await;
             return;
         }
 
@@ -317,9 +314,9 @@ pub async fn send_stream(
     }
 
     if finished {
-        on_event(crate::Message::StreamDone(genai_messages)).await;
+        on_event(SessionEvent::Done(genai_messages)).await;
     } else {
-        on_event(crate::Message::StreamError(
+        on_event(SessionEvent::Error(
             format!("Exceeded maximum tool-calling iterations ({MAX_ITERATIONS})"),
             genai_messages,
         ))

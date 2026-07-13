@@ -3,6 +3,8 @@ pub mod left_pane;
 pub mod modal;
 pub mod model_config;
 pub mod right_pane;
+pub mod search_bar;
+pub mod session_state;
 pub mod session_view;
 pub mod styles;
 pub mod system_prompt;
@@ -23,6 +25,8 @@ pub(crate) use center_pane::{
 pub(crate) use left_pane::left_pane;
 pub(crate) use modal::workspace_modal;
 pub(crate) use right_pane::right_pane;
+pub(crate) use search_bar::SearchEvent;
+pub(crate) use session_state::{SessionEvent, SessionState};
 pub(crate) use styles::DividerState;
 pub(crate) use styles::divider;
 pub(crate) use system_prompt::{build_workspace_options, load_prompt_options};

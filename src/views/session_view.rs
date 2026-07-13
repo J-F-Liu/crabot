@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::Message;
-use crate::llm::StreamState;
+use crate::llm::DialogPhase;
 
 /// Lightweight session metadata for dropdown listing.
 #[derive(Debug, Clone)]
@@ -35,7 +35,7 @@ impl PartialEq for SessionEntry {
 }
 
 pub(crate) fn session_view<'a>(
-    streaming: StreamState,
+    streaming: DialogPhase,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
 ) -> Element<'a, Message> {
@@ -44,19 +44,19 @@ pub(crate) fn session_view<'a>(
     let mut list = pick_list(
         session_options,
         selected,
-        if streaming == StreamState::Idle {
+        if streaming == DialogPhase::Idle {
             Message::LoadSession
         } else {
             |_| Message::Noop
         },
     )
     .width(Fill);
-    list = if streaming != StreamState::Idle {
+    list = if streaming != DialogPhase::Idle {
         list.style(crate::views::disabled_pick_list_style)
     } else {
         list
     };
-    if streaming == StreamState::Idle {
+    if streaming == DialogPhase::Idle {
         list = list.on_open(Message::SessionPickerFocused);
     }
 
@@ -68,7 +68,7 @@ pub(crate) fn session_view<'a>(
             }),
             iced::widget::Space::new().width(Fill),
             button(text("New").align_x(Alignment::Center))
-                .on_press_maybe(if streaming != StreamState::Idle {
+                .on_press_maybe(if streaming != DialogPhase::Idle {
                     None
                 } else {
                     Some(Message::NewSession)

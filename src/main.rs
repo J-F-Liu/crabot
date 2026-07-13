@@ -5,7 +5,6 @@
 mod chat;
 mod fonts;
 mod llm;
-mod search;
 mod session;
 mod views;
 mod widgets;
@@ -19,19 +18,16 @@ use iced::{
     Element, Event, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window,
 };
 use indexmap::IndexMap;
-use llm::StreamState;
+use llm::DialogPhase;
 use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
-use chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
-use crabot::model::{Model, ModelConfig, ModelList, TokenAmount};
+use chat::Turn;
+use crabot::model::{Model, ModelConfig, ModelList};
 use crabot::system::{FilepathEntry, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
-use genai::chat::{ChatMessage, ChatRole};
 use session::Session;
 
 use crabot::user::{UserPrompt, WorkMode};
@@ -40,9 +36,7 @@ use views::session_view::SessionEntry;
 use views::system_prompt::PromptSectionState;
 use views::theme::{HANDLE, MIN_W, default_theme};
 use views::tool_list::ToolListState;
-use views::{
-    DividerState, SEARCH_INPUT, center_pane, divider, left_pane, right_pane, scroll_to_end,
-};
+use views::{DividerState, center_pane, divider, left_pane, right_pane, scroll_to_end};
 use widgets::textarea::{self, TextArea};
 
 fn crabot_title() -> &'static str {
@@ -122,12 +116,8 @@ struct App {
     session: Session,
     /// Available saved-sessions for the dropdown list in the left pane.
     session_options: Vec<SessionEntry>,
-    /// Current phase of the LLM interaction lifecycle.
-    streaming: StreamState,
-    /// Index (flat turn count) in the session where the current stream's
-    /// placeholders begin; used by `handle_stream_done` to backfill captured
-    /// content/reasoning into the right display messages.
-    stream_start_index: usize,
+    /// Session state (LLM dialog phase, cancellation, auto-scroll).
+    session_state: views::SessionState,
     /// Indices of turns whose collapsible body (tool result / reasoning) is expanded.
     expanded_turns: HashSet<(usize, usize)>,
     /// Indices of dialogs that are expanded.
@@ -138,16 +128,6 @@ struct App {
     center_pane_title: String,
     /// Whether to show the Restart button (current_exe within workspace).
     show_restart: bool,
-    /// Cancellation token to stop an in-progress stream early.
-    cancel_token: Arc<AtomicBool>,
-    /// Shared slot for a user prompt injected during streaming.
-    pending_user_prompt: Arc<Mutex<Option<String>>>,
-    /// UI-side mirror of `pending_user_prompt`, updated alongside it.
-    pending_prompt_display: Option<String>,
-    /// Whether to auto-scroll the message view to the bottom during streaming.
-    /// Set `true` when a new prompt is sent; `on_scroll` toggles it based on
-    /// whether the user has manually scrolled away from or to the bottom.
-    auto_scroll: Arc<AtomicBool>,
     /// Indices of messages displayed as selectable plain text (double-click
     /// a single message to toggle; ESC clears all).
     selectable_msgs: HashSet<usize>,
@@ -164,7 +144,7 @@ struct App {
     /// Cached default workspace path shown in the confirmation dialog.
     default_workspace_path: PathBuf,
     /// Center-pane search UI state and measurement cache.
-    search: search::SearchState,
+    search: views::search_bar::SearchState,
 }
 
 #[derive(Clone)]
@@ -203,18 +183,9 @@ pub(crate) enum Message {
     EmptyWorkspaceConfirm(Option<PathBuf>),
     ToggleTurnExpand(usize, usize),
     ToggleDialogExpand(usize),
-    StreamToolCalls(Vec<ToolCall>),
-    StreamContent(String),
-    StreamReasoning(String),
-    StreamToolResult(ToolResult),
-    /// A user prompt injected during streaming (consumed by `send_stream`).
-    StreamUserPrompt(String),
-    TokenUsage(Option<genai::chat::Usage>),
-    StreamDone(Vec<ChatMessage>),
-    StreamError(String, Vec<ChatMessage>),
-    StreamCancelled(Vec<ChatMessage>),
-    StreamStateChange(StreamState),
-    StopStream,
+    /// Streaming event (tool calls, content, reasoning, lifecycle).
+    /// Wraps [`views::session_state::Event`] to delegate all streaming interactions.
+    StreamEvent(views::SessionEvent),
     AppClosing,
     Noop,
     CopySessionTitle,
@@ -236,16 +207,9 @@ pub(crate) enum Message {
     /// Arrow-key navigation for the session pick_list.
     /// `true` = up (previous), `false` = down (next).
     NavigateSession(bool),
-    /// Toggle the search bar in the center pane.
-    ToggleSearch,
-    /// Search query text changed.
-    SearchQueryChanged(String),
-    /// Execute the search (Enter key).
-    SearchSubmit,
-    /// Navigate to previous (-1) or next (+1) search result.
-    SearchNavigate(i32),
-    /// Escape key pressed. Closes search bar if visible, otherwise
-    /// clears selectable-text mode.
+    /// Search bar event (toggle, query change, submit, navigate).
+    SearchEvent(views::SearchEvent),
+    /// Escape key pressed. Closes search bar if visible, otherwise clears selectable-text mode.
     EscapePressed,
     /// Result of measuring turn offsets from the widget tree.
     TurnOffsetsMeasured(u64, Vec<f32>),
@@ -350,24 +314,19 @@ impl App {
             workmode: WorkMode::Code,
             session: Session::new(),
             session_options: Vec::new(),
-            streaming: StreamState::Idle,
-            stream_start_index: 0,
+            session_state: views::SessionState::default(),
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
             last_usage: genai::chat::Usage::default(),
             center_pane_title: "New session".into(),
             show_restart,
-            cancel_token: Arc::new(AtomicBool::new(false)),
-            pending_user_prompt: Arc::new(Mutex::new(None)),
-            pending_prompt_display: None,
-            auto_scroll: Arc::new(AtomicBool::new(true)),
             selectable_msgs: HashSet::new(),
             shift_held: false,
             font_scale: saved.font_scale,
             focused: None,
             show_workspace_dialog: false,
             default_workspace_path: setup::default_workspace_path(),
-            search: search::SearchState::default(),
+            search: views::search_bar::SearchState::default(),
         };
         let session_task = app.refresh_session_list();
         let discover_task = mcp_list
@@ -617,6 +576,7 @@ impl App {
             }
             Message::NewSession => {
                 self.session = Session::new();
+                self.session_state = views::SessionState::default();
                 self.center_pane_title = "New session".into();
                 self.last_usage = genai::chat::Usage::default();
                 self.expanded_turns.clear();
@@ -644,7 +604,7 @@ impl App {
                 self.search.invalidate_offsets();
             }
             Message::LoadSession(entry) => {
-                if self.streaming != StreamState::Idle {
+                if self.session_state.phase != DialogPhase::Idle {
                     return Task::none();
                 }
                 match Session::load(&entry.path) {
@@ -675,7 +635,7 @@ impl App {
             }
             Message::NavigateSession(up) => {
                 if self.focused != Some(FocusedTarget::SessionPicker)
-                    || self.streaming != StreamState::Idle
+                    || self.session_state.phase != DialogPhase::Idle
                     || self.session_options.is_empty()
                 {
                     return Task::none();
@@ -737,11 +697,11 @@ impl App {
                 self.user_prompt.clear();
 
                 // During streaming: stash the prompt for the agent loop to pick up.
-                if self.streaming != StreamState::Idle {
-                    if let Ok(mut pending) = self.pending_user_prompt.lock() {
+                if self.session_state.phase != DialogPhase::Idle {
+                    if let Ok(mut pending) = self.session_state.pending_user_prompt.lock() {
                         *pending = Some(user_prompt.clone());
                     }
-                    self.pending_prompt_display = Some(content);
+                    self.session_state.pending_display = Some(content);
                     return Task::none();
                 }
 
@@ -766,7 +726,9 @@ impl App {
                 return Task::done(Message::SendPrompt);
             }
             Message::ResendLastPrompt => {
-                if self.streaming != StreamState::Idle || self.center_pane_title == "New session" {
+                if self.session_state.phase != DialogPhase::Idle
+                    || self.center_pane_title == "New session"
+                {
                     return Task::none();
                 }
                 let Some(model) = self
@@ -783,68 +745,17 @@ impl App {
                 }
                 return self.start_dialog(&model, None);
             }
-            Message::StreamToolCalls(tcs) => {
-                // Empty Tool turn to accumulate results + Temp turn to show pending calls.
-                self.session.push_turn(Turn::from_tool_results(vec![]));
-                self.session.push_turn(Turn::from_tool_calls(tcs));
-                return self.maybe_scroll_to_end();
-            }
-            Message::StreamContent(chunk) => {
-                if let Some(last) = self.session.last_turn_mut()
-                    && let TurnBody::Text(tc) = &mut last.body
-                {
-                    tc.content.push_str(&chunk);
-                    tc.refresh_md_cache();
-                }
-                self.search.invalidate_offsets();
-                return self.maybe_scroll_to_end();
-            }
-            Message::StreamReasoning(chunk) => {
-                if let Some(last) = self.session.last_turn_mut()
-                    && let TurnBody::Text(tc) = &mut last.body
-                {
-                    tc.reasoning
-                        .get_or_insert_with(String::new)
-                        .push_str(&chunk);
-                    tc.refresh_md_cache();
-                }
-                self.search.invalidate_offsets();
-                return self.maybe_scroll_to_end();
-            }
-            Message::StreamToolResult(tr) => {
-                // Track files modified by write / edit tools.
-                if let Some(path_str) = tr.get_modified_file()
-                    && !self.session.modified_files.iter().any(|p| p == path_str)
-                {
-                    self.session.modified_files.push(path_str.to_string());
-                }
-                if let Some(dialog) = self.session.dialogs.last_mut() {
-                    dialog.push_tool_result(tr);
-                }
-                return self.maybe_scroll_to_end();
-            }
-            Message::StreamUserPrompt(content) => {
-                self.session.push_turn(Turn::user(content));
-                self.pending_prompt_display = None;
-                return self.maybe_scroll_to_end();
-            }
-            Message::TokenUsage(usage) => {
-                let u = usage.unwrap_or_default();
-                let tokens = TokenAmount::from_genai(&u);
+            Message::StreamEvent(event) => {
                 let cost = self.get_current_model().map(|m| m.cost);
-                self.session.accumulate_usage(&tokens, cost);
-                self.session.size = u.prompt_tokens.unwrap_or(0);
-                self.last_usage = u;
-            }
-            Message::StreamDone(genai_messages) => {
-                self.handle_stream_done(genai_messages);
-                self.search.invalidate_offsets();
-                return self.maybe_scroll_to_end();
-            }
-            Message::StreamError(err, genai_messages) => {
-                self.handle_stream_error(err, genai_messages);
-                self.search.invalidate_offsets();
-                return self.maybe_scroll_to_end();
+                return views::session_state::update(
+                    event,
+                    &mut self.session_state,
+                    &mut self.session,
+                    &mut self.search,
+                    &mut self.last_usage,
+                    cost,
+                    &mut self.user_prompt,
+                );
             }
             Message::CopySessionTitle => {
                 return iced::clipboard::write(self.center_pane_title.clone());
@@ -855,40 +766,8 @@ impl App {
                 let _ = Command::new("cargo").args(["run", "--release"]).spawn();
                 return iced::exit();
             }
-            Message::StopStream => {
-                self.cancel_token.store(true, Ordering::Relaxed);
-                self.session.save().ok();
-            }
             Message::SessionViewScrolled(viewport) => {
-                // While streaming, track whether the user has scrolled away from the bottom
-                // (to pause auto-scroll) or back to it (to resume).
-                if self.streaming != StreamState::Idle {
-                    let y = viewport.relative_offset().y;
-                    let at_bottom = if y.is_nan() { true } else { y >= 0.99 };
-                    self.auto_scroll.store(at_bottom, Ordering::Relaxed);
-                }
-            }
-            Message::StreamCancelled(genai_messages) => {
-                self.streaming = StreamState::Idle;
-                // Put any pending prompt back into the textarea so the user doesn't lose what they typed.
-                if let Ok(mut pending) = self.pending_user_prompt.lock()
-                    && let Some(prompt) = pending.take()
-                {
-                    let raw = UserPrompt::strip_mode_tag(&prompt);
-                    self.user_prompt.set_text(raw);
-                }
-                self.pending_prompt_display = None;
-                // Preserve partial assistant/tool messages in history so
-                // subsequent requests still carry valid context.
-                self.session.history.extend(genai_messages);
-                let _ = self.session.save();
-            }
-            Message::StreamStateChange(state) => {
-                // When the LLM begins thinking, push a new assistant turn placeholder.
-                if state == StreamState::LlmThinking {
-                    self.session.push_turn(Turn::assistant(String::new(), None));
-                }
-                self.streaming = state;
+                views::session_state::handle_scroll(&self.session_state, viewport);
             }
             Message::AppClosing => {
                 self.save_settings();
@@ -916,133 +795,20 @@ impl App {
                 }
                 None => self.selectable_msgs.clear(),
             },
-            Message::ToggleSearch => {
-                self.search.visible = !self.search.visible;
-                if self.search.visible {
-                    return iced::widget::operation::focus(SEARCH_INPUT.clone());
-                }
-            }
-            Message::SearchQueryChanged(q) => {
-                self.search.set_query(q);
-            }
-            Message::SearchSubmit => {
-                if let Some(target) = self.search.submit(&self.session) {
-                    let q = self.search.query.clone();
-                    search::expand_result(
-                        &self.session,
-                        &mut self.expanded_dialogs,
-                        &mut self.expanded_turns,
-                        target,
-                        &q,
-                    );
-                    let total = self.session.total_turns();
-                    return self.search.measure_and_scroll(total, target);
-                }
-            }
-            Message::SearchNavigate(delta) => {
-                if let Some(target) = self.search.navigate(delta) {
-                    let q = self.search.query.clone();
-                    let changed = search::expand_result(
-                        &self.session,
-                        &mut self.expanded_dialogs,
-                        &mut self.expanded_turns,
-                        target,
-                        &q,
-                    );
-                    if !changed && let Some(task) = self.search.scroll_to_target(target) {
-                        return task;
-                    }
-                    let total = self.session.total_turns();
-                    return self.search.measure_and_scroll(total, target);
-                }
+            Message::SearchEvent(event) => {
+                return views::search_bar::update(
+                    event,
+                    &mut self.search,
+                    &self.session,
+                    &mut self.expanded_dialogs,
+                    &mut self.expanded_turns,
+                );
             }
             Message::TurnOffsetsMeasured(generation, offsets) => {
                 self.search.handle_offsets(generation, offsets);
             }
         }
         Task::none()
-    }
-
-    /// Backfill streaming placeholders with captured content from genai,
-    /// extend session history, and persist the session.
-    fn handle_stream_done(&mut self, genai_messages: Vec<ChatMessage>) {
-        self.streaming = StreamState::Idle;
-
-        let mut genai_asst_iter = genai_messages
-            .iter()
-            .filter(|m| m.role == genai::chat::ChatRole::Assistant)
-            .filter_map(|m| {
-                let text = m.content.joined_texts().unwrap_or_default();
-                let reasoning = m.content.first_reasoning_content().map(|s| s.to_string());
-                if !text.is_empty() || reasoning.is_some() {
-                    Some((text, reasoning))
-                } else {
-                    None
-                }
-            });
-
-        for turn in self.session.turns_from_mut(self.stream_start_index) {
-            if turn.role != ChatRole::Assistant {
-                continue;
-            }
-            if let TurnBody::Text(tc) = &mut turn.body
-                && let Some((joined_text, reasoning)) = genai_asst_iter.next()
-            {
-                if !joined_text.is_empty() {
-                    tc.content = replace_emoji(&joined_text);
-                }
-                // Some providers omit ReasoningChunk events and only expose
-                // reasoning via captured_reasoning_content at stream end.
-                if tc.reasoning.is_none() {
-                    tc.reasoning = reasoning;
-                }
-                tc.refresh_md_cache();
-            }
-        }
-
-        self.session.history.extend(genai_messages);
-        let _ = self.session.save();
-    }
-
-    /// Replace the last-message empty assistant placeholder with this error,
-    /// or push a new error message if no placeholder exists.
-    fn handle_stream_error(&mut self, err: String, genai_messages: Vec<ChatMessage>) {
-        self.streaming = StreamState::Idle;
-
-        // Preserve any messages generated before the error (user msg,
-        // partial assistant turns, tool calls/responses) in the history
-        // so subsequent requests still carry valid context.
-        self.session.history.extend(genai_messages);
-
-        let error_msg = format!("Error: {err}");
-
-        // Replace an empty assistant placeholder from streaming, or push a new error turn.
-        if let Some(turn) = self.session.last_turn_mut()
-            && turn.role == ChatRole::Assistant
-            && matches!(
-                &turn.body,
-                TurnBody::Text(TextContent { content, reasoning: None, .. })
-                    if content.is_empty()
-            )
-        {
-            turn.body = TurnBody::Text(TextContent {
-                content: error_msg,
-                ..Default::default()
-            });
-        } else {
-            self.session.push_turn(Turn::assistant(error_msg, None));
-        }
-        let _ = self.session.save();
-    }
-
-    /// Snap the message scroll to the end, but only if auto-scroll is
-    /// currently enabled (i.e. the user hasn't scrolled away).
-    fn maybe_scroll_to_end(&self) -> Task<Message> {
-        if self.auto_scroll.load(Ordering::Relaxed) {
-            scroll_to_end()
-        } else {
-            Task::none()
-        }
     }
 
     fn start_dialog(
@@ -1058,12 +824,14 @@ impl App {
         self.session.workspace = self.system_prompt.workspace.1.clone();
         self.session.save().ok();
         // Clear any stale pending prompt from a previous stream.
-        if let Ok(mut pending) = self.pending_user_prompt.lock() {
+        if let Ok(mut pending) = self.session_state.pending_user_prompt.lock() {
             *pending = None;
         }
-        self.pending_prompt_display = None;
-        self.stream_start_index = self.session.total_turns();
-        self.auto_scroll.store(true, Ordering::Relaxed);
+        self.session_state.pending_display = None;
+        self.session_state.start_index = self.session.total_turns();
+        self.session_state
+            .auto_scroll
+            .store(true, Ordering::Relaxed);
 
         let config = llm::SendConfig {
             model,
@@ -1073,27 +841,29 @@ impl App {
             tools: self
                 .tool_registry
                 .enabled_tools(&self.enabled_tools, &self.enabled_mcp_servers),
-            pending_user_prompt: self.pending_user_prompt.clone(),
+            pending_user_prompt: self.session_state.pending_user_prompt.clone(),
             user_agent: crabot_title().to_string(),
-            cancel_token: self.cancel_token.clone(),
+            cancel_token: self.session_state.cancel_token.clone(),
         };
 
         let history = self.session.history.clone();
 
-        self.streaming = StreamState::LlmLoading;
-        self.cancel_token.store(false, Ordering::Relaxed);
-        let cancel_token = self.cancel_token.clone();
+        self.session_state.phase = DialogPhase::LlmLoading;
+        self.session_state
+            .cancel_token
+            .store(false, Ordering::Relaxed);
+        let cancel_token = self.session_state.cancel_token.clone();
 
         Task::batch([
             scroll_to_end(),
             Task::stream(iced::stream::channel(128, async move |sender| {
                 let cancel = cancel_token.clone();
                 let mut callback = {
-                    move |msg: Message| {
+                    move |msg: views::SessionEvent| {
                         let cancel = cancel.clone();
                         let mut sender = sender.clone();
                         async move {
-                            let ok = sender.send(msg).await.is_ok();
+                            let ok = sender.send(Message::StreamEvent(msg)).await.is_ok();
                             if cancel.load(Ordering::Relaxed) {
                                 false
                             } else {
@@ -1226,18 +996,7 @@ impl App {
     }
 
     fn get_status(&self) -> &str {
-        match self.streaming {
-            StreamState::LlmLoading => "🔗 Loading LLM…",
-            StreamState::LlmThinking => "💭 LLM thinking…",
-            StreamState::ToolExecuting => "🔧 Tool executing…",
-            StreamState::Idle => {
-                if self.session.is_empty() {
-                    "Send user prompt to start dialog with LLM"
-                } else {
-                    "✅ Ready"
-                }
-            }
-        }
+        self.session_state.status(self.session.is_empty())
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -1262,7 +1021,7 @@ impl App {
                 &self.tool_registry,
                 &self.user_prompt,
                 self.workmode,
-                self.streaming,
+                self.session_state.phase,
                 &self.session_options,
                 &self.session.id,
                 &self.enabled_mcp_servers,
@@ -1275,10 +1034,10 @@ impl App {
                 &self.expanded_dialogs,
                 self.get_status(),
                 &self.theme,
-                self.streaming,
+                self.session_state.phase,
                 &self.selectable_msgs,
                 self.font_scale,
-                self.pending_prompt_display.as_deref(),
+                self.session_state.pending_display.as_deref(),
                 &self.search,
             ),
             divider(&self.right_divider),
@@ -1342,7 +1101,9 @@ impl App {
                         keyboard::Key::Character("y") => {
                             Some(Message::UndoRedo(textarea::Message::Redo))
                         }
-                        keyboard::Key::Character("f") => Some(Message::ToggleSearch),
+                        keyboard::Key::Character("f") => {
+                            Some(Message::SearchEvent(views::SearchEvent::ToggleSearch))
+                        }
                         keyboard::Key::Character("=") => Some(Message::Zoom(0.05)),
                         keyboard::Key::Character("-") => Some(Message::Zoom(-0.05)),
                         _ => None,
