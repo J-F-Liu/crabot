@@ -36,6 +36,12 @@ pub struct Session {
     pub updated_at: String,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
     /// Create a new session.
     pub fn new() -> Self {

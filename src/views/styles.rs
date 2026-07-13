@@ -299,14 +299,11 @@ pub(crate) fn role_badge_style(role: &str) -> impl Fn(&Theme) -> container::Styl
     }
 }
 
-// ── pick_list styles ──────────────────────────────────────────────
+// ── dropdown styles ───────────────────────────────────────────────
 
-/// Muted, non-interactive-looking style for pick_list when disabled.
-pub(crate) fn disabled_pick_list_style(
-    _theme: &Theme,
-    _status: iced::widget::pick_list::Status,
-) -> iced::widget::pick_list::Style {
-    iced::widget::pick_list::Style {
+/// Muted, non-interactive-looking style for DropDown when disabled.
+pub(crate) fn disabled_dropdown_style(_theme: &Theme) -> crate::widgets::dropdown::Style {
+    crate::widgets::dropdown::Style {
         text_color: CRABOT_TEXT_MUTED,
         placeholder_color: CRABOT_TEXT_MUTED,
         handle_color: CRABOT_TEXT_MUTED,

@@ -821,6 +821,19 @@ impl App {
         self.session.model = Some(model_config.clone());
         self.session.workspace = self.system_prompt.workspace.1.clone();
         self.session.save().ok();
+
+        // Add current session to the dropdown list so it appears immediately.
+        if self.session.dialogs.len() == 1
+            && let Some(path) = self.session.save_path()
+        {
+            let entry = SessionEntry {
+                id: self.session.id.clone(),
+                title: self.session.title.clone(),
+                path,
+            };
+            self.session_options.insert(0, entry);
+        }
+
         // Clear any stale pending prompt from a previous stream.
         if let Ok(mut pending) = self.session_state.pending_user_prompt.lock() {
             *pending = None;
@@ -1065,7 +1078,7 @@ impl App {
 
     fn subscription(_state: &Self) -> Subscription<Message> {
         Subscription::batch([
-            event::listen_with(|event, _status, _window| match event {
+            event::listen_with(|event, status, _window| match event {
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     Some(Message::CursorMoved(position))
                 }
@@ -1077,6 +1090,9 @@ impl App {
                 }
                 Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size)),
                 Event::Window(window::Event::Moved(pos)) => Some(Message::WindowMoved(pos)),
+                // Skip keyboard shortcuts when a widget already captured the
+                // event (e.g. dropdown overlay handling arrow-key navigation).
+                Event::Keyboard(_) if status == event::Status::Captured => None,
                 Event::Keyboard(keyboard::Event::KeyPressed {
                     key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
                     ..

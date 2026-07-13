@@ -1,6 +1,6 @@
 use iced::{
     Alignment, Element, Fill, Font, font,
-    widget::{button, column, container, pick_list, row, text},
+    widget::{button, column, container, row, text},
 };
 
 use json_escape::unescape;
@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::Message;
 use crate::llm::DialogPhase;
+use crate::widgets::dropdown::DropDown;
 
 /// Lightweight session metadata for dropdown listing.
 #[derive(Debug, Clone)]
@@ -41,7 +42,7 @@ pub(crate) fn session_view<'a>(
 ) -> Element<'a, Message> {
     let selected = session_options.iter().find(|e| e.id == current_session_id);
 
-    let mut list = pick_list(
+    let mut list = DropDown::new(
         session_options,
         selected,
         if streaming == DialogPhase::Idle {
@@ -50,9 +51,11 @@ pub(crate) fn session_view<'a>(
             |_| Message::Noop
         },
     )
-    .width(Fill);
+    .width(Fill)
+    .menu_width(600.0);
+
     list = if streaming != DialogPhase::Idle {
-        list.style(crate::views::disabled_pick_list_style)
+        list.style(crate::views::disabled_dropdown_style)
     } else {
         list
     };
@@ -66,8 +69,8 @@ pub(crate) fn session_view<'a>(
                 weight: font::Weight::Bold,
                 ..Font::DEFAULT
             }),
-            iced::widget::Space::new().width(Fill),
-            button(text("New").align_x(Alignment::Center))
+            container(list).clip(true),
+            button(text("New").size(13).align_x(Alignment::Center))
                 .on_press_maybe(if streaming != DialogPhase::Idle {
                     None
                 } else {
@@ -77,7 +80,6 @@ pub(crate) fn session_view<'a>(
         ]
         .align_y(Alignment::Center)
         .spacing(8),
-        container(list).clip(true),
     ]
     .spacing(4)
     .into()
