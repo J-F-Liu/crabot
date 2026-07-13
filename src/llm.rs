@@ -28,7 +28,7 @@ pub enum DialogPhase {
 }
 
 /// Max agent loop iterations to prevent infinite tool-calling cycles.
-const MAX_ITERATIONS: usize = 50;
+const MAX_ITERATIONS: usize = 100;
 
 /// Configuration for a send request to the LLM.
 pub struct SendConfig {
