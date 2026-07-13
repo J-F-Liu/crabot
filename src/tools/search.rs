@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 
@@ -41,13 +41,17 @@ impl Tool for SearchTool {
         &self,
         args: &Value,
         workspace: &Path,
-        _cancel: &AtomicBool,
+        cancel: &AtomicBool,
     ) -> Result<String, String> {
-        execute(args, workspace)
+        execute(args, workspace, cancel)
     }
 }
 
-pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
+pub(super) fn execute(
+    args: &Value,
+    workspace: &Path,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
     const MAX_LINES: usize = 500;
 
     let pattern = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
@@ -88,7 +92,7 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             .standard_filters(true)
             .build();
         for entry in walker {
-            if out_lines >= MAX_LINES {
+            if out_lines >= MAX_LINES || cancel.load(Ordering::Relaxed) {
                 break;
             }
             let entry = match entry {
@@ -123,6 +127,10 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     }
     if !found {
         Ok("No matches found.".into())
+    } else if cancel.load(Ordering::Relaxed) {
+        let _ =
+            std::fmt::Write::write_fmt(&mut out, format_args!("\n... [search was cancelled]\n"));
+        Ok(super::truncate_output(out))
     } else if truncated {
         let _ = std::fmt::Write::write_fmt(
             &mut out,
