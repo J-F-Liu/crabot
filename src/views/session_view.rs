@@ -85,7 +85,7 @@ pub(crate) fn session_view<'a>(
 
 /// List session metadata for a workspace (reads only first 8 KiB per file).
 pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String> {
-    let paths = list_sessions(workspace)?;
+    let paths = crabot::session::list_session_paths(workspace)?;
     let mut entries = Vec::with_capacity(paths.len());
     let mut buf = vec![0u8; 8192];
     for path in paths {
@@ -105,22 +105,6 @@ pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String
         entries.push(SessionEntry { id, title, path });
     }
     Ok(entries)
-}
-
-/// List all saved sessions for a workspace.
-fn list_sessions(workspace: &Path) -> Result<Vec<PathBuf>, String> {
-    let dir = workspace.join(".agent").join("sessions");
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read sessions dir: {e}"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    paths.sort_by(|a, b| b.cmp(a)); // newest first
-    Ok(paths)
 }
 
 /// Extract a top-level JSON string value for `key` from partial JSON text.

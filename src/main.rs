@@ -2,10 +2,8 @@
 // for `println!`/`eprintln!` output during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod chat;
 mod fonts;
 mod llm;
-mod session;
 mod views;
 mod widgets;
 
@@ -25,10 +23,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::Ordering;
 
-use chat::Turn;
+use crabot::chat::Turn;
 use crabot::model::{Model, ModelConfig, ModelList};
+use crabot::session::Session;
 use crabot::system::{FilepathEntry, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
-use session::Session;
 
 use crabot::user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;

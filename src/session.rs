@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::chat::{Dialog, ToolResult, Turn};
-use crabot::model::{ModelConfig, TokenAmount};
+use crate::model::{ModelConfig, TokenAmount};
 
 /// A conversation session, persisted to `.agent/sessions/`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,7 +106,7 @@ impl Session {
     }
 
     /// Accumulate token usage and recalculate cost from the model's pricing.
-    pub fn accumulate_usage(&mut self, tokens: &TokenAmount, cost: Option<crabot::model::Cost>) {
+    pub fn accumulate_usage(&mut self, tokens: &TokenAmount, cost: Option<crate::model::Cost>) {
         self.usage.accumulate(tokens);
         if let Some(c) = cost {
             self.cost += c.calculate(tokens);
@@ -204,7 +204,7 @@ impl Session {
                 ChatRole::System => {}
                 ChatRole::User => {
                     let text = msg.content.joined_texts().unwrap_or_default();
-                    let text_for_title = crabot::user::UserPrompt::strip_mode_tag(&text);
+                    let text_for_title = crate::user::UserPrompt::strip_mode_tag(&text);
                     let title = Self::derive_title(text_for_title);
                     let turn = Turn::user(text);
                     dialogs.push(Dialog {
@@ -289,4 +289,20 @@ impl Session {
         session.rebuild_dialogs();
         Ok(session)
     }
+}
+
+/// List all saved session file paths for a workspace (newest first).
+pub fn list_session_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
+    let dir = workspace.join(".agent").join("sessions");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("Failed to read sessions dir: {e}"))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    paths.sort_by(|a, b| b.cmp(a)); // newest first
+    Ok(paths)
 }

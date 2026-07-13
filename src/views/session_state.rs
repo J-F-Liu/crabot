@@ -5,14 +5,14 @@ use iced::Task;
 use iced::widget::scrollable::Viewport;
 
 use crate::Message;
-use crate::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use crate::llm::DialogPhase;
 use crate::model::Cost;
 use crate::model::TokenAmount;
-use crate::session::Session;
 use crate::views::scroll_to_end;
 use crate::views::search_bar::SearchState;
 use crate::widgets::textarea::TextArea;
+use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
+use crabot::session::Session;
 use crabot::user::UserPrompt;
 use genai::chat::{ChatMessage, ChatRole};
 

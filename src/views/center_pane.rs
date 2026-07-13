@@ -19,9 +19,9 @@ use super::theme::{
 };
 use super::tool_message::{args_rows, highlighted_text, path_arg_row, result_text};
 use crate::Message;
-use crate::chat::{Dialog, Turn, TurnBody};
 use crate::llm::DialogPhase;
 use crate::views::search_bar::SearchState;
+use crabot::chat::{Dialog, Turn, TurnBody};
 use std::collections::HashSet;
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");

@@ -9,9 +9,9 @@ use genai::chat::{
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
-use crate::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult};
 use crate::tools::{self, ToolRef};
 use crate::views::session_state::SessionEvent;
+use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult};
 use crabot::model::ModelInfo;
 
 // ── DialogPhase: tracks the current phase of an LLM interaction ────

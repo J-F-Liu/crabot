@@ -10,9 +10,9 @@ use super::styles::{bordered_bar_style, icon_button_style};
 use super::theme::CRABOT_TEXT_MUTED;
 
 use crate::Message;
-use crate::chat::TurnBody;
-use crate::session::Session;
 use crate::views::{SEARCH_INPUT, measure_turn_offsets, scroll_to_turn_at};
+use crabot::chat::TurnBody;
+use crabot::session::Session;
 
 /// UI state and widget bookkeeping for center-pane search.
 pub(crate) struct SearchState {
