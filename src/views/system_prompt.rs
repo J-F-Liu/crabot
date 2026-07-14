@@ -213,12 +213,12 @@ pub fn load_prompt_options(subdir: &str, selected: &str) -> (Vec<FilepathEntry>,
     (options, content)
 }
 
-pub fn build_workspace_options(recent: &[PathBuf]) -> Vec<FilepathEntry> {
+pub fn build_workspace_options(recent: &[(PathBuf, bool)]) -> Vec<FilepathEntry> {
     use std::collections::HashMap;
 
     let mut entries: Vec<FilepathEntry> = recent
         .iter()
-        .map(|path| {
+        .map(|(path, _)| {
             let display = path
                 .file_name()
                 .and_then(|n| n.to_str())

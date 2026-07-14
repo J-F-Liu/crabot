@@ -22,8 +22,8 @@ pub struct Settings {
     pub date_enabled: bool,
     /// Current workspace path.
     pub workspace: PathBuf,
-    /// Recent workspace paths (most recent first).
-    pub recent_workspaces: Vec<PathBuf>,
+    /// Recent workspaces as `(path, agents_md_enabled)` tuples, most recent first.
+    pub recent_workspaces: Vec<(PathBuf, bool)>,
     /// Font scale factor for center pane dialog blocks (0.5 .. 2.0).
     pub font_scale: f32,
     /// Enabled MCP servers: server name → enabled.

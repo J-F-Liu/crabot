@@ -101,6 +101,8 @@ struct App {
     workspace_options: Vec<FilepathEntry>,
     /// Whether an AGENTS.md file exists in the current workspace.
     agents_md_exists: bool,
+    /// Recent workspace paths with their per-workspace agents_md_enabled preference.
+    recent_workspaces: Vec<(PathBuf, bool)>,
     // user-editable Content need to persist between view calls to maintain editor state
     files_content: text_editor::Content,
     tools_content: text_editor::Content,
@@ -300,6 +302,7 @@ impl App {
             selected_rules: saved.selected_rules,
             workspace_options: views::build_workspace_options(&saved.recent_workspaces),
             agents_md_exists,
+            recent_workspaces: saved.recent_workspaces,
             prompt_section_state: PromptSectionState::default(),
             tool_list_state: ToolListState::default(),
             files_content,
@@ -890,28 +893,41 @@ impl App {
     }
 
     /// Bump `path` to top of recents, persist it as current workspace,
-    /// and rebuild the files tree.
+    /// restore its agents_md_enabled preference, and rebuild the files tree.
     fn set_workspace(&mut self, path: PathBuf) {
-        let mut paths: Vec<PathBuf> = std::mem::take(&mut self.workspace_options)
-            .into_iter()
-            .filter(|e| !e.path.as_os_str().is_empty())
-            .map(|e| e.path)
-            .collect();
-        paths.retain(|p| p != &path);
+        // Save current workspace preference before switching.
+        let cur = &self.system_prompt.workspace.1;
+        if !cur.as_os_str().is_empty() {
+            let enabled = self.system_prompt.agents_md.0;
+            if let Some(entry) = self.recent_workspaces.iter_mut().find(|(p, _)| p == cur) {
+                entry.1 = enabled;
+            } else {
+                self.recent_workspaces.push((cur.clone(), enabled));
+            }
+        }
 
-        self.system_prompt.workspace.1 = path.clone();
+        // Move the new workspace to the front of recents.
+        let (exists, content) = load_agents_md(&path);
+        let enabled = self
+            .recent_workspaces
+            .iter()
+            .find_map(|(p, e)| (p == &path).then_some(*e))
+            .unwrap_or(true)
+            && exists;
+        self.recent_workspaces.retain(|(p, _)| p != &path);
+        self.recent_workspaces.insert(0, (path.clone(), enabled));
+        self.recent_workspaces.truncate(10);
+
+        // Apply workspace.
         self.system_prompt.files.1 = workspace::build_files_tree(&path);
         self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
-        let (exists, agents_md_content) = load_agents_md(&path);
         self.agents_md_exists = exists;
-        self.system_prompt.agents_md = (self.agents_md_exists, agents_md_content);
+        self.system_prompt.agents_md = (enabled, content);
         self.show_restart = env::current_exe()
             .ok()
             .is_some_and(|exe| exe.starts_with(&path));
-
-        paths.insert(0, path);
-        paths.truncate(10);
-        self.workspace_options = views::build_workspace_options(&paths);
+        self.system_prompt.workspace.1 = path;
+        self.workspace_options = views::build_workspace_options(&self.recent_workspaces);
     }
 
     /// Collect current app state into `Settings` and persist to disk.
@@ -932,12 +948,7 @@ impl App {
             files_enabled: self.system_prompt.files.0,
             date_enabled: self.system_prompt.date.0,
             workspace: self.system_prompt.workspace.1.clone(),
-            recent_workspaces: self
-                .workspace_options
-                .iter()
-                .filter(|e| !e.path.as_os_str().is_empty())
-                .map(|e| e.path.clone())
-                .collect(),
+            recent_workspaces: self.recent_workspaces.clone(),
             font_scale: self.font_scale,
             mcp_servers: self
                 .tool_registry
