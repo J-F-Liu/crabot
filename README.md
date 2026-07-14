@@ -4,6 +4,10 @@
 [![Downloads](https://img.shields.io/crates/d/crabot.svg)](https://crates.io/crates/crabot)
 [![CI](https://github.com/J-F-Liu/crabot/actions/workflows/rust.yml/badge.svg)](https://github.com/J-F-Liu/crabot/actions/workflows/rust.yml)
 
+<p align="center">
+  <img src="assets/images/logo.png" alt="Crabot Logo" width="200">
+</p>
+
 A smart and powerful coding agent.
 
 ## Highlights
