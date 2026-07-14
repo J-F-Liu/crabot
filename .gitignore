@@ -3,6 +3,7 @@
 /.agent
 /.reasonix
 /.codebase-memory
+/.codegraph
 /tests
 ops.txt
 reasonix.toml
