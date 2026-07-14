@@ -48,6 +48,8 @@ pub(crate) fn left_pane<'a>(
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     workmode_enabled: bool,
+    prompt_recipes: &'a [String],
+    recipe_dropdown_expanded: bool,
     streaming: DialogPhase,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
@@ -93,7 +95,13 @@ pub(crate) fn left_pane<'a>(
         date_field_view(&system_prompt.date),
         session_view(streaming, session_options, current_session_id),
         label("User Prompt", 140.0),
-        user_prompt_view(user_prompt, workmode, workmode_enabled),
+        user_prompt_view(
+            user_prompt,
+            workmode,
+            workmode_enabled,
+            prompt_recipes,
+            recipe_dropdown_expanded,
+        ),
         tools_section(
             BUILTIN_TOOLS,
             tool_list_state.builtin_expanded,

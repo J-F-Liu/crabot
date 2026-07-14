@@ -27,9 +27,13 @@ pub struct Settings {
     /// Font scale factor for center pane dialog blocks (0.5 .. 2.0).
     pub font_scale: f32,
     /// Enabled MCP servers: server name → enabled.
+    #[serde(default)]
     pub mcp_servers: IndexMap<String, bool>,
     /// Enabled agent tools: tool name → enabled.
     pub agent_tools: IndexMap<String, bool>,
+    /// Prompt recipes: work-mode name (lowercase) → list of prompt templates.
+    #[serde(default)]
+    pub prompt_recipe: IndexMap<String, Vec<String>>,
 }
 
 impl Default for Settings {
@@ -54,6 +58,7 @@ impl Default for Settings {
             font_scale: 1.0,
             mcp_servers: IndexMap::new(),
             agent_tools: IndexMap::new(),
+            prompt_recipe: IndexMap::new(),
         }
     }
 }

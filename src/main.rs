@@ -146,6 +146,10 @@ struct App {
     default_workspace_path: PathBuf,
     /// Center-pane search UI state and measurement cache.
     search: views::search_bar::SearchState,
+    /// Prompt recipes loaded from settings: work-mode name → list of prompt templates.
+    prompt_recipe: IndexMap<String, Vec<String>>,
+    /// Whether the recipe DropDown is currently expanded.
+    recipe_dropdown_expanded: bool,
 }
 
 #[derive(Clone)]
@@ -215,6 +219,12 @@ pub(crate) enum Message {
     EscapePressed,
     /// Result of measuring turn offsets from the widget tree.
     TurnOffsetsMeasured(u64, Vec<f32>),
+    /// Toggle the recipe DropDown expand/collapse.
+    ToggleRecipeDropdown,
+    /// Select a recipe by index and fill the user prompt text area.
+    SelectRecipe(usize),
+    /// Dismiss the recipe DropDown without selecting.
+    DismissRecipeDropdown,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -331,6 +341,8 @@ impl App {
             show_workspace_dialog: false,
             default_workspace_path: setup::default_workspace_path(),
             search: views::search_bar::SearchState::default(),
+            prompt_recipe: saved.prompt_recipe,
+            recipe_dropdown_expanded: false,
         };
         let session_task = app.refresh_session_list();
         let discover_task = mcp_list
@@ -819,6 +831,21 @@ impl App {
             Message::TurnOffsetsMeasured(generation, offsets) => {
                 self.search.handle_offsets(generation, offsets);
             }
+            Message::ToggleRecipeDropdown => {
+                self.recipe_dropdown_expanded = !self.recipe_dropdown_expanded;
+            }
+            Message::SelectRecipe(index) => {
+                let mode_key = self.workmode.name.to_lowercase();
+                if let Some(recipes) = self.prompt_recipe.get(&mode_key)
+                    && let Some(recipe) = recipes.get(index)
+                {
+                    self.user_prompt.replace_text(recipe);
+                }
+                self.recipe_dropdown_expanded = false;
+            }
+            Message::DismissRecipeDropdown => {
+                self.recipe_dropdown_expanded = false;
+            }
         }
         Task::none()
     }
@@ -975,6 +1002,7 @@ impl App {
                     (name.clone(), enabled)
                 })
                 .collect(),
+            prompt_recipe: self.prompt_recipe.clone(),
         };
         settings.save();
     }
@@ -1032,6 +1060,15 @@ impl App {
         self.session_state.status(self.session.is_empty())
     }
 
+    /// Return the recipe list for the currently active work mode (lowercase key).
+    fn current_recipe_list(&self) -> &[String] {
+        let key = self.workmode.name.to_lowercase();
+        self.prompt_recipe
+            .get(&key)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     fn view(&self) -> Element<'_, Message> {
         let main_content: Element<_> = row![
             left_pane(
@@ -1055,6 +1092,8 @@ impl App {
                 &self.user_prompt,
                 self.workmode,
                 self.workmode_enabled,
+                self.current_recipe_list(),
+                self.recipe_dropdown_expanded,
                 self.session_state.phase,
                 &self.session_options,
                 &self.session.id,

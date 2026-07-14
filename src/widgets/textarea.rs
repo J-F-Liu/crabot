@@ -144,6 +144,16 @@ impl TextArea {
         self.redo_stack.clear();
     }
 
+    /// Replaces all text content while preserving undo history.
+    ///
+    /// The previous content is pushed onto the undo stack so the user can
+    /// revert via undo, unlike [`set_text`](Self::set_text) which wipes history.
+    pub fn replace_text(&mut self, text: &str) {
+        self.push_undo();
+        self.redo_stack.clear();
+        self.content = text_editor::Content::with_text(text);
+    }
+
     // ── private helpers ────────────────────────────────────────────────
 
     fn perform(&mut self, action: text_editor::Action) {

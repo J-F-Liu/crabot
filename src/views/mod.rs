@@ -15,7 +15,7 @@ pub mod user_prompt;
 
 // Re-export the style functions for external callers.
 pub(crate) use styles::{
-    disabled_dropdown_style, primary_button, primary_checkbox, primary_toggler,
+    disabled_dropdown_style, primary_button, primary_checkbox, primary_toggler, secondary_button,
 };
 
 // Re-export the pane constructors and helpers used by `App::view` / `App::update`.
