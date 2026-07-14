@@ -47,6 +47,7 @@ pub(crate) fn left_pane<'a>(
     tool_registry: &'a tools::ToolRegistry,
     user_prompt: &'a TextArea,
     workmode: WorkMode,
+    workmode_enabled: bool,
     streaming: DialogPhase,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
@@ -92,7 +93,7 @@ pub(crate) fn left_pane<'a>(
         date_field_view(&system_prompt.date),
         session_view(streaming, session_options, current_session_id),
         label("User Prompt", 140.0),
-        user_prompt_view(user_prompt, workmode),
+        user_prompt_view(user_prompt, workmode, workmode_enabled),
         tools_section(
             BUILTIN_TOOLS,
             tool_list_state.builtin_expanded,

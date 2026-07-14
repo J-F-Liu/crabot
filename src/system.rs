@@ -54,13 +54,19 @@ impl SystemPrompt {
     }
 
     /// Concatenate all enabled components, returning the full prompt string.
-    pub fn get_prompt(&self) -> String {
+    pub fn get_prompt(&self, workmode_enabled: bool) -> String {
         let mut prompt = String::new();
         if let (true, content) = &self.preamble
             && !content.is_empty()
         {
             prompt.push_str(content);
             prompt.push('\n');
+        }
+        if workmode_enabled
+            && let Some(file) = crate::setup::ASSETS.get_file("workmode.md")
+            && let Some(contents) = file.contents_utf8()
+        {
+            prompt.push_str(contents);
         }
         if let (true, content) = &self.rules
             && !content.is_empty()

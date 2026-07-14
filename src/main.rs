@@ -113,6 +113,7 @@ struct App {
     saved_agent_tools: IndexMap<String, bool>,
     user_prompt: TextArea,
     workmode: WorkMode,
+    workmode_enabled: bool,
     session: Session,
     /// Available saved-sessions for the dropdown list in the left pane.
     session_options: Vec<SessionEntry>,
@@ -175,6 +176,7 @@ pub(crate) enum Message {
     /// [`TextArea`] currently holds keyboard focus.
     UndoRedo(textarea::Message),
     SelectWorkMode(WorkMode),
+    ToggleWorkMode(bool),
     NewSession,
     LoadSession(SessionEntry),
     SessionListLoaded(Vec<SessionEntry>),
@@ -312,7 +314,8 @@ impl App {
             enabled_mcp_servers: enabled_mcp_servers.clone(),
             saved_agent_tools: saved.agent_tools,
             user_prompt: TextArea::new(),
-            workmode: WorkMode::Code,
+            workmode: WorkMode::default_mode().clone(),
+            workmode_enabled: true,
             session: Session::new(),
             session_options: Vec::new(),
             session_state: views::SessionState::default(),
@@ -575,6 +578,9 @@ impl App {
             Message::SelectWorkMode(mode) => {
                 self.workmode = mode;
             }
+            Message::ToggleWorkMode(enabled) => {
+                self.workmode_enabled = enabled;
+            }
             Message::NewSession => {
                 self.session = Session::new();
                 self.session_state = views::SessionState::default();
@@ -694,7 +700,12 @@ impl App {
                     return Task::none();
                 }
 
-                let user_prompt = UserPrompt::new(self.workmode, content.clone()).get_prompt();
+                let mode = if self.workmode_enabled {
+                    Some(self.workmode.clone())
+                } else {
+                    None
+                };
+                let user_prompt = UserPrompt::new(mode, content.clone()).get_prompt();
                 self.user_prompt.clear();
 
                 // During streaming: stash the prompt for the agent loop to pick up.
@@ -850,7 +861,7 @@ impl App {
         let config = llm::SendConfig {
             model,
             workspace: self.system_prompt.workspace.1.clone(),
-            system_prompt: self.system_prompt.get_prompt(),
+            system_prompt: self.system_prompt.get_prompt(self.workmode_enabled),
             user_prompt,
             tools: self
                 .tool_registry
@@ -1042,7 +1053,8 @@ impl App {
                 &self.enabled_tools,
                 &self.tool_registry,
                 &self.user_prompt,
-                self.workmode,
+                self.workmode.clone(),
+                self.workmode_enabled,
                 self.session_state.phase,
                 &self.session_options,
                 &self.session.id,

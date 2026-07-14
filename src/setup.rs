@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use include_dir::{Dir, include_dir};
 
-static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
+pub static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
 
 /// Embedded default models configuration.
 pub fn default_models() -> &'static str {
