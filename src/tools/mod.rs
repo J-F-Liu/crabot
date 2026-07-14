@@ -5,13 +5,14 @@ mod find;
 pub mod mcp;
 mod read;
 mod search;
+pub mod todo;
 mod write;
 
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use genai::chat::Tool as GenaiTool;
@@ -188,11 +189,14 @@ pub struct ToolRegistry {
     pub mcp_servers: Vec<mcp::McpServer>,
     /// MCP tool names grouped by server name: `(server_name, tool_names)`.
     pub mcp_groups: Vec<(String, Vec<String>)>,
+    /// Shared todo list — written by the `todo` tool, read by the right pane.
+    pub todo_items: todo::TodoList,
 }
 
 impl ToolRegistry {
-    /// Create a new registry pre-populated with the six built-in tools.
+    /// Create a new registry pre-populated with the seven built-in tools.
     pub fn new() -> Self {
+        let todo_items: todo::TodoList = Arc::new(Mutex::new(Vec::new()));
         let builtin: Vec<ToolRef> = vec![
             Arc::new(read::ReadTool),
             Arc::new(write::WriteTool),
@@ -200,6 +204,7 @@ impl ToolRegistry {
             Arc::new(find::FindTool),
             Arc::new(search::SearchTool),
             Arc::new(bash::BashTool),
+            Arc::new(todo::TodoTool::new(Arc::clone(&todo_items))),
         ];
         Self {
             builtin_names: builtin.iter().map(|t| t.name().to_string()).collect(),
@@ -209,6 +214,7 @@ impl ToolRegistry {
             custom_names: Vec::new(),
             mcp_servers: Vec::new(),
             mcp_groups: Vec::new(),
+            todo_items,
         }
     }
 
@@ -243,6 +249,21 @@ impl ToolRegistry {
             .iter()
             .chain(self.custom_names.iter())
             .chain(self.mcp_groups.iter().flat_map(|(_s, names)| names.iter()))
+    }
+
+    /// Return a snapshot of the current todo list.
+    pub fn snapshot_todo(&self) -> Vec<todo::TodoItem> {
+        self.todo_items
+            .lock()
+            .map(|items| items.clone())
+            .unwrap_or_default()
+    }
+
+    /// Clear all todo items.
+    pub fn clear_todo(&self) {
+        if let Ok(mut items) = self.todo_items.lock() {
+            items.clear();
+        }
     }
 
     /// Collect every tool whose name appears in `enabled`.

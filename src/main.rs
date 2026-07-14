@@ -27,6 +27,7 @@ use crabot::chat::Turn;
 use crabot::model::{Model, ModelConfig, ModelList};
 use crabot::session::Session;
 use crabot::system::{FilepathEntry, SystemPrompt, TOOLS, WORKSPACE, WORKSPACE_TREE};
+use crabot::tools::todo::TodoItem;
 
 use crabot::user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
@@ -150,6 +151,8 @@ struct App {
     prompt_recipe: IndexMap<String, Vec<String>>,
     /// Whether the recipe DropDown is currently expanded.
     recipe_dropdown_expanded: bool,
+    /// Cached snapshot of the todo list, refreshed when the todo tool executes.
+    cached_todo_items: Vec<TodoItem>,
 }
 
 #[derive(Clone)]
@@ -343,6 +346,7 @@ impl App {
             search: views::search_bar::SearchState::default(),
             prompt_recipe: saved.prompt_recipe,
             recipe_dropdown_expanded: false,
+            cached_todo_items: Vec::new(),
         };
         let session_task = app.refresh_session_list();
         let discover_task = mcp_list
@@ -602,6 +606,8 @@ impl App {
                 self.expanded_dialogs.clear();
                 self.selectable_msgs.clear();
                 self.search.reset();
+                self.cached_todo_items.clear();
+                self.tool_registry.clear_todo();
                 // Refresh workspace tree so the system prompt reflects current files.
                 self.system_prompt.files.1 =
                     workspace::build_files_tree(&self.system_prompt.workspace.1);
@@ -645,6 +651,8 @@ impl App {
                 self.expanded_dialogs.clear();
                 self.selectable_msgs.clear();
                 self.search.reset();
+                // Restore todo list from the last successful todo tool call in history.
+                self.cached_todo_items = self.session.last_todo_items();
             }
             Message::SessionListLoaded(entries) => {
                 self.session_options = entries;
@@ -770,6 +778,12 @@ impl App {
                 return self.start_dialog(&model, None);
             }
             Message::StreamEvent(event) => {
+                // If the todo tool just finished, refresh the cached snapshot.
+                if let views::SessionEvent::ToolResult(ref tr) = event
+                    && tr.name == "todo"
+                {
+                    self.cached_todo_items = self.tool_registry.snapshot_todo();
+                }
                 let cost = self.get_current_model().map(|m| m.cost);
                 return views::session_state::update(
                     event,
@@ -1122,6 +1136,7 @@ impl App {
                 self.session.cost,
                 &self.session.modified_files,
                 self.show_restart,
+                &self.cached_todo_items,
             ),
         ]
         .spacing(0)

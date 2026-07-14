@@ -1,5 +1,5 @@
 use iced::{
-    Element, Fill, Font, Length, alignment, font, padding,
+    Color, Element, Fill, Font, Length, alignment, font, padding,
     widget::{Space, button, column, container, rule, scrollable, text},
 };
 use iced_selection::Text as SelectableText;
@@ -8,6 +8,7 @@ use super::styles::{pane_side, primary_button, sel_primary};
 use super::theme::thin_vertical;
 use crate::Message;
 use crabot::model::TokenAmount;
+use crabot::tools::todo::{TodoItem, TodoStatus};
 
 /// Label-value row with the value right-aligned via a fill spacer.
 fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
@@ -33,6 +34,48 @@ fn format_cost(amount: f64) -> String {
     }
 }
 
+/// Bold section title used throughout the right pane.
+fn section_header<'a>(title: &'a str) -> Element<'a, Message> {
+    text(title)
+        .size(14)
+        .font(Font {
+            weight: font::Weight::Bold,
+            ..Font::DEFAULT
+        })
+        .into()
+}
+
+/// Build the todo-list section, returning `None` when the list is empty.
+fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, Message>> {
+    if todo_items.is_empty() {
+        return None;
+    }
+    let rows: Vec<Element<'_, Message>> = todo_items
+        .iter()
+        .map(|item| {
+            let indent = item.depth as u16 * 16;
+            let (icon, color) = match item.status {
+                TodoStatus::Pending => ("⏳", Color::from_rgb(0.7, 0.7, 0.7)),
+                TodoStatus::InProgress => ("🔄", Color::from_rgb(0.3, 0.6, 1.0)),
+                TodoStatus::Completed => ("✅", Color::from_rgb(0.4, 0.7, 0.4)),
+            };
+            container(text(format!("{icon} {}", item.text)).size(14).color(color))
+                .padding(padding::left(indent as f32))
+                .into()
+        })
+        .collect();
+    Some(
+        column![
+            rule::horizontal(1),
+            section_header("Todo List"),
+            column(rows).spacing(3),
+        ]
+        .spacing(8)
+        .into(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn right_pane<'a>(
     pane_width: f32,
     context_window: Option<u32>,
@@ -41,6 +84,7 @@ pub(crate) fn right_pane<'a>(
     cost: f64,
     modified_files: &'a [String],
     show_restart: bool,
+    todo_items: &'a [TodoItem],
 ) -> Element<'a, Message> {
     let mut col = column![].spacing(8);
 
@@ -53,10 +97,7 @@ pub(crate) fn right_pane<'a>(
 
     col = col
         .push(rule::horizontal(1))
-        .push(text("Context window").size(14).font(Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        }))
+        .push(section_header("Context window"))
         .push(token_row("Prompt tokens:", format!("{prompt_tokens}")))
         .push(token_row("Cached tokens:", format!("{cached_tokens}")));
 
@@ -70,21 +111,23 @@ pub(crate) fn right_pane<'a>(
     // ── cumulative token usage and cost ───────────────────────────────────────────
     col = col
         .push(rule::horizontal(1))
-        .push(text("Token Usage").size(14).font(Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        }))
+        .push(section_header("Token Usage"))
         .push(token_row("Input tokens:", format!("{}", amount.input)))
         .push(token_row("Cached tokens:", format!("{}", amount.cached)))
         .push(token_row("Output tokens:", format!("{}", amount.output)))
         .push(token_row("Session cost:", format_cost(cost)));
+
+    // ── todo items ──
+    if let Some(section) = todo_section(todo_items) {
+        col = col.push(section);
+    }
 
     // ── modified files ──
     if !modified_files.is_empty() {
         let files: Vec<Element<'_, Message>> = modified_files
             .iter()
             .map(|p| {
-                container(SelectableText::new(p.as_str()).size(12).style(sel_primary))
+                container(SelectableText::new(p.as_str()).size(13).style(sel_primary))
                     .padding([1, 0])
                     .into()
             })
@@ -92,10 +135,7 @@ pub(crate) fn right_pane<'a>(
         let files_col = column(files).spacing(2);
         col = col
             .push(rule::horizontal(1))
-            .push(text("Modified Files").size(14).font(Font {
-                weight: font::Weight::Bold,
-                ..Font::DEFAULT
-            }))
+            .push(section_header("Modified Files"))
             .push(files_col);
     }
 

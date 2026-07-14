@@ -1,10 +1,13 @@
 use genai::chat::{ChatMessage, ChatRole};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::chat::{Dialog, ToolResult, Turn};
 use crate::model::{ModelConfig, TokenAmount};
+use crate::tools::todo::TodoItem;
 
 /// A conversation session, persisted to `.agent/sessions/`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +264,43 @@ impl Session {
 
         self.modified_files = modified;
         self.dialogs = dialogs;
+    }
+
+    /// Return the items of the last successful `todo` tool call.
+    pub fn last_todo_items(&self) -> Vec<TodoItem> {
+        // One reverse pass: collect successful call-ids from Tool messages,
+        // then match them against todo calls in the preceding Assistant message.
+        // A successful todo response matches the pattern produced by
+        // [`crate::tools::todo::TodoTool::execute_inner`].
+        static SUCCESS_RE: OnceLock<Regex> = OnceLock::new();
+        let success_re = SUCCESS_RE.get_or_init(|| Regex::new(r"^Updated \d+ todo").unwrap());
+        let mut successful: HashSet<&str> = HashSet::new();
+        for msg in self.history.iter().rev() {
+            match msg.role {
+                ChatRole::Tool => {
+                    for tr in msg.content.tool_responses() {
+                        if success_re.is_match(&tr.content) {
+                            successful.insert(tr.call_id.as_str());
+                        }
+                    }
+                }
+                ChatRole::Assistant => {
+                    for tc in msg.content.tool_calls().iter().rev() {
+                        if tc.fn_name == "todo" && successful.contains(tc.call_id.as_str()) {
+                            return tc
+                                .fn_arguments
+                                .get("items")
+                                .and_then(|v| {
+                                    serde_json::from_value::<Vec<TodoItem>>(v.clone()).ok()
+                                })
+                                .unwrap_or_default();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Vec::new()
     }
 
     // ── Persistence ─────────────────────────────────────────────────
