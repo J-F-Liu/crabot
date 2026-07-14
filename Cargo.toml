@@ -51,3 +51,4 @@ rmcp = { version = "2", default-features = false, features = [
     "which-command",
 ] }
 http = "1.4.2"
+arrayvec = { version = "0.7.8" }

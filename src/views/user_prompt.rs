@@ -19,7 +19,7 @@ pub(crate) fn user_prompt_view<'a>(
 ) -> Element<'a, Message> {
     let mut tab_bar_builder = TabBar::new(Message::SelectWorkMode);
     for mode in WorkMode::all() {
-        tab_bar_builder = tab_bar_builder.push(mode.clone(), TabLabel::Text(mode.name.clone()));
+        tab_bar_builder = tab_bar_builder.push(*mode, TabLabel::Text(mode.name.to_string()));
     }
     let tab_bar: Element<'_, Message> = tab_bar_builder
         .set_active_tab(&workmode)

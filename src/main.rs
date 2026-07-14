@@ -314,7 +314,7 @@ impl App {
             enabled_mcp_servers: enabled_mcp_servers.clone(),
             saved_agent_tools: saved.agent_tools,
             user_prompt: TextArea::new(),
-            workmode: WorkMode::default_mode().clone(),
+            workmode: WorkMode::default_mode(),
             workmode_enabled: true,
             session: Session::new(),
             session_options: Vec::new(),
@@ -701,7 +701,7 @@ impl App {
                 }
 
                 let mode = if self.workmode_enabled {
-                    Some(self.workmode.clone())
+                    Some(self.workmode)
                 } else {
                     None
                 };
@@ -1053,7 +1053,7 @@ impl App {
                 &self.enabled_tools,
                 &self.tool_registry,
                 &self.user_prompt,
-                self.workmode.clone(),
+                self.workmode,
                 self.workmode_enabled,
                 self.session_state.phase,
                 &self.session_options,

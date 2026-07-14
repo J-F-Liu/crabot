@@ -738,6 +738,7 @@ dependencies = [
 name = "crabot"
 version = "0.4.0"
 dependencies = [
+ "arrayvec",
  "chrono",
  "dunce",
  "fontdb",

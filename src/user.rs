@@ -1,10 +1,11 @@
+use arrayvec::ArrayString;
 use regex::Regex;
 use std::sync::LazyLock;
 
 /// A work mode parsed from `assets/workmode.md` at runtime.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkMode {
-    pub name: String,
+    pub name: ArrayString<16>,
 }
 
 impl WorkMode {
@@ -19,7 +20,7 @@ impl WorkMode {
             let re = Regex::new(r"## (\w+) Mode \(`<work-mode>\w+</work-mode>`\)").unwrap();
             re.captures_iter(content)
                 .map(|cap| WorkMode {
-                    name: cap[1].to_string(),
+                    name: ArrayString::from(&cap[1]).unwrap(),
                 })
                 .collect()
         });
@@ -27,15 +28,15 @@ impl WorkMode {
     }
 
     /// The default mode (the one whose lowercase name is `"code"`, or the first mode).
-    pub fn default_mode() -> &'static WorkMode {
-        static FALLBACK: LazyLock<WorkMode> = LazyLock::new(|| WorkMode {
-            name: "Code".into(),
-        });
+    pub fn default_mode() -> WorkMode {
         WorkMode::all()
             .iter()
             .find(|m| m.name.eq_ignore_ascii_case("code"))
             .or_else(|| WorkMode::all().first())
-            .unwrap_or(&FALLBACK)
+            .copied()
+            .unwrap_or(WorkMode {
+                name: ArrayString::from("Code").unwrap(),
+            })
     }
 }
 
@@ -51,11 +52,10 @@ impl UserPrompt {
 
     pub fn get_prompt(&self) -> String {
         let mut prompt = String::new();
-        if let Some(ref mode) = self.mode {
-            prompt.push_str(&format!(
-                "<work-mode>{}</work-mode>\n",
-                mode.name.to_lowercase()
-            ));
+        if let Some(mode) = self.mode {
+            let mut lower = mode.name;
+            lower.make_ascii_lowercase();
+            prompt.push_str(&format!("<work-mode>{}</work-mode>\n", lower));
         }
         prompt.push_str(&format!("{}\n", &self.content));
         prompt
