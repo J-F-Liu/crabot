@@ -87,22 +87,28 @@ pub(crate) fn right_pane<'a>(
     todo_items: &'a [TodoItem],
 ) -> Element<'a, Message> {
     let mut col = column![].spacing(8);
-
-    let prompt_tokens = usage.prompt_tokens.unwrap_or(0);
-    let cached_tokens = usage
-        .prompt_tokens_details
-        .as_ref()
-        .and_then(|d| d.cached_tokens)
-        .unwrap_or(0);
+    let usage_amount = TokenAmount::from_genai(usage);
 
     col = col
         .push(rule::horizontal(1))
         .push(section_header("Context window"))
-        .push(token_row("Prompt tokens:", format!("{prompt_tokens}")))
-        .push(token_row("Cached tokens:", format!("{cached_tokens}")));
+        .push(token_row(
+            "Prompt tokens:",
+            format!("{}", usage_amount.input),
+        ))
+        .push(token_row(
+            "Cached tokens:",
+            format!("{}", usage_amount.cached),
+        ));
+    if usage_amount.cache_write > 0 {
+        col = col.push(token_row(
+            "Cache write:",
+            format!("{}", usage_amount.cache_write),
+        ));
+    }
 
     if let Some(cw) = context_window.filter(|&cw| cw > 0) {
-        let pct = (prompt_tokens as f64) * 100.0 / cw as f64;
+        let pct = (usage_amount.input as f64) * 100.0 / cw as f64;
         col = col
             .push(token_row("window size:", format!("{cw}")))
             .push(token_row("Window used:", format!("{:.1}%", pct)));
@@ -113,7 +119,11 @@ pub(crate) fn right_pane<'a>(
         .push(rule::horizontal(1))
         .push(section_header("Token Usage"))
         .push(token_row("Input tokens:", format!("{}", amount.input)))
-        .push(token_row("Cached tokens:", format!("{}", amount.cached)))
+        .push(token_row("Cached tokens:", format!("{}", amount.cached)));
+    if amount.cache_write > 0 {
+        col = col.push(token_row("Cache write:", format!("{}", amount.cache_write)));
+    }
+    col = col
         .push(token_row("Output tokens:", format!("{}", amount.output)))
         .push(token_row("Session cost:", format_cost(cost)));
 

@@ -147,10 +147,12 @@ impl Cost {
     /// Calculate cost breakdown from token usage.
     /// Prices are per million tokens; token counts are raw integers.
     pub fn calculate(&self, tokens: &TokenAmount) -> f64 {
-        let input_cost = (tokens.input - tokens.cached).max(0) as f64 / 1_000_000.0 * self.input;
-        let cached_cost = tokens.cached as f64 / 1_000_000.0 * self.cache_read;
+        let regular_input = (tokens.input - tokens.cached - tokens.cache_write).max(0);
+        let input_cost = regular_input as f64 / 1_000_000.0 * self.input;
+        let cached_read_cost = tokens.cached as f64 / 1_000_000.0 * self.cache_read;
+        let cache_write_cost = tokens.cache_write as f64 / 1_000_000.0 * self.cache_write;
         let output_cost = tokens.output as f64 / 1_000_000.0 * self.output;
-        input_cost + cached_cost + output_cost
+        input_cost + cached_read_cost + cache_write_cost + output_cost
     }
 }
 
@@ -159,6 +161,8 @@ impl Cost {
 pub struct TokenAmount {
     pub input: i32,
     pub cached: i32,
+    #[serde(default)]
+    pub cache_write: i32,
     pub output: i32,
 }
 
@@ -170,10 +174,16 @@ impl TokenAmount {
             .as_ref()
             .and_then(|d| d.cached_tokens)
             .unwrap_or(0);
+        let cache_write = usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cache_creation_tokens)
+            .unwrap_or(0);
         let prompt = usage.prompt_tokens.unwrap_or(0);
         Self {
-            input: prompt, // total input (cached + uncached)
+            input: prompt, // total input (cached + uncached + cache-write)
             cached,
+            cache_write,
             output: usage.completion_tokens.unwrap_or(0),
         }
     }
@@ -181,6 +191,7 @@ impl TokenAmount {
     pub fn accumulate(&mut self, incoming: &TokenAmount) {
         self.input += incoming.input;
         self.cached += incoming.cached;
+        self.cache_write += incoming.cache_write;
         self.output += incoming.output;
     }
 }
