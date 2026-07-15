@@ -325,8 +325,8 @@ fn format_call_tool_result(result: &rmcp::model::CallToolResult) -> String {
 /// sender whose receiver lives in the dropped service task. Without retaining
 /// the connections here, every discovered tool would be dead on arrival, with
 /// all `call_tool` requests failing as `TransportClosed`.
-static MCP_CONNECTIONS: LazyLock<Mutex<Vec<McpConnection>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static MCP_CONNECTIONS: LazyLock<Mutex<HashMap<String, McpConnection>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// State for an MCP connection.
 pub struct McpConnection {
@@ -349,6 +349,21 @@ impl McpConnection {
     pub async fn list_tools(&self) -> Result<Vec<rmcp::model::Tool>, rmcp::service::ServiceError> {
         self.peer.list_all_tools().await
     }
+}
+
+/// Drop the connection for `server_name`, killing its child process if any.
+pub fn drop_connection(server_name: &str) {
+    if let Ok(mut conns) = MCP_CONNECTIONS.lock() {
+        conns.remove(server_name);
+    }
+}
+
+/// Returns true if a live connection exists for `server_name`.
+pub fn has_connection(server_name: &str) -> bool {
+    MCP_CONNECTIONS
+        .lock()
+        .map(|conns| conns.contains_key(server_name))
+        .unwrap_or(false)
 }
 
 /// Helper to build a `ClientInfo` for the MCP handshake.
@@ -487,8 +502,10 @@ pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
                 .map(|remote_tool| McpTool::new(&server_name, qualify, remote_tool, peer.clone()))
                 .collect();
             // Keep the connection alive for the lifetime of the tools.
+            // HashMap::insert drops any previous connection for this server,
+            // killing its child process via RunningService's Drop.
             if let Ok(mut conns) = MCP_CONNECTIONS.lock() {
-                conns.push(conn);
+                conns.insert(server_name.clone(), conn);
             }
             (server_name, mcp_tools)
         }

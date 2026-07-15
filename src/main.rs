@@ -465,31 +465,28 @@ impl App {
                 }
             }
             Message::ToggleMcpServer(server, enabled) => {
-                self.enabled_mcp_servers.set(server.clone(), enabled);
-                // When enabling a server whose tools haven't been discovered yet
-                // (e.g. it was disabled at startup), trigger discovery now.
-                let discovery = if enabled
-                    && !self
-                        .tool_registry
-                        .mcp
-                        .iter()
-                        .any(|(name, _)| name == &server)
-                {
-                    self.tool_registry
-                        .mcp_servers
-                        .iter()
-                        .find(|s| s.name == server)
-                        .cloned()
+                if enabled {
+                    self.enabled_mcp_servers.set(server.clone(), true);
+                    // When enabling a server without a live connection (e.g.
+                    // disabled at boot or just toggled off), trigger discovery.
+                    if !tools::mcp::has_connection(&server)
+                        && let Some(s) = self
+                            .tool_registry
+                            .mcp_servers
+                            .iter()
+                            .find(|s| s.name == server)
+                            .cloned()
+                    {
+                        return Task::perform(
+                            async move { tools::mcp::discover_mcp_server(s).await },
+                            Message::McpToolsDiscovered,
+                        );
+                    }
                 } else {
-                    None
-                };
-                self.refresh_tools_summary();
-                if let Some(s) = discovery {
-                    return Task::perform(
-                        async move { tools::mcp::discover_mcp_server(s).await },
-                        Message::McpToolsDiscovered,
-                    );
+                    tools::mcp::drop_connection(&server);
+                    self.enabled_mcp_servers.set(server.clone(), false);
                 }
+                self.refresh_tools_summary();
             }
             Message::ToggleAgentTool(tool_name, enabled) => {
                 self.enabled_tools.set(tool_name, enabled);
@@ -498,7 +495,12 @@ impl App {
             Message::McpToolsDiscovered((server_name, tools)) => {
                 if tools.is_empty() {
                     self.enabled_mcp_servers.remove(&server_name);
+                    tools::mcp::drop_connection(&server_name);
                 } else {
+                    // Drop connection if server is disabled (e.g. disabled at boot).
+                    if !self.enabled_mcp_servers.contains(&server_name) {
+                        tools::mcp::drop_connection(&server_name);
+                    }
                     let new_names: Vec<_> = tools.iter().map(|t| t.name.clone()).collect();
                     self.tool_registry.register_mcp_group(server_name, tools);
                     // Auto-enable tools that were previously saved as enabled.

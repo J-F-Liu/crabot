@@ -188,10 +188,16 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     if out.is_empty() && limit_kind == Some(LimitKind::Bytes) {
         let line = next_line.as_deref().unwrap_or("");
         let approx_kb = (line.len() + 7) / 1024;
-        return Ok(format!(
-            "[Line {offset} is ~{approx_kb}KB, exceeds {}KB limit — use sed -n '{offset}p' {display_path}]\n",
-            DEFAULT_MAX_BYTES / 1024,
-        ));
+        let limit_kb = DEFAULT_MAX_BYTES / 1024;
+        // Emit as much of the oversized line as we can, with a truncation notice.
+        let notice = format!(
+            "[Line {offset} truncated: ~{approx_kb}KB, exceeds {limit_kb}KB limit — showing first {limit_kb}KB]\n",
+        );
+        let available = DEFAULT_MAX_BYTES.saturating_sub(notice.len());
+        let truncated = truncate_at_boundary(line, available);
+        let _ = writeln!(&mut out, "{:>4}|{}", offset, truncated);
+        out.push_str(&notice);
+        return Ok(out);
     }
 
     // ── empty file / offset exactly at EOF ──────────────────────────
@@ -212,7 +218,7 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         let approx_kb = (overflowing.len() + 7) / 1024;
         let _ = writeln!(
             &mut out,
-            "[Line {next_line_num} is ~{approx_kb}KB, exceeds {}KB limit — use sed -n '{next_line_num}p' {display_path}]",
+            "[Line {next_line_num} is ~{approx_kb}KB, exceeds {}KB limit — skipped]",
             DEFAULT_MAX_BYTES / 1024,
         );
     }
@@ -226,6 +232,13 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     }
 
     Ok(out)
+}
+
+/// Truncate `s` to at most `max_bytes` bytes, landing on a valid UTF-8
+/// character boundary.
+fn truncate_at_boundary(s: &str, max_bytes: usize) -> &str {
+    let end = max_bytes.min(s.len());
+    &s[..s.floor_char_boundary(end)]
 }
 
 // ── helpers ──────────────────────────────────────────────────────────

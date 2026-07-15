@@ -115,13 +115,20 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             )
         })?;
 
-        // Verify uniqueness: no second occurrence (including overlapping ones)
-        if let Some(pos) = content[start + 1..].find(&edit.old_text) {
+        // Verify uniqueness: no second occurrence (including overlapping ones).
+        // Search from the next character boundary after `start` to avoid
+        // panicking when old_text begins with a multi-byte (non-ASCII) char.
+        let search_from = content[start..]
+            .char_indices()
+            .nth(1)
+            .map(|(i, _)| start + i)
+            .unwrap_or(content.len());
+        if let Some(pos) = content[search_from..].find(&edit.old_text) {
             return Err(format!(
                 "Edit {i}: found multiple occurrences of '{}' in {display_path} (positions {} and {}) — need unique match",
                 edit.old_text,
                 start,
-                start + 1 + pos,
+                search_from + pos,
             ));
         }
 
