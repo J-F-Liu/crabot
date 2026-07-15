@@ -194,7 +194,7 @@ pub(crate) enum Message {
     ToggleDialogExpand(usize),
     /// Streaming event (tool calls, content, reasoning, lifecycle).
     /// Wraps [`views::session_state::Event`] to delegate all streaming interactions.
-    StreamEvent(views::SessionEvent),
+    SessionEvent(views::SessionEvent),
     AppClosing,
     Noop,
     CopySessionTitle,
@@ -777,7 +777,7 @@ impl App {
                 }
                 return self.start_dialog(&model, None);
             }
-            Message::StreamEvent(event) => {
+            Message::SessionEvent(event) => {
                 // If the todo tool just finished, refresh the cached snapshot.
                 if let views::SessionEvent::ToolResult(ref tr) = event
                     && tr.name == "todo"
@@ -929,7 +929,7 @@ impl App {
                         let cancel = cancel.clone();
                         let mut sender = sender.clone();
                         async move {
-                            let ok = sender.send(Message::StreamEvent(msg)).await.is_ok();
+                            let ok = sender.send(Message::SessionEvent(msg)).await.is_ok();
                             if cancel.load(Ordering::Relaxed) {
                                 false
                             } else {

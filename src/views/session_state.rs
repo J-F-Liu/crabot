@@ -95,17 +95,16 @@ pub(crate) fn update(
         SessionEvent::ToolCalls(tcs) => {
             session.push_turn(Turn::from_tool_results(vec![]));
             session.push_turn(Turn::from_tool_calls(tcs));
-            maybe_scroll_to_end(&state.auto_scroll)
+            return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::Content(chunk) => {
             if let Some(last) = session.last_turn_mut()
                 && let TurnBody::Text(tc) = &mut last.body
             {
                 tc.content.push_str(&chunk);
-                tc.refresh_md_cache();
             }
             search.invalidate_offsets();
-            maybe_scroll_to_end(&state.auto_scroll)
+            return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::Reasoning(chunk) => {
             if let Some(last) = session.last_turn_mut()
@@ -114,10 +113,9 @@ pub(crate) fn update(
                 tc.reasoning
                     .get_or_insert_with(String::new)
                     .push_str(&chunk);
-                tc.refresh_md_cache();
             }
             search.invalidate_offsets();
-            maybe_scroll_to_end(&state.auto_scroll)
+            return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::ToolResult(tr) => {
             if let Some(path_str) = tr.get_modified_file()
@@ -128,12 +126,12 @@ pub(crate) fn update(
             if let Some(dialog) = session.dialogs.last_mut() {
                 dialog.push_tool_result(tr);
             }
-            maybe_scroll_to_end(&state.auto_scroll)
+            return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::UserPrompt(content) => {
             session.push_turn(Turn::user(content));
             state.pending_display = None;
-            maybe_scroll_to_end(&state.auto_scroll)
+            return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::TokenUsage(usage) => {
             let u = usage.unwrap_or_default();
@@ -141,17 +139,22 @@ pub(crate) fn update(
             session.accumulate_usage(&tokens, model_cost);
             session.size = u.prompt_tokens.unwrap_or(0);
             *last_usage = u;
-            Task::none()
+            // Refresh the markdown cache after all chunks are collected.
+            if let Some(last) = session.last_turn_mut()
+                && let TurnBody::Text(tc) = &mut last.body
+            {
+                tc.refresh_md_cache();
+            }
         }
         SessionEvent::Done(genai_messages) => {
             handle_stream_done(state, session, genai_messages);
             search.invalidate_offsets();
-            maybe_scroll_to_end(&state.auto_scroll)
+            return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::Error(err, genai_messages) => {
             handle_stream_error(state, session, err, genai_messages);
             search.invalidate_offsets();
-            maybe_scroll_to_end(&state.auto_scroll)
+            return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::Cancelled(genai_messages) => {
             state.phase = DialogPhase::Idle;
@@ -163,22 +166,25 @@ pub(crate) fn update(
             }
             state.pending_display = None;
             session.history.extend(genai_messages);
+            // Refresh the markdown cache so partial content renders as markdown.
+            if let Some(last) = session.last_turn_mut()
+                && let TurnBody::Text(tc) = &mut last.body
+            {
+                tc.refresh_md_cache();
+            }
             let _ = session.save();
-            Task::none()
         }
         SessionEvent::PhaseChange(phase) => {
             if phase == DialogPhase::LlmThinking {
                 session.push_turn(Turn::assistant(String::new(), None));
             }
             state.phase = phase;
-            Task::none()
         }
         SessionEvent::Stop => {
             state.cancel_token.store(true, Ordering::Release);
-            session.save().ok();
-            Task::none()
         }
     }
+    Task::none()
 }
 
 /// Handle session-view scroll tracking — while streaming, toggle auto-scroll

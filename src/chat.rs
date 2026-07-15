@@ -41,7 +41,9 @@ impl TextContent {
             reasoning,
             ..Default::default()
         };
-        tc.refresh_md_cache();
+        if !tc.content.is_empty() || tc.reasoning.is_some() {
+            tc.refresh_md_cache();
+        }
         tc
     }
 

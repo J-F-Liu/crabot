@@ -1,12 +1,23 @@
-use iced::widget;
+use std::collections::HashSet;
+
+use crabot::chat::{Dialog, Turn, TurnBody};
+use genai::chat::ChatRole;
 use iced::{
-    Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task, Theme,
+    Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task,
+    Theme, Vector,
     advanced::text::Highlight,
-    advanced::widget::operation::{Operation, Outcome},
-    alignment, font,
-    widget::{Space, button, column, container, markdown, mouse_area, row, scrollable, text},
+    advanced::widget::operation::{Operation, Outcome, Scrollable, scrollable as scrollable_op},
+    alignment, font, mouse,
+    widget::{self, Space, button, column, container, markdown, mouse_area, row, scrollable, text},
 };
+use iced_runtime::task::widget as task_widget;
 use iced_selection::Text as SelectableText;
+use iced_selection::text::Style as SelectionStyle;
+use serde_json::Value;
+
+use crate::Message;
+use crate::llm::DialogPhase;
+use crate::views::search_bar::SearchState;
 
 use super::styles::{
     assistant_bubble_style, bordered_bar_style, icon_button_style, pane_center,
@@ -14,22 +25,17 @@ use super::styles::{
     user_bubble_style,
 };
 use super::theme::{
-    CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_TEXT, CRABOT_TEXT_MUTED,
-    CRABOT_TOOL_ACCENT, color_text, thin_vertical,
+    CRABOT_DANGER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS,
+    CRABOT_TEXT, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text, thin_vertical,
 };
 use super::tool_message::{args_rows, highlighted_text, path_arg_row, result_text};
-use crate::Message;
-use crate::llm::DialogPhase;
-use crate::views::search_bar::SearchState;
-use crabot::chat::{Dialog, Turn, TurnBody};
-use std::collections::HashSet;
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
 pub(crate) const SEARCH_INPUT: widget::Id = widget::Id::new("search-input");
 
 /// Snap the message scroll to the end unconditionally.
 pub(crate) fn scroll_to_end() -> Task<Message> {
-    iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::snap_to(
+    task_widget(scrollable_op::snap_to(
         MESSAGE_SCROLL.clone(),
         scrollable::RelativeOffset::END.into(),
     ))
@@ -73,8 +79,8 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
             id: Option<&widget::Id>,
             bounds: Rectangle,
             _content_bounds: Rectangle,
-            _translation: iced::Vector,
-            _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+            _translation: Vector,
+            _state: &mut dyn Scrollable,
         ) {
             if id == Some(&self.scrollable_id) {
                 self.scrollable_bounds = Some(bounds);
@@ -86,7 +92,7 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
         }
     }
 
-    iced_runtime::task::widget(MeasureAll {
+    task_widget(MeasureAll {
         scrollable_id: MESSAGE_SCROLL.clone(),
         turn_ids,
         scrollable_bounds: None,
@@ -96,7 +102,7 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
 
 /// Scroll to a turn using a pre-measured offset.
 pub(crate) fn scroll_to_turn_at(y: f32) -> Task<Message> {
-    iced_runtime::task::widget(iced::advanced::widget::operation::scrollable::scroll_to(
+    task_widget(scrollable_op::scroll_to(
         MESSAGE_SCROLL.clone(),
         scrollable::AbsoluteOffset {
             x: None,
@@ -203,7 +209,7 @@ fn wrap_bubble<'a>(
 /// Collapsed args preview: just the path for edit/write, all args otherwise.
 fn args_preview<'a>(
     name: &str,
-    args: &'a serde_json::Value,
+    args: &'a Value,
     font_scale: f32,
     search_query: &str,
 ) -> Vec<Element<'a, Message>> {
@@ -229,7 +235,7 @@ fn tool_turn_block<'a>(
     // Build a unified list of (name, args, result_opt, timestamp) from either variant.
     type ToolItem<'a> = (
         &'a str,
-        &'a serde_json::Value,
+        &'a Value,
         Option<&'a Result<String, String>>,
         &'a str,
     );
@@ -268,8 +274,8 @@ fn tool_turn_block<'a>(
         let completed = result.is_some();
 
         let (status_icon, status_color) = match result {
-            Some(Ok(_)) => ("✓", super::theme::CRABOT_SUCCESS),
-            Some(Err(_)) => ("✗", super::theme::CRABOT_DANGER),
+            Some(Ok(_)) => ("✓", CRABOT_SUCCESS),
+            Some(Err(_)) => ("✗", CRABOT_DANGER),
             None => ("⏳", CRABOT_TEXT_MUTED),
         };
         let expanded = completed && expanded_turns.contains(&(i, idx));
@@ -300,11 +306,11 @@ fn tool_turn_block<'a>(
                 ts_text,
             ]
             .spacing(6)
-            .align_y(iced::Alignment::Center);
+            .align_y(Alignment::Center);
             elements.push(
                 mouse_area(header)
                     .on_press(Message::ToggleTurnExpand(i, idx))
-                    .interaction(iced::mouse::Interaction::Pointer)
+                    .interaction(mouse::Interaction::Pointer)
                     .into(),
             );
         } else {
@@ -315,7 +321,7 @@ fn tool_turn_block<'a>(
                 ts_text,
             ]
             .spacing(6)
-            .align_y(iced::Alignment::Center);
+            .align_y(Alignment::Center);
             elements.push(header.into());
         }
 
@@ -372,8 +378,8 @@ fn text_turn_block<'a>(
 
     let (role_label, bubble_style): (&'static str, fn(&Theme) -> container::Style) = match msg.role
     {
-        genai::chat::ChatRole::User => ("User", user_bubble_style),
-        genai::chat::ChatRole::Assistant => ("Assistant", assistant_bubble_style),
+        ChatRole::User => ("User", user_bubble_style),
+        ChatRole::Assistant => ("Assistant", assistant_bubble_style),
         _ => ("System", assistant_bubble_style),
     };
     let badge = role_badge(role_label.to_string(), role_label, font_scale);
@@ -396,15 +402,15 @@ fn text_turn_block<'a>(
             ts_text,
         ]
         .spacing(6)
-        .align_y(iced::Alignment::Center);
+        .align_y(Alignment::Center);
         content_col = content_col.push(
             mouse_area(header)
                 .on_press(Message::ToggleTurnExpand(i, 0))
-                .interaction(iced::mouse::Interaction::Pointer),
+                .interaction(mouse::Interaction::Pointer),
         );
     } else {
         let header =
-            row![badge, Space::new().width(Length::Fill), ts_text].align_y(iced::Alignment::Center);
+            row![badge, Space::new().width(Length::Fill), ts_text].align_y(Alignment::Center);
         content_col = content_col.push(header);
     }
 
@@ -539,20 +545,20 @@ pub(crate) fn center_pane<'a>(
             ]
             .width(Length::Fill)
             .spacing(8)
-            .align_y(iced::Alignment::Center);
+            .align_y(Alignment::Center);
 
             let header = mouse_area(
                 container(
                     row![title_row, turn_count_badge(turn_count, font_scale)]
                         .spacing(10)
-                        .align_y(iced::Alignment::Center)
+                        .align_y(Alignment::Center)
                         .width(Fill),
                 )
                 .width(Fill)
                 .padding([8, 12]),
             )
             .on_press(Message::ToggleDialogExpand(di))
-            .interaction(iced::mouse::Interaction::Pointer);
+            .interaction(mouse::Interaction::Pointer);
 
             // ── turn blocks (only built when expanded) ────────────
             let turn_blocks: Vec<Element<'_, Message>> = if collapsed {
@@ -638,8 +644,6 @@ pub(crate) fn center_pane<'a>(
 /// Header bar at the top of the center pane: prompt text or "New session",
 /// plus copy-to-clipboard and resend action icons on the far right.
 fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
-    use iced_selection::text::Style as SelectionStyle;
-
     let header = row![
         container(
             SelectableText::new(prompt)
@@ -664,7 +668,7 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
             .style(icon_button_style),
     ]
     .spacing(6)
-    .align_y(iced::Alignment::Center);
+    .align_y(Alignment::Center);
 
     header_container(
         container(header)
@@ -712,12 +716,12 @@ fn status_line<'a>(
             .size(12.0 * font_scale)
             .color(CRABOT_TEXT_MUTED),
     ]
-    .align_y(iced::Alignment::Center)
+    .align_y(Alignment::Center)
     .spacing(8);
     if streaming != DialogPhase::Idle {
         row = row.push(
             button(text("⏹ Stop").size(11.0 * font_scale))
-                .on_press(Message::StreamEvent(
+                .on_press(Message::SessionEvent(
                     crate::views::session_state::SessionEvent::Stop,
                 ))
                 .padding([4, 10])
