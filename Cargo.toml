@@ -24,6 +24,7 @@ iced = { version = "0.14.0", features = [
     "tokio",
     "highlighter",
     "markdown",
+    "image",
 ] }
 iced_runtime = "0.14.0"
 iced_selection = "0.5.0"
@@ -52,3 +53,7 @@ rmcp = { version = "2", default-features = false, features = [
 ] }
 http = "1.4.2"
 arrayvec = { version = "0.7.8" }
+image = { version = "0.25.10", default-features = false, features = ["ico"] }
+
+[build-dependencies]
+winresource = "0.1.31"

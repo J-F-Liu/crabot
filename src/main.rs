@@ -52,14 +52,21 @@ pub fn main() -> iced::Result {
     );
     let position =
         iced::window::Position::Specific(Point::new(saved.window_pos.0, saved.window_pos.1));
+    let icon = setup::ASSETS.get_file("images/icon.ico").and_then(|f| {
+        iced::window::icon::from_file_data(f.contents(), Some(image::ImageFormat::Ico)).ok()
+    });
     iced::application(move || App::boot(saved.clone()), App::update, App::view)
         .subscription(App::subscription)
         .theme(|state: &App| state.theme.clone())
-        .window_size(size)
-        .position(position)
+        .window(iced::window::Settings {
+            size,
+            position,
+            exit_on_close_request: false,
+            icon,
+            ..Default::default()
+        })
         .title(crabot_title())
         .antialiasing(true)
-        .exit_on_close_request(false)
         .run()
 }
 
