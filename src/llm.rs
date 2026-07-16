@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, ReasoningEffort,
-    ToolCall, ToolResponse,
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent,
+    ReasoningEffort, ToolCall, ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
@@ -29,6 +29,24 @@ pub enum DialogPhase {
 
 /// Max agent loop iterations to prevent infinite tool-calling cycles.
 const MAX_ITERATIONS: usize = 100;
+
+/// Move the rolling ephemeral cache breakpoint to the tail message.
+/// Only touches `CacheControl::Ephemeral`; leaves other TTLs (e.g. `Ephemeral1h`) intact.
+fn mark_cache_tail(messages: &mut [ChatMessage]) {
+    // Find and remove the most recent rolling ephemeral breakpoint (if any).
+    if let Some(msg) = messages.iter_mut().rev().find(|msg| {
+        msg.options
+            .as_ref()
+            .and_then(|o| o.cache_control.as_ref())
+            == Some(&CacheControl::Ephemeral)
+    }) {
+        msg.options.as_mut().unwrap().cache_control = None;
+    }
+    // Set the rolling breakpoint on the tail message.
+    if let Some(last) = messages.last_mut() {
+        last.options.get_or_insert_default().cache_control = Some(CacheControl::Ephemeral);
+    }
+}
 
 /// Configuration for a send request to the LLM.
 pub struct SendConfig {
@@ -74,8 +92,10 @@ pub async fn send_stream(
     let client = build_client(&model.base_url, &model.api_key, &model.api_type);
 
     // Build chat request from genai history directly.
+    // System prompt as a message with 1h cache TTL (rarely changes, large).
+    let sys_msg = ChatMessage::system(system_prompt).with_options(CacheControl::Ephemeral1h);
     let mut chat_req = ChatRequest::default()
-        .with_system(system_prompt)
+        .append_message(sys_msg)
         .with_tools(tools::build_tools(&tools, model.strict));
     chat_req = chat_req.append_messages(history);
 
@@ -131,6 +151,10 @@ pub async fn send_stream(
     for _ in 0..MAX_ITERATIONS {
         // Signal that we're connecting to the LLM.
         on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await;
+
+        // Keep a single rolling cache breakpoint at the conversation tail
+        // (Anthropic limit: 4 breakpoints; system prompt uses 1 for Ephemeral1h).
+        mark_cache_tail(&mut chat_req.messages);
 
         let stream_result = client
             .exec_chat_stream(&model.model_id, chat_req.clone(), Some(&chat_options))
