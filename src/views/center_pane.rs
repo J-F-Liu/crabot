@@ -218,7 +218,7 @@ fn args_preview<'a>(
             .into_iter()
             .collect()
     } else {
-        args_rows(args, font_scale, search_query)
+        args_rows(name, args, font_scale, search_query)
     }
 }
 
@@ -326,7 +326,7 @@ fn tool_turn_block<'a>(
         }
 
         if expanded {
-            elements.extend(args_rows(args, font_scale, search_query));
+            elements.extend(args_rows(name, args, font_scale, search_query));
             elements.push(result_text(result.unwrap(), font_scale, search_query));
         } else {
             elements.extend(args_preview(name, args, font_scale, search_query));

@@ -5,7 +5,7 @@ use iced::{
 
 use super::model_config::ProviderEntry;
 use super::model_config::model_config_view;
-use super::session_view::session_view;
+use super::session_list::session_view;
 use super::styles::{label, pane_side};
 use super::system_prompt::{
     PromptSectionState, agents_md_field_view, date_field_view, file_picker_field_view,
@@ -19,7 +19,7 @@ use super::user_prompt::user_prompt_view;
 use crate::Message;
 use crate::llm::DialogPhase;
 use crate::tools;
-use crate::views::session_view::SessionEntry;
+use crate::views::session_list::SessionEntry;
 use crate::widgets::textarea::TextArea;
 use crabot::model::ModelList;
 use crabot::system::{FilepathEntry, SystemPrompt};

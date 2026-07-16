@@ -1,6 +1,6 @@
 use iced::{
     Border, Color, Element, Fill, Font, Theme, font,
-    widget::{Space, column, container, rich_text, row, span, text},
+    widget::{Space, column, container, rich_text, row, span, text, text::Wrapping},
 };
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
@@ -12,6 +12,7 @@ use super::theme::{
 };
 use crate::Message;
 use crate::tools::edit::EditParam;
+use crate::tools::todo::{TodoItem, TodoStatus};
 
 /// Color used for search keyword highlighting within text.
 const SEARCH_HIGHLIGHT_BG: Color = Color::from_rgba(1.0, 0.92, 0.0, 0.35);
@@ -234,8 +235,136 @@ fn edits_table<'a>(
         .into()
 }
 
+/// Status colours for todo items.
+const TODO_STATUS_PENDING: Color = Color::from_rgb8(0x99, 0x99, 0x99);
+const TODO_STATUS_IN_PROGRESS: Color = Color::from_rgb8(0x29, 0x76, 0xFF);
+const TODO_STATUS_WIDTH: f32 = 96.0;
+
+fn todo_text_cell(
+    content: String,
+    font_scale: f32,
+    search_query: &str,
+) -> Element<'static, Message> {
+    if search_query.trim().is_empty() {
+        SelectableText::new(content)
+            .size(12.0 * font_scale)
+            .style(sel_default)
+            .font(mono_font())
+            .into()
+    } else {
+        highlighted_text(&content, search_query, 12.0 * font_scale)
+    }
+}
+
+fn todo_row(
+    content: String,
+    status: &'static str,
+    status_color: Color,
+    font_scale: f32,
+    search_query: &str,
+) -> Element<'static, Message> {
+    row![
+        container(todo_text_cell(content, font_scale, search_query))
+            .width(Fill)
+            .padding(2),
+        container(
+            text(status)
+                .size(12.0 * font_scale)
+                .color(status_color)
+                .font(bold_font())
+                .wrapping(Wrapping::None),
+        )
+        .width(TODO_STATUS_WIDTH)
+        .padding(2),
+    ]
+    .spacing(8)
+    .into()
+}
+
+fn todo_item_row(
+    item: &serde_json::Value,
+    font_scale: f32,
+    search_query: &str,
+) -> Element<'static, Message> {
+    match serde_json::from_value::<TodoItem>(item.clone()) {
+        Ok(todo) => {
+            let (status, color) = match todo.status {
+                TodoStatus::Pending => ("pending", TODO_STATUS_PENDING),
+                TodoStatus::InProgress => ("in progress", TODO_STATUS_IN_PROGRESS),
+                TodoStatus::Completed => ("completed", CRABOT_SUCCESS),
+            };
+            let content = format!("{}{}", "  ".repeat(todo.depth as usize), todo.text);
+            todo_row(content, status, color, font_scale, search_query)
+        }
+        Err(_) => todo_row(
+            item.to_string(),
+            "⚠ invalid",
+            CRABOT_DANGER,
+            font_scale,
+            search_query,
+        ),
+    }
+}
+
+/// Embedded table for the `items` argument of the `todo` tool.
+fn todo_table(
+    items: &[serde_json::Value],
+    font_scale: f32,
+    search_query: &str,
+) -> Element<'static, Message> {
+    let col_header = row![
+        container(
+            text("Text")
+                .size(11.0 * font_scale)
+                .color(CRABOT_TEXT_MUTED)
+                .font(bold_font()),
+        )
+        .width(Fill)
+        .padding(2),
+        container(
+            text("Status")
+                .size(11.0 * font_scale)
+                .color(CRABOT_TEXT_MUTED)
+                .font(bold_font())
+                .wrapping(Wrapping::None),
+        )
+        .width(TODO_STATUS_WIDTH)
+        .padding(2),
+    ]
+    .spacing(8);
+
+    let mut elements: Vec<Element<'static, Message>> = vec![col_header.into()];
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            elements.push(
+                container(Space::new().width(Fill).height(1.0))
+                    .style(|_theme: &Theme| container::Style {
+                        background: Some(CRABOT_TOOL_CONTENT_BORDER.into()),
+                        ..container::Style::default()
+                    })
+                    .into(),
+            );
+        }
+        elements.push(todo_item_row(item, font_scale, search_query));
+    }
+
+    container(column(elements).spacing(0).width(Fill))
+        .padding(4)
+        .style(|_theme: &Theme| container::Style {
+            border: Border {
+                color: CRABOT_TOOL_CONTENT_BORDER,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .width(Fill)
+        .into()
+}
+
 /// All tool-argument rows.
 pub(super) fn args_rows<'a>(
+    tool_name: &str,
     args: &'a serde_json::Value,
     font_scale: f32,
     search_query: &str,
@@ -243,6 +372,14 @@ pub(super) fn args_rows<'a>(
     let Some(map) = args.as_object() else {
         return Vec::new();
     };
+
+    // Todo tool: render items as a table.
+    if tool_name == "todo"
+        && let Some(items) = map.get("items").and_then(|v| v.as_array())
+    {
+        return vec![todo_table(items, font_scale, search_query)];
+    }
+
     let mut rows: Vec<Element<'_, Message>> = Vec::new();
 
     // Combine offset + limit into a single row when both are present

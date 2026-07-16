@@ -31,7 +31,7 @@ use crabot::tools::todo::TodoItem;
 
 use crabot::user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
-use views::session_view::SessionEntry;
+use views::session_list::SessionEntry;
 use views::system_prompt::PromptSectionState;
 use views::theme::{HANDLE, MIN_W, default_theme};
 use views::tool_list::ToolListState;
@@ -1051,7 +1051,7 @@ impl App {
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    crate::views::session_view::list_entries(&workspace)
+                    crate::views::session_list::list_entries(&workspace)
                 })
                 .await
                 .unwrap_or(Ok(Vec::new()))
