@@ -28,10 +28,13 @@ use super::theme::{
     CRABOT_DANGER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS,
     CRABOT_TEXT, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text, thin_vertical,
 };
-use super::tool_message::{args_rows, highlighted_text, path_arg_row, result_text};
+use super::tool_message::{
+    args_rows, ask_result_view, highlighted_text, path_arg_row, result_text,
+};
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
 pub(crate) const SEARCH_INPUT: widget::Id = widget::Id::new("search-input");
+pub(crate) const ASK_INPUT: widget::Id = widget::Id::new("ask-input");
 
 /// Snap the message scroll to the end unconditionally.
 pub(crate) fn scroll_to_end() -> Task<Message> {
@@ -278,8 +281,6 @@ fn tool_turn_block<'a>(
             Some(Err(_)) => ("✗", CRABOT_DANGER),
             None => ("⏳", CRABOT_TEXT_MUTED),
         };
-        let expanded = completed && expanded_turns.contains(&(i, idx));
-        let indicator = if expanded { "▼" } else { "⏵" };
 
         let status_text = text(status_icon)
             .size(12.0 * font_scale)
@@ -294,6 +295,24 @@ fn tool_turn_block<'a>(
             });
 
         let ts_text = text(ts).size(11.0 * font_scale).color(CRABOT_TEXT_MUTED);
+
+        // Completed ask tool: render question + answer without expand/collapse.
+        if name == "ask" && completed {
+            let header = row![
+                badge,
+                status_text,
+                Space::new().width(Length::Fill),
+                ts_text,
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            elements.push(header.into());
+            elements.push(ask_result_view(args, result.unwrap(), font_scale));
+            continue;
+        }
+
+        let expanded = completed && expanded_turns.contains(&(i, idx));
+        let indicator = if expanded { "▼" } else { "⏵" };
 
         if completed {
             let header = row![
@@ -509,6 +528,8 @@ pub(crate) fn center_pane<'a>(
     selectable_msgs: &HashSet<usize>,
     font_scale: f32,
     pending_user_prompt: Option<&'a str>,
+    ask_request: Option<&'a super::session_state::AskRequest>,
+    ask_input: &'a str,
     search_state: &'a SearchState,
 ) -> Element<'a, Message> {
     // Ensure turn widget IDs match the current dialog layout so that
@@ -631,6 +652,9 @@ pub(crate) fn center_pane<'a>(
             .direction(thin_vertical())
             .id(MESSAGE_SCROLL.clone())
             .on_scroll(Message::SessionViewScrolled),
+        ask_request
+            .map(|request| super::tool_message::ask_view(request, ask_input, font_scale))
+            .unwrap_or_else(|| Space::new().into()),
         status_line(status, streaming, font_scale),
     ])
     .width(Fill)

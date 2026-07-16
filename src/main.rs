@@ -32,6 +32,7 @@ use crabot::tools::todo::TodoItem;
 use crabot::user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
 use views::session_list::SessionEntry;
+use views::session_state::AskAction;
 use views::system_prompt::PromptSectionState;
 use views::theme::{HANDLE, MIN_W, default_theme};
 use views::tool_list::ToolListState;
@@ -198,6 +199,8 @@ pub(crate) enum Message {
     /// Result of the "empty workspace" confirmation dialog shown before sending.
     EmptyWorkspaceConfirm(Option<PathBuf>),
     ToggleTurnExpand(usize, usize),
+    AskAction(AskAction),
+    AskInputChanged(String),
     ToggleDialogExpand(usize),
     /// Streaming event (tool calls, content, reasoning, lifecycle).
     /// Wraps [`views::session_state::Event`] to delegate all streaming interactions.
@@ -338,7 +341,7 @@ impl App {
             workmode_enabled: true,
             session: Session::new(),
             session_options: Vec::new(),
-            session_state: views::SessionState::default(),
+            session_state: views::SessionState::new(),
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
             last_usage: genai::chat::Usage::default(),
@@ -608,7 +611,7 @@ impl App {
             }
             Message::NewSession => {
                 self.session = Session::new();
-                self.session_state = views::SessionState::default();
+                self.session_state = views::SessionState::new();
                 self.center_pane_title = "New session".into();
                 self.last_usage = genai::chat::Usage::default();
                 self.expanded_turns.clear();
@@ -786,6 +789,21 @@ impl App {
                 }
                 return self.start_dialog(&model, None);
             }
+            Message::AskInputChanged(input) => {
+                self.session_state.ask_input = input;
+            }
+            Message::AskAction(action) => {
+                let result = match action {
+                    AskAction::OptionSelected(option) => {
+                        self.session_state.ask_input = option;
+                        return Task::none();
+                    }
+                    AskAction::Ok => Ok(self.session_state.ask_input.clone()),
+                    AskAction::Skip => Ok("No preference. Use your best judgment.".into()),
+                };
+                let _ = self.session_state.ask_sender.send(result);
+                self.session_state.ask_request = None;
+            }
             Message::SessionEvent(event) => {
                 // If the todo tool just finished, refresh the cached snapshot.
                 if let views::SessionEvent::ToolResult(ref tr) = event
@@ -908,6 +926,10 @@ impl App {
             .auto_scroll
             .store(true, Ordering::Relaxed);
 
+        // Create a fresh mpsc channel for this stream's ask-tool responses.
+        let (ask_tx, ask_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.session_state.ask_sender = ask_tx;
+
         let config = llm::SendConfig {
             model,
             workspace: self.system_prompt.workspace.1.clone(),
@@ -917,6 +939,7 @@ impl App {
                 .tool_registry
                 .enabled_tools(&self.enabled_tools, &self.enabled_mcp_servers),
             pending_user_prompt: self.session_state.pending_user_prompt.clone(),
+            ask_receiver: ask_rx,
             user_agent: crabot_title().to_string(),
             cancel_token: self.session_state.cancel_token.clone(),
         };
@@ -1134,6 +1157,8 @@ impl App {
                 &self.selectable_msgs,
                 self.font_scale,
                 self.session_state.pending_display.as_deref(),
+                self.session_state.ask_request.as_ref(),
+                &self.session_state.ask_input,
                 &self.search,
             ),
             divider(&self.right_divider),

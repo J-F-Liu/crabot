@@ -1,3 +1,4 @@
+mod ask;
 mod bash;
 pub mod custom;
 pub mod edit;
@@ -204,6 +205,7 @@ impl ToolRegistry {
             Arc::new(find::FindTool),
             Arc::new(search::SearchTool),
             Arc::new(bash::BashTool),
+            Arc::new(ask::AskTool),
             Arc::new(todo::TodoTool::new(Arc::clone(&todo_items))),
         ];
         Self {

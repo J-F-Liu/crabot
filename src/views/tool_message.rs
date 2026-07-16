@@ -1,10 +1,13 @@
 use iced::{
-    Border, Color, Element, Fill, Font, Theme, font,
+    Alignment, Border, Color, Element, Fill, Font, Theme, font, padding,
     widget::{Space, column, container, rich_text, row, span, text, text::Wrapping},
 };
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
 
+use super::ASK_INPUT;
+use super::session_state::{AskAction, AskRequest};
+use super::styles::{primary_button, secondary_button};
 use super::styles::{sel_default, sel_primary, sel_secondary};
 use super::theme::{
     CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, CRABOT_TOOL_CONTENT_BG,
@@ -13,6 +16,197 @@ use super::theme::{
 use crate::Message;
 use crate::tools::edit::EditParam;
 use crate::tools::todo::{TodoItem, TodoStatus};
+use iced::widget::{button, text_input};
+
+/// Shared container style for ask tool views (active and completed).
+fn ask_tool_container(content: impl Into<Element<'static, Message>>) -> Element<'static, Message> {
+    container(content.into())
+        .padding([10, 14])
+        .style(|_theme: &Theme| container::Style {
+            background: Some(CRABOT_TOOL_CONTENT_BG.into()),
+            border: Border {
+                color: CRABOT_TOOL_CONTENT_BORDER,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .width(Fill)
+        .into()
+}
+
+/// Render a list of options with checkmarks.
+/// In interactive mode each option is a clickable `button`; otherwise
+/// options are rendered as read-only `SelectableText`.
+fn ask_option_list(
+    options: &[String],
+    selected: &str,
+    font_scale: f32,
+    interactive: bool,
+) -> Vec<Element<'static, Message>> {
+    options
+        .iter()
+        .map(|option| {
+            let is_selected = option == selected;
+            let check = if is_selected { "✓" } else { " " };
+            let label: Element<'static, Message> = if interactive {
+                button(text(option.clone()).size(13.0 * font_scale))
+                    .style(secondary_button)
+                    .on_press(Message::AskAction(AskAction::OptionSelected(option.clone())))
+                    .into()
+            } else {
+                SelectableText::new(option.clone())
+                    .size(13.0 * font_scale)
+                    .style(sel_default)
+                    .into()
+            };
+            row![
+                text(check).width(16.0 * font_scale).size(13.0 * font_scale),
+                label,
+            ]
+            .align_y(Alignment::Center)
+            .into()
+        })
+        .collect()
+}
+
+/// Interactive response controls for the builtin ask tool.
+pub(crate) fn ask_view(
+    request: &AskRequest,
+    input: &str,
+    font_scale: f32,
+) -> Element<'static, Message> {
+    let header = text("🤖 LLM asks:").size(13.0).color(CRABOT_TOOL_ACCENT);
+    let question: Element<'static, Message> = SelectableText::new(request.question.clone())
+        .style(sel_default)
+        .into();
+    let skip = button(text("Skip"))
+        .style(secondary_button)
+        .on_press(Message::AskAction(AskAction::Skip));
+    let controls: Element<'static, Message> = if request.options.is_empty() {
+        row![
+            text_input("Type your answer…", input)
+                .id(ASK_INPUT.clone())
+                .on_input(Message::AskInputChanged)
+                .on_submit(Message::AskAction(AskAction::Ok))
+                .width(Fill),
+            button(text("Ok"))
+                .style(primary_button)
+                .on_press(Message::AskAction(AskAction::Ok)),
+            skip
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        let ok_enabled = !input.is_empty();
+        let options_col =
+            column(ask_option_list(&request.options, input, font_scale, true)).spacing(8);
+        let action_row = row![
+            button(text("Ok"))
+                .style(primary_button)
+                .on_press_maybe(if ok_enabled {
+                    Some(Message::AskAction(AskAction::Ok))
+                } else {
+                    None
+                }),
+            skip
+        ]
+        .spacing(8)
+        .padding([4, 16]);
+        column![options_col, action_row].spacing(8).into()
+    };
+    ask_tool_container(column![header, question, controls].spacing(8))
+}
+
+/// Completed ask tool result view — shows the question, all options
+/// (with the selected one marked ✓), and the answer without interactive
+/// controls (those only appear during active asking via [`ask_view`]).
+pub(crate) fn ask_result_view(
+    args: &serde_json::Value,
+    result: &Result<String, String>,
+    font_scale: f32,
+) -> Element<'static, Message> {
+    let question = args
+        .get("question")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let options: Vec<String> = args
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
+
+    let (answer, is_ok) = match result {
+        Ok(s) => (s.as_str(), true),
+        Err(e) => (e.as_str(), false),
+    };
+
+    let question_text: Element<'static, Message> = SelectableText::new(question.to_string())
+        .style(sel_default)
+        .into();
+
+    let answer_label = if is_ok { "Answer" } else { "Error" };
+    let answer_color = if is_ok { CRABOT_SUCCESS } else { CRABOT_DANGER };
+
+    let mut answer_col = column![];
+
+    if is_ok && !options.is_empty() {
+        let matched = options.iter().any(|opt| opt == answer);
+        let option_rows = ask_option_list(&options, answer, font_scale, false);
+
+        if matched {
+            answer_col = answer_col
+                .push(
+                    text(format!("{answer_label}:"))
+                        .size(12.0 * font_scale)
+                        .color(answer_color)
+                        .font(bold_font()),
+                )
+                .push(column(option_rows).spacing(2));
+        } else {
+            // When the answer doesn't match any option (e.g. the user skipped),
+            // show the actual answer text so it isn't lost.
+            answer_col = answer_col
+                .push(
+                    text("Options:")
+                        .size(12.0 * font_scale)
+                        .color(answer_color)
+                        .font(bold_font()),
+                )
+                .push(column(option_rows).spacing(2))
+                .push(
+                    row![
+                        text(format!("{answer_label}: "))
+                            .size(12.0 * font_scale)
+                            .color(answer_color)
+                            .font(bold_font()),
+                        SelectableText::new(answer.to_string())
+                            .size(13.0 * font_scale)
+                            .style(sel_default),
+                    ]
+                    .spacing(4)
+                    .padding(padding::top(4)),
+                );
+        }
+    } else {
+        let answer_element: Element<'static, Message> = SelectableText::new(answer.to_string())
+            .size(13.0 * font_scale)
+            .style(sel_default)
+            .into();
+        answer_col = answer_col.push(
+            row![
+                text(format!("{answer_label}: "))
+                    .size(12.0 * font_scale)
+                    .color(answer_color)
+                    .font(bold_font()),
+                answer_element,
+            ]
+            .spacing(4),
+        );
+    }
+
+    ask_tool_container(column![question_text, answer_col].spacing(8))
+}
 
 /// Color used for search keyword highlighting within text.
 const SEARCH_HIGHLIGHT_BG: Color = Color::from_rgba(1.0, 0.92, 0.0, 0.35);

@@ -39,6 +39,8 @@ pub struct SendConfig {
     pub tools: Vec<ToolRef>,
     /// Shared slot for a user prompt injected during streaming (tool execution / thinking).
     pub pending_user_prompt: Arc<Mutex<Option<String>>>,
+    /// Receiver for the builtin ask tool's user response.
+    pub ask_receiver: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     pub user_agent: String,
     /// When set to `true`, in-progress tool execution is cancelled.
     pub cancel_token: Arc<AtomicBool>,
@@ -64,6 +66,7 @@ pub async fn send_stream(
         user_prompt,
         tools,
         pending_user_prompt,
+        mut ask_receiver,
         user_agent,
         cancel_token,
     } = config;
@@ -259,6 +262,15 @@ pub async fn send_stream(
             // name into the blocking closure. Unknown tools short-circuit to
             // an error result without spawning a task.
             let result = match tools.iter().find(|t| t.name() == tc.fn_name).cloned() {
+                Some(_) if tc.fn_name == "ask" => {
+                    match handle_ask_tool(&tc, &mut ask_receiver, &cancel_token, on_event).await {
+                        Some(result) => result,
+                        None => {
+                            on_event(SessionEvent::Cancelled(genai_messages)).await;
+                            return;
+                        }
+                    }
+                }
                 Some(tool) => {
                     // Run tool execution on a blocking thread so the async
                     // task yields while the tool runs – this keeps the iced
@@ -378,4 +390,69 @@ fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Client {
     Client::builder()
         .with_service_target_resolver(target_resolver)
         .build()
+}
+
+/// Handle a builtin ask-tool call: parse arguments, emit the question to
+/// the UI, then wait for user response, cancellation, or timeout (120 s).
+///
+/// Returns `None` when the event channel is closed (caller should emit
+/// `Cancelled` and stop the agent loop).
+async fn handle_ask_tool(
+    tc: &ToolCall,
+    ask_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    cancel_token: &AtomicBool,
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+) -> Option<Result<String, String>> {
+    let question = tc
+        .fn_arguments
+        .get("question")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let options: Vec<String> = tc
+        .fn_arguments
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Drain any stale messages left over from a previous ask (e.g. the user
+    // answered after the previous timeout had already fired).
+    while ask_receiver.try_recv().is_ok() {}
+
+    if !on_event(SessionEvent::AskRequest(
+        crate::views::session_state::AskRequest { question, options },
+    ))
+    .await
+    {
+        return None;
+    }
+
+    // Await the user's response with a 120 s timeout and cancellation
+    // support.  `select!` races the mpsc receiver against a deadline and a
+    // cancel-token poller so that the user's answer, the timeout, or the
+    // Stop button can each break the wait promptly — no busy-polling.
+    Some(tokio::select! {
+        answer = ask_receiver.recv() => match answer {
+            Some(answer) => answer,
+            None => Err("Ask response channel closed.".into()),
+        },
+        _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
+            Ok("User did not respond before the timeout.".into())
+        }
+        _ = async {
+            loop {
+                if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        } => {
+            Err("Cancelled by user.".into())
+        }
+    })
 }

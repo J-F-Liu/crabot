@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use iced::Task;
 use iced::widget::scrollable::Viewport;
+use tokio::sync::mpsc;
 
 use crate::Message;
 use crate::llm::DialogPhase;
@@ -10,6 +11,7 @@ use crate::model::Cost;
 use crate::model::TokenAmount;
 use crate::views::scroll_to_end;
 use crate::views::search_bar::SearchState;
+use crate::views::ASK_INPUT;
 use crate::widgets::textarea::TextArea;
 use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use crabot::session::Session;
@@ -28,24 +30,33 @@ pub(crate) struct SessionState {
     pub(crate) pending_user_prompt: Arc<Mutex<Option<String>>>,
     /// UI-side mirror of `pending_user_prompt`, updated alongside it.
     pub(crate) pending_display: Option<String>,
+    /// Active ask-tool request shown in the tool turn.
+    pub(crate) ask_request: Option<AskRequest>,
+    pub(crate) ask_input: String,
+    /// Sender for the builtin ask tool — the UI calls `send()` to deliver
+    /// the user's response to the streaming task's receiver.
+    pub(crate) ask_sender: mpsc::UnboundedSender<Result<String, String>>,
     /// Whether to auto-scroll the message view to the bottom during streaming.
     pub(crate) auto_scroll: Arc<AtomicBool>,
 }
 
-impl Default for SessionState {
-    fn default() -> Self {
+impl SessionState {
+    /// Create a fresh session state.
+    pub(crate) fn new() -> Self {
+        let (ask_tx, _ask_rx) = mpsc::unbounded_channel();
         Self {
             phase: DialogPhase::Idle,
             start_index: 0,
             cancel_token: Arc::new(AtomicBool::new(false)),
             pending_user_prompt: Arc::new(Mutex::new(None)),
             pending_display: None,
+            ask_request: None,
+            ask_input: String::new(),
+            ask_sender: ask_tx,
             auto_scroll: Arc::new(AtomicBool::new(true)),
         }
     }
-}
 
-impl SessionState {
     /// Human-readable status label for the current streaming phase.
     pub(crate) fn status(&self, session_empty: bool) -> &str {
         match self.phase {
@@ -63,10 +74,29 @@ impl SessionState {
     }
 }
 
+/// Request displayed by the builtin ask tool.
+#[derive(Debug, Clone)]
+pub(crate) struct AskRequest {
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+/// Action taken from the builtin ask tool UI controls.
+#[derive(Debug, Clone)]
+pub(crate) enum AskAction {
+    /// User submitted an answer (text read from `ask_input`).
+    Ok,
+    /// User chose to skip the question.
+    Skip,
+    /// User selected one of the provided options.
+    OptionSelected(String),
+}
+
 /// Events emitted from the streaming runtime channel.
 #[derive(Debug, Clone)]
 pub(crate) enum SessionEvent {
     ToolCalls(Vec<ToolCall>),
+    AskRequest(AskRequest),
     Content(String),
     Reasoning(String),
     ToolResult(ToolResult),
@@ -97,6 +127,14 @@ pub(crate) fn update(
             session.push_turn(Turn::from_tool_calls(tcs));
             return maybe_scroll_to_end(&state.auto_scroll);
         }
+        SessionEvent::AskRequest(request) => {
+            let no_options = request.options.is_empty();
+            state.ask_request = Some(request);
+            state.ask_input.clear();
+            if no_options {
+                return iced::widget::operation::focus(ASK_INPUT.clone());
+            }
+        }
         SessionEvent::Content(chunk) => {
             if let Some(last) = session.last_turn_mut()
                 && let TurnBody::Text(tc) = &mut last.body
@@ -118,6 +156,11 @@ pub(crate) fn update(
             return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::ToolResult(tr) => {
+            // Clear the ask UI when the ask tool completes (covers both
+            // user-response and timeout paths).
+            if tr.name == "ask" {
+                state.ask_request = None;
+            }
             if let Some(path_str) = tr.get_modified_file()
                 && !session.modified_files.iter().any(|p| p == path_str)
             {
@@ -147,16 +190,19 @@ pub(crate) fn update(
             }
         }
         SessionEvent::Done(genai_messages) => {
+            state.ask_request = None;
             handle_stream_done(state, session, genai_messages);
             search.invalidate_offsets();
             return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::Error(err, genai_messages) => {
+            state.ask_request = None;
             handle_stream_error(state, session, err, genai_messages);
             search.invalidate_offsets();
             return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::Cancelled(genai_messages) => {
+            state.ask_request = None;
             state.phase = DialogPhase::Idle;
             if let Ok(mut pending) = state.pending_user_prompt.lock()
                 && let Some(prompt) = pending.take()
