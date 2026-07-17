@@ -227,18 +227,25 @@ pub(super) fn highlighted_spans(
         return vec![span(content.to_string())];
     }
 
-    let lower_content = content.to_lowercase();
-    let lower_query = query.to_lowercase();
-    let query_len = query.len();
+    // Build a case-insensitive literal-match regex.  Escaping prevents the
+    // search query from being interpreted as regex syntax.
+    let re = match regex::RegexBuilder::new(&regex::escape(query))
+        .case_insensitive(true)
+        .build()
+    {
+        Ok(r) => r,
+        Err(_) => return vec![span(content.to_string())],
+    };
 
     let mut spans: Vec<iced::widget::text::Span<'static, (), iced::Font>> = Vec::new();
     let mut last_end = 0;
 
-    for (start, _) in lower_content.match_indices(&lower_query) {
+    for m in re.find_iter(content) {
+        let start = m.start();
+        let end = m.end();
         if start > last_end {
             spans.push(span(content[last_end..start].to_string()));
         }
-        let end = start + query_len;
         spans.push(span(content[start..end].to_string()).background(SEARCH_HIGHLIGHT_BG));
         last_end = end;
     }
