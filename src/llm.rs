@@ -177,7 +177,8 @@ pub async fn send_stream(
 
         while let Some(event) = stream.next().await {
             match event {
-                Ok(ChatStreamEvent::Chunk(chunk)) => {
+                // Skip empty chunk, so a UI placeholder isn't created for it.
+                Ok(ChatStreamEvent::Chunk(chunk)) if !chunk.content.is_empty() => {
                     if !thinking_signaled {
                         thinking_signaled = true;
                         on_event(SessionEvent::PhaseChange(DialogPhase::LlmThinking)).await;
@@ -187,7 +188,7 @@ pub async fn send_stream(
                         return;
                     }
                 }
-                Ok(ChatStreamEvent::ReasoningChunk(chunk)) => {
+                Ok(ChatStreamEvent::ReasoningChunk(chunk)) if !chunk.content.is_empty() => {
                     if !thinking_signaled {
                         thinking_signaled = true;
                         on_event(SessionEvent::PhaseChange(DialogPhase::LlmThinking)).await;
@@ -205,7 +206,8 @@ pub async fn send_stream(
                         return;
                     }
                 }
-                Ok(_) => {} // ignore Start, ThoughtSignature, ToolCallChunk
+                // ignore Start, ThoughtSignature, ToolCallChunk, empty chunks
+                Ok(_) => {}
                 Err(e) => {
                     on_event(SessionEvent::Error(
                         format!("stream error: {e}"),
@@ -226,8 +228,9 @@ pub async fn send_stream(
             .cloned()
             .collect();
 
-        let assistant_msg =
-            ChatMessage::assistant(assistant_content).with_reasoning_content(captured_reasoning);
+        // Drop an empty reasoning capture.
+        let assistant_msg = ChatMessage::assistant(assistant_content)
+            .with_reasoning_content(captured_reasoning.filter(|r| !r.is_empty()));
 
         // Append assistant message to request + genai history.
         chat_req = chat_req.append_message(assistant_msg.clone());
