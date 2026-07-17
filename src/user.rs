@@ -19,8 +19,10 @@ impl WorkMode {
             // Match: ## {Name} Mode (`<work-mode>{tag}</work-mode>`)
             let re = Regex::new(r"## (\w+) Mode \(`<work-mode>\w+</work-mode>`\)").unwrap();
             re.captures_iter(content)
-                .map(|cap| WorkMode {
-                    name: ArrayString::from(&cap[1]).unwrap(),
+                .filter_map(|cap| {
+                    ArrayString::from(&cap[1])
+                        .ok()
+                        .map(|name| WorkMode { name })
                 })
                 .collect()
         });

@@ -208,7 +208,7 @@ pub fn load_prompt_options(subdir: &str, selected: &str) -> (Vec<FilepathEntry>,
     let content = options
         .iter()
         .find(|e| e.display == selected)
-        .map(|e| std::fs::read_to_string(&e.path).unwrap_or_else(|e| e.to_string()))
+        .map(|e| std::fs::read_to_string(&e.path).unwrap_or_default())
         .unwrap_or_default();
     (options, content)
 }

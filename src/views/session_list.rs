@@ -3,8 +3,8 @@ use iced::{
     widget::{button, column, container, row, text},
 };
 
-use json_escape::unescape;
-use std::io::Read;
+use serde::Deserialize;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use crate::Message;
@@ -85,49 +85,29 @@ pub(crate) fn session_view<'a>(
     .into()
 }
 
-/// List session metadata for a workspace (reads only first 8 KiB per file).
-pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String> {
-    let paths = crabot::session::list_session_paths(workspace)?;
-    let mut entries = Vec::with_capacity(paths.len());
-    let mut buf = vec![0u8; 8192];
-    for path in paths {
-        let (id, title) = match std::fs::File::open(&path) {
-            Ok(mut file) => match file.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    let text = String::from_utf8_lossy(&buf[..n]);
-                    (
-                        extract_json_string(&text, "id").unwrap_or_default(),
-                        extract_json_string(&text, "title").unwrap_or_default(),
-                    )
-                }
-                _ => (String::new(), String::new()),
-            },
-            Err(_) => (String::new(), String::new()),
-        };
-        entries.push(SessionEntry { id, title, path });
-    }
-    Ok(entries)
+/// Only the fields needed for the dropdown; serde skips the rest
+/// (notably the large `history`) without allocating.
+#[derive(Deserialize)]
+struct SessionMeta {
+    id: String,
+    #[serde(default)]
+    title: String,
 }
 
-/// Extract a top-level JSON string value for `key` from partial JSON text.
-/// Unescaping (incl. `\uXXXX` surrogate pairs) is handled by `json_escape`;
-/// truncated input yields the portion decoded so far.
-fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    let search = format!("\"{}\"", key);
-    let rest = json.split_once(&search)?.1;
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    // Isolate the quoted string: `unescape` won't stop at a closing quote,
-    // so scan to the first unescaped `"` ourselves.
-    let content = rest.strip_prefix('"')?;
-    let bytes = content.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => break,
-            _ => i += 1,
-        }
-    }
-    let inner = &content[..i.min(content.len())];
-    Some(unescape(inner).display_utf8_lossy().to_string())
+/// List session metadata for a workspace, skipping unreadable/corrupt files.
+pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String> {
+    let paths = crabot::session::list_session_paths(workspace)?;
+    let entries = paths
+        .into_iter()
+        .filter_map(|path| {
+            let file = std::fs::File::open(&path).ok()?;
+            let meta: SessionMeta = serde_json::from_reader(BufReader::new(file)).ok()?;
+            Some(SessionEntry {
+                id: meta.id,
+                title: meta.title,
+                path,
+            })
+        })
+        .collect();
+    Ok(entries)
 }
