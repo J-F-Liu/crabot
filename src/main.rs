@@ -712,7 +712,8 @@ impl App {
                 }
             }
             Message::SendPrompt => {
-                let content = self.user_prompt.text();
+                let content_raw = self.user_prompt.text();
+                let content = crabot::tools::normalize_newlines(&content_raw).into_owned();
                 if content.trim().is_empty() {
                     return Task::none();
                 }

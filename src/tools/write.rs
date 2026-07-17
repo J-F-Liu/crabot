@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, make_workspace_relative, resolve_path_partial};
+use super::{Tool, arg_str, make_workspace_relative, normalize_newlines, resolve_path_partial};
 
 pub struct WriteTool;
 
@@ -49,14 +49,15 @@ impl Tool for WriteTool {
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let path = arg_str(args, "path").ok_or("Missing 'path' argument")?;
-    let content = arg_str(args, "content").ok_or("Missing 'content' argument")?;
+    let content_raw = arg_str(args, "content").ok_or("Missing 'content' argument")?;
+    let content = normalize_newlines(content_raw);
     let file_path = resolve_path_partial(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
     let display_path = make_workspace_relative(&file_path, workspace);
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create parent dir: {e}"))?;
     }
-    std::fs::write(&file_path, content)
+    std::fs::write(&file_path, content.as_ref())
         .map_err(|e| format!("Failed to write {display_path}: {e}"))?;
     Ok(format!("Wrote {} bytes to {display_path}", content.len(),))
 }

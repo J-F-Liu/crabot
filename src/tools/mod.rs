@@ -312,6 +312,14 @@ pub fn build_tools(tools: &[ToolRef], strict: bool) -> Vec<GenaiTool> {
 
 // ── shared helpers ─────────────────────────────────────────────────
 
+/// Convert Windows-style `\r\n` line endings to Unix `\n`.
+pub fn normalize_newlines(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('\r') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    std::borrow::Cow::Owned(s.replace("\r\n", "\n"))
+}
+
 pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }

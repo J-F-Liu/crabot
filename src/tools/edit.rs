@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, make_workspace_relative, resolve_path};
+use super::{Tool, arg_str, make_workspace_relative, normalize_newlines, resolve_path};
 
 /// A single edit operation with flexible field-name aliases for cross‑model
 /// compatibility (e.g. `old_text` / `old` / `search`).
@@ -84,8 +84,6 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     let file_path = resolve_path(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
     let display_path = make_workspace_relative(&file_path, workspace);
-    let content = std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read {display_path}: {e}"))?;
 
     let edits = args
         .get("edits")
@@ -94,6 +92,14 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     if edits.is_empty() {
         return Err("'edits' array must not be empty".to_string());
     }
+
+    let raw = std::fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read {display_path}: {e}"))?;
+
+    // Normalize `\r\n` → `\n` for the file content, `old_text` and `new_text` in each edit.
+    // This ensures consistent behavior across platforms and avoids accidental mismatches due to line ending differences.
+    // The entire file is written back with `\n` endings.
+    let content = normalize_newlines(&raw);
 
     // ── Phase 1: locate each old_text, record byte range ──────────
     struct LocatedEdit {
@@ -107,11 +113,13 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     for (i, edit_value) in edits.iter().enumerate() {
         let edit: EditParam =
             serde_json::from_value(edit_value.clone()).map_err(|e| format!("Edit {i}: {e}"))?;
+        let old_text = normalize_newlines(&edit.old_text);
+        let new_text = normalize_newlines(&edit.new_text);
 
-        let start = content.find(&edit.old_text).ok_or_else(|| {
+        let start = content.find(old_text.as_ref()).ok_or_else(|| {
             format!(
                 "Edit {i}: string not found in {display_path}: '{}'",
-                edit.old_text
+                old_text
             )
         })?;
 
@@ -123,10 +131,10 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             .nth(1)
             .map(|(i, _)| start + i)
             .unwrap_or(content.len());
-        if let Some(pos) = content[search_from..].find(&edit.old_text) {
+        if let Some(pos) = content[search_from..].find(old_text.as_ref()) {
             return Err(format!(
                 "Edit {i}: found multiple occurrences of '{}' in {display_path} (positions {} and {}) — need unique match",
-                edit.old_text,
+                old_text,
                 start,
                 search_from + pos,
             ));
@@ -135,8 +143,8 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         located.push(LocatedEdit {
             idx: i,
             start,
-            end: start + edit.old_text.len(),
-            new_text: edit.new_text,
+            end: start + old_text.len(),
+            new_text: new_text.into_owned(),
         });
     }
 
