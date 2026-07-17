@@ -52,7 +52,9 @@ fn ask_option_list(
             let label: Element<'static, Message> = if interactive {
                 button(text(option.clone()).size(13.0 * font_scale))
                     .style(secondary_button)
-                    .on_press(Message::AskAction(AskAction::OptionSelected(option.clone())))
+                    .on_press(Message::AskAction(AskAction::OptionSelected(
+                        option.clone(),
+                    )))
                     .into()
             } else {
                 SelectableText::new(option.clone())
@@ -133,7 +135,11 @@ pub(crate) fn ask_result_view(
     let options: Vec<String> = args
         .get("options")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default();
 
     let (answer, is_ok) = match result {

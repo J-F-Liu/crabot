@@ -111,16 +111,14 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
 
     let mut located: Vec<LocatedEdit> = Vec::with_capacity(edits.len());
     for (i, edit_value) in edits.iter().enumerate() {
+        let idx = i + 1; // 1‑based for human‑readable messages
         let edit: EditParam =
-            serde_json::from_value(edit_value.clone()).map_err(|e| format!("Edit {i}: {e}"))?;
+            serde_json::from_value(edit_value.clone()).map_err(|e| format!("Edit {idx}: {e}"))?;
         let old_text = normalize_newlines(&edit.old_text);
         let new_text = normalize_newlines(&edit.new_text);
 
         let start = content.find(old_text.as_ref()).ok_or_else(|| {
-            format!(
-                "Edit {i}: string not found in {display_path}: '{}'",
-                old_text
-            )
+            format!("Edit {idx}: string not found in {display_path}: '{old_text}'",)
         })?;
 
         // Verify uniqueness: no second occurrence (including overlapping ones).
@@ -133,15 +131,13 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             .unwrap_or(content.len());
         if let Some(pos) = content[search_from..].find(old_text.as_ref()) {
             return Err(format!(
-                "Edit {i}: found multiple occurrences of '{}' in {display_path} (positions {} and {}) — need unique match",
-                old_text,
-                start,
+                "Edit {idx}: found multiple occurrences of '{old_text}' in {display_path} (positions {start} and {}) — need unique match",
                 search_from + pos,
             ));
         }
 
         located.push(LocatedEdit {
-            idx: i,
+            idx,
             start,
             end: start + old_text.len(),
             new_text: new_text.into_owned(),

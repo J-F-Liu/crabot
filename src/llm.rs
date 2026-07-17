@@ -35,9 +35,7 @@ const MAX_ITERATIONS: usize = 100;
 fn mark_cache_tail(messages: &mut [ChatMessage]) {
     // Find and remove the most recent rolling ephemeral breakpoint (if any).
     if let Some(msg) = messages.iter_mut().rev().find(|msg| {
-        msg.options
-            .as_ref()
-            .and_then(|o| o.cache_control.as_ref())
+        msg.options.as_ref().and_then(|o| o.cache_control.as_ref())
             == Some(&CacheControl::Ephemeral)
     }) {
         msg.options.as_mut().unwrap().cache_control = None;
