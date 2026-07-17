@@ -86,6 +86,7 @@ pub(crate) fn user_prompt_view<'a>(
         row![
             checkbox(workmode_enabled)
                 .label("Work mode")
+                .width(Length::Fill)
                 .on_toggle(Message::ToggleWorkMode)
                 .style(crate::views::primary_checkbox),
             tab_bar,

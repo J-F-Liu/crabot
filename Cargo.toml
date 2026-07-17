@@ -18,7 +18,7 @@ rfd = "0.17"
 home = "0.5"
 genai = "0.6"
 futures = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 iced = { version = "0.14.0", features = [
     "advanced",
     "tokio",
@@ -35,7 +35,6 @@ glob = "0.3.3"
 ignore = "0.4.26"
 dunce = "1"
 gh-emoji = "1.0.8"
-json-escape = "0.3"
 ron = "0.12.2"
 fontdb = "0.23"
 iced_aw = { version = "0.14.1", features = ["tab_bar", "drop_down"] }

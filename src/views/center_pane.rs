@@ -8,6 +8,7 @@ use iced::{
     advanced::text::Highlight,
     advanced::widget::operation::{Operation, Outcome, Scrollable, scrollable as scrollable_op},
     alignment, font, mouse,
+    widget::scrollable::{Direction, Scrollbar},
     widget::{self, Space, button, column, container, markdown, mouse_area, row, scrollable, text},
 };
 use iced_runtime::task::widget as task_widget;
@@ -649,7 +650,9 @@ pub(crate) fn center_pane<'a>(
         },
         scrollable(column(dialog_blocks).spacing(18).padding(14),)
             .height(Fill)
-            .direction(thin_vertical())
+            .direction(Direction::Vertical(
+                Scrollbar::new().width(6).scroller_width(6)
+            ))
             .id(MESSAGE_SCROLL.clone())
             .on_scroll(Message::SessionViewScrolled),
         ask_request
@@ -709,9 +712,13 @@ fn header_container<'a>(
     content: impl Into<Element<'a, Message>>,
     max_h: f32,
 ) -> Element<'a, Message> {
-    container(scrollable(content).height(Length::Shrink))
-        .max_height(max_h)
-        .into()
+    container(
+        scrollable(content)
+            .direction(thin_vertical())
+            .height(Length::Shrink),
+    )
+    .max_height(max_h)
+    .into()
 }
 
 /// Displays the pending prompt text with a muted style.

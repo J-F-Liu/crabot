@@ -180,7 +180,7 @@ pub(crate) fn update(
         Event::SelectModelConfig(name) => {
             if name != *selected_model {
                 *selected_model = name;
-                return true;
+                return false; // selected_model is saved in settings.ron, don't trigger models.ron save
             }
         }
         Event::SelectProvider(id) => {

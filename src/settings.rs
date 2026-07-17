@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 /// All persistable app-level state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub left_pane_width: f32,
     pub right_pane_width: f32,
@@ -27,12 +28,10 @@ pub struct Settings {
     /// Font scale factor for center pane dialog blocks (0.5 .. 2.0).
     pub font_scale: f32,
     /// Enabled MCP servers: server name → enabled.
-    #[serde(default)]
     pub mcp_servers: IndexMap<String, bool>,
     /// Enabled agent tools: tool name → enabled.
     pub agent_tools: IndexMap<String, bool>,
     /// Prompt recipes: work-mode name (lowercase) → list of prompt templates.
-    #[serde(default)]
     pub prompt_recipe: IndexMap<String, Vec<String>>,
 }
 
