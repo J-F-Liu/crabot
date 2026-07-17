@@ -46,6 +46,16 @@ fn mark_cache_tail(messages: &mut [ChatMessage]) {
     }
 }
 
+/// Resolve once the cancel token is set.
+async fn wait_cancelled(cancel_token: &AtomicBool) {
+    loop {
+        if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 /// Configuration for a send request to the LLM.
 pub struct SendConfig {
     pub model: ModelInfo,
@@ -154,9 +164,14 @@ pub async fn send_stream(
         // (Anthropic limit: 4 breakpoints; system prompt uses 1 for Ephemeral1h).
         mark_cache_tail(&mut chat_req.messages);
 
-        let stream_result = client
-            .exec_chat_stream(&model.model_id, chat_req.clone(), Some(&chat_options))
-            .await;
+        // Race the connect against cancellation so Stop takes effect promptly.
+        let stream_result = tokio::select! {
+            res = client.exec_chat_stream(&model.model_id, chat_req.clone(), Some(&chat_options)) => res,
+            _ = wait_cancelled(&cancel_token) => {
+                on_event(SessionEvent::Cancelled(genai_messages)).await;
+                return;
+            }
+        };
 
         let mut stream = match stream_result {
             Ok(chat_res) => chat_res.stream,
@@ -175,7 +190,16 @@ pub async fn send_stream(
         let mut captured_reasoning: Option<String> = None;
         let mut thinking_signaled = false;
 
-        while let Some(event) = stream.next().await {
+        // Race each read against cancellation so Stop works during stream idle.
+        loop {
+            let event = tokio::select! {
+                ev = stream.next() => ev,
+                _ = wait_cancelled(&cancel_token) => {
+                    on_event(SessionEvent::Cancelled(genai_messages)).await;
+                    return;
+                }
+            };
+            let Some(event) = event else { break };
             match event {
                 // Skip empty chunk, so a UI placeholder isn't created for it.
                 Ok(ChatStreamEvent::Chunk(chunk)) if !chunk.content.is_empty() => {
@@ -331,7 +355,7 @@ pub async fn send_stream(
         chat_req = chat_req.append_message(tool_responses.clone());
         genai_messages.push(ChatMessage::from(tool_responses));
 
-        // Check cancellation before executing tool calls.
+        // Check cancellation after executing tool calls to keep tool results match in history.
         if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
             on_event(SessionEvent::Cancelled(genai_messages)).await;
             return;
@@ -469,14 +493,7 @@ async fn handle_ask_tool(
         _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
             Ok("User did not respond before the timeout.".into())
         }
-        _ = async {
-            loop {
-                if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            }
-        } => {
+        _ = wait_cancelled(cancel_token) => {
             Err("Cancelled by user.".into())
         }
     })
