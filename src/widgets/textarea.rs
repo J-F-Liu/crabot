@@ -9,6 +9,7 @@ use iced::widget::text_editor;
 use iced::widget::text_editor::TextEditor;
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 /// Messages that the `TextArea` component can process.
 #[derive(Debug, Clone)]
@@ -43,18 +44,57 @@ struct EditSnapshot {
     cursor: text_editor::Cursor,
 }
 
-/// Maximum number of snapshots retained per stack. When exceeded, the oldest
+/// Maximum number of undo units retained per stack. When exceeded, the oldest
 /// entry is discarded.
 const MAX_HISTORY: usize = 100;
 
+/// Maximum idle gap between edits that still coalesce into one undo unit.
+const COALESCE_WINDOW: Duration = Duration::from_secs(1);
+
+/// Coalescing class of a [`text_editor::Edit`], used for undo grouping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    /// Character typing; inserts coalesce until a word boundary.
+    Insert,
+    /// Consecutive backspaces coalesce.
+    Backspace,
+    /// Consecutive forward-deletes coalesce.
+    Delete,
+    /// Paste, Enter, indent, … — always a standalone undo unit.
+    Atomic,
+}
+
+impl EditKind {
+    fn of(edit: &text_editor::Edit) -> Self {
+        match edit {
+            text_editor::Edit::Insert(_) => Self::Insert,
+            text_editor::Edit::Backspace => Self::Backspace,
+            text_editor::Edit::Delete => Self::Delete,
+            _ => Self::Atomic,
+        }
+    }
+}
+
+/// The last edit performed, used to coalesce runs into a single undo unit.
+#[derive(Debug, Clone, Copy)]
+struct LastEdit {
+    kind: EditKind,
+    at: Instant,
+    /// Whether the last inserted character was whitespace (word boundary).
+    word_boundary: bool,
+}
+
 /// A multi-line text input component with undo/redo history.
 ///
-/// Wraps [`text_editor::Content`] and maintains bounded undo/redo stacks
-/// that track each edit action.
+/// Wraps [`text_editor::Content`] and maintains bounded undo/redo stacks.
+/// Consecutive edits of the same kind (typing, backspacing, …) coalesce
+/// into one undo unit, so undo reverts a run rather than a single keystroke.
 pub struct TextArea {
     content: text_editor::Content,
     undo_stack: VecDeque<EditSnapshot>,
     redo_stack: VecDeque<EditSnapshot>,
+    /// The most recent edit; `None` after navigation, undo/redo, or reset.
+    last_edit: Option<LastEdit>,
 }
 
 impl TextArea {
@@ -64,6 +104,7 @@ impl TextArea {
             content: text_editor::Content::new(),
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            last_edit: None,
         }
     }
 
@@ -74,6 +115,7 @@ impl TextArea {
             content: text_editor::Content::with_text(text),
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            last_edit: None,
         }
     }
 
@@ -135,6 +177,7 @@ impl TextArea {
         self.content = text_editor::Content::new();
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.last_edit = None;
     }
 
     /// Replaces all text content and resets the undo/redo history.
@@ -142,6 +185,7 @@ impl TextArea {
         self.content = text_editor::Content::with_text(text);
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.last_edit = None;
     }
 
     /// Replaces all text content while preserving undo history.
@@ -151,15 +195,36 @@ impl TextArea {
     pub fn replace_text(&mut self, text: &str) {
         self.push_undo();
         self.redo_stack.clear();
+        self.last_edit = None;
         self.content = text_editor::Content::with_text(text);
     }
 
     // ── private helpers ────────────────────────────────────────────────
 
     fn perform(&mut self, action: text_editor::Action) {
-        if action.is_edit() {
-            self.push_undo();
-            self.redo_stack.clear();
+        if let text_editor::Action::Edit(edit) = &action {
+            let kind = EditKind::of(edit);
+            // Continue the current undo unit only when the same kind of edit
+            // follows within the coalescing window (and, for typing, doesn't
+            // cross a word boundary); otherwise start a new unit.
+            let coalesces = self.last_edit.is_some_and(|last| {
+                last.kind == kind
+                    && kind != EditKind::Atomic
+                    && last.at.elapsed() < COALESCE_WINDOW
+                    && !(kind == EditKind::Insert && last.word_boundary)
+            });
+            if !coalesces {
+                self.push_undo();
+                self.redo_stack.clear();
+            }
+            self.last_edit = Some(LastEdit {
+                kind,
+                at: Instant::now(),
+                word_boundary: matches!(edit, text_editor::Edit::Insert(c) if c.is_whitespace()),
+            });
+        } else {
+            // Navigation, selection, and scrolling break the coalescing run.
+            self.last_edit = None;
         }
         self.content.perform(action);
     }
@@ -168,6 +233,7 @@ impl TextArea {
         if let Some(snapshot) = self.undo_stack.pop_back() {
             self.push_redo();
             self.restore_snapshot(&snapshot);
+            self.last_edit = None;
         }
     }
 
@@ -175,6 +241,7 @@ impl TextArea {
         if let Some(snapshot) = self.redo_stack.pop_back() {
             self.push_undo();
             self.restore_snapshot(&snapshot);
+            self.last_edit = None;
         }
     }
 
