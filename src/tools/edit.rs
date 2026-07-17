@@ -117,6 +117,11 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         let old_text = normalize_newlines(&edit.old_text);
         let new_text = normalize_newlines(&edit.new_text);
 
+        // An empty old_text matches everywhere; reject it before the search.
+        if old_text.is_empty() {
+            return Err(format!("Edit {idx}: 'old_text' must not be empty"));
+        }
+
         let start = content.find(old_text.as_ref()).ok_or_else(|| {
             format!("Edit {idx}: string not found in {display_path}: '{old_text}'",)
         })?;

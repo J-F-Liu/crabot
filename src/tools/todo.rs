@@ -99,9 +99,9 @@ impl Tool for TodoTool {
         _workspace: &Path,
         _cancel: &AtomicBool,
     ) -> Result<String, String> {
-        let items: Vec<TodoItem> =
-            serde_json::from_value(args.get("items").cloned().unwrap_or(json!([])))
-                .map_err(|e| format!("Invalid todo items: {}", e))?;
+        let items_value = args.get("items").ok_or("Missing 'items' argument")?;
+        let items: Vec<TodoItem> = serde_json::from_value(items_value.clone())
+            .map_err(|e| format!("Invalid todo items: {}", e))?;
 
         let count = items.len();
         let mut list = self

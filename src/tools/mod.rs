@@ -825,7 +825,7 @@ mod win32 {
             hNamedPipe: isize,
             lpMode: *mut u32,
             lpMaxCollectionCount: *mut u32,
-            lpCollectDataTimeout: *mut u64,
+            lpCollectDataTimeout: *mut u32,
         ) -> i32;
     }
 

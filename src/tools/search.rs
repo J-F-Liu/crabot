@@ -124,6 +124,11 @@ pub(super) fn execute(
                 }
             }
         }
+    } else {
+        return Err(format!(
+            "Path does not exist or is not searchable: {}",
+            super::make_workspace_relative(&search_path, workspace)
+        ));
     }
     if !found {
         Ok("No matches found.".into())
