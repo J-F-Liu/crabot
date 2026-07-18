@@ -59,7 +59,8 @@ impl UserPrompt {
             lower.make_ascii_lowercase();
             prompt.push_str(&format!("<work-mode>{}</work-mode>\n", lower));
         }
-        prompt.push_str(&format!("{}\n", &self.content));
+        prompt.push_str(&self.content);
+        prompt.push('\n');
         prompt
     }
 

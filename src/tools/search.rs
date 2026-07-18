@@ -71,14 +71,14 @@ pub(super) fn execute(
     if search_path.is_file() {
         let path_string = super::make_workspace_relative(&search_path, workspace);
         let content = std::fs::read_to_string(&search_path)
-            .map_err(|e| format!("Failed to read {}: {e}", &path_string))?;
+            .map_err(|e| format!("Failed to read {path_string}: {e}"))?;
         for (i, line) in content.lines().enumerate() {
             if re.is_match(line) {
                 found = true;
                 if out_lines < MAX_LINES {
                     let _ = std::fmt::Write::write_fmt(
                         &mut out,
-                        format_args!("{}:{}:{}\n", &path_string, i + 1, line),
+                        format_args!("{}:{}:{}\n", path_string, i + 1, line),
                     );
                     out_lines += 1;
                 } else {
@@ -114,7 +114,7 @@ pub(super) fn execute(
                     if out_lines < MAX_LINES {
                         let _ = std::fmt::Write::write_fmt(
                             &mut out,
-                            format_args!("{}:{}:{}\n", &path_string, i + 1, line),
+                            format_args!("{}:{}:{}\n", path_string, i + 1, line),
                         );
                         out_lines += 1;
                     } else {
