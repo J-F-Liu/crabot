@@ -2,6 +2,7 @@ mod ask;
 mod bash;
 pub mod custom;
 pub mod edit;
+mod fetch;
 mod find;
 pub mod mcp;
 mod read;
@@ -195,7 +196,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Create a new registry pre-populated with the seven built-in tools.
+    /// Create a new registry pre-populated with the nine built-in tools.
     pub fn new() -> Self {
         let todo_items: todo::TodoList = Arc::new(Mutex::new(Vec::new()));
         let builtin: Vec<ToolRef> = vec![
@@ -207,6 +208,7 @@ impl ToolRegistry {
             Arc::new(bash::BashTool),
             Arc::new(ask::AskTool),
             Arc::new(todo::TodoTool::new(Arc::clone(&todo_items))),
+            Arc::new(fetch::FetchTool),
         ];
         Self {
             builtin_names: builtin.iter().map(|t| t.name().to_string()).collect(),
