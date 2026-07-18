@@ -92,11 +92,12 @@ pub struct ModelInfo {
 pub struct Provider {
     pub name: String,
     pub base_url: String,
-    pub api_key: String,
     pub api_type: String,
     pub auth: String,
+    pub api_key: String,
     #[serde(default)]
     pub strict_mode: bool,
+    #[serde(default)]
     pub headers: BTreeMap<String, String>,
     pub models: Vec<Model>,
 }
