@@ -108,7 +108,7 @@ pub(crate) fn right_pane<'a>(
     }
 
     if let Some(cw) = context_window.filter(|&cw| cw > 0) {
-        let pct = (usage_amount.input as f64) * 100.0 / cw as f64;
+        let pct = usage_amount.window_used(cw);
         col = col
             .push(token_row("window size:", format!("{cw}")))
             .push(token_row("Window used:", format!("{:.1}%", pct)));

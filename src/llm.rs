@@ -124,6 +124,10 @@ pub async fn send_stream(
         .with_capture_usage(true)
         .with_extra_headers(("user-agent", user_agent));
 
+    if model.max_tokens > 0 {
+        chat_options = chat_options.with_max_tokens(model.max_tokens);
+    }
+
     // Set reasoning effort, When thinking is off, omit it entirely
     if model.thinking {
         let reasoning_effort = model

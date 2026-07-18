@@ -56,6 +56,7 @@ impl ModelList {
             api_key: provider.api_key.clone(),
             strict: provider.strict_mode,
             model_id: model.id.clone(),
+            max_tokens: model.max_tokens,
             thinking: config.thinking,
             thinking_level: config.thinking_level.clone(),
         })
@@ -82,6 +83,8 @@ pub struct ModelInfo {
     pub api_key: String,
     pub strict: bool,
     pub model_id: String,
+    /// Output token cap; 0 means unset (provider/genai default applies).
+    pub max_tokens: u32,
     pub thinking: bool,
     pub thinking_level: String,
 }
@@ -187,6 +190,11 @@ impl TokenAmount {
             cache_write,
             output: usage.completion_tokens.unwrap_or(0),
         }
+    }
+    /// Percentage of `context_window` used by the estimated next-turn
+    /// context size: last prompt plus the response just generated.
+    pub fn window_used(&self, context_window_size: u32) -> f32 {
+        (self.input + self.output) as f32 * 100.0 / context_window_size as f32
     }
     /// Accumulate `incoming` into `self` in place.
     pub fn accumulate(&mut self, incoming: &TokenAmount) {
