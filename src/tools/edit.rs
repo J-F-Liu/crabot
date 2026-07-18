@@ -35,7 +35,7 @@ impl Tool for EditTool {
     }
 
     fn instruction(&self) -> &str {
-        "Perform exact string replacements in an existing file. Use this tool for precise, localized edits instead of rewriting the entire file. Each old_text must uniquely identify a single location in the file. Include sufficient surrounding context to ensure an exact match. Edits are validated before application and will fail if matches are ambiguous, duplicated, overlapping, or missing."
+        "Perform exact string replacements in an existing file. Use this tool for precise, localized edits instead of rewriting the entire file. Edits are validated before application and will fail if matches are ambiguous, duplicated, overlapping, or missing."
     }
 
     fn schema(&self) -> Value {
@@ -48,17 +48,17 @@ impl Tool for EditTool {
                 },
                 "edits": {
                     "type": "array",
-                    "description": "Ordered list of edits. Each old_text must appear exactly once in the original file. Edits must not overlap and are applied simultaneously.",
+                    "description": "Ordered list of edits. Each old_text must appear exactly once, add surrounding context to disambiguate. Edits must not overlap.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "old_text": {
                                 "type": "string",
-                                "description": "Exact text to search for and replace. Must appear exactly once in the original file."
+                                "description": "Exact text to replace (must be unique in the file)"
                             },
                             "new_text": {
                                 "type": "string",
-                                "description": "Replacement text to substitute in place of old_text"
+                                "description": "Replacement text (may be empty to delete)"
                             }
                         },
                         "required": ["old_text", "new_text"]

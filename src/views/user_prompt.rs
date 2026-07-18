@@ -1,6 +1,6 @@
 use iced::{
     Alignment, Border, Element, Length, padding,
-    widget::{button, checkbox, column, container, row, scrollable, text},
+    widget::{button, checkbox, column, container, row, scrollable, text, text::Wrapping},
 };
 
 use crate::views::theme::{CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_SURFACE, CRABOT_TEXT};
@@ -88,7 +88,8 @@ pub(crate) fn user_prompt_view<'a>(
                 .label("Work mode")
                 .width(Length::Fill)
                 .on_toggle(Message::ToggleWorkMode)
-                .style(crate::views::primary_checkbox),
+                .style(crate::views::primary_checkbox)
+                .text_wrapping(Wrapping::None),
             tab_bar,
         ]
         .spacing(8)
