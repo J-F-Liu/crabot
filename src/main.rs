@@ -836,6 +836,10 @@ impl App {
                 views::session_state::handle_scroll(&self.session_state, viewport);
             }
             Message::AppClosing => {
+                // Signal any in-flight stream and running tools to stop.
+                self.session_state
+                    .cancel_token
+                    .store(true, Ordering::Release);
                 self.save_settings();
                 return iced::exit();
             }
@@ -1202,6 +1206,12 @@ impl App {
                 }
                 Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size)),
                 Event::Window(window::Event::Moved(pos)) => Some(Message::WindowMoved(pos)),
+                // Always handle Escape regardless of capture status so that
+                // selectable-text mode can be exited in a single keypress.
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::EscapePressed),
                 // Skip keyboard shortcuts when a widget already captured the
                 // event (e.g. dropdown overlay handling arrow-key navigation).
                 Event::Keyboard(_) if status == event::Status::Captured => None,
@@ -1213,10 +1223,6 @@ impl App {
                     key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
                     ..
                 }) => Some(Message::NavigateSession(false)),
-                Event::Keyboard(keyboard::Event::KeyPressed {
-                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
-                    ..
-                }) => Some(Message::EscapePressed),
                 Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
                     if modifiers.command() =>
                 {
