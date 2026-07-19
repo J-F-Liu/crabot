@@ -129,7 +129,13 @@ pub fn tools_summary(
 
     // Build the MCP tools prompt section for the system prompt.
     for server in &tool_registry.mcp_servers {
-        if enabled_servers.contains(&server.name) && !server.prompt.is_empty() {
+        if enabled_servers.contains(&server.name)
+            && !server.prompt.is_empty()
+            && tool_registry
+                .get_mcp_tool_names(&server.name)
+                .iter()
+                .any(|name| enabled_tools.contains(name))
+        {
             result.push_str(&server.prompt);
         }
     }

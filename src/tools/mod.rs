@@ -270,6 +270,15 @@ impl ToolRegistry {
         }
     }
 
+    /// Get the list of MCP tool names for a specific server.
+    pub fn get_mcp_tool_names(&self, server: &str) -> &[String] {
+        self.mcp_groups
+            .iter()
+            .find(|(s, _)| s == server)
+            .map(|(_, tools)| tools.as_slice())
+            .unwrap_or_default()
+    }
+
     /// Collect every tool whose name appears in `enabled`.
     /// MCP tools are further filtered by `enabled_servers` (server name must be present).
     pub fn enabled_tools(
