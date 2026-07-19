@@ -9,6 +9,10 @@ pub mod user;
 pub mod workspace;
 
 use std::collections::HashSet;
+
+pub fn app_title() -> &'static str {
+    concat!("Crabot v", env!("CARGO_PKG_VERSION"))
+}
 use std::hash::Hash;
 
 pub trait HashSetExt<T> {

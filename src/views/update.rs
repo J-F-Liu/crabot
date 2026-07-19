@@ -34,7 +34,7 @@ struct CrateVersion {
 /// Returns `Some(version)` if a newer version exists, `None` otherwise.
 pub(crate) async fn check_for_updates() -> Option<String> {
     let client = reqwest::Client::builder()
-        .user_agent(crate::crabot_title())
+        .user_agent(crabot::app_title())
         .timeout(Duration::from_secs(10))
         .build()
         .ok()?;

@@ -20,7 +20,7 @@ impl Tool for FetchTool {
     }
 
     fn instruction(&self) -> &str {
-        "Fetch the content of a webpage or remote document over HTTP/HTTPS. Returns cleaned Markdown by default; pass format \"text\" for extracted plain text or \"html\" for raw markup. Do not use it for local files — use the read tool instead."
+        "Fetch the content of a webpage or remote document over HTTP/HTTPS. Returns cleaned Markdown by default; pass format \"text\" for extracted plain text or \"html\" for raw markup."
     }
 
     fn schema(&self) -> Value {
@@ -55,9 +55,6 @@ impl Tool for FetchTool {
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024; // 8 MB
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Identify as a regular browser to avoid trivial bot blocking.
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -170,7 +167,7 @@ async fn cancel_signal(cancel: &AtomicBool) {
 fn client() -> Result<&'static reqwest::Client, String> {
     static CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
         reqwest::Client::builder()
-            .user_agent(USER_AGENT)
+            .user_agent(crate::app_title())
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| format!("Failed to build HTTP client: {e}"))

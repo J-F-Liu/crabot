@@ -39,10 +39,6 @@ use views::tool_list::ToolListState;
 use views::{DividerState, center_pane, divider, left_pane, right_pane, scroll_to_end};
 use widgets::textarea::{self, TextArea};
 
-fn crabot_title() -> &'static str {
-    concat!("Crabot v", env!("CARGO_PKG_VERSION"))
-}
-
 pub fn main() -> iced::Result {
     setup::ensure_default_files();
     fonts::load_system_fonts();
@@ -66,7 +62,7 @@ pub fn main() -> iced::Result {
             icon,
             ..Default::default()
         })
-        .title(crabot_title())
+        .title(crabot::app_title())
         .antialiasing(true)
         .run()
 }
@@ -984,7 +980,7 @@ impl App {
                 .enabled_tools(&self.enabled_tools, &self.enabled_mcp_servers),
             pending_user_prompt: self.session_state.pending_user_prompt.clone(),
             ask_receiver: ask_rx,
-            user_agent: crabot_title().to_string(),
+            user_agent: crabot::app_title().to_string(),
             cancel_token: self.session_state.cancel_token.clone(),
         };
 
