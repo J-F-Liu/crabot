@@ -33,6 +33,8 @@ pub struct Settings {
     pub agent_tools: IndexMap<String, bool>,
     /// Prompt recipes: work-mode name (lowercase) → list of prompt templates.
     pub prompt_recipe: IndexMap<String, Vec<String>>,
+    /// Latest version found in the last check, if newer than current.
+    pub last_update_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -58,6 +60,7 @@ impl Default for Settings {
             mcp_servers: IndexMap::new(),
             agent_tools: IndexMap::new(),
             prompt_recipe: IndexMap::new(),
+            last_update_version: None,
         }
     }
 }

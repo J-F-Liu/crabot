@@ -11,7 +11,7 @@ use crabot::{HashSetExt, model, settings, setup, system, tools, workspace};
 
 use futures::{SinkExt, future::FutureExt};
 use iced::widget::scrollable::Viewport;
-use iced::widget::{row, text_editor};
+use iced::widget::{column, row, text_editor};
 use iced::{
     Element, Event, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window,
 };
@@ -161,6 +161,10 @@ struct App {
     recipe_dropdown_expanded: bool,
     /// Cached snapshot of the todo list, refreshed when the todo tool executes.
     cached_todo_items: Vec<TodoItem>,
+    /// Latest version from crates.io when newer than current, shown as a banner.
+    update_available: Option<String>,
+    /// Cached latest version from the last crates.io check.
+    cached_update_version: Option<String>,
 }
 
 #[derive(Clone)]
@@ -238,6 +242,12 @@ pub(crate) enum Message {
     SelectRecipe(usize),
     /// Dismiss the recipe DropDown without selecting.
     DismissRecipeDropdown,
+    /// Result of checking crates.io for a newer version.
+    VersionCheckResult(Option<String>),
+    /// User dismissed the update-available banner.
+    DismissUpdateBanner,
+    /// Open the Crabot GitHub releases page in the system browser.
+    OpenReleaseNotes,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -308,6 +318,12 @@ impl App {
             ),
         };
 
+        let cached_update_version = saved.last_update_version;
+        let update_available = cached_update_version
+            .as_ref()
+            .filter(|v| views::update::version_gt(v, views::update::CURRENT_VERSION))
+            .cloned();
+
         let mut app = Self {
             left_pane_width: saved.left_pane_width,
             right_pane_width: saved.right_pane_width,
@@ -357,6 +373,8 @@ impl App {
             prompt_recipe: saved.prompt_recipe,
             recipe_dropdown_expanded: false,
             cached_todo_items: Vec::new(),
+            update_available,
+            cached_update_version,
         };
         let session_task = app.refresh_session_list();
         let discover_task = mcp_list
@@ -369,7 +387,17 @@ impl App {
                 )
             })
             .fold(Task::none(), Task::chain);
-        (app, session_task.chain(discover_task))
+        // Skip the network check when a cached update is already available.
+        let update_task = if app.update_available.is_some() {
+            Task::none()
+        } else {
+            Task::perform(
+                views::update::check_for_updates(),
+                Message::VersionCheckResult,
+            )
+        };
+        // Run session refresh, MCP discovery, and version check in parallel.
+        (app, Task::batch([session_task, discover_task, update_task]))
     }
 
     /// Rebuild the tools summary and refresh all UI fields that depend on it.
@@ -892,6 +920,17 @@ impl App {
             Message::DismissRecipeDropdown => {
                 self.recipe_dropdown_expanded = false;
             }
+            Message::VersionCheckResult(latest) => {
+                self.update_available = latest.clone();
+            }
+            Message::DismissUpdateBanner => {
+                self.update_available = None;
+            }
+            Message::OpenReleaseNotes => {
+                if let Err(e) = open::that(views::update::RELEASES_URL) {
+                    eprintln!("Failed to open release notes: {e}");
+                }
+            }
         }
         Task::none()
     }
@@ -1054,6 +1093,7 @@ impl App {
                 })
                 .collect(),
             prompt_recipe: self.prompt_recipe.clone(),
+            last_update_version: self.cached_update_version.clone(),
         };
         settings.save();
     }
@@ -1183,14 +1223,22 @@ impl App {
         .spacing(0)
         .into();
 
-        if self.show_workspace_dialog {
+        let body: Element<_> = if self.show_workspace_dialog {
             iced::widget::stack![
                 main_content,
-                views::workspace_modal(&self.default_workspace_path)
+                views::workspace_modal(&self.default_workspace_path),
             ]
             .into()
         } else {
             main_content
+        };
+
+        if let Some(latest) = &self.update_available {
+            column![views::update::update_banner(latest), body]
+                .spacing(0)
+                .into()
+        } else {
+            body
         }
     }
 
