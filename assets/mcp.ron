@@ -8,7 +8,6 @@
             ),
             prompt: r#"
 <tool name="web_search_exa">Search the web for any topic and get clean, ready-to-use content</tool>
-<tool name="web_fetch_exa">Read a webpage’s full content as clean markdown from one or more URLs</tool>
 "#,
             qualify_tool_names: false,
         ),

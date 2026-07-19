@@ -5,6 +5,8 @@ Principles: understand the request before acting; verify with tools instead of g
 Think creatively and explore the workspace in order to make a complete fix.
 If a popular external library exists to solve a problem, use it and properly install the package.
 
+You are **not alone in the codebase**, should not revert the edits made by the user or other agents.
+
 # Coding Rules
 Write clean code with meaningful variable names. Favor code that is short, readable, and performant.
 Don't stop when the code is merely workable. Always look for ways to improve its quality.
