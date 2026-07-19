@@ -532,6 +532,8 @@ pub(crate) fn center_pane<'a>(
     ask_request: Option<&'a super::session_state::AskRequest>,
     ask_input: &'a str,
     search_state: &'a SearchState,
+    model_id: Option<&'a str>,
+    created_at: &'a str,
 ) -> Element<'a, Message> {
     // Ensure turn widget IDs match the current dialog layout so that
     // scroll-to-match measurement can find each turn by its ID.
@@ -648,13 +650,20 @@ pub(crate) fn center_pane<'a>(
         } else {
             row![].into()
         },
-        scrollable(column(dialog_blocks).spacing(18).padding(14),)
-            .height(Fill)
-            .direction(Direction::Vertical(
-                Scrollbar::new().width(6).scroller_width(6)
-            ))
-            .id(MESSAGE_SCROLL.clone())
-            .on_scroll(Message::SessionViewScrolled),
+        scrollable(
+            column![
+                session_info(model_id, created_at, font_scale),
+                column(dialog_blocks).spacing(8),
+            ]
+            .spacing(8)
+            .padding(14),
+        )
+        .height(Fill)
+        .direction(Direction::Vertical(
+            Scrollbar::new().width(6).scroller_width(6)
+        ))
+        .id(MESSAGE_SCROLL.clone())
+        .on_scroll(Message::SessionViewScrolled),
         ask_request
             .map(|request| super::tool_message::ask_view(request, ask_input, font_scale))
             .unwrap_or_else(|| Space::new().into()),
@@ -704,6 +713,36 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
             .style(bordered_bar_style),
         200.0,
     )
+}
+
+/// Displays the model ID and creation time for the current session.
+fn session_info<'a>(
+    model_id: Option<&'a str>,
+    created_at: &'a str,
+    font_scale: f32,
+) -> Element<'a, Message> {
+    let Some(model_id) = model_id else {
+        return row![].into();
+    };
+    let model_text = text(format!("Model: {model_id}"))
+        .size(12.0 * font_scale)
+        .color(CRABOT_TEXT_MUTED);
+    let time_text = text(format!("Created: {created_at}"))
+        .size(12.0 * font_scale)
+        .color(CRABOT_TEXT_MUTED);
+    container(
+        row![model_text, Space::new().width(Length::Fill), time_text]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .width(Fill),
+    )
+    .padding(Padding {
+        top: 4.0,
+        right: 14.0,
+        bottom: 4.0,
+        left: 12.0,
+    })
+    .into()
 }
 
 /// Wraps content in a bordered container that scrolls vertically

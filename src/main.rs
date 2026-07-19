@@ -1165,6 +1165,8 @@ impl App {
                 self.session_state.ask_request.as_ref(),
                 &self.session_state.ask_input,
                 &self.search,
+                self.session.model.as_ref().map(|m| m.model_id.as_str()),
+                &self.session.created_at,
             ),
             divider(&self.right_divider),
             right_pane(
