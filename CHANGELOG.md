@@ -1,3 +1,26 @@
+# Crabot v0.5.0
+
+- **Three new built-in tools** — `fetch` (download web pages and convert to Markdown), `ask` (interactive user prompt for agent confirmation), and `todo` (manage and display task lists). Todo items are rendered in a table in the conversation pane.
+- **Prompt recipes** — quickly populate the user prompt from a dropdown of predefined recipe templates, saving time on common tasks.
+- **Update notifications** — Crabot checks for new releases on startup and notifies you when an update is available.
+- **Session metadata** — each session now displays its model ID and creation time for better tracking.
+- **Max output tokens** — configure the maximum number of output tokens per request in model settings for finer control.
+- **Anthropic cache control** — explicit cache control management in LLM interactions, taking effect in the Anthropic provider.
+- **Improved context window** — the "Window used" percentage is now more accurate and shows one decimal place.
+- **Enhanced TextArea** — undo now coalesces by run rather than single keystrokes, making text recovery more intuitive.
+- **Smoother streaming** — markdown is no longer refreshed on every chunk event, keeping the UI responsive during fast streaming.
+- **Branded app** — window and executable now include the Crabot logo and icon.
+- **Early stop in LLM wait** — the Stop button now works while waiting for the LLM response to begin, not just during generation.
+- **Prompt recipes and optional work modes** — work mode is now optional in system and user prompts, and prompt recipes are selectable from a dropdown.
+- **Better search** — session dialog search is now case-insensitive and safer on non-ASCII text.
+- **Improved error handling** — empty `old_text` is validated before search in EditTool, SearchTool and TodoTool have better error messages, and work mode extraction is more robust.
+- **Normalized line endings** — user prompt, edit, and write tools now normalize line endings for cross-platform consistency.
+- **Edit message numbering** — edit tool messages now use 1-based numbering for clarity.
+- **Token cost accuracy** — cache write costs are now properly accounted for in token cost calculations.
+- **Signal cancellation on close** — ensures proper cleanup when closing the app while a session is active.
+
+**Full Changelog**: [`v0.4.0...v0.5.0`](https://github.com/J-F-Liu/crabot/compare/v0.4.0...v0.5.0)
+
 # Crabot v0.4.0
 
 - **MCP (Model Context Protocol) support** — connect to external MCP servers via Stdio or HTTP transport. Tools are auto-discovered from each server, displayed grouped by server name in the tools UI, with per-server toggle checkboxes. Configure servers in `~/.crabot/mcp.ron`.
