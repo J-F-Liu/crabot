@@ -140,6 +140,8 @@ struct App {
     /// Whether the Shift key is currently held. Used to distinguish Enter
     /// (send prompt) from Shift+Enter (insert newline) in the text editor.
     shift_held: bool,
+    /// Whether the Ctrl key is currently held. Used for Ctrl+Click on markdown links.
+    ctrl_held: bool,
     /// Font scale factor for center pane dialog blocks.
     font_scale: f32,
     /// Which widget currently holds keyboard focus; `None` when no editable
@@ -244,6 +246,10 @@ pub(crate) enum Message {
     DismissUpdateBanner,
     /// Open the Crabot GitHub releases page in the system browser.
     OpenReleaseNotes,
+    /// A markdown link was clicked; the URL to open.
+    LinkClicked(String),
+    /// Track whether the Ctrl key is currently held.
+    CtrlHeld(bool),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -371,6 +377,7 @@ impl App {
             cached_todo_items: Vec::new(),
             update_available,
             cached_update_version,
+            ctrl_held: false,
         };
         let session_task = app.refresh_session_list();
         let discover_task = mcp_list
@@ -927,6 +934,19 @@ impl App {
                     eprintln!("Failed to open release notes: {e}");
                 }
             }
+            Message::LinkClicked(url) => {
+                if self.ctrl_held {
+                    return Task::perform(
+                        async move {
+                            let _ = open::that_detached(&url);
+                        },
+                        |_| Message::Noop,
+                    );
+                }
+            }
+            Message::CtrlHeld(held) => {
+                self.ctrl_held = held;
+            }
         }
         Task::none()
     }
@@ -1295,6 +1315,14 @@ impl App {
                     key: keyboard::Key::Named(keyboard::key::Named::Shift),
                     ..
                 }) => Some(Message::ShiftHeld(false)),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Control),
+                    ..
+                }) => Some(Message::CtrlHeld(true)),
+                Event::Keyboard(keyboard::Event::KeyReleased {
+                    key: keyboard::Key::Named(keyboard::key::Named::Control),
+                    ..
+                }) => Some(Message::CtrlHeld(false)),
                 _ => None,
             }),
             window::close_requests().map(|_id| Message::AppClosing),

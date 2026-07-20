@@ -378,7 +378,7 @@ fn markdown_element<'a>(
         code_size: code_size.into(),
         ..markdown::Settings::with_text_size(text_size, md_style)
     };
-    mouse_area(markdown::view(md.items(), md_settings).map(|_| Message::Noop))
+    mouse_area(markdown::view(md.items(), md_settings).map(Message::LinkClicked))
         .on_double_click(Message::ToggleSelectableMode(Some(i)))
         .into()
 }
