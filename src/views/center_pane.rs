@@ -20,6 +20,7 @@ use crate::Message;
 use crate::llm::DialogPhase;
 use crate::views::search_bar::SearchState;
 
+use super::icons;
 use super::styles::{
     assistant_bubble_style, bordered_bar_style, icon_button_style, pane_center,
     reasoning_box_style, role_badge_style, sel_default, sel_secondary, tool_bubble_style,
@@ -694,14 +695,12 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
         )
         .width(Length::Fill)
         .clip(true),
-        button(text("▣").size(14.0))
-            .on_press(Message::CopySessionTitle)
-            .padding(6)
-            .style(icon_button_style),
-        button(text("↻").size(14.0))
-            .on_press(Message::ResendLastPrompt)
-            .padding(6)
-            .style(icon_button_style),
+        icons::icon_action(icons::COPY, "Copy session title", Message::CopySessionTitle),
+        icons::icon_action(
+            icons::RESEND,
+            "Resend session history",
+            Message::ResendLastPrompt
+        ),
     ]
     .spacing(6)
     .align_y(Alignment::Center);

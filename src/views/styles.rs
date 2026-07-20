@@ -1,5 +1,5 @@
 use iced::{
-    Border, Color, Element, Font, Length, Theme, font,
+    Border, Color, Element, Font, Length, Shadow, Theme, Vector, font,
     widget::{button, checkbox, container, mouse_area, rule, toggler},
 };
 use iced_selection::text::Style as SelectionStyle;
@@ -309,6 +309,23 @@ pub(crate) fn disabled_dropdown_style(_theme: &Theme) -> crate::widgets::dropdow
         handle_color: CRABOT_TEXT_MUTED,
         background: iced::Background::Color(CRABOT_SURFACE),
         border: iced::Border::default(),
+    }
+}
+
+/// Floating tooltip box — dark rounded background with a subtle shadow.
+pub(crate) fn tooltip_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgba(0.2, 0.2, 0.2, 0.95).into()),
+        border: Border {
+            radius: 6.0.into(),
+            ..Border::default()
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 8.0,
+        },
+        ..container::Style::default()
     }
 }
 
