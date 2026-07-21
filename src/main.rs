@@ -1098,15 +1098,18 @@ impl App {
             .model
             .as_ref()
             .is_some_and(|m| m.model_id != model_config.model_id);
-        if model_changed {
+        let session_fored = if model_changed && self.session.history.len() > 1 {
             self.session = self.session.fork();
-        }
+            true
+        } else {
+            false
+        };
         self.session.model = Some(model_config.clone());
         self.session.workspace = self.system_prompt.workspace.1.clone();
         self.session.save().ok();
 
         // Add current session to the dropdown list so it appears immediately.
-        if (self.session.dialogs.len() == 1 || model_changed)
+        if (self.session.is_fresh() || session_fored)
             && let Some(path) = self.session.save_path()
         {
             let entry = SessionEntry {

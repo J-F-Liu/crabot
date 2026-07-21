@@ -67,6 +67,10 @@ impl Session {
         }
     }
 
+    pub fn is_fresh(&self) -> bool {
+        self.dialogs.len() == 1 && self.dialogs[0].turns.len() == 1
+    }
+
     /// Create a copy of this session with a fresh id and timestamps.
     pub fn fork(&self) -> Self {
         let mut session = self.clone();
