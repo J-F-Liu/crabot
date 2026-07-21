@@ -5,7 +5,7 @@ use iced::{
     Alignment, Background, Border, Color, Element, Fill, Length,
     border::Radius,
     mouse,
-    widget::{button, column, container, mouse_area, pick_list, row, svg, text, toggler},
+    widget::{button, column, container, mouse_area, pick_list, row, svg, text, toggler, tooltip},
 };
 use iced_aw::{
     style::{status::Status, tab_bar::Style as TabBarStyle},
@@ -83,11 +83,17 @@ pub(crate) fn model_config_view<'a>(
             color: Some(theme.palette().text),
         });
 
-    let gear_button: Element<_> = button(gear_icon)
-        .padding([2, 6])
-        .style(crate::views::styles::secondary_button)
-        .on_press(Event::OpenSettings)
-        .into();
+    let gear_button: Element<_> = tooltip(
+        button(gear_icon)
+            .padding([2, 6])
+            .style(crate::views::styles::secondary_button)
+            .on_press(Event::OpenSettings),
+        text("Open Settings").size(11).color(Color::WHITE),
+        tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .style(crate::views::styles::tooltip_style)
+    .into();
 
     let header_row: Element<_> = row![container(tab_bar).width(Fill), gear_button,]
         .align_y(Alignment::Center)

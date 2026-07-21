@@ -96,8 +96,9 @@ impl ModelDatabase {
     /// Look up a model by its primary ID or alias.
     pub fn get(&self, model_id: &str) -> Option<&Model> {
         self.models.get(model_id).or_else(|| {
-            model_id
-                .strip_suffix("-free")
+            ["-free", ":free"]
+                .iter()
+                .find_map(|s| model_id.strip_suffix(s))
                 .and_then(|stripped| self.models.get(stripped))
         })
     }
