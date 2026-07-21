@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod model;
+pub mod model_database;
 pub mod session;
 pub mod settings;
 pub mod setup;

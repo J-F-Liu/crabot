@@ -123,6 +123,9 @@ pub struct Model {
     pub context_window: u32,
     pub max_tokens: u32,
     pub cost: Cost,
+    /// All pricing offers (different currencies / providers).
+    #[serde(default, skip)]
+    pub offers: Vec<Cost>,
 }
 
 impl std::fmt::Display for Model {
@@ -139,12 +142,17 @@ impl PartialEq for Model {
 
 // ── Cost ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Cost {
     pub input: f64,
     pub output: f64,
     pub cache_read: f64,
     pub cache_write: f64,
+    #[serde(default)]
+    pub currency: String,
+    /// Offer source (e.g. "openrouter", "litellm", "bailian").
+    #[serde(default, skip)]
+    pub source: String,
 }
 
 impl Cost {

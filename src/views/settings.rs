@@ -5,6 +5,7 @@ use super::theme::{
 };
 use crate::Message;
 use crabot::model::{Model, ModelConfig, ModelList, Provider};
+use crabot::model_database::ModelDatabase;
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
@@ -12,7 +13,7 @@ use iced::{
         text, text_input,
     },
 };
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 /// Widget id of the new-label text input — used to focus it and detect blur.
 pub(crate) const NEW_LABEL_INPUT_ID: &str = "settings-new-label-input";
@@ -36,9 +37,13 @@ pub(crate) enum SettingsEvent {
     SaveProvider,
     CancelNewProvider,
     DeleteProvider(String),
-    ModelsFetched(Result<Vec<String>, String>),
+    ModelsFetched(String, Result<Vec<String>, String>),
+    /// Manually refresh the available-model list for the current provider.
+    RefreshModels,
     ToggleModel(String, bool),
     SelectModelDetail(String),
+    /// Choose which pricing offer to display / use when adding a model.
+    SelectOfferSource(String),
     // Label actions
     DeleteLabel(String),
     /// Show the blank new-label capsule and focus its input.
@@ -71,6 +76,8 @@ pub(crate) struct SettingsState {
     fetching_models: bool,
     available_model_ids: Vec<String>,
     models_fetch_error: Option<String>,
+    /// Cache of fetched model IDs keyed by provider ID — avoids re-fetching on switch.
+    cached_model_ids: HashMap<String, Vec<String>>,
     /// Which model ID is currently selected for detail display.
     selected_model_id: Option<String>,
     // Label editing
@@ -81,6 +88,10 @@ pub(crate) struct SettingsState {
     drag_label: Option<usize>,
     /// Whether the current drag changed the label order.
     drag_reordered: bool,
+    /// Model database loaded from embedded assets for detail lookup.
+    model_db: ModelDatabase,
+    /// Which offer source is selected for the currently-viewed model detail.
+    selected_offer_source: Option<String>,
 }
 
 impl SettingsState {
@@ -93,11 +104,17 @@ impl SettingsState {
         self.provider_api_key = p.api_key.clone();
         self.provider_strict_mode = p.strict_mode;
         self.is_new_provider = false;
-        // Reset model-fetch state when switching providers
-        self.fetching_models = true;
-        self.available_model_ids.clear();
-        self.models_fetch_error = None;
         self.selected_model_id = None;
+        // Use cached model IDs if available, otherwise trigger a fetch.
+        if let Some(cached) = self.cached_model_ids.get(&self.selected_provider_id) {
+            self.available_model_ids = cached.clone();
+            self.fetching_models = false;
+            self.models_fetch_error = None;
+        } else {
+            self.available_model_ids.clear();
+            self.fetching_models = true;
+            self.models_fetch_error = None;
+        }
     }
 
     /// Reset provider fields to defaults (for new provider).
@@ -113,6 +130,7 @@ impl SettingsState {
 
     /// Select the first provider when the settings dialog opens.
     pub(crate) fn select_first_provider(&mut self, models: &ModelList) {
+        self.model_db = ModelDatabase::load_embedded();
         if let Some(first) = models.providers.keys().next() {
             self.selected_provider_id = first.clone();
             if let Some(p) = models.providers.get(first) {
@@ -145,7 +163,6 @@ impl SettingsState {
                 // Drop any in-progress label editing / dragging.
                 self.adding_label = false;
                 self.drag_label = None;
-                false
             }
             // ── Provider actions ──────────────────────────────────
             SettingsEvent::SelectProvider(id) => {
@@ -153,48 +170,76 @@ impl SettingsState {
                 if let Some(p) = models.providers.get(&id) {
                     self.load_provider(p);
                 }
-                false
             }
-            SettingsEvent::EditProviderName(v) => {
-                self.provider_name = v;
-                false
-            }
+            SettingsEvent::EditProviderName(v) => self.provider_name = v,
             SettingsEvent::EditProviderBaseUrl(v) => {
+                // Clear cached models — the URL changed, old list is stale.
+                self.cached_model_ids.remove(&self.selected_provider_id);
+                self.available_model_ids.clear();
+                self.models_fetch_error = None;
                 self.provider_base_url = v;
-                false
             }
-            SettingsEvent::EditProviderApiType(v) => {
-                self.provider_api_type = v;
-                false
+            SettingsEvent::EditProviderApiType(v) => self.provider_api_type = v,
+            SettingsEvent::EditProviderAuth(v) => self.provider_auth = v,
+            SettingsEvent::EditProviderApiKey(v) => self.provider_api_key = v,
+            SettingsEvent::ToggleProviderStrictMode(v) => self.provider_strict_mode = v,
+            SettingsEvent::RefreshModels => {
+                self.cached_model_ids.remove(&self.selected_provider_id);
+                self.available_model_ids.clear();
+                self.models_fetch_error = None;
+                self.fetching_models = true;
             }
-            SettingsEvent::EditProviderAuth(v) => {
-                self.provider_auth = v;
-                false
-            }
-            SettingsEvent::EditProviderApiKey(v) => {
-                self.provider_api_key = v;
-                false
-            }
-            SettingsEvent::ToggleProviderStrictMode(v) => {
-                self.provider_strict_mode = v;
-                false
-            }
-            SettingsEvent::ModelsFetched(result) => {
+            SettingsEvent::ModelsFetched(provider_id, result) => {
                 self.fetching_models = false;
                 match result {
-                    Ok(ids) => self.available_model_ids = ids,
-                    Err(e) => self.models_fetch_error = Some(e),
+                    Ok(ids) => {
+                        if !provider_id.is_empty() {
+                            self.cached_model_ids
+                                .insert(provider_id.clone(), ids.clone());
+                        }
+                        // Only update display if we're still looking at this provider.
+                        if provider_id == self.selected_provider_id {
+                            self.available_model_ids = ids;
+                        }
+                    }
+                    Err(e) => {
+                        if provider_id == self.selected_provider_id {
+                            self.models_fetch_error = Some(e);
+                        }
+                    }
                 }
-                false
             }
             SettingsEvent::ToggleModel(id, checked) => {
                 if let Some(provider) = models.providers.get_mut(&self.selected_provider_id) {
                     if checked {
                         if !provider.models.iter().any(|m| m.id == id) {
-                            provider.models.push(Model {
-                                id,
-                                ..Default::default()
-                            });
+                            let model = if let Some(db_model) = self.model_db.get(&id) {
+                                let cost = self
+                                    .selected_offer_source
+                                    .as_deref()
+                                    .and_then(|src| {
+                                        db_model.offers.iter().find(|o| o.source == src)
+                                    })
+                                    .cloned()
+                                    .unwrap_or_else(|| db_model.cost.clone());
+                                Model {
+                                    id,
+                                    name: db_model.name.clone(),
+                                    thinking: db_model.thinking,
+                                    thinking_levels: db_model.thinking_levels.clone(),
+                                    input: db_model.input.clone(),
+                                    context_window: db_model.context_window,
+                                    max_tokens: db_model.max_tokens,
+                                    cost,
+                                    offers: db_model.offers.clone(),
+                                }
+                            } else {
+                                Model {
+                                    id,
+                                    ..Default::default()
+                                }
+                            };
+                            provider.models.push(model);
                             return true;
                         }
                     } else {
@@ -205,20 +250,25 @@ impl SettingsState {
                         }
                     }
                 }
-                false
             }
             SettingsEvent::SelectModelDetail(id) => {
                 if self.selected_model_id.as_deref() == Some(&id) {
                     self.selected_model_id = None;
+                    self.selected_offer_source = None;
                 } else {
                     self.selected_model_id = Some(id);
+                    self.selected_offer_source = None;
                 }
-                false
+            }
+            SettingsEvent::SelectOfferSource(source) => {
+                self.selected_offer_source = Some(source);
             }
             SettingsEvent::NewProvider => {
                 self.reset_provider_fields();
+                self.selected_model_id = None;
+                self.selected_offer_source = None;
+                self.available_model_ids.clear();
                 self.selected_provider_id.clear();
-                false
             }
             SettingsEvent::SaveProvider => {
                 let name = self.provider_name.trim().to_string();
@@ -248,12 +298,11 @@ impl SettingsState {
                         existing.headers = headers;
                     }
                 }
-                true
+                return true;
             }
             SettingsEvent::CancelNewProvider => {
                 self.is_new_provider = false;
                 self.select_first_provider(models);
-                false
             }
             SettingsEvent::DeleteProvider(id) => {
                 models.providers.shift_remove(&id);
@@ -263,22 +312,18 @@ impl SettingsState {
                     self.selected_provider_id.clear();
                     self.select_first_provider(models);
                 }
-                true
+                return true;
             }
             // ── Label actions ─────────────────────────────────────
             SettingsEvent::DeleteLabel(name) => {
                 models.models.shift_remove(&name);
-                true
+                return true;
             }
             SettingsEvent::StartAddLabel => {
                 self.adding_label = true;
                 self.new_label_name.clear();
-                false
             }
-            SettingsEvent::NewLabelName(v) => {
-                self.new_label_name = v;
-                false
-            }
+            SettingsEvent::NewLabelName(v) => self.new_label_name = v,
             SettingsEvent::AddLabel => {
                 self.adding_label = false;
                 let name = self.new_label_name.trim().to_string();
@@ -287,12 +332,10 @@ impl SettingsState {
                     models.models.insert(name, ModelConfig::default());
                     return true;
                 }
-                false
             }
             SettingsEvent::LabelDragStart(index) => {
                 self.drag_label = Some(index);
                 self.drag_reordered = false;
-                false
             }
             SettingsEvent::LabelDragEnter(index) => {
                 if let Some(from) = self.drag_label
@@ -303,13 +346,13 @@ impl SettingsState {
                     self.drag_label = Some(index);
                     self.drag_reordered = true;
                 }
-                false
             }
             SettingsEvent::LabelDragEnd => {
                 self.drag_label = None;
-                std::mem::take(&mut self.drag_reordered)
+                return std::mem::take(&mut self.drag_reordered);
             }
         }
+        false
     }
 
     /// Whether the new-label capsule input is currently active.
@@ -332,9 +375,19 @@ impl SettingsState {
         &self.provider_base_url
     }
 
+    /// Current provider ID (used to tag async fetch results).
+    pub(crate) fn current_provider_id(&self) -> &str {
+        &self.selected_provider_id
+    }
+
     /// Current provider API key (used for model fetching).
     pub(crate) fn provider_api_key(&self) -> &str {
         &self.provider_api_key
+    }
+
+    /// Whether a model-list fetch is needed for the current provider.
+    pub(crate) fn needs_fetch(&self) -> bool {
+        self.fetching_models
     }
 }
 
@@ -362,28 +415,31 @@ pub(crate) fn settings_dialog<'a>(
     state: &'a SettingsState,
     models: &'a ModelList,
 ) -> Element<'a, Message> {
-    let header = row![
-        text("Settings")
-            .size(16)
-            .font(iced::Font {
-                weight: iced::font::Weight::Bold,
-                ..iced::Font::DEFAULT
-            })
-            .color(CRABOT_PRIMARY),
-        iced::widget::Space::new().width(Length::Fill),
-        button(
-            svg(svg::Handle::from_memory(icons::CLOSE))
-                .width(16)
-                .height(16)
-                .style(|theme: &iced::Theme, _status| svg::Style {
-                    color: Some(theme.palette().text),
-                }),
-        )
-        .padding([2, 8])
-        .style(crate::views::styles::secondary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::Close)),
-    ]
-    .align_y(Alignment::Center);
+    let header = container(
+        row![
+            text("Settings")
+                .size(18)
+                .font(iced::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..iced::Font::DEFAULT
+                })
+                .color(CRABOT_PRIMARY),
+            iced::widget::Space::new().width(Length::Fill),
+            button(
+                svg(svg::Handle::from_memory(icons::CLOSE))
+                    .width(16)
+                    .height(16)
+                    .style(|theme: &iced::Theme, _status| svg::Style {
+                        color: Some(theme.palette().text),
+                    }),
+            )
+            .padding([2, 8])
+            .style(crate::views::styles::secondary_button)
+            .on_press(Message::SettingsEvent(SettingsEvent::Close)),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .padding(iced::Padding::new(0.0).bottom(8.0));
 
     let section_rule = || {
         rule::horizontal(1).style(|_: &iced::Theme| rule::Style {
@@ -408,8 +464,6 @@ pub(crate) fn settings_dialog<'a>(
     let labels_section = label_tab_view(state, models);
 
     let body = column![
-        section_header("Model Providers"),
-        section_rule(),
         providers_section,
         iced::widget::Space::new().height(8),
         section_header("Model Labels"),
@@ -430,7 +484,7 @@ pub(crate) fn settings_dialog<'a>(
         border: Border::default().rounded(CRABOT_DIALOG_RADIUS),
         ..container::Style::default()
     })
-    .max_width(600)
+    .max_width(720)
     .max_height(800)
     .into()
 }
@@ -460,7 +514,7 @@ fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Ele
     let is_editing = !state.selected_provider_id.is_empty() || state.is_new_provider;
 
     let form: Element<_> = if is_editing {
-        let api_types = vec![
+        const API_TYPES: &[&str] = &[
             "openai",
             "openai-completions",
             "anthropic",
@@ -469,16 +523,16 @@ fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Ele
             "ollama",
             "deepseek",
         ];
-        let selected_api_type = api_types
+        let selected_api_type = API_TYPES
             .iter()
-            .position(|&t| t == state.provider_api_type)
-            .and_then(|i| api_types.get(i).copied());
+            .find(|&&t| t == state.provider_api_type)
+            .copied();
 
-        let auth_types = vec!["apiKey", "bearer", "basic", "none"];
-        let selected_auth = auth_types
+        const AUTH_TYPES: &[&str] = &["apiKey", "bearer", "basic", "none"];
+        let selected_auth = AUTH_TYPES
             .iter()
-            .position(|&t| t == state.provider_auth)
-            .and_then(|i| auth_types.get(i).copied());
+            .find(|&&t| t == state.provider_auth)
+            .copied();
 
         let form_body = column![
             field_row(
@@ -486,27 +540,30 @@ fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Ele
                 &state.provider_name,
                 |v| { Message::SettingsEvent(SettingsEvent::EditProviderName(v)) },
                 "Provider name",
-                Some(NEW_PROVIDER_NAME_INPUT_ID)
+                Some(NEW_PROVIDER_NAME_INPUT_ID),
+                None,
             ),
             field_row(
                 "Base URL",
                 &state.provider_base_url,
                 |v| { Message::SettingsEvent(SettingsEvent::EditProviderBaseUrl(v)) },
-                "",
-                None
+                "Base URL of the provider, press Enter to fetch model list",
+                None,
+                Some(Message::SettingsEvent(SettingsEvent::RefreshModels)),
             ),
-            label_pick_row("API Type", api_types, selected_api_type, |v| {
+            label_pick_row("API Type", API_TYPES, selected_api_type, |v| {
                 Message::SettingsEvent(SettingsEvent::EditProviderApiType(v.to_string()))
             }),
-            label_pick_row("Auth", auth_types, selected_auth, |v| {
+            label_pick_row("Auth", AUTH_TYPES, selected_auth, |v| {
                 Message::SettingsEvent(SettingsEvent::EditProviderAuth(v.to_string()))
             }),
             field_row(
                 "API Key",
                 &state.provider_api_key,
                 |v| { Message::SettingsEvent(SettingsEvent::EditProviderApiKey(v)) },
-                "Enter API Key or its enviroment variable name",
-                None
+                "API Key or its enviroment variable name",
+                None,
+                None,
             ),
             checkbox_row("Strict Mode", state.provider_strict_mode, |v| {
                 Message::SettingsEvent(SettingsEvent::ToggleProviderStrictMode(v))
@@ -574,6 +631,13 @@ fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Ele
 
     column![
         row![
+            text("Model Providers")
+                .size(13)
+                .font(iced::Font {
+                    weight: iced::font::Weight::Bold,
+                    ..iced::Font::DEFAULT
+                })
+                .color(CRABOT_PRIMARY),
             picker,
             button(text("New"))
                 .style(crate::views::styles::primary_button)
@@ -735,6 +799,7 @@ fn field_row<'a>(
     on_input: impl Fn(String) -> Message + 'a,
     placeholder: &'a str,
     id: Option<&'static str>,
+    on_submit: Option<Message>,
 ) -> Element<'a, Message> {
     let mut input = iced::widget::text_input(placeholder, value)
         .on_input(on_input)
@@ -742,6 +807,9 @@ fn field_row<'a>(
         .padding(4);
     if let Some(input_id) = id {
         input = input.id(input_id);
+    }
+    if let Some(msg) = on_submit {
+        input = input.on_submit(msg);
     }
     let label_col = container(text(label).size(14))
         .width(90)
@@ -754,7 +822,7 @@ fn field_row<'a>(
 
 fn label_pick_row<'a>(
     label: &'static str,
-    options: Vec<&'static str>,
+    options: &'a [&'static str],
     selected: Option<&'static str>,
     on_select: impl Fn(&'static str) -> Message + 'a,
 ) -> Element<'a, Message> {
@@ -793,14 +861,7 @@ fn models_section_view<'a>(
     state: &'a SettingsState,
     models: &'a ModelList,
 ) -> Element<'a, Message> {
-    if state.provider_base_url.is_empty() {
-        return iced::widget::Space::new()
-            .width(Length::Fill)
-            .height(0)
-            .into();
-    }
-
-    let provider_model_ids: HashSet<&str> = models
+    let provider_model_ids: Vec<&str> = models
         .providers
         .get(&state.selected_provider_id)
         .map(|p| p.models.iter().map(|m| m.id.as_str()).collect())
@@ -811,21 +872,26 @@ fn models_section_view<'a>(
         .width(90)
         .align_x(iced::Alignment::End);
 
+    let display_ids: Vec<&str> = if state.available_model_ids.is_empty() {
+        provider_model_ids.to_vec()
+    } else {
+        state
+            .available_model_ids
+            .iter()
+            .map(|s| s.as_str())
+            .collect()
+    };
+
     // Body: status or table + details
     let body: Element<'_, Message> = if state.fetching_models {
         text("Loading models…")
             .size(12)
             .color(CRABOT_TEXT_MUTED)
             .into()
-    } else if let Some(err) = &state.models_fetch_error {
-        text(format!("Error: {err}"))
-            .size(12)
-            .color(CRABOT_DANGER)
-            .into()
-    } else if state.available_model_ids.is_empty() {
-        text("No models available.")
-            .size(12)
-            .color(CRABOT_TEXT_MUTED)
+    } else if display_ids.is_empty() {
+        button(text("Fetch Models").size(12))
+            .style(crate::views::styles::primary_button)
+            .on_press(Message::SettingsEvent(SettingsEvent::RefreshModels))
             .into()
     } else {
         // ── Table column ──────────────────────────────────────────
@@ -835,28 +901,25 @@ fn models_section_view<'a>(
             .height(0);
 
         // Data rows
-        let model_rows: Vec<Element<'_, Message>> = state
-            .available_model_ids
+        let model_rows: Vec<Element<'_, Message>> = display_ids
             .iter()
-            .map(|id| {
-                let checked = provider_model_ids.contains(id.as_str());
-                let id_clone = id.clone();
-                let id_clone2 = id.clone();
+            .map(|&id| {
+                let checked = provider_model_ids.contains(&id);
+                let id_string = id.to_string();
+                let id_string2 = id.to_string();
                 let is_selected = state.selected_model_id.as_deref() == Some(id);
 
                 let cb = checkbox(checked)
-                    .on_toggle(move |_| {
-                        Message::SettingsEvent(SettingsEvent::ToggleModel(
-                            id_clone.clone(),
-                            !checked,
-                        ))
+                    .label("")
+                    .on_toggle(move |v| {
+                        Message::SettingsEvent(SettingsEvent::ToggleModel(id_string.clone(), v))
                     })
                     .style(crate::views::primary_checkbox);
 
-                let id_text = text(id.clone()).size(12);
+                let id_text = text(id.to_string()).size(12);
                 let id_inner = container(id_text).padding([2, 4]);
-                let id_cell = if is_selected {
-                    mouse_area(container(id_inner).style(move |_: &iced::Theme| {
+                let id_cell = mouse_area(container(id_inner).style(move |_: &iced::Theme| {
+                    if is_selected {
                         container::Style {
                             background: Some(
                                 Color::from_rgb8(0x3B, 0x82, 0xF6).scale_alpha(0.12).into(),
@@ -867,15 +930,13 @@ fn models_section_view<'a>(
                                 .color(Color::from_rgb8(0x3B, 0x82, 0xF6).scale_alpha(0.3)),
                             ..container::Style::default()
                         }
-                    }))
-                    .on_press(Message::SettingsEvent(
-                        SettingsEvent::SelectModelDetail(id_clone2),
-                    ))
-                } else {
-                    mouse_area(id_inner).on_press(Message::SettingsEvent(
-                        SettingsEvent::SelectModelDetail(id_clone2),
-                    ))
-                };
+                    } else {
+                        container::Style::default()
+                    }
+                }))
+                .on_press(Message::SettingsEvent(
+                    SettingsEvent::SelectModelDetail(id_string2),
+                ));
 
                 let row_bg: Element<_> =
                     container(row![cb, id_cell].spacing(8).align_y(Alignment::Center))
@@ -910,32 +971,13 @@ fn models_section_view<'a>(
             if let Some(model) =
                 provider_models.and_then(|ml| ml.iter().find(|m| &m.id == selected_id))
             {
-                let thinking_levels = model.thinking_levels.join(", ");
-                let input_modes = model.input.join(", ");
-                let context = if model.context_window > 0 {
-                    model.context_window.to_string()
+                let name = if model.name.is_empty() {
+                    "—".to_string()
                 } else {
-                    "—".into()
+                    model.name.clone()
                 };
-                let max_tok = if model.max_tokens > 0 {
-                    model.max_tokens.to_string()
-                } else {
-                    "—".into()
-                };
-                let cost_in = format!("${:.4}/M", model.cost.input);
-                let cost_out = format!("${:.4}/M", model.cost.output);
-                let cost_cache_read = format!("${:.4}/M", model.cost.cache_read);
-                let cost_cache_write = format!("${:.4}/M", model.cost.cache_write);
-
-                let items = column![
-                    detail_row(
-                        "Name",
-                        if model.name.is_empty() {
-                            "—".into()
-                        } else {
-                            model.name.clone()
-                        },
-                    ),
+                let mut header = vec![
+                    detail_row("Name", name),
                     detail_row(
                         "Thinking",
                         if model.thinking {
@@ -944,36 +986,73 @@ fn models_section_view<'a>(
                             "no".into()
                         },
                     ),
-                    if !model.thinking_levels.is_empty() {
-                        detail_row("Think Levels", thinking_levels)
-                    } else {
-                        iced::widget::Space::new()
-                            .height(0)
-                            .width(Length::Fill)
-                            .into()
-                    },
-                    if !model.input.is_empty() {
-                        detail_row("Input Modes", input_modes)
-                    } else {
-                        iced::widget::Space::new()
-                            .height(0)
-                            .width(Length::Fill)
-                            .into()
-                    },
-                    detail_row("Context", context),
-                    detail_row("Max Tokens", max_tok),
-                    detail_row("Cost (in)", cost_in),
-                    detail_row("Cost (out)", cost_out),
-                    detail_row("Cache read", cost_cache_read),
-                    detail_row("Cache write", cost_cache_write),
-                ]
-                .spacing(2);
+                ];
+                if !model.thinking_levels.is_empty() {
+                    header.push(detail_row("Think Levels", model.thinking_levels.join(", ")));
+                }
+                model_detail_panel(
+                    &model.cost,
+                    &model.input,
+                    model.context_window,
+                    model.max_tokens,
+                    header,
+                )
+            } else if let Some(details) = state.model_db.get(selected_id) {
+                // Pick the active offer: user-selected source, or first.
+                let active_cost = state
+                    .selected_offer_source
+                    .as_deref()
+                    .and_then(|src| details.offers.iter().find(|o| o.source == src))
+                    .unwrap_or_else(|| details.offers.first().unwrap_or(&details.cost));
 
-                container(items)
-                    .padding(8)
-                    .style(form_card_style)
-                    .width(Length::FillPortion(1))
+                let header = vec![
+                    detail_row("Name", details.name.clone()),
+                    detail_row(
+                        "Thinking",
+                        if details.thinking {
+                            "yes".into()
+                        } else {
+                            "no".into()
+                        },
+                    ),
+                ];
+
+                let detail = model_detail_panel(
+                    active_cost,
+                    &details.input,
+                    details.context_window,
+                    details.max_tokens,
+                    header,
+                );
+
+                // Show offer-source picker when multiple offers exist.
+                if details.offers.len() > 1 {
+                    let sources: Vec<String> =
+                        details.offers.iter().map(|o| o.source.clone()).collect();
+                    let selected_source = state
+                        .selected_offer_source
+                        .clone()
+                        .unwrap_or_else(|| active_cost.source.clone());
+                    let picker = pick_list(sources, Some(selected_source), |src| {
+                        Message::SettingsEvent(SettingsEvent::SelectOfferSource(src))
+                    });
+                    column![
+                        container(
+                            row![
+                                text("Offer").size(12).color(CRABOT_TEXT_MUTED).width(60),
+                                picker.width(Length::Fill),
+                            ]
+                            .spacing(10)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([4, 0]),
+                        detail,
+                    ]
+                    .spacing(4)
                     .into()
+                } else {
+                    detail
+                }
             } else {
                 container(
                     text("Check the box to add this model,\nthen save to see parameters.")
@@ -998,11 +1077,74 @@ fn models_section_view<'a>(
         };
         row![table, details].spacing(10).into()
     };
-    row![header, body].spacing(10).into()
+    row![header, body]
+        .spacing(10)
+        .height(Length::Fixed(200.0))
+        .into()
+}
+
+/// Renders the common lower half of the model detail panel.
+fn model_detail_panel<'a>(
+    cost: &crabot::model::Cost,
+    input: &[String],
+    context_window: u32,
+    max_tokens: u32,
+    header: Vec<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let sym = currency_symbol(&cost.currency);
+    let ctx = if context_window > 0 {
+        context_window.to_string()
+    } else {
+        "—".into()
+    };
+    let max_tok = if max_tokens > 0 {
+        max_tokens.to_string()
+    } else {
+        "—".into()
+    };
+
+    let mut rows = header;
+    if !input.is_empty() {
+        rows.push(detail_row("Input Modes", input.join(", ")));
+    }
+    rows.push(detail_row("Context", ctx));
+    rows.push(detail_row("Max Tokens", max_tok));
+    rows.push(detail_row("Cost (in)", format!("{sym}{:.4}/M", cost.input)));
+    rows.push(detail_row(
+        "Cost (out)",
+        format!("{sym}{:.4}/M", cost.output),
+    ));
+    if cost.cache_read > 0.0 || cost.cache_write > 0.0 {
+        rows.push(detail_row(
+            "Cache read",
+            format!("{sym}{:.4}/M", cost.cache_read),
+        ));
+        rows.push(detail_row(
+            "Cache write",
+            format!("{sym}{:.4}/M", cost.cache_write),
+        ));
+    }
+
+    container(column(rows).spacing(2))
+        .padding(8)
+        .style(form_card_style)
+        .width(Length::FillPortion(1))
+        .into()
+}
+
+/// Map common ISO 4217 currency codes to their symbols.
+pub(crate) fn currency_symbol(currency: &str) -> &str {
+    match currency {
+        "USD" => "$",
+        "CNY" => "¥",
+        "EUR" => "€",
+        "GBP" => "£",
+        other => other,
+    }
 }
 
 /// Single label–value row for the model detail panel.
-fn detail_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
+fn detail_row(label: &'static str, value: String) -> Element<'static, Message> {
     row![
         text(label).size(11).color(CRABOT_TEXT_MUTED).width(70),
         text(value).size(11).color(CRABOT_TEXT),

@@ -518,17 +518,26 @@ impl App {
                     self.settings_state
                         .select_first_provider(&self.provided_models);
                     self.show_settings_dialog = true;
-                    let base_url = self.settings_state.provider_base_url().to_string();
-                    let api_key = self.settings_state.provider_api_key().to_string();
-                    if !base_url.is_empty() {
-                        return Task::perform(
-                            async move {
-                                crabot::model::fetch_available_models(&base_url, &api_key).await
-                            },
-                            |result| {
-                                Message::SettingsEvent(views::SettingsEvent::ModelsFetched(result))
-                            },
-                        );
+                    if self.settings_state.needs_fetch() {
+                        let base_url = self.settings_state.provider_base_url().to_string();
+                        let api_key = self.settings_state.provider_api_key().to_string();
+                        let provider_id = self.settings_state.current_provider_id().to_string();
+                        if !base_url.is_empty() {
+                            return Task::perform(
+                                async move {
+                                    let models =
+                                        crabot::model::fetch_available_models(&base_url, &api_key)
+                                            .await;
+                                    (provider_id, models)
+                                },
+                                |(provider_id, result)| {
+                                    Message::SettingsEvent(views::SettingsEvent::ModelsFetched(
+                                        provider_id,
+                                        result,
+                                    ))
+                                },
+                            );
+                        }
                     }
                 } else if views::model_config::update(
                     event,
@@ -890,7 +899,7 @@ impl App {
                 {
                     self.cached_todo_items = self.tool_registry.snapshot_todo();
                 }
-                let cost = self.get_current_model().map(|m| m.cost);
+                let cost = self.get_current_model().map(|m| m.cost.clone());
                 return views::session_state::update(
                     event,
                     &mut self.session_state,
@@ -1004,53 +1013,57 @@ impl App {
             Message::SettingsEvent(event) => {
                 if matches!(event, views::SettingsEvent::Close) {
                     self.show_settings_dialog = false;
-                } else {
-                    // Intercept SelectProvider to spawn an async fetch.
-                    if matches!(event, views::SettingsEvent::SelectProvider(_)) {
-                        self.settings_state.update(event, &mut self.provided_models);
+                } else if matches!(event, views::SettingsEvent::SelectProvider(_))
+                    || matches!(event, views::SettingsEvent::RefreshModels)
+                {
+                    self.settings_state.update(event, &mut self.provided_models);
+                    if self.settings_state.needs_fetch() {
                         let base_url = self.settings_state.provider_base_url().to_string();
                         let api_key = self.settings_state.provider_api_key().to_string();
+                        let provider_id = self.settings_state.current_provider_id().to_string();
                         if !base_url.is_empty() {
                             return Task::perform(
                                 async move {
-                                    crabot::model::fetch_available_models(&base_url, &api_key).await
+                                    let models =
+                                        crabot::model::fetch_available_models(&base_url, &api_key)
+                                            .await;
+                                    (provider_id, models)
                                 },
-                                |result| {
+                                |(provider_id, result)| {
                                     Message::SettingsEvent(views::SettingsEvent::ModelsFetched(
+                                        provider_id,
                                         result,
                                     ))
                                 },
                             );
                         }
-                    } else {
-                        let focus_new_label = matches!(event, views::SettingsEvent::StartAddLabel);
-                        let focus_new_provider_name =
-                            matches!(event, views::SettingsEvent::NewProvider);
-                        if self.settings_state.update(event, &mut self.provided_models) {
-                            self.provided_models.save();
-                            // Refresh provider pick-list entries.
-                            self.provider_entries = self
-                                .provided_models
-                                .providers
-                                .iter()
-                                .map(|(id, p)| views::model_config::ProviderEntry {
-                                    id: id.clone(),
-                                    name: p.name.clone(),
-                                })
-                                .collect();
-                            // If the currently-selected model config label was deleted,
-                            // switch to the first available one.
-                            self.selected_model =
-                                self.provided_models.ensure_valid_name(&self.selected_model);
-                        }
-                        if focus_new_label {
-                            return iced::widget::operation::focus(views::NEW_LABEL_INPUT_ID);
-                        }
-                        if focus_new_provider_name {
-                            return iced::widget::operation::focus(
-                                views::NEW_PROVIDER_NAME_INPUT_ID,
-                            );
-                        }
+                    }
+                } else {
+                    let focus_new_label = matches!(event, views::SettingsEvent::StartAddLabel);
+                    let focus_new_provider_name =
+                        matches!(event, views::SettingsEvent::NewProvider);
+                    if self.settings_state.update(event, &mut self.provided_models) {
+                        self.provided_models.save();
+                        // Refresh provider pick-list entries.
+                        self.provider_entries = self
+                            .provided_models
+                            .providers
+                            .iter()
+                            .map(|(id, p)| views::model_config::ProviderEntry {
+                                id: id.clone(),
+                                name: p.name.clone(),
+                            })
+                            .collect();
+                        // If the currently-selected model config label was deleted,
+                        // switch to the first available one.
+                        self.selected_model =
+                            self.provided_models.ensure_valid_name(&self.selected_model);
+                    }
+                    if focus_new_label {
+                        return iced::widget::operation::focus(views::NEW_LABEL_INPUT_ID);
+                    }
+                    if focus_new_provider_name {
+                        return iced::widget::operation::focus(views::NEW_PROVIDER_NAME_INPUT_ID);
                     }
                 }
             }
@@ -1345,7 +1358,7 @@ impl App {
             divider(&self.right_divider),
             right_pane(
                 self.right_pane_width,
-                self.get_current_model().map(|model| model.context_window),
+                self.get_current_model(),
                 &self.last_usage,
                 &self.session.usage,
                 self.session.cost,

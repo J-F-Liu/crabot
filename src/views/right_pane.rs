@@ -4,10 +4,11 @@ use iced::{
 };
 use iced_selection::Text as SelectableText;
 
+use super::settings::currency_symbol;
 use super::styles::{pane_side, primary_button, sel_primary};
 use super::theme::thin_vertical;
 use crate::Message;
-use crabot::model::TokenAmount;
+use crabot::model::{Model, TokenAmount};
 use crabot::tools::todo::{TodoItem, TodoStatus};
 
 /// Label-value row with the value right-aligned via a fill spacer.
@@ -24,13 +25,13 @@ fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
     .into()
 }
 
-/// Format cost value.
+/// Format cost value with currency symbol prefix.
 /// Small amounts get 4 decimal places, larger amounts get 2 decimal places.
-fn format_cost(amount: f64) -> String {
+fn format_cost(amount: f64, sym: &str) -> String {
     if amount < 0.01 {
-        format!("{:.4}", amount)
+        format!("{sym}{:.4}", amount)
     } else {
-        format!("{:.2}", amount)
+        format!("{sym}{:.2}", amount)
     }
 }
 
@@ -78,7 +79,7 @@ fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, Message>> 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn right_pane<'a>(
     pane_width: f32,
-    context_window: Option<u32>,
+    model: Option<&Model>,
     usage: &genai::chat::Usage,
     amount: &TokenAmount,
     cost: f64,
@@ -86,6 +87,8 @@ pub(crate) fn right_pane<'a>(
     show_restart: bool,
     todo_items: &'a [TodoItem],
 ) -> Element<'a, Message> {
+    let context_window = model.map(|m| m.context_window);
+    let currency = model.map(|m| m.cost.currency.as_str()).unwrap_or("USD");
     let mut col = column![].spacing(8);
     let usage_amount = TokenAmount::from_genai(usage);
 
@@ -125,7 +128,10 @@ pub(crate) fn right_pane<'a>(
     }
     col = col
         .push(token_row("Output tokens:", format!("{}", amount.output)))
-        .push(token_row("Session cost:", format_cost(cost)));
+        .push(token_row(
+            "Session cost:",
+            format_cost(cost, currency_symbol(currency)),
+        ));
 
     // ── todo items ──
     if let Some(section) = todo_section(todo_items) {
