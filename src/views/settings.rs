@@ -4,8 +4,9 @@ use super::theme::{
     CRABOT_SURFACE, CRABOT_TEXT, CRABOT_TEXT_MUTED,
 };
 use crate::Message;
-use crabot::model::{Model, ModelConfig, ModelList, Provider};
+use crabot::model::{Model, ModelConfig, ModelList, Provider, currency_symbol};
 use crabot::model_database::ModelDatabase;
+use iced::padding;
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
@@ -34,9 +35,8 @@ pub(crate) enum SettingsEvent {
     EditProviderApiKey(String),
     ToggleProviderStrictMode(bool),
     NewProvider,
-    SaveProvider,
-    CancelNewProvider,
     DeleteProvider(String),
+    CancelNewProvider,
     ModelsFetched(String, Result<Vec<String>, String>),
     /// Manually refresh the available-model list for the current provider.
     RefreshModels,
@@ -57,6 +57,8 @@ pub(crate) enum SettingsEvent {
     LabelDragEnter(usize),
     /// End the capsule drag, saving if the order changed.
     LabelDragEnd,
+    /// Save all changes and close the dialog.
+    Save,
 }
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -92,6 +94,8 @@ pub(crate) struct SettingsState {
     model_db: ModelDatabase,
     /// Which offer source is selected for the currently-viewed model detail.
     selected_offer_source: Option<String>,
+    /// Working copy of models edited within the dialog — saved to disk on Save.
+    pub(crate) working_models: ModelList,
 }
 
 impl SettingsState {
@@ -128,13 +132,13 @@ impl SettingsState {
         self.is_new_provider = true;
     }
 
-    /// Select the first provider when the settings dialog opens.
-    pub(crate) fn select_first_provider(&mut self, models: &ModelList) {
+    /// Select the first provider from the working models.
+    pub(crate) fn select_first_provider(&mut self) {
         self.model_db = ModelDatabase::load_embedded();
-        if let Some(first) = models.providers.keys().next() {
+        if let Some(first) = self.working_models.providers.keys().next() {
             self.selected_provider_id = first.clone();
-            if let Some(p) = models.providers.get(first) {
-                self.load_provider(p);
+            if let Some(p) = self.working_models.providers.get(first).cloned() {
+                self.load_provider(&p);
             }
         }
     }
@@ -153,22 +157,69 @@ impl SettingsState {
         }
     }
 
+    /// Write the current form fields back into `working_models` for the
+    /// selected provider (or create a new provider entry if `is_new_provider`).
+    fn flush_current_provider(&mut self) {
+        let name = self.provider_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let provider = self.build_provider();
+        if self.is_new_provider {
+            let base = name.to_lowercase().replace(' ', "-");
+            let mut id = base.clone();
+            let mut suffix = 2;
+            while self.working_models.providers.contains_key(&id) {
+                id = format!("{}-{}", base, suffix);
+                suffix += 1;
+            }
+            self.selected_provider_id = id.clone();
+            self.working_models.providers.insert(id, provider);
+            self.is_new_provider = false;
+        } else {
+            let id = self.selected_provider_id.clone();
+            if id.is_empty() || !self.working_models.providers.contains_key(&id) {
+                return;
+            }
+            if let Some(existing) = self.working_models.providers.get_mut(&id) {
+                let models_list = std::mem::take(&mut existing.models);
+                let headers = std::mem::take(&mut existing.headers);
+                *existing = provider;
+                existing.models = models_list;
+                existing.headers = headers;
+            }
+        }
+    }
+
     // ── Update ──────────────────────────────────────────────────────
 
-    /// Handle a `SettingsEvent`, mutating `self` and `models`.
-    /// Returns `true` if `models` was modified and needs saving.
-    pub(crate) fn update(&mut self, event: SettingsEvent, models: &mut ModelList) -> bool {
+    /// Handle a `SettingsEvent`, mutating `self.working_models`.
+    pub(crate) fn update(&mut self, event: SettingsEvent) {
         match event {
             SettingsEvent::Close => {
                 // Drop any in-progress label editing / dragging.
                 self.adding_label = false;
                 self.drag_label = None;
             }
+            SettingsEvent::Save => {
+                self.adding_label = false;
+                self.drag_label = None;
+                self.flush_current_provider();
+                // Also confirm any pending label input.
+                let name = self.new_label_name.trim().to_string();
+                self.new_label_name.clear();
+                if !name.is_empty() && !self.working_models.models.contains_key(&name) {
+                    self.working_models
+                        .models
+                        .insert(name, ModelConfig::default());
+                }
+            }
             // ── Provider actions ──────────────────────────────────
             SettingsEvent::SelectProvider(id) => {
+                self.flush_current_provider();
                 self.selected_provider_id = id.clone();
-                if let Some(p) = models.providers.get(&id) {
-                    self.load_provider(p);
+                if let Some(p) = self.working_models.providers.get(&id).cloned() {
+                    self.load_provider(&p);
                 }
             }
             SettingsEvent::EditProviderName(v) => self.provider_name = v,
@@ -210,7 +261,11 @@ impl SettingsState {
                 }
             }
             SettingsEvent::ToggleModel(id, checked) => {
-                if let Some(provider) = models.providers.get_mut(&self.selected_provider_id) {
+                if let Some(provider) = self
+                    .working_models
+                    .providers
+                    .get_mut(&self.selected_provider_id)
+                {
                     if checked {
                         if !provider.models.iter().any(|m| m.id == id) {
                             let model = if let Some(db_model) = self.model_db.get(&id) {
@@ -240,14 +295,9 @@ impl SettingsState {
                                 }
                             };
                             provider.models.push(model);
-                            return true;
                         }
                     } else {
-                        let len_before = provider.models.len();
                         provider.models.retain(|m| m.id != id);
-                        if provider.models.len() != len_before {
-                            return true;
-                        }
                     }
                 }
             }
@@ -264,60 +314,31 @@ impl SettingsState {
                 self.selected_offer_source = Some(source);
             }
             SettingsEvent::NewProvider => {
+                self.flush_current_provider();
                 self.reset_provider_fields();
                 self.selected_model_id = None;
                 self.selected_offer_source = None;
                 self.available_model_ids.clear();
                 self.selected_provider_id.clear();
             }
-            SettingsEvent::SaveProvider => {
-                let name = self.provider_name.trim().to_string();
-                if name.is_empty() {
-                    return false;
-                }
-                let provider = self.build_provider();
-                if self.is_new_provider {
-                    let base = name.to_lowercase().replace(' ', "-");
-                    let mut id = base.clone();
-                    let mut suffix = 2;
-                    while models.providers.contains_key(&id) {
-                        id = format!("{}-{}", base, suffix);
-                        suffix += 1;
-                    }
-                    self.selected_provider_id = id.clone();
-                    models.providers.insert(id, provider);
-                    self.is_new_provider = false;
-                } else {
-                    let id = self.selected_provider_id.clone();
-                    if let Some(existing) = models.providers.get_mut(&id) {
-                        // Preserve existing models and headers
-                        let models_list = std::mem::take(&mut existing.models);
-                        let headers = std::mem::take(&mut existing.headers);
-                        *existing = provider;
-                        existing.models = models_list;
-                        existing.headers = headers;
-                    }
-                }
-                return true;
-            }
             SettingsEvent::CancelNewProvider => {
                 self.is_new_provider = false;
-                self.select_first_provider(models);
+                self.select_first_provider();
             }
             SettingsEvent::DeleteProvider(id) => {
-                models.providers.shift_remove(&id);
+                self.working_models.providers.shift_remove(&id);
                 // Remove any labels referencing this provider
-                models.models.retain(|_, cfg| cfg.provider_id != id);
+                self.working_models
+                    .models
+                    .retain(|_, cfg| cfg.provider_id != id);
                 if self.selected_provider_id == id {
                     self.selected_provider_id.clear();
-                    self.select_first_provider(models);
+                    self.select_first_provider();
                 }
-                return true;
             }
             // ── Label actions ─────────────────────────────────────
             SettingsEvent::DeleteLabel(name) => {
-                models.models.shift_remove(&name);
-                return true;
+                self.working_models.models.shift_remove(&name);
             }
             SettingsEvent::StartAddLabel => {
                 self.adding_label = true;
@@ -328,9 +349,10 @@ impl SettingsState {
                 self.adding_label = false;
                 let name = self.new_label_name.trim().to_string();
                 self.new_label_name.clear();
-                if !name.is_empty() && !models.models.contains_key(&name) {
-                    models.models.insert(name, ModelConfig::default());
-                    return true;
+                if !name.is_empty() && !self.working_models.models.contains_key(&name) {
+                    self.working_models
+                        .models
+                        .insert(name, ModelConfig::default());
                 }
             }
             SettingsEvent::LabelDragStart(index) => {
@@ -340,19 +362,18 @@ impl SettingsState {
             SettingsEvent::LabelDragEnter(index) => {
                 if let Some(from) = self.drag_label
                     && from != index
-                    && index < models.models.len()
+                    && index < self.working_models.models.len()
                 {
-                    models.models.move_index(from, index);
+                    self.working_models.models.move_index(from, index);
                     self.drag_label = Some(index);
                     self.drag_reordered = true;
                 }
             }
             SettingsEvent::LabelDragEnd => {
                 self.drag_label = None;
-                return std::mem::take(&mut self.drag_reordered);
+                self.drag_reordered = false;
             }
         }
-        false
     }
 
     /// Whether the new-label capsule input is currently active.
@@ -410,11 +431,7 @@ impl std::fmt::Display for ProviderPickEntry {
 /// Returns the settings dialog content with Providers and Labels sections
 /// displayed on a single scrollable page. The caller is responsible for
 /// placing it inside a modal structure (e.g. a stack with a backdrop).
-/// The dialog can only be dismissed via its ✕ close button.
-pub(crate) fn settings_dialog<'a>(
-    state: &'a SettingsState,
-    models: &'a ModelList,
-) -> Element<'a, Message> {
+pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Message> {
     let header = container(
         row![
             text("Settings")
@@ -433,51 +450,42 @@ pub(crate) fn settings_dialog<'a>(
                         color: Some(theme.palette().text),
                     }),
             )
-            .padding([2, 8])
+            .padding([4, 8])
             .style(crate::views::styles::secondary_button)
             .on_press(Message::SettingsEvent(SettingsEvent::Close)),
         ]
         .align_y(Alignment::Center),
-    )
-    .padding(iced::Padding::new(0.0).bottom(8.0));
+    );
 
-    let section_rule = || {
-        rule::horizontal(1).style(|_: &iced::Theme| rule::Style {
-            color: CRABOT_PRIMARY,
-            fill_mode: rule::FillMode::Full,
-            radius: 0.0.into(),
-            snap: false,
-        })
-    };
+    let providers_section = provider_tab_view(state);
+    let labels_section = label_tab_view(state);
 
-    let section_header = |label: &'static str| {
-        text(label)
-            .size(13)
-            .font(iced::Font {
-                weight: iced::font::Weight::Bold,
-                ..iced::Font::DEFAULT
-            })
-            .color(CRABOT_PRIMARY)
-    };
+    let save_button = button(text("OK"))
+        .style(crate::views::styles::primary_button)
+        .on_press(Message::SettingsEvent(SettingsEvent::Save));
 
-    let providers_section = provider_tab_view(state, models);
-    let labels_section = label_tab_view(state, models);
+    let cancel_button = button(text("Cancel"))
+        .style(crate::views::styles::secondary_button)
+        .on_press(Message::SettingsEvent(SettingsEvent::Close));
 
-    let body = column![
-        providers_section,
-        iced::widget::Space::new().height(8),
-        section_header("Model Labels"),
-        section_rule(),
-        labels_section,
+    let action_row = row![
+        iced::widget::Space::new().width(Length::Fill),
+        cancel_button,
+        save_button,
     ]
-    .spacing(10);
-
-    let scrollable_body = scrollable(body).width(Length::Fill);
+    .spacing(10)
+    .padding(padding::top(8));
 
     container(
-        column![header, section_rule(), scrollable_body,]
-            .spacing(8)
-            .padding(20),
+        column![
+            header,
+            section_rule(),
+            providers_section,
+            labels_section,
+            action_row,
+        ]
+        .spacing(16)
+        .padding(20),
     )
     .style(|_: &iced::Theme| container::Style {
         background: Some(CRABOT_DIALOG_BG.into()),
@@ -489,10 +497,22 @@ pub(crate) fn settings_dialog<'a>(
     .into()
 }
 
+fn section_rule() -> Element<'static, Message> {
+    rule::horizontal(1)
+        .style(|_: &iced::Theme| rule::Style {
+            color: CRABOT_PRIMARY,
+            fill_mode: rule::FillMode::Full,
+            radius: 0.0.into(),
+            snap: false,
+        })
+        .into()
+}
+
 // ── Provider section ────────────────────────────────────────────────
 
-fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Element<'a, Message> {
-    let entries: Vec<ProviderPickEntry> = models
+fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+    let entries: Vec<ProviderPickEntry> = state
+        .working_models
         .providers
         .iter()
         .map(|(id, p)| ProviderPickEntry {
@@ -568,43 +588,7 @@ fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Ele
             checkbox_row("Strict Mode", state.provider_strict_mode, |v| {
                 Message::SettingsEvent(SettingsEvent::ToggleProviderStrictMode(v))
             },),
-            models_section_view(state, models),
-            {
-                let save_button: Element<'_, Message> = if state.provider_name.trim().is_empty() {
-                    button(text("Save"))
-                        .style(crate::views::styles::secondary_button)
-                        .into()
-                } else {
-                    button(text("Save"))
-                        .style(crate::views::styles::primary_button)
-                        .on_press(Message::SettingsEvent(SettingsEvent::SaveProvider))
-                        .into()
-                };
-                let secondary_button: Element<'_, Message> = if state.is_new_provider {
-                    button(text("Cancel"))
-                        .style(crate::views::styles::secondary_button)
-                        .on_press(Message::SettingsEvent(SettingsEvent::CancelNewProvider))
-                        .into()
-                } else {
-                    button(text("Delete"))
-                        .style(|theme: &iced::Theme, status| {
-                            let mut s = crate::views::styles::secondary_button(theme, status);
-                            s.text_color = iced::Color::from_rgb8(0xE5, 0x4D, 0x4D);
-                            s
-                        })
-                        .on_press(Message::SettingsEvent(SettingsEvent::DeleteProvider(
-                            state.selected_provider_id.clone(),
-                        )))
-                        .into()
-                };
-                row![
-                    iced::widget::Space::new().width(Length::Fill),
-                    save_button,
-                    secondary_button,
-                ]
-                .spacing(10)
-                .width(Length::Fill)
-            },
+            models_section_view(state, &state.working_models),
         ]
         .spacing(10);
 
@@ -629,6 +613,26 @@ fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Ele
         .into()
     };
 
+    let action_button: Element<'_, Message> = if state.is_new_provider {
+        button(text("Cancel"))
+            .style(crate::views::styles::secondary_button)
+            .on_press(Message::SettingsEvent(SettingsEvent::CancelNewProvider))
+            .into()
+    } else if !state.selected_provider_id.is_empty() {
+        button(text("Delete"))
+            .style(|theme: &iced::Theme, status| {
+                let mut s = crate::views::styles::secondary_button(theme, status);
+                s.text_color = iced::Color::from_rgb8(0xE5, 0x4D, 0x4D);
+                s
+            })
+            .on_press(Message::SettingsEvent(SettingsEvent::DeleteProvider(
+                state.selected_provider_id.clone(),
+            )))
+            .into()
+    } else {
+        iced::widget::Space::new().width(0).into()
+    };
+
     column![
         row![
             text("Model Providers")
@@ -639,9 +643,13 @@ fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Ele
                 })
                 .color(CRABOT_PRIMARY),
             picker,
-            button(text("New"))
-                .style(crate::views::styles::primary_button)
-                .on_press(Message::SettingsEvent(SettingsEvent::NewProvider)),
+            row![
+                button(text("New"))
+                    .style(crate::views::styles::primary_button)
+                    .on_press(Message::SettingsEvent(SettingsEvent::NewProvider)),
+                action_button,
+            ]
+            .spacing(8),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
@@ -656,10 +664,19 @@ fn provider_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Ele
 /// Labels are shown as draggable capsules on a single (scrollable) row.
 /// The trailing "+" capsule opens a blank input capsule; the new label is
 /// confirmed with Enter or when the input loses focus.
-fn label_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Element<'a, Message> {
+fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+    let section_header = text("Model Labels")
+        .size(13)
+        .font(iced::Font {
+            weight: iced::font::Weight::Bold,
+            ..iced::Font::DEFAULT
+        })
+        .color(CRABOT_PRIMARY);
+
     let dragging = state.dragging_label();
 
-    let mut chips: Vec<Element<'a, Message>> = models
+    let mut chips: Vec<Element<'a, Message>> = state
+        .working_models
         .models
         .keys()
         .enumerate()
@@ -725,17 +742,24 @@ fn label_tab_view<'a>(state: &'a SettingsState, models: &'a ModelList) -> Elemen
         );
     }
 
-    let hint = text("Drag labels to reorder · Click + to add a new label")
-        .size(12)
-        .color(CRABOT_TEXT_MUTED);
-
-    let chip_row = scrollable(row(chips).spacing(8).align_y(Alignment::Center))
+    let labels_section = scrollable(row(chips).spacing(8).align_y(Alignment::Center))
         .direction(scrollable::Direction::Horizontal(
             scrollable::Scrollbar::default(),
         ))
         .width(Length::Fill);
 
-    column![hint, chip_row].spacing(8).into()
+    let hint = text("Drag labels to reorder · Click + to add a new label")
+        .size(12)
+        .color(CRABOT_TEXT_MUTED);
+    column![
+        section_header,
+        container(column![labels_section, section_rule(), hint].spacing(10))
+            .padding(16)
+            .style(form_card_style)
+            .width(Length::Fill)
+    ]
+    .spacing(10)
+    .into()
 }
 
 // ── Capsule styles ────────────────────────────────────────────────
@@ -1130,17 +1154,6 @@ fn model_detail_panel<'a>(
         .style(form_card_style)
         .width(Length::FillPortion(1))
         .into()
-}
-
-/// Map common ISO 4217 currency codes to their symbols.
-pub(crate) fn currency_symbol(currency: &str) -> &str {
-    match currency {
-        "USD" => "$",
-        "CNY" => "¥",
-        "EUR" => "€",
-        "GBP" => "£",
-        other => other,
-    }
 }
 
 /// Single label–value row for the model detail panel.

@@ -489,13 +489,9 @@ impl App {
             Message::LeftReleased => {
                 self.left_divider.dragging = false;
                 self.right_divider.dragging = false;
-                if self.settings_state.is_label_dragging()
-                    && self.settings_state.update(
-                        views::SettingsEvent::LabelDragEnd,
-                        &mut self.provided_models,
-                    )
-                {
-                    self.provided_models.save();
+                if self.settings_state.is_label_dragging() {
+                    self.settings_state
+                        .update(views::SettingsEvent::LabelDragEnd);
                 }
             }
             Message::LabelInputFocus(focused) => {
@@ -515,8 +511,8 @@ impl App {
             }
             Message::ModelConfigEvent(event) => {
                 if matches!(event, views::model_config::Event::OpenSettings) {
-                    self.settings_state
-                        .select_first_provider(&self.provided_models);
+                    self.settings_state.working_models = self.provided_models.clone();
+                    self.settings_state.select_first_provider();
                     self.show_settings_dialog = true;
                     if self.settings_state.needs_fetch() {
                         let base_url = self.settings_state.provider_base_url().to_string();
@@ -1010,38 +1006,14 @@ impl App {
                 self.ctrl_held = held;
             }
             Message::SettingsEvent(event) => {
-                if matches!(event, views::SettingsEvent::Close) {
-                    self.show_settings_dialog = false;
-                } else if matches!(event, views::SettingsEvent::SelectProvider(_))
-                    || matches!(event, views::SettingsEvent::RefreshModels)
-                {
-                    self.settings_state.update(event, &mut self.provided_models);
-                    if self.settings_state.needs_fetch() {
-                        let base_url = self.settings_state.provider_base_url().to_string();
-                        let api_key = self.settings_state.provider_api_key().to_string();
-                        let provider_id = self.settings_state.current_provider_id().to_string();
-                        if !base_url.is_empty() {
-                            return Task::perform(
-                                async move {
-                                    let models =
-                                        crabot::model::fetch_available_models(&base_url, &api_key)
-                                            .await;
-                                    (provider_id, models)
-                                },
-                                |(provider_id, result)| {
-                                    Message::SettingsEvent(views::SettingsEvent::ModelsFetched(
-                                        provider_id,
-                                        result,
-                                    ))
-                                },
-                            );
-                        }
+                match event {
+                    views::SettingsEvent::Close => {
+                        self.settings_state.update(event);
+                        self.show_settings_dialog = false;
                     }
-                } else {
-                    let focus_new_label = matches!(event, views::SettingsEvent::StartAddLabel);
-                    let focus_new_provider_name =
-                        matches!(event, views::SettingsEvent::NewProvider);
-                    if self.settings_state.update(event, &mut self.provided_models) {
+                    views::SettingsEvent::Save => {
+                        self.settings_state.update(event);
+                        self.provided_models = self.settings_state.working_models.clone();
                         self.provided_models.save();
                         // Refresh provider pick-list entries.
                         self.provider_entries = self
@@ -1053,16 +1025,50 @@ impl App {
                                 name: p.name.clone(),
                             })
                             .collect();
-                        // If the currently-selected model config label was deleted,
-                        // switch to the first available one.
+                        // Re-validate the selected model label.
                         self.selected_model =
                             self.provided_models.ensure_valid_name(&self.selected_model);
+                        self.show_settings_dialog = false;
                     }
-                    if focus_new_label {
-                        return iced::widget::operation::focus(views::NEW_LABEL_INPUT_ID);
+                    views::SettingsEvent::SelectProvider(_)
+                    | views::SettingsEvent::RefreshModels => {
+                        self.settings_state.update(event);
+                        if self.settings_state.needs_fetch() {
+                            let base_url = self.settings_state.provider_base_url().to_string();
+                            let api_key = self.settings_state.provider_api_key().to_string();
+                            let provider_id = self.settings_state.current_provider_id().to_string();
+                            if !base_url.is_empty() {
+                                return Task::perform(
+                                    async move {
+                                        let models = crabot::model::fetch_available_models(
+                                            &base_url, &api_key,
+                                        )
+                                        .await;
+                                        (provider_id, models)
+                                    },
+                                    |(provider_id, result)| {
+                                        Message::SettingsEvent(views::SettingsEvent::ModelsFetched(
+                                            provider_id,
+                                            result,
+                                        ))
+                                    },
+                                );
+                            }
+                        }
                     }
-                    if focus_new_provider_name {
-                        return iced::widget::operation::focus(views::NEW_PROVIDER_NAME_INPUT_ID);
+                    _ => {
+                        let focus_new_label = matches!(event, views::SettingsEvent::StartAddLabel);
+                        let focus_new_provider_name =
+                            matches!(event, views::SettingsEvent::NewProvider);
+                        self.settings_state.update(event);
+                        if focus_new_label {
+                            return iced::widget::operation::focus(views::NEW_LABEL_INPUT_ID);
+                        }
+                        if focus_new_provider_name {
+                            return iced::widget::operation::focus(
+                                views::NEW_PROVIDER_NAME_INPUT_ID,
+                            );
+                        }
                     }
                 }
             }
@@ -1070,14 +1076,10 @@ impl App {
         Task::none()
     }
 
-    /// When new-label capsule created (on Enter or focus loss), saving the model list.
+    /// When new-label capsule created (on Enter or focus loss).
     fn confirm_pending_label(&mut self) {
-        if self.settings_state.is_adding_label()
-            && self
-                .settings_state
-                .update(views::SettingsEvent::AddLabel, &mut self.provided_models)
-        {
-            self.provided_models.save();
+        if self.settings_state.is_adding_label() {
+            self.settings_state.update(views::SettingsEvent::AddLabel);
         }
     }
 
@@ -1392,7 +1394,7 @@ impl App {
                 ..container::Style::default()
             });
 
-            let dialog = views::settings_dialog(&self.settings_state, &self.provided_models);
+            let dialog = views::settings_dialog(&self.settings_state);
 
             iced::widget::stack![
                 main_content,

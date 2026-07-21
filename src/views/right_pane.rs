@@ -4,10 +4,10 @@ use iced::{
 };
 use iced_selection::Text as SelectableText;
 
-use super::settings::currency_symbol;
 use super::styles::{pane_side, primary_button, sel_primary};
 use super::theme::thin_vertical;
 use crate::Message;
+use crate::model::currency_symbol;
 use crabot::model::{Model, TokenAmount};
 use crabot::tools::todo::{TodoItem, TodoStatus};
 

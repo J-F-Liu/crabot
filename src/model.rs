@@ -213,6 +213,17 @@ impl TokenAmount {
     }
 }
 
+/// Map common ISO 4217 currency codes to their symbols.
+pub fn currency_symbol(currency: &str) -> &str {
+    match currency {
+        "USD" => "$",
+        "CNY" => "¥",
+        "EUR" => "€",
+        "GBP" => "£",
+        other => other,
+    }
+}
+
 // ── loaders ─────────────────────────────────────────────────────────
 
 /// Loads providers from `~/.crabot/models.ron`.
