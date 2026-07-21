@@ -11,9 +11,9 @@ use crabot::{HashSetExt, model, settings, setup, system, tools, workspace};
 
 use futures::{SinkExt, future::FutureExt};
 use iced::widget::scrollable::Viewport;
-use iced::widget::{column, row, text_editor};
+use iced::widget::{column, container, row, text_editor};
 use iced::{
-    Element, Event, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window,
+    Element, Event, Length, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window,
 };
 use indexmap::IndexMap;
 use llm::DialogPhase;
@@ -34,7 +34,7 @@ use views::model_config::ProviderEntry;
 use views::session_list::SessionEntry;
 use views::session_state::AskAction;
 use views::system_prompt::PromptSectionState;
-use views::theme::{HANDLE, MIN_W, default_theme};
+use views::theme::{CRABOT_MODAL_SCRIM, HANDLE, MIN_W, default_theme};
 use views::tool_list::ToolListState;
 use views::{DividerState, center_pane, divider, left_pane, right_pane, scroll_to_end};
 use widgets::textarea::{self, TextArea};
@@ -149,6 +149,10 @@ struct App {
     focused: Option<FocusedTarget>,
     /// Whether to show the in-app empty-workspace confirmation dialog.
     show_workspace_dialog: bool,
+    /// Whether to show the settings modal dialog.
+    show_settings_dialog: bool,
+    /// Editing state for the settings dialog (providers & labels).
+    settings_state: views::SettingsState,
     /// Cached default workspace path shown in the confirmation dialog.
     default_workspace_path: PathBuf,
     /// Center-pane search UI state and measurement cache.
@@ -230,7 +234,7 @@ pub(crate) enum Message {
     NavigateSession(bool),
     /// Search bar event (toggle, query change, submit, navigate).
     SearchEvent(views::SearchEvent),
-    /// Escape key pressed. Closes search bar if visible, otherwise clears selectable-text mode.
+    /// Escape key pressed. Closes the settings dialog if open, then the search bar.
     EscapePressed,
     /// Result of measuring turn offsets from the widget tree.
     TurnOffsetsMeasured(u64, Vec<f32>),
@@ -246,6 +250,11 @@ pub(crate) enum Message {
     DismissUpdateBanner,
     /// Open the Crabot GitHub releases page in the system browser.
     OpenReleaseNotes,
+    /// Settings dialog events (add/edit/delete providers & labels).
+    SettingsEvent(views::SettingsEvent),
+    /// Result of a focus check on the new-label input; `false` means the
+    /// input lost focus and the pending label should be confirmed.
+    LabelInputFocus(bool),
     /// A markdown link was clicked; the URL to open.
     LinkClicked(String),
     /// Track whether the Ctrl key is currently held.
@@ -371,6 +380,8 @@ impl App {
             focused: None,
             show_workspace_dialog: false,
             default_workspace_path: setup::default_workspace_path(),
+            show_settings_dialog: false,
+            settings_state: views::SettingsState::default(),
             search: views::search_bar::SearchState::default(),
             prompt_recipe: saved.prompt_recipe,
             recipe_dropdown_expanded: false,
@@ -391,7 +402,7 @@ impl App {
             })
             .fold(Task::none(), Task::chain);
         // Skip the network check when a cached update is already available.
-        let update_task = if app.update_available.is_some() {
+        let update_task = if show_restart || app.update_available.is_some() {
             Task::none()
         } else {
             Task::perform(
@@ -467,10 +478,30 @@ impl App {
                         self.right_divider.start = self.right_pane_width;
                     }
                 }
+
+                // A press anywhere may blur the new-label input (the widget
+                // tree has already processed this press) — check its focus.
+                if self.show_settings_dialog && self.settings_state.is_adding_label() {
+                    return iced::widget::operation::is_focused(views::NEW_LABEL_INPUT_ID)
+                        .map(Message::LabelInputFocus);
+                }
             }
             Message::LeftReleased => {
                 self.left_divider.dragging = false;
                 self.right_divider.dragging = false;
+                if self.settings_state.is_label_dragging()
+                    && self.settings_state.update(
+                        views::SettingsEvent::LabelDragEnd,
+                        &mut self.provided_models,
+                    )
+                {
+                    self.provided_models.save();
+                }
+            }
+            Message::LabelInputFocus(focused) => {
+                if !focused {
+                    self.confirm_pending_label();
+                }
             }
             Message::WindowResized(size) => {
                 // Ignore zero-size events (e.g. window minimized on Windows).
@@ -483,7 +514,23 @@ impl App {
                 self.window_pos = pos;
             }
             Message::ModelConfigEvent(event) => {
-                if views::model_config::update(
+                if matches!(event, views::model_config::Event::OpenSettings) {
+                    self.settings_state
+                        .select_first_provider(&self.provided_models);
+                    self.show_settings_dialog = true;
+                    let base_url = self.settings_state.provider_base_url().to_string();
+                    let api_key = self.settings_state.provider_api_key().to_string();
+                    if !base_url.is_empty() {
+                        return Task::perform(
+                            async move {
+                                crabot::model::fetch_available_models(&base_url, &api_key).await
+                            },
+                            |result| {
+                                Message::SettingsEvent(views::SettingsEvent::ModelsFetched(result))
+                            },
+                        );
+                    }
+                } else if views::model_config::update(
                     event,
                     &mut self.provided_models,
                     &mut self.selected_model,
@@ -883,7 +930,14 @@ impl App {
                 self.search.invalidate_offsets();
             }
             Message::EscapePressed => {
-                if self.search.visible {
+                if self.show_settings_dialog {
+                    if self.settings_state.is_adding_label() {
+                        // Escape blurs the new-label input instead of closing the dialog.
+                        self.confirm_pending_label();
+                    } else {
+                        self.show_settings_dialog = false;
+                    }
+                } else if self.search.visible {
                     self.search.visible = false;
                 } else {
                     self.selectable_msgs.clear();
@@ -947,8 +1001,72 @@ impl App {
             Message::CtrlHeld(held) => {
                 self.ctrl_held = held;
             }
+            Message::SettingsEvent(event) => {
+                if matches!(event, views::SettingsEvent::Close) {
+                    self.show_settings_dialog = false;
+                } else {
+                    // Intercept SelectProvider to spawn an async fetch.
+                    if matches!(event, views::SettingsEvent::SelectProvider(_)) {
+                        self.settings_state.update(event, &mut self.provided_models);
+                        let base_url = self.settings_state.provider_base_url().to_string();
+                        let api_key = self.settings_state.provider_api_key().to_string();
+                        if !base_url.is_empty() {
+                            return Task::perform(
+                                async move {
+                                    crabot::model::fetch_available_models(&base_url, &api_key).await
+                                },
+                                |result| {
+                                    Message::SettingsEvent(views::SettingsEvent::ModelsFetched(
+                                        result,
+                                    ))
+                                },
+                            );
+                        }
+                    } else {
+                        let focus_new_label = matches!(event, views::SettingsEvent::StartAddLabel);
+                        let focus_new_provider_name =
+                            matches!(event, views::SettingsEvent::NewProvider);
+                        if self.settings_state.update(event, &mut self.provided_models) {
+                            self.provided_models.save();
+                            // Refresh provider pick-list entries.
+                            self.provider_entries = self
+                                .provided_models
+                                .providers
+                                .iter()
+                                .map(|(id, p)| views::model_config::ProviderEntry {
+                                    id: id.clone(),
+                                    name: p.name.clone(),
+                                })
+                                .collect();
+                            // If the currently-selected model config label was deleted,
+                            // switch to the first available one.
+                            self.selected_model =
+                                self.provided_models.ensure_valid_name(&self.selected_model);
+                        }
+                        if focus_new_label {
+                            return iced::widget::operation::focus(views::NEW_LABEL_INPUT_ID);
+                        }
+                        if focus_new_provider_name {
+                            return iced::widget::operation::focus(
+                                views::NEW_PROVIDER_NAME_INPUT_ID,
+                            );
+                        }
+                    }
+                }
+            }
         }
         Task::none()
+    }
+
+    /// When new-label capsule created (on Enter or focus loss), saving the model list.
+    fn confirm_pending_label(&mut self) {
+        if self.settings_state.is_adding_label()
+            && self
+                .settings_state
+                .update(views::SettingsEvent::AddLabel, &mut self.provided_models)
+        {
+            self.provided_models.save();
+        }
     }
 
     fn start_dialog(
@@ -1239,7 +1357,33 @@ impl App {
         .spacing(0)
         .into();
 
-        let body: Element<_> = if self.show_workspace_dialog {
+        let body: Element<_> = if self.show_settings_dialog {
+            // The scrim is purely visual — the dialog only closes via its ✕ button.
+            let backdrop = container(
+                iced::widget::Space::new()
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_: &Theme| container::Style {
+                background: Some(CRABOT_MODAL_SCRIM.into()),
+                ..container::Style::default()
+            });
+
+            let dialog = views::settings_dialog(&self.settings_state, &self.provided_models);
+
+            iced::widget::stack![
+                main_content,
+                backdrop,
+                container(dialog)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill),
+            ]
+            .into()
+        } else if self.show_workspace_dialog {
             iced::widget::stack![
                 main_content,
                 views::workspace_modal(&self.default_workspace_path),

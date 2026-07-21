@@ -1,10 +1,11 @@
+use super::icons;
 use super::theme::CRABOT_BORDER;
 use crabot::model::{Model, ModelList};
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Length,
     border::Radius,
     mouse,
-    widget::{column, mouse_area, pick_list, row, text, toggler},
+    widget::{button, column, container, mouse_area, pick_list, row, svg, text, toggler},
 };
 use iced_aw::{
     style::{status::Status, tab_bar::Style as TabBarStyle},
@@ -32,6 +33,7 @@ pub(crate) enum Event {
     SelectModel(String),
     ToggleThinking(bool),
     SelectThinkingLevel(String),
+    OpenSettings,
 }
 
 pub(crate) fn model_config_view<'a>(
@@ -73,6 +75,23 @@ pub(crate) fn model_config_view<'a>(
         bar = bar.set_active_tab(selected);
         bar.into()
     };
+
+    let gear_icon = svg(svg::Handle::from_memory(icons::SETTINGS))
+        .width(16)
+        .height(16)
+        .style(|theme: &iced::Theme, _status| svg::Style {
+            color: Some(theme.palette().text),
+        });
+
+    let gear_button: Element<_> = button(gear_icon)
+        .padding([2, 6])
+        .style(crate::views::styles::secondary_button)
+        .on_press(Event::OpenSettings)
+        .into();
+
+    let header_row: Element<_> = row![container(tab_bar).width(Fill), gear_button,]
+        .align_y(Alignment::Center)
+        .into();
 
     let selected_config = provided_models.get_config(selected);
     let selected_entry: Option<&ProviderEntry> =
@@ -137,7 +156,7 @@ pub(crate) fn model_config_view<'a>(
     };
 
     column![
-        tab_bar,
+        header_row,
         iced::widget::container(
             column![
                 row![
@@ -232,6 +251,9 @@ pub(crate) fn update(
                 cfg.thinking_level = level;
                 return true;
             }
+        }
+        Event::OpenSettings => {
+            // Handled by `App::update`; no models.ron save needed.
         }
     }
     false

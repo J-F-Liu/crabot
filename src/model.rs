@@ -457,6 +457,52 @@ pub fn load_models() -> ModelList {
     ModelList::default()
 }
 
+/// If `api_key` is an environment variable name, resolve it to the actual value.
+/// Otherwise return the literal string as-is.
+pub fn resolve_api_key(api_key: &str) -> String {
+    std::env::var(api_key).unwrap_or_else(|_| api_key.to_string())
+}
+
+// ── Fetch models from provider ──────────────────────────────────────
+
+/// Fetch available model IDs from a provider's `/models` endpoint.
+pub async fn fetch_available_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+    let api_key = resolve_api_key(api_key);
+    let url = if base_url.ends_with('/') {
+        format!("{}models", base_url)
+    } else {
+        format!("{}/models", base_url)
+    };
+    let client = reqwest::Client::builder()
+        .user_agent(crate::app_title())
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+    let resp = client
+        .get(&url)
+        .header("Content-Type", "application/json")
+        .bearer_auth(&api_key)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("Invalid JSON: {e}"))?;
+    let models = json["data"]
+        .as_array()
+        .ok_or_else(|| "Invalid response format: missing 'data' array".to_string())?;
+    if !models.is_empty() {
+        println!("{:#?}", models[0]);
+    }
+    let ids: Vec<String> = models
+        .iter()
+        .filter_map(|m| m["id"].as_str().map(String::from))
+        .collect();
+    Ok(ids)
+}
+
 // ── RON load / save ─────────────────────────────────────────────────
 
 fn models_ron_path() -> Result<PathBuf, Box<dyn std::error::Error>> {

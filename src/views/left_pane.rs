@@ -1,6 +1,6 @@
 use iced::{
     Element, Fill, Length,
-    widget::{column, container, rule, scrollable, text_editor},
+    widget::{column, container, scrollable, text_editor},
 };
 
 use super::model_config::ProviderEntry;
@@ -55,78 +55,85 @@ pub(crate) fn left_pane<'a>(
     current_session_id: &'a str,
     enabled_mcp_servers: &'a HashSet<String>,
 ) -> Element<'a, Message> {
-    let agents_md: Element<'a, Message> = if agents_md_exists {
-        agents_md_field_view(&system_prompt.agents_md)
-    } else {
-        container(column![]).into()
-    };
-
-    let children: Vec<Element<'a, Message>> = vec![
-        model_config_view(provided_models, provider_entries, selected_model)
-            .map(Message::ModelConfigEvent),
-        rule::horizontal(0).into(),
-        label("System Prompt", 140.0),
-        file_picker_field_view(
-            crabot::system::PREAMBLE,
-            &system_prompt.preamble,
-            preamble_options,
-            selected_preamble,
-            Message::SelectPreamble,
-        ),
-        file_picker_field_view(
-            crabot::system::RULES,
-            &system_prompt.rules,
-            rules_options,
-            selected_rules,
-            Message::SelectRules,
-        ),
-        tools_field_view(
-            prompt_section_state.tools_expanded,
-            &system_prompt.tools,
-            tools_content,
-        ),
-        workspace_field_view(&system_prompt.workspace, workspace_options),
-        agents_md,
-        files_field_view(
-            prompt_section_state.files_expanded,
-            &system_prompt.files,
-            files_content,
-        ),
-        date_field_view(&system_prompt.date),
-        session_view(streaming, session_options, current_session_id),
-        label("User Prompt", 140.0),
-        user_prompt_view(
-            user_prompt,
-            workmode,
-            workmode_enabled,
-            prompt_recipes,
-            recipe_dropdown_expanded,
-        ),
-        tools_section(
-            BUILTIN_TOOLS,
-            tool_list_state.builtin_expanded,
-            enabled_tools,
-            &tool_registry.builtin_names,
-        ),
-        tools_section(
-            CUSTOM_TOOLS,
-            tool_list_state.custom_expanded,
-            enabled_tools,
-            &tool_registry.custom_names,
-        ),
-        mcp_tools_section(
-            tool_list_state.mcp_expanded,
-            enabled_tools,
-            &tool_registry.mcp,
-            enabled_mcp_servers,
-        ),
-    ];
-
-    let col = column(children).spacing(8);
-
-    container(scrollable(col.padding([4, 12])).direction(thin_vertical()))
-        .width(Length::Fixed(left_w))
-        .height(Fill)
-        .style(pane_side)
-        .into()
+    container(
+        column![
+            container(
+                model_config_view(provided_models, provider_entries, selected_model)
+                    .map(Message::ModelConfigEvent),
+            )
+            .padding([2, 10]),
+            scrollable(
+                column![
+                    label("System Prompt", 140.0),
+                    file_picker_field_view(
+                        crabot::system::PREAMBLE,
+                        &system_prompt.preamble,
+                        preamble_options,
+                        selected_preamble,
+                        Message::SelectPreamble,
+                    ),
+                    file_picker_field_view(
+                        crabot::system::RULES,
+                        &system_prompt.rules,
+                        rules_options,
+                        selected_rules,
+                        Message::SelectRules,
+                    ),
+                    tools_field_view(
+                        prompt_section_state.tools_expanded,
+                        &system_prompt.tools,
+                        tools_content,
+                    ),
+                    workspace_field_view(&system_prompt.workspace, workspace_options),
+                    if agents_md_exists {
+                        agents_md_field_view(&system_prompt.agents_md)
+                    } else {
+                        column![].into()
+                    },
+                    files_field_view(
+                        prompt_section_state.files_expanded,
+                        &system_prompt.files,
+                        files_content,
+                    ),
+                    date_field_view(&system_prompt.date),
+                    session_view(streaming, session_options, current_session_id),
+                    label("User Prompt", 140.0),
+                    user_prompt_view(
+                        user_prompt,
+                        workmode,
+                        workmode_enabled,
+                        prompt_recipes,
+                        recipe_dropdown_expanded,
+                    ),
+                    tools_section(
+                        BUILTIN_TOOLS,
+                        tool_list_state.builtin_expanded,
+                        enabled_tools,
+                        &tool_registry.builtin_names,
+                    ),
+                    tools_section(
+                        CUSTOM_TOOLS,
+                        tool_list_state.custom_expanded,
+                        enabled_tools,
+                        &tool_registry.custom_names,
+                    ),
+                    mcp_tools_section(
+                        tool_list_state.mcp_expanded,
+                        enabled_tools,
+                        &tool_registry.mcp,
+                        enabled_mcp_servers,
+                    ),
+                ]
+                .spacing(8)
+                .padding([4, 12]),
+            )
+            .direction(thin_vertical())
+            .height(Fill),
+        ]
+        .spacing(4),
+    )
+    .width(Length::Fixed(left_w))
+    .height(Fill)
+    .style(pane_side)
+    .into()
 }

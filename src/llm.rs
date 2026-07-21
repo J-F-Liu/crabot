@@ -406,12 +406,7 @@ fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Client {
         base_url.push('/');
     }
 
-    // If api_key is an environment variable, resolve it to the actual value.
-    let api_key = if let Ok(secret) = std::env::var(api_key) {
-        secret
-    } else {
-        api_key.to_string()
-    };
+    let api_key = crabot::model::resolve_api_key(api_key);
 
     let target_resolver = ServiceTargetResolver::from_resolver_fn(
         move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
