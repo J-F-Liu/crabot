@@ -69,7 +69,7 @@ pub(crate) fn session_view<'a>(
                 weight: font::Weight::Bold,
                 ..Font::DEFAULT
             }),
-            container(list).clip(true),
+            container(list),
             button(text("New").size(13).align_x(Alignment::Center))
                 .on_press_maybe(if streaming != DialogPhase::Idle {
                     None

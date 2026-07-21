@@ -506,21 +506,14 @@ where
             style.background,
         );
 
-        // Text (selected or placeholder). Position the paragraph using
-        // bounds.anchor() so it is vertically centered — fill_paragraph
-        // draws at the given top-left and does not apply alignment offsets.
         // The text is rendered inside a clip layer so it does not overflow
-        // into the arrow indicator area.
+        // into the arrow indicator area. The anchor is offset by padding.left
+        // so the text aligns with the padded content area.
         let text_color = if self.selected.is_some() {
             style.text_color
         } else {
             style.placeholder_color
         };
-        let anchor = bounds.anchor(
-            state.label.min_bounds(),
-            state.label.align_x(),
-            alignment::Vertical::Center,
-        );
 
         let text_clip = Rectangle {
             x: bounds.x + self.padding.left,
@@ -528,6 +521,10 @@ where
             width: bounds.width - self.padding.left - self.padding.right,
             height: bounds.height,
         };
+        let anchor = Point::new(
+            bounds.x + self.padding.left,
+            bounds.y + (bounds.height - state.label.min_bounds().height) / 2.0,
+        );
         renderer.with_layer(text_clip, |renderer| {
             renderer.fill_paragraph(state.label.raw(), anchor, text_color, *viewport);
         });
