@@ -214,7 +214,7 @@ pub(crate) enum Message {
     AppClosing,
     Noop,
     CopySessionTitle,
-    ResendLastPrompt,
+    ResendSessionHistory,
     Restart,
     /// Fires when the center pane scrollable's viewport changes.
     SessionViewScrolled(Viewport),
@@ -714,7 +714,6 @@ impl App {
                 let (exists, agents_md_content) = load_agents_md(&self.system_prompt.workspace.1);
                 self.agents_md_exists = exists;
                 self.system_prompt.agents_md.1 = agents_md_content;
-                return self.refresh_session_list();
             }
             Message::ToggleTurnExpand(idx, sub) => {
                 let key = (idx, sub);
@@ -857,7 +856,7 @@ impl App {
                 // Re-enter the send-prompt flow now that a workspace is set.
                 return Task::done(Message::SendPrompt);
             }
-            Message::ResendLastPrompt => {
+            Message::ResendSessionHistory => {
                 if self.session_state.phase != DialogPhase::Idle
                     || self.center_pane_title == "New session"
                 {
@@ -1091,12 +1090,21 @@ impl App {
         let Some(model) = self.provided_models.get_model_info(model_config) else {
             return Task::none();
         };
+        // When continuing with a different model, fork the session.
+        let model_changed = self
+            .session
+            .model
+            .as_ref()
+            .is_some_and(|m| m.model_id != model_config.model_id);
+        if model_changed {
+            self.session = self.session.fork();
+        }
         self.session.model = Some(model_config.clone());
         self.session.workspace = self.system_prompt.workspace.1.clone();
         self.session.save().ok();
 
         // Add current session to the dropdown list so it appears immediately.
-        if self.session.dialogs.len() == 1
+        if (self.session.dialogs.len() == 1 || model_changed)
             && let Some(path) = self.session.save_path()
         {
             let entry = SessionEntry {

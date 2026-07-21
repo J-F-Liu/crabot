@@ -699,7 +699,7 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
         icons::icon_action(
             icons::RESEND,
             "Resend session history",
-            Message::ResendLastPrompt
+            Message::ResendSessionHistory
         ),
     ]
     .spacing(6)

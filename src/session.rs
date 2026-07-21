@@ -67,6 +67,19 @@ impl Session {
         }
     }
 
+    /// Create a copy of this session with a fresh id and timestamps.
+    pub fn fork(&self) -> Self {
+        let mut session = self.clone();
+        let now = chrono::Local::now();
+        session.id = now.format("%Y%m%d-%H%M%S").to_string();
+        session.created_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        session.updated_at = session.created_at.clone();
+        // Fresh accumulators — the fork starts its own usage/cost accounting.
+        session.usage = TokenAmount::default();
+        session.cost = 0.0;
+        session
+    }
+
     // ── Dialog / turn helpers ────────────────────────────────────────
 
     /// Add a new empty dialog with the given title.
