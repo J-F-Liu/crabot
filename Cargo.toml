@@ -11,7 +11,6 @@ opt-level = "s"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
 serde_json = "1"
 chrono = "0.4"
 rfd = "0.17"
