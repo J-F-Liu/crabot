@@ -321,6 +321,24 @@ pub fn build_tools(tools: &[ToolRef], strict: bool) -> Vec<GenaiTool> {
     tools.iter().map(|t| t.tool_declaration(strict)).collect()
 }
 
+/// Build a helpful error message when an unknown tool is requested.
+pub fn unknown_tool_message(name: &str) -> String {
+    let hint = match name {
+        "grep" => Some("use the search tool instead"),
+        "cat" => Some("use the read tool instead"),
+        "ls" | "dir" => Some("use the find or bash tool instead"),
+        "mv" | "cp" | "rm" | "mkdir" => Some("use the bash tool instead"),
+        "curl" | "wget" => Some("use the fetch tool instead"),
+        "git" => Some("use the bash tool instead"),
+        _ => None,
+    };
+
+    match hint {
+        Some(suggestion) => format!("Unknown tool: {name} — {suggestion}"),
+        None => format!("Unknown tool: {name}"),
+    }
+}
+
 // ── shared helpers ─────────────────────────────────────────────────
 
 /// Convert Windows-style `\r\n` line endings to Unix `\n`.

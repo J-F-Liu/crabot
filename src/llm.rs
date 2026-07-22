@@ -338,7 +338,7 @@ pub async fn send_stream(
                     .await
                     .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
                 }
-                None => Err(format!("Unknown tool: {}", tc.fn_name)),
+                None => Err(tools::unknown_tool_message(&tc.fn_name)),
             };
 
             // Flatten for genai's ToolResponse (genai expects plain String).
