@@ -1,4 +1,7 @@
-use super::{NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState};
+use super::{
+    NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState, SettingsTab,
+    form_card_style,
+};
 use crate::Message;
 use crate::views::theme::{
     CRABOT_BORDER, CRABOT_DANGER, CRABOT_PRIMARY, CRABOT_SURFACE, CRABOT_TEXT, CRABOT_TEXT_MUTED,
@@ -568,7 +571,8 @@ fn models_section_view<'a>(
                         .unwrap_or_else(|| active_cost.source.clone());
                     let picker = pick_list(sources, Some(selected_source), |src| {
                         Message::SettingsEvent(SettingsEvent::SelectOfferSource(src))
-                    });
+                    })
+                    .text_size(12);
                     column![
                         container(
                             row![
@@ -676,14 +680,6 @@ fn detail_row(label: &'static str, value: String) -> Element<'static, Message> {
     .into()
 }
 
-fn form_card_style(_theme: &iced::Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::from_rgb8(0xF4, 0xF4, 0xF4).into()),
-        border: Border::default().rounded(8).width(1).color(CRABOT_BORDER),
-        ..container::Style::default()
-    }
-}
-
 // ── Page ───────────────────────────────────────────────────────────
 
 /// Full "AI Models" tab page: provider editor, label editor, and action buttons.
@@ -691,21 +687,18 @@ pub(super) fn ai_models_page<'a>(state: &'a SettingsState) -> Element<'a, Messag
     let providers_section = provider_tab_view(state);
     let labels_section = label_tab_view(state);
 
-    let save_button = button(text("OK"))
+    let save_label = if state.save_feedback == Some(SettingsTab::AiModels) {
+        "Saved ✓"
+    } else {
+        "Save"
+    };
+    let save_button = button(text(save_label).size(13))
         .style(crate::views::styles::primary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::Save));
+        .on_press(Message::SettingsEvent(SettingsEvent::SaveModels));
 
-    let cancel_button = button(text("Cancel"))
-        .style(crate::views::styles::secondary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::Close));
-
-    let action_row = row![
-        iced::widget::Space::new().width(Length::Fill),
-        cancel_button,
-        save_button,
-    ]
-    .spacing(10)
-    .padding(padding::top(8));
+    let action_row = row![iced::widget::Space::new().width(Length::Fill), save_button,]
+        .spacing(10)
+        .padding(padding::top(8));
 
     column![providers_section, labels_section, action_row]
         .spacing(16)

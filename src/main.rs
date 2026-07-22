@@ -512,6 +512,8 @@ impl App {
             Message::ModelConfigEvent(event) => {
                 if matches!(event, views::model_config::Event::OpenSettings) {
                     self.settings_state.working_models = self.provided_models.clone();
+                    self.settings_state
+                        .load_tools(tools::custom::ToolList::load());
                     self.settings_state.select_first_provider();
                     self.show_settings_dialog = true;
                     if self.settings_state.needs_fetch() {
@@ -1011,7 +1013,7 @@ impl App {
                         self.settings_state.update(event);
                         self.show_settings_dialog = false;
                     }
-                    views::SettingsEvent::Save => {
+                    views::SettingsEvent::SaveModels => {
                         self.settings_state.update(event);
                         self.provided_models = self.settings_state.working_models.clone();
                         self.provided_models.save();
@@ -1028,7 +1030,25 @@ impl App {
                         // Re-validate the selected model label.
                         self.selected_model =
                             self.provided_models.ensure_valid_name(&self.selected_model);
-                        self.show_settings_dialog = false;
+                    }
+                    views::SettingsEvent::SaveTools => {
+                        self.settings_state.update(event);
+                        // Persist custom tools and sync the tool registry.
+                        let old_names: HashSet<String> =
+                            self.tool_registry.custom_names.iter().cloned().collect();
+                        self.settings_state.working_tools.save();
+                        self.tool_registry
+                            .register_custom(self.settings_state.working_tools.clone());
+                        let new_names: HashSet<String> =
+                            self.tool_registry.custom_names.iter().cloned().collect();
+                        // Deleted tools lose their enabled state; new tools default to enabled.
+                        for name in old_names.difference(&new_names) {
+                            self.enabled_tools.remove(name);
+                        }
+                        for name in new_names.difference(&old_names) {
+                            self.enabled_tools.insert(name.clone());
+                        }
+                        self.refresh_tools_summary();
                     }
                     views::SettingsEvent::SelectProvider(_)
                     | views::SettingsEvent::RefreshModels => {

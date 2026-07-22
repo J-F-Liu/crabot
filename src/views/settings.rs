@@ -1,11 +1,13 @@
 use super::icons;
 use super::theme::{
-    CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SURFACE, CRABOT_TEXT,
-    CRABOT_TEXT_MUTED,
+    CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SURFACE,
+    CRABOT_TEXT, CRABOT_TEXT_MUTED,
 };
 use crate::Message;
+use crate::widgets::textarea::TextArea;
 use crabot::model::{Model, ModelConfig, ModelList, Provider};
 use crabot::model_database::ModelDatabase;
+use crabot::tools::custom::{CustomTool, ParameterType, ToolList, ToolParameter};
 use iced::padding;
 use iced::{
     Alignment, Border, Color, Element, Length,
@@ -14,6 +16,7 @@ use iced::{
 use std::collections::HashMap;
 
 pub mod ai_models;
+pub mod custom_tools;
 
 /// Widget id of the new-label text input — used to focus it and detect blur.
 pub(crate) const NEW_LABEL_INPUT_ID: &str = "settings-new-label-input";
@@ -37,6 +40,13 @@ impl SettingsTab {
             SettingsTab::McpServers => "MCP Servers",
         }
     }
+}
+
+/// Identifies which text field in the custom-tool form is being edited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolTextField {
+    Description,
+    Instruction,
 }
 
 // ── Events ──────────────────────────────────────────────────────────
@@ -76,8 +86,24 @@ pub(crate) enum SettingsEvent {
     LabelDragEnter(usize),
     /// End the capsule drag, saving if the order changed.
     LabelDragEnd,
-    /// Save all changes and close the dialog.
-    Save,
+    // Custom tool actions
+    /// Expand/collapse the tool card at the given index.
+    ToggleTool(usize),
+    /// Append a new blank tool and expand its card.
+    NewTool,
+    DeleteTool(usize),
+    EditToolName(usize, String),
+    EditToolCommand(usize, String),
+    AddToolParam(usize),
+    DeleteToolParam(usize, usize),
+    EditParamName(usize, usize, String),
+    EditParamKind(usize, usize, String),
+    EditParamDescription(usize, usize, String),
+    ToggleParamRequired(usize, usize, bool),
+    SaveModels,
+    SaveTools,
+    /// A [`TextArea`] edit in the custom-tool form.
+    ToolTextArea(ToolTextField, crate::widgets::textarea::Message),
 }
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -117,6 +143,16 @@ pub(crate) struct SettingsState {
     pub(super) selected_offer_source: Option<String>,
     /// Working copy of models edited within the dialog — saved to disk on Save.
     pub(crate) working_models: ModelList,
+    /// Working copy of custom tools edited within the dialog — saved on Save.
+    pub(crate) working_tools: ToolList,
+    /// Index of the custom-tool card currently expanded, if any.
+    pub(super) expanded_tool: Option<usize>,
+    /// `TextArea` for the description of the currently expanded tool.
+    pub(super) tool_desc_area: TextArea,
+    /// `TextArea` for the instruction of the currently expanded tool.
+    pub(super) tool_instr_area: TextArea,
+    /// Which tab just saved — drives the "Saved ✓" button label.
+    pub(super) save_feedback: Option<SettingsTab>,
 }
 
 impl Default for SettingsState {
@@ -143,6 +179,11 @@ impl Default for SettingsState {
             model_db: ModelDatabase::default(),
             selected_offer_source: None,
             working_models: ModelList::default(),
+            working_tools: ToolList::default(),
+            expanded_tool: None,
+            tool_desc_area: TextArea::new(),
+            tool_instr_area: TextArea::new(),
+            save_feedback: None,
         }
     }
 }
@@ -179,6 +220,14 @@ impl SettingsState {
         self.provider_api_key.clear();
         self.provider_strict_mode = false;
         self.is_new_provider = true;
+    }
+
+    /// Load custom tools into the dialog's working copy (on dialog open).
+    pub(crate) fn load_tools(&mut self, tools: ToolList) {
+        self.working_tools = tools;
+        self.expanded_tool = None;
+        self.tool_desc_area = TextArea::new();
+        self.tool_instr_area = TextArea::new();
     }
 
     /// Select the first provider from the working models.
@@ -244,6 +293,7 @@ impl SettingsState {
 
     /// Handle a `SettingsEvent`, mutating `self.working_models`.
     pub(crate) fn update(&mut self, event: SettingsEvent) {
+        self.save_feedback = None;
         match event {
             SettingsEvent::SelectTab(tab) => {
                 self.selected_tab = tab;
@@ -253,7 +303,7 @@ impl SettingsState {
                 self.adding_label = false;
                 self.drag_label = None;
             }
-            SettingsEvent::Save => {
+            SettingsEvent::SaveModels => {
                 self.adding_label = false;
                 self.drag_label = None;
                 self.flush_current_provider();
@@ -265,6 +315,20 @@ impl SettingsState {
                         .models
                         .insert(name, ModelConfig::default());
                 }
+                self.save_feedback = Some(SettingsTab::AiModels);
+            }
+            SettingsEvent::SaveTools => {
+                // Flush any pending TextArea edits to tool structs.
+                self.flush_tool_text_areas();
+                // Drop custom tools left with a blank name — they cannot be invoked.
+                self.working_tools
+                    .custom_tools
+                    .retain(|t| !t.name.trim().is_empty());
+                // Trim leading/trailing whitespace from remaining tool names.
+                for t in &mut self.working_tools.custom_tools {
+                    t.name = t.name.trim().to_string();
+                }
+                self.save_feedback = Some(SettingsTab::CustomTools);
             }
             // ── Provider actions ──────────────────────────────────
             SettingsEvent::SelectProvider(id) => {
@@ -425,6 +489,147 @@ impl SettingsState {
                 self.drag_label = None;
                 self.drag_reordered = false;
             }
+            // ── Custom tool actions ────────────────────────────────
+            SettingsEvent::ToggleTool(index) => {
+                self.flush_tool_text_areas();
+                self.expanded_tool = if self.expanded_tool == Some(index) {
+                    None
+                } else {
+                    Some(index)
+                };
+                self.init_tool_text_areas();
+            }
+            SettingsEvent::NewTool => {
+                self.flush_tool_text_areas();
+                let base = "new_tool";
+                let mut name = base.to_string();
+                let mut suffix = 2;
+                while self
+                    .working_tools
+                    .custom_tools
+                    .iter()
+                    .any(|t| t.name == name)
+                {
+                    name = format!("{base}_{suffix}");
+                    suffix += 1;
+                }
+                self.working_tools.custom_tools.push(CustomTool {
+                    name,
+                    description: String::new(),
+                    instruction: String::new(),
+                    parameters: vec![],
+                    command: String::new(),
+                });
+                self.expanded_tool = Some(self.working_tools.custom_tools.len() - 1);
+                self.init_tool_text_areas();
+            }
+            SettingsEvent::DeleteTool(index) => {
+                self.flush_tool_text_areas();
+                if index < self.working_tools.custom_tools.len() {
+                    self.working_tools.custom_tools.remove(index);
+                }
+                self.expanded_tool = match self.expanded_tool {
+                    Some(i) if i == index => None,
+                    Some(i) if i > index => Some(i - 1),
+                    other => other,
+                };
+                self.init_tool_text_areas();
+            }
+            SettingsEvent::EditToolName(index, v) => {
+                if let Some(t) = self.tool_mut(index) {
+                    t.name = v;
+                }
+            }
+            SettingsEvent::EditToolCommand(index, v) => {
+                if let Some(t) = self.tool_mut(index) {
+                    t.command = v;
+                }
+            }
+            SettingsEvent::AddToolParam(index) => {
+                if let Some(t) = self.tool_mut(index) {
+                    let mut n = t.parameters.len() + 1;
+                    let mut name = format!("param{n}");
+                    while t.parameters.iter().any(|p| p.name == name) {
+                        n += 1;
+                        name = format!("param{n}");
+                    }
+                    t.parameters.push(ToolParameter {
+                        name,
+                        kind: ParameterType::String,
+                        description: String::new(),
+                        required: true,
+                    });
+                }
+            }
+            SettingsEvent::DeleteToolParam(tool_index, index) => {
+                if let Some(t) = self.tool_mut(tool_index)
+                    && index < t.parameters.len()
+                {
+                    t.parameters.remove(index);
+                }
+            }
+            SettingsEvent::EditParamName(tool_index, index, v) => {
+                if let Some(p) = self.param_mut(tool_index, index) {
+                    p.name = v;
+                }
+            }
+            SettingsEvent::EditParamKind(tool_index, index, kind) => {
+                if let Some(p) = self.param_mut(tool_index, index) {
+                    p.kind = match kind.as_str() {
+                        "integer" => ParameterType::Integer,
+                        "number" => ParameterType::Number,
+                        "boolean" => ParameterType::Boolean,
+                        _ => ParameterType::String,
+                    };
+                }
+            }
+            SettingsEvent::EditParamDescription(tool_index, index, v) => {
+                if let Some(p) = self.param_mut(tool_index, index) {
+                    p.description = v;
+                }
+            }
+            SettingsEvent::ToggleParamRequired(tool_index, index, v) => {
+                if let Some(p) = self.param_mut(tool_index, index) {
+                    p.required = v;
+                }
+            }
+            SettingsEvent::ToolTextArea(field, msg) => match field {
+                ToolTextField::Description => self.tool_desc_area.update(msg, false),
+                ToolTextField::Instruction => self.tool_instr_area.update(msg, false),
+            },
+        }
+    }
+
+    /// Borrow the custom tool at `index` for in-place editing.
+    fn tool_mut(&mut self, index: usize) -> Option<&mut CustomTool> {
+        self.working_tools.custom_tools.get_mut(index)
+    }
+
+    /// Borrow one parameter of a custom tool for in-place editing.
+    fn param_mut(&mut self, tool_index: usize, index: usize) -> Option<&mut ToolParameter> {
+        self.working_tools
+            .custom_tools
+            .get_mut(tool_index)
+            .and_then(|t| t.parameters.get_mut(index))
+    }
+
+    /// Flush TextArea content back to the currently expanded tool.
+    fn flush_tool_text_areas(&mut self) {
+        if let Some(i) = self.expanded_tool
+            && let Some(tool) = self.working_tools.custom_tools.get_mut(i)
+        {
+            tool.description = self.tool_desc_area.text();
+            tool.instruction = self.tool_instr_area.text();
+        }
+    }
+
+    /// Initialize TextArea content from the currently expanded tool.
+    fn init_tool_text_areas(&mut self) {
+        if let Some(i) = self.expanded_tool
+            && let Some(tool) = self.working_tools.custom_tools.get(i)
+        {
+            self.tool_desc_area.set_text(&tool.description);
+            self.tool_instr_area.set_text(&tool.instruction);
         }
     }
 
@@ -526,7 +731,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Messa
     // ── Tab content ────────────────────────────────────────────────
     let tab_content: Element<'a, Message> = match state.selected_tab {
         SettingsTab::AiModels => ai_models::ai_models_page(state),
-        SettingsTab::CustomTools => blank_tab_page("Custom Tools"),
+        SettingsTab::CustomTools => custom_tools::custom_tools_page(state),
         SettingsTab::McpServers => blank_tab_page("MCP Servers"),
     };
 
@@ -559,6 +764,14 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Messa
     .max_width(900)
     .max_height(800)
     .into()
+}
+
+pub(super) fn form_card_style(_theme: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::from_rgb8(0xF4, 0xF4, 0xF4).into()),
+        border: Border::default().rounded(8).width(1).color(CRABOT_BORDER),
+        ..container::Style::default()
+    }
 }
 
 pub(super) fn section_rule() -> Element<'static, Message> {
@@ -597,20 +810,11 @@ fn sidebar_tab_style(active: bool) -> impl Fn(&iced::Theme, button::Status) -> b
 
 /// A blank placeholder page shown for tabs that haven't been implemented yet.
 fn blank_tab_page<'a>(title: &'static str) -> Element<'a, Message> {
-    let save_button = button(text("OK"))
+    let save_button = button(text("Save"))
         .style(crate::views::styles::primary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::Save));
+        .on_press(Message::SettingsEvent(SettingsEvent::SaveModels));
 
-    let cancel_button = button(text("Cancel"))
-        .style(crate::views::styles::secondary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::Close));
-
-    let action_row = row![
-        iced::widget::Space::new().width(Length::Fill),
-        cancel_button,
-        save_button,
-    ]
-    .spacing(10);
+    let action_row = row![iced::widget::Space::new().width(Length::Fill), save_button,].spacing(10);
 
     container(
         column![

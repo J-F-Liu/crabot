@@ -89,6 +89,7 @@ struct LastEdit {
 /// Wraps [`text_editor::Content`] and maintains bounded undo/redo stacks.
 /// Consecutive edits of the same kind (typing, backspacing, …) coalesce
 /// into one undo unit, so undo reverts a run rather than a single keystroke.
+#[derive(Debug, Clone)]
 pub struct TextArea {
     content: text_editor::Content,
     undo_stack: VecDeque<EditSnapshot>,

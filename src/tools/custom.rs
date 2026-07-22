@@ -221,7 +221,6 @@ impl ToolList {
     }
 
     /// Save custom tools to disk as RON text.
-    #[allow(dead_code)]
     pub fn save(&self) {
         let path = Self::path();
         if let Some(parent) = path.parent() {
