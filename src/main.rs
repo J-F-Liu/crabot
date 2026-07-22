@@ -36,7 +36,10 @@ use views::session_state::AskAction;
 use views::system_prompt::PromptSectionState;
 use views::theme::{CRABOT_MODAL_SCRIM, HANDLE, MIN_W, default_theme};
 use views::tool_list::ToolListState;
-use views::{DividerState, center_pane, divider, left_pane, right_pane, scroll_to_end};
+use views::{
+    DividerState, SCROLL_STEP, center_pane, divider, left_pane, right_pane, scroll_by,
+    scroll_page_down, scroll_page_up, scroll_to_end, scroll_to_start,
+};
 use widgets::textarea::{self, TextArea};
 
 pub fn main() -> iced::Result {
@@ -144,6 +147,8 @@ struct App {
     ctrl_held: bool,
     /// Font scale factor for center pane dialog blocks.
     font_scale: f32,
+    /// Cached viewport height for the message scrollable, used by PageUp/PageDown.
+    scroll_viewport_height: f32,
     /// Which widget currently holds keyboard focus; `None` when no editable
     /// widget is focused. Setting this implicitly clears focus on all others.
     focused: Option<FocusedTarget>,
@@ -218,6 +223,14 @@ pub(crate) enum Message {
     Restart,
     /// Fires when the center pane scrollable's viewport changes.
     SessionViewScrolled(Viewport),
+    /// Scroll the message view one page down.
+    ScrollPageDown,
+    /// Scroll the message view one page up.
+    ScrollPageUp,
+    /// Scroll the message view to the top.
+    ScrollToHome,
+    /// Scroll the message view to the bottom.
+    ScrollToEnd,
     /// Toggle a single message between Markdown and selectable plain-text.
     /// `Some(i)` toggles message `i`; `None` clears all (ESC).
     ToggleSelectableMode(Option<usize>),
@@ -377,6 +390,7 @@ impl App {
             selectable_msgs: HashSet::new(),
             shift_held: false,
             font_scale: saved.font_scale,
+            scroll_viewport_height: 0.0,
             focused: None,
             show_workspace_dialog: false,
             default_workspace_path: setup::default_workspace_path(),
@@ -761,7 +775,8 @@ impl App {
                     || self.session_state.phase != DialogPhase::Idle
                     || self.session_options.is_empty()
                 {
-                    return Task::none();
+                    // Session picker not focused or busy — scroll the message view instead.
+                    return scroll_by(if up { -SCROLL_STEP } else { SCROLL_STEP });
                 }
                 let current_idx = self
                     .session_options
@@ -917,7 +932,20 @@ impl App {
                 return iced::exit();
             }
             Message::SessionViewScrolled(viewport) => {
+                self.scroll_viewport_height = viewport.bounds().height;
                 views::session_state::handle_scroll(&self.session_state, viewport);
+            }
+            Message::ScrollPageDown => {
+                return scroll_page_down(self.scroll_viewport_height);
+            }
+            Message::ScrollPageUp => {
+                return scroll_page_up(self.scroll_viewport_height);
+            }
+            Message::ScrollToHome => {
+                return scroll_to_start();
+            }
+            Message::ScrollToEnd => {
+                return scroll_to_end();
             }
             Message::AppClosing => {
                 // Signal any in-flight stream and running tools to stop.
@@ -1514,6 +1542,27 @@ impl App {
                     key: keyboard::Key::Named(keyboard::key::Named::Control),
                     ..
                 }) => Some(Message::CtrlHeld(false)),
+                // Message-view scroll shortcuts (Home/End/PageUp/PageDown/Space).
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Home),
+                    ..
+                }) => Some(Message::ScrollToHome),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::End),
+                    ..
+                }) => Some(Message::ScrollToEnd),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::PageUp),
+                    ..
+                }) => Some(Message::ScrollPageUp),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::PageDown),
+                    ..
+                }) => Some(Message::ScrollPageDown),
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Space),
+                    ..
+                }) => Some(Message::ScrollPageDown),
                 _ => None,
             }),
             window::close_requests().map(|_id| Message::AppClosing),

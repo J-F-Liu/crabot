@@ -38,12 +38,44 @@ pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
 pub(crate) const SEARCH_INPUT: widget::Id = widget::Id::new("search-input");
 pub(crate) const ASK_INPUT: widget::Id = widget::Id::new("ask-input");
 
+/// Fraction of the viewport scrolled per page key (leaves 10% overlap for context).
+const PAGE_SCROLL_FRACTION: f32 = 0.9;
+
+/// Vertical pixels scrolled per arrow-key press on the message view.
+pub(crate) const SCROLL_STEP: f32 = 40.0;
+
 /// Snap the message scroll to the end unconditionally.
 pub(crate) fn scroll_to_end() -> Task<Message> {
     task_widget(scrollable_op::snap_to(
         MESSAGE_SCROLL.clone(),
         scrollable::RelativeOffset::END.into(),
     ))
+}
+
+/// Snap the message scroll to the start unconditionally.
+pub(crate) fn scroll_to_start() -> Task<Message> {
+    task_widget(scrollable_op::snap_to(
+        MESSAGE_SCROLL.clone(),
+        scrollable::RelativeOffset::START.into(),
+    ))
+}
+
+/// Scroll the message viewport vertically by `delta_y` pixels (positive = down).
+pub(crate) fn scroll_by(delta_y: f32) -> Task<Message> {
+    task_widget(scrollable_op::scroll_by(
+        MESSAGE_SCROLL.clone(),
+        scrollable::AbsoluteOffset { x: 0.0, y: delta_y },
+    ))
+}
+
+/// Scroll the message viewport down by one page.
+pub(crate) fn scroll_page_down(viewport_height: f32) -> Task<Message> {
+    scroll_by(viewport_height * PAGE_SCROLL_FRACTION)
+}
+
+/// Scroll the message viewport up by one page.
+pub(crate) fn scroll_page_up(viewport_height: f32) -> Task<Message> {
+    scroll_by(-viewport_height * PAGE_SCROLL_FRACTION)
 }
 
 /// Measure the y-offsets of all turns in the scrollable content.

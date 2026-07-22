@@ -23,7 +23,8 @@ pub(crate) use styles::{
 
 // Re-export the pane constructors and helpers used by `App::view` / `App::update`.
 pub(crate) use center_pane::{
-    ASK_INPUT, SEARCH_INPUT, center_pane, measure_turn_offsets, scroll_to_end, scroll_to_turn_at,
+    ASK_INPUT, SCROLL_STEP, SEARCH_INPUT, center_pane, measure_turn_offsets, scroll_by,
+    scroll_page_down, scroll_page_up, scroll_to_end, scroll_to_start, scroll_to_turn_at,
 };
 pub(crate) use left_pane::left_pane;
 pub(crate) use modal::workspace_modal;
