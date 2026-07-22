@@ -1416,7 +1416,8 @@ impl App {
             ]
             .into()
         } else {
-            main_content
+            // Always wrap in a Stack so the widget tree type doesn't change.
+            iced::widget::stack![main_content].into()
         };
 
         if let Some(latest) = &self.update_available {
