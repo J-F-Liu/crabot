@@ -1,4 +1,4 @@
-use genai::chat::{ChatMessage, ChatRole};
+use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -351,6 +351,18 @@ impl Session {
             serde_json::from_str(&json).map_err(|e| format!("Failed to parse session: {e}"))?;
         session.rebuild_dialogs();
         Ok(session)
+    }
+
+    /// DeepSeek require every Assistant has a ReasoningContent part, fix history created by other Models when resend to deepseek
+    pub fn fix_history(&mut self) {
+        for message in &mut self.history {
+            if message.role == ChatRole::Assistant && !message.content.contains_reasoning_content()
+            {
+                message
+                    .content
+                    .push(ContentPart::ReasoningContent(String::new()));
+            }
+        }
     }
 }
 

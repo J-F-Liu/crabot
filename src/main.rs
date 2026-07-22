@@ -1183,8 +1183,11 @@ impl App {
             .model
             .as_ref()
             .is_some_and(|m| m.model_id != model_config.model_id);
-        let session_fored = if model_changed && self.session.history.len() > 1 {
+        let session_forked = if model_changed && self.session.history.len() > 1 {
             self.session = self.session.fork();
+            if model_config.model_id.starts_with("deepseek") {
+                self.session.fix_history();
+            }
             true
         } else {
             false
@@ -1194,7 +1197,7 @@ impl App {
         self.session.save().ok();
 
         // Add current session to the dropdown list so it appears immediately.
-        if (self.session.is_fresh() || session_fored)
+        if (self.session.is_fresh() || session_forked)
             && let Some(path) = self.session.save_path()
         {
             let entry = SessionEntry {
