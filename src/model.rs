@@ -276,9 +276,6 @@ pub async fn fetch_available_models(base_url: &str, api_key: &str) -> Result<Vec
     let models = json["data"]
         .as_array()
         .ok_or_else(|| "Invalid response format: missing 'data' array".to_string())?;
-    if !models.is_empty() {
-        println!("{:#?}", models[0]);
-    }
     let ids: Vec<String> = models
         .iter()
         .filter_map(|m| m["id"].as_str().map(String::from))

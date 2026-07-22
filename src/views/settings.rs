@@ -448,6 +448,11 @@ impl SettingsState {
                 }
             }
             SettingsEvent::ToggleModel(id, checked) => {
+                // Auto-flush new provider so it exists in working_models.
+                if self.is_new_provider {
+                    // create provider id and set is_new_provider to false
+                    self.flush_current_provider();
+                }
                 if let Some(provider) = self
                     .working_models
                     .providers
@@ -476,8 +481,10 @@ impl SettingsState {
                                     offers: db_model.offers.clone(),
                                 }
                             } else {
+                                let name = id.clone();
                                 Model {
                                     id,
+                                    name,
                                     ..Default::default()
                                 }
                             };
@@ -507,6 +514,7 @@ impl SettingsState {
                 self.selected_offer_source = None;
                 self.available_model_ids.clear();
                 self.selected_provider_id.clear();
+                self.models_fetch_error = None;
             }
             SettingsEvent::CancelNewProvider => {
                 self.is_new_provider = false;

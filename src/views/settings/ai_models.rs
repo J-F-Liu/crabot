@@ -435,10 +435,18 @@ fn models_section_view<'a>(
             .color(CRABOT_TEXT_MUTED)
             .into()
     } else if display_ids.is_empty() {
-        button(text("Fetch Models").size(12))
-            .style(crate::views::styles::primary_button)
-            .on_press(Message::SettingsEvent(SettingsEvent::RefreshModels))
-            .into()
+        let mut btn =
+            button(text("Fetch Models").size(12)).style(crate::views::styles::primary_button);
+        if !state.provider_base_url.trim().is_empty() {
+            btn = btn.on_press(Message::SettingsEvent(SettingsEvent::RefreshModels));
+        }
+        if let Some(err) = &state.models_fetch_error {
+            column![btn, text(err).size(11).color(CRABOT_DANGER),]
+                .spacing(4)
+                .into()
+        } else {
+            btn.into()
+        }
     } else {
         // ── Table column ──────────────────────────────────────────
         let model_rows: Vec<Element<'_, Message>> = display_ids
@@ -449,12 +457,17 @@ fn models_section_view<'a>(
                 let id_string2 = id.to_string();
                 let is_selected = state.selected_model_id.as_deref() == Some(id);
 
-                let cb = checkbox(checked)
-                    .label("")
-                    .on_toggle(move |v| {
-                        Message::SettingsEvent(SettingsEvent::ToggleModel(id_string.clone(), v))
-                    })
-                    .style(crate::views::primary_checkbox);
+                // Disable checkbox when the new provider hasn't been named yet.
+                let can_toggle = !(state.is_new_provider && state.provider_name.trim().is_empty());
+                let cb = if can_toggle {
+                    checkbox(checked)
+                        .on_toggle(move |v| {
+                            Message::SettingsEvent(SettingsEvent::ToggleModel(id_string.clone(), v))
+                        })
+                        .style(crate::views::primary_checkbox)
+                } else {
+                    checkbox(checked).style(crate::views::primary_checkbox)
+                };
 
                 let id_text = text(id.to_string()).size(12);
                 let id_inner = container(id_text).padding([2, 4]);
