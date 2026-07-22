@@ -528,6 +528,7 @@ impl App {
                     self.settings_state.working_models = self.provided_models.clone();
                     self.settings_state
                         .load_tools(tools::custom::ToolList::load());
+                    self.settings_state.load_mcp(tools::mcp::McpList::load());
                     self.settings_state.select_first_provider();
                     self.show_settings_dialog = true;
                     if self.settings_state.needs_fetch() {
@@ -1075,6 +1076,42 @@ impl App {
                         }
                         for name in new_names.difference(&old_names) {
                             self.enabled_tools.insert(name.clone());
+                        }
+                        self.refresh_tools_summary();
+                    }
+                    views::SettingsEvent::SaveMcp => {
+                        // Snapshot current servers to detect removals / reconfigurations.
+                        let old_servers = self.tool_registry.mcp_servers.clone();
+                        self.settings_state.update(event);
+                        // Persist MCP servers and sync the tool registry.
+                        self.settings_state.working_mcp.save();
+                        self.tool_registry.mcp_servers =
+                            self.settings_state.working_mcp.servers.clone();
+                        // Drop live connections whose server was removed or whose
+                        // connection-affecting config changed — their discovered
+                        // tools are now stale, so the server starts disabled.
+                        for old in &old_servers {
+                            let stale = match self
+                                .tool_registry
+                                .mcp_servers
+                                .iter()
+                                .find(|s| s.name == old.name)
+                            {
+                                Some(new) => {
+                                    new.transport != old.transport
+                                        || new.qualify_tool_names != old.qualify_tool_names
+                                }
+                                None => true,
+                            };
+                            if stale {
+                                tools::mcp::drop_connection(&old.name);
+                                self.enabled_mcp_servers.remove(&old.name);
+                                let stale_names =
+                                    self.tool_registry.unregister_mcp_group(&old.name);
+                                for name in &stale_names {
+                                    self.enabled_tools.remove(name);
+                                }
+                            }
                         }
                         self.refresh_tools_summary();
                     }

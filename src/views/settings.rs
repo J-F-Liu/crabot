@@ -1,22 +1,25 @@
 use super::icons;
 use super::theme::{
-    CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SURFACE,
-    CRABOT_TEXT, CRABOT_TEXT_MUTED,
+    CRABOT_BORDER, CRABOT_DANGER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY,
+    CRABOT_SURFACE, CRABOT_TEXT, CRABOT_TEXT_MUTED,
 };
 use crate::Message;
 use crate::widgets::textarea::TextArea;
 use crabot::model::{Model, ModelConfig, ModelList, Provider};
 use crabot::model_database::ModelDatabase;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolList, ToolParameter};
+use crabot::tools::mcp::{McpList, McpServer, McpTransport};
 use iced::padding;
 use iced::{
     Alignment, Border, Color, Element, Length,
-    widget::{button, column, container, row, rule, scrollable, svg, text},
+    widget::{button, column, container, row, rule, scrollable, svg, text, text_input},
 };
+use indexmap::IndexMap;
 use std::collections::HashMap;
 
 pub mod ai_models;
 pub mod custom_tools;
+pub mod mcp_servers;
 
 /// Widget id of the new-label text input — used to focus it and detect blur.
 pub(crate) const NEW_LABEL_INPUT_ID: &str = "settings-new-label-input";
@@ -104,6 +107,29 @@ pub(crate) enum SettingsEvent {
     SaveTools,
     /// A [`TextArea`] edit in the custom-tool form.
     ToolTextArea(ToolTextField, crate::widgets::textarea::Message),
+    // MCP server actions
+    /// Expand/collapse the MCP server card at the given index.
+    ToggleMcp(usize),
+    /// Append a new blank MCP server and expand its card.
+    NewMcp,
+    DeleteMcp(usize),
+    EditMcpName(usize, String),
+    /// Switch a server's transport kind ("stdio" or "http").
+    EditMcpTransport(usize, String),
+    /// Edit the spawn command of a stdio server.
+    EditMcpCmd(usize, String),
+    /// Edit the URL of an HTTP server.
+    EditMcpUrl(usize, String),
+    ToggleMcpQualify(usize, bool),
+    /// Add a key/value entry to the active transport's option map
+    /// (env vars for stdio servers, HTTP headers for http servers).
+    AddMcpMapEntry(usize),
+    DeleteMcpMapEntry(usize, usize),
+    EditMcpMapKey(usize, usize, String),
+    EditMcpMapValue(usize, usize, String),
+    SaveMcp,
+    /// A [`TextArea`] edit in the MCP server prompt form.
+    McpTextArea(crate::widgets::textarea::Message),
 }
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -151,6 +177,12 @@ pub(crate) struct SettingsState {
     pub(super) tool_desc_area: TextArea,
     /// `TextArea` for the instruction of the currently expanded tool.
     pub(super) tool_instr_area: TextArea,
+    /// Working copy of MCP servers edited within the dialog — saved on Save.
+    pub(crate) working_mcp: McpList,
+    /// Index of the MCP server card currently expanded, if any.
+    pub(super) expanded_mcp: Option<usize>,
+    /// `TextArea` for the prompt of the currently expanded MCP server.
+    pub(super) mcp_prompt_area: TextArea,
     /// Which tab just saved — drives the "Saved ✓" button label.
     pub(super) save_feedback: Option<SettingsTab>,
 }
@@ -183,6 +215,9 @@ impl Default for SettingsState {
             expanded_tool: None,
             tool_desc_area: TextArea::new(),
             tool_instr_area: TextArea::new(),
+            working_mcp: McpList::default(),
+            expanded_mcp: None,
+            mcp_prompt_area: TextArea::new(),
             save_feedback: None,
         }
     }
@@ -228,6 +263,13 @@ impl SettingsState {
         self.expanded_tool = None;
         self.tool_desc_area = TextArea::new();
         self.tool_instr_area = TextArea::new();
+    }
+
+    /// Load MCP servers into the dialog's working copy (on dialog open).
+    pub(crate) fn load_mcp(&mut self, servers: McpList) {
+        self.working_mcp = servers;
+        self.expanded_mcp = None;
+        self.mcp_prompt_area = TextArea::new();
     }
 
     /// Select the first provider from the working models.
@@ -329,6 +371,35 @@ impl SettingsState {
                     t.name = t.name.trim().to_string();
                 }
                 self.save_feedback = Some(SettingsTab::CustomTools);
+            }
+            SettingsEvent::SaveMcp => {
+                // Flush any pending TextArea edits to server structs.
+                self.flush_mcp_text_area();
+                // Drop servers left with a blank name — they cannot be connected.
+                self.working_mcp
+                    .servers
+                    .retain(|s| !s.name.trim().is_empty());
+                for s in &mut self.working_mcp.servers {
+                    s.name = s.name.trim().to_string();
+                    // Drop key/value entries with a blank key.
+                    match &mut s.transport {
+                        McpTransport::Stdio { env_vars, .. } => {
+                            env_vars.retain(|k, _| !k.trim().is_empty());
+                        }
+                        McpTransport::Http { headers, .. } => {
+                            headers.retain(|k, _| !k.trim().is_empty());
+                        }
+                    }
+                }
+                // Deduplicate server names — keep the first occurrence of each name.
+                // Duplicate names would corrupt the connection map and enable state.
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                self.working_mcp
+                    .servers
+                    .retain(|s| seen.insert(s.name.clone()));
+                // Collapse the card — indices may have shifted after pruning.
+                self.expanded_mcp = None;
+                self.save_feedback = Some(SettingsTab::McpServers);
             }
             // ── Provider actions ──────────────────────────────────
             SettingsEvent::SelectProvider(id) => {
@@ -597,6 +668,133 @@ impl SettingsState {
                 ToolTextField::Description => self.tool_desc_area.update(msg, false),
                 ToolTextField::Instruction => self.tool_instr_area.update(msg, false),
             },
+            // ── MCP server actions ────────────────────────────────
+            SettingsEvent::ToggleMcp(index) => {
+                self.flush_mcp_text_area();
+                self.expanded_mcp = if self.expanded_mcp == Some(index) {
+                    None
+                } else {
+                    Some(index)
+                };
+                self.init_mcp_text_area();
+            }
+            SettingsEvent::NewMcp => {
+                self.flush_mcp_text_area();
+                let base = "new_server";
+                let mut name = base.to_string();
+                let mut suffix = 2;
+                while self.working_mcp.servers.iter().any(|s| s.name == name) {
+                    name = format!("{base}_{suffix}");
+                    suffix += 1;
+                }
+                self.working_mcp.servers.push(McpServer {
+                    name,
+                    transport: McpTransport::Stdio {
+                        cmd: String::new(),
+                        env_vars: IndexMap::new(),
+                    },
+                    qualify_tool_names: false,
+                    prompt: String::new(),
+                });
+                self.expanded_mcp = Some(self.working_mcp.servers.len() - 1);
+                self.init_mcp_text_area();
+            }
+            SettingsEvent::DeleteMcp(index) => {
+                self.flush_mcp_text_area();
+                if index < self.working_mcp.servers.len() {
+                    self.working_mcp.servers.remove(index);
+                }
+                self.expanded_mcp = match self.expanded_mcp {
+                    Some(i) if i == index => None,
+                    Some(i) if i > index => Some(i - 1),
+                    other => other,
+                };
+                self.init_mcp_text_area();
+            }
+            SettingsEvent::EditMcpName(index, v) => {
+                if let Some(s) = self.mcp_mut(index) {
+                    s.name = v;
+                }
+            }
+            SettingsEvent::EditMcpTransport(index, kind) => {
+                if let Some(s) = self.mcp_mut(index) {
+                    let new_transport = match (kind.as_str(), &s.transport) {
+                        ("http", McpTransport::Stdio { .. }) => Some(McpTransport::Http {
+                            url: String::new(),
+                            headers: IndexMap::new(),
+                        }),
+                        ("stdio", McpTransport::Http { .. }) => Some(McpTransport::Stdio {
+                            cmd: String::new(),
+                            env_vars: IndexMap::new(),
+                        }),
+                        _ => None,
+                    };
+                    if let Some(transport) = new_transport {
+                        s.transport = transport;
+                    }
+                }
+            }
+            SettingsEvent::EditMcpCmd(index, v) => {
+                if let Some(s) = self.mcp_mut(index)
+                    && let McpTransport::Stdio { cmd, .. } = &mut s.transport
+                {
+                    *cmd = v;
+                }
+            }
+            SettingsEvent::EditMcpUrl(index, v) => {
+                if let Some(s) = self.mcp_mut(index)
+                    && let McpTransport::Http { url, .. } = &mut s.transport
+                {
+                    *url = v;
+                }
+            }
+            SettingsEvent::ToggleMcpQualify(index, v) => {
+                if let Some(s) = self.mcp_mut(index) {
+                    s.qualify_tool_names = v;
+                }
+            }
+            SettingsEvent::AddMcpMapEntry(index) => {
+                if let Some(s) = self.mcp_mut(index) {
+                    let (map, base) = match &mut s.transport {
+                        McpTransport::Stdio { env_vars, .. } => (env_vars, "KEY"),
+                        McpTransport::Http { headers, .. } => (headers, "HEADER"),
+                    };
+                    let mut n = map.len() + 1;
+                    let mut key = format!("{base}{n}");
+                    while map.contains_key(&key) {
+                        n += 1;
+                        key = format!("{base}{n}");
+                    }
+                    map.insert(key, String::new());
+                }
+            }
+            SettingsEvent::DeleteMcpMapEntry(server_index, index) => {
+                if let Some(map) = self.mcp_map_mut(server_index) {
+                    map.shift_remove_index(index);
+                }
+            }
+            SettingsEvent::EditMcpMapKey(server_index, index, new_key) => {
+                // Rename the key in place, keeping the entry's position so
+                // the row (and its input focus) doesn't jump while typing.
+                // Renames that would collide with an existing key are ignored.
+                if let Some(map) = self.mcp_map_mut(server_index)
+                    && index < map.len()
+                    && !map.contains_key(&new_key)
+                    && let Some((_, value)) = map.shift_remove_index(index)
+                {
+                    let last = map.len();
+                    map.insert(new_key, value);
+                    map.move_index(last, index);
+                }
+            }
+            SettingsEvent::EditMcpMapValue(server_index, index, v) => {
+                if let Some(map) = self.mcp_map_mut(server_index)
+                    && let Some((_, value)) = map.get_index_mut(index)
+                {
+                    *value = v;
+                }
+            }
+            SettingsEvent::McpTextArea(msg) => self.mcp_prompt_area.update(msg, false),
         }
     }
 
@@ -630,6 +828,41 @@ impl SettingsState {
         {
             self.tool_desc_area.set_text(&tool.description);
             self.tool_instr_area.set_text(&tool.instruction);
+        }
+    }
+
+    /// Borrow the MCP server at `index` for in-place editing.
+    fn mcp_mut(&mut self, index: usize) -> Option<&mut McpServer> {
+        self.working_mcp.servers.get_mut(index)
+    }
+
+    /// Borrow the active transport's option map (env vars or HTTP headers)
+    /// of the MCP server at `index` for in-place editing.
+    fn mcp_map_mut(&mut self, index: usize) -> Option<&mut IndexMap<String, String>> {
+        self.working_mcp
+            .servers
+            .get_mut(index)
+            .map(|s| match &mut s.transport {
+                McpTransport::Stdio { env_vars, .. } => env_vars,
+                McpTransport::Http { headers, .. } => headers,
+            })
+    }
+
+    /// Flush TextArea content back to the currently expanded MCP server.
+    fn flush_mcp_text_area(&mut self) {
+        if let Some(i) = self.expanded_mcp
+            && let Some(server) = self.working_mcp.servers.get_mut(i)
+        {
+            server.prompt = self.mcp_prompt_area.text();
+        }
+    }
+
+    /// Initialize TextArea content from the currently expanded MCP server.
+    fn init_mcp_text_area(&mut self) {
+        if let Some(i) = self.expanded_mcp
+            && let Some(server) = self.working_mcp.servers.get(i)
+        {
+            self.mcp_prompt_area.set_text(&server.prompt);
         }
     }
 
@@ -732,7 +965,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Messa
     let tab_content: Element<'a, Message> = match state.selected_tab {
         SettingsTab::AiModels => ai_models::ai_models_page(state),
         SettingsTab::CustomTools => custom_tools::custom_tools_page(state),
-        SettingsTab::McpServers => blank_tab_page("MCP Servers"),
+        SettingsTab::McpServers => mcp_servers::mcp_servers_page(state),
     };
 
     let content_area = scrollable(tab_content)
@@ -785,6 +1018,87 @@ pub(super) fn section_rule() -> Element<'static, Message> {
         .into()
 }
 
+// ── Shared form helpers ────────────────────────────────────────────
+
+/// A labelled single-line text input row used by the settings forms.
+pub(super) fn field_row<'a>(
+    label: &'static str,
+    value: &'a str,
+    placeholder: &'a str,
+    mono: bool,
+    on_input: impl Fn(String) -> Message + 'a,
+) -> Element<'a, Message> {
+    let label_col = container(text(label).size(14))
+        .width(90)
+        .align_x(Alignment::End);
+    let mut input = text_input(placeholder, value)
+        .on_input(on_input)
+        .width(Length::Fill)
+        .padding(4)
+        .size(13);
+    if mono {
+        input = input.font(iced::Font::MONOSPACE);
+    }
+    row![label_col, input]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// A labelled multi-line [`TextArea`] row for editing longer text fields.
+pub(super) fn textarea_field_row<'a>(
+    label: &'static str,
+    area: &'a TextArea,
+    placeholder: &'a str,
+    on_action: impl Fn(crate::widgets::textarea::Message) -> Message + 'a,
+) -> Element<'a, Message> {
+    let label_col = container(text(label).size(14))
+        .width(90)
+        .align_x(Alignment::End)
+        .align_y(Alignment::Start)
+        .padding(padding::top(4));
+    let editor = area
+        .view(on_action)
+        .placeholder(placeholder)
+        .height(Length::Fixed(64.0));
+    row![label_col, container(editor).width(Length::Fill)]
+        .spacing(10)
+        .align_y(Alignment::Start)
+        .into()
+}
+
+/// Thin separator between a card header and the expanded form.
+pub(super) fn card_rule() -> Element<'static, Message> {
+    rule::horizontal(1)
+        .style(|_: &iced::Theme| rule::Style {
+            color: CRABOT_BORDER,
+            fill_mode: rule::FillMode::Full,
+            radius: 0.0.into(),
+            snap: false,
+        })
+        .into()
+}
+
+/// White sub-card used for nested editors inside a form card.
+pub(super) fn sub_card_style(_theme: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(Color::WHITE.into()),
+        border: Border::default().rounded(6).width(1).color(CRABOT_BORDER),
+        ..container::Style::default()
+    }
+}
+
+/// Subtle "✕" button — muted normally, red on hover.
+pub(super) fn delete_button_style(_theme: &iced::Theme, status: button::Status) -> button::Style {
+    button::Style {
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => CRABOT_DANGER,
+            _ => CRABOT_TEXT_MUTED,
+        },
+        ..button::Style::default()
+    }
+}
+
 // ── Sidebar & placeholder helpers ──────────────────────────────────
 
 /// Style for a vertical tab button in the settings sidebar.
@@ -806,41 +1120,4 @@ fn sidebar_tab_style(active: bool) -> impl Fn(&iced::Theme, button::Status) -> b
             }
         }
     }
-}
-
-/// A blank placeholder page shown for tabs that haven't been implemented yet.
-fn blank_tab_page<'a>(title: &'static str) -> Element<'a, Message> {
-    let save_button = button(text("Save"))
-        .style(crate::views::styles::primary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::SaveModels));
-
-    let action_row = row![iced::widget::Space::new().width(Length::Fill), save_button,].spacing(10);
-
-    container(
-        column![
-            column![
-                text(title)
-                    .size(13)
-                    .font(iced::Font {
-                        weight: iced::font::Weight::Bold,
-                        ..iced::Font::DEFAULT
-                    })
-                    .color(CRABOT_PRIMARY),
-                text("Configuration will be available in a future update.")
-                    .size(12)
-                    .color(CRABOT_TEXT_MUTED),
-            ]
-            .spacing(8)
-            .align_x(Alignment::Center)
-            .width(Length::Fill),
-            iced::widget::Space::new().height(Length::Fill),
-            action_row,
-        ]
-        .spacing(16),
-    )
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
 }

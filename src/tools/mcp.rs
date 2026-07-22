@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use indexmap::IndexMap;
 use rmcp::model::{
     CallToolRequestParams, ClientCapabilities, ClientInfo, ContentBlock, Implementation,
     ResourceContents,
@@ -43,7 +44,7 @@ pub enum McpTransport {
         cmd: String,
         /// Extra environment variables for the child process.
         #[serde(default)]
-        env_vars: HashMap<String, String>,
+        env_vars: IndexMap<String, String>,
     },
     /// Streamable HTTP transport.
     Http {
@@ -51,7 +52,7 @@ pub enum McpTransport {
         url: String,
         /// Custom HTTP headers to include with every request.
         #[serde(default)]
-        headers: HashMap<String, String>,
+        headers: IndexMap<String, String>,
     },
 }
 
@@ -100,6 +101,20 @@ impl McpList {
     #[allow(dead_code)]
     pub fn server_names(&self) -> Vec<String> {
         self.servers.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// Save the server list to disk as RON text.
+    pub fn save(&self) {
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(text) = ron::ser::to_string_pretty(
+            self,
+            ron::ser::PrettyConfig::default().escape_strings(false),
+        ) {
+            let _ = std::fs::write(&path, text);
+        }
     }
 }
 
@@ -387,7 +402,7 @@ impl McpServer {
 async fn connect_stdio(
     server: &McpServer,
     command: &str,
-    env_vars: &HashMap<String, String>,
+    env_vars: &IndexMap<String, String>,
 ) -> Result<McpConnection, String> {
     let parts =
         split(command).map_err(|e| format!("Failed to parse command '{}': {e}", command))?;
@@ -439,7 +454,7 @@ async fn connect_stdio(
 async fn connect_http(
     server: &McpServer,
     url: &str,
-    headers: &HashMap<String, String>,
+    headers: &IndexMap<String, String>,
 ) -> Result<McpConnection, String> {
     use http::{HeaderName, HeaderValue};
 

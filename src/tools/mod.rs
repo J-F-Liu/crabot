@@ -247,6 +247,18 @@ impl ToolRegistry {
         }
     }
 
+    /// Remove a server's tools from the registry, returning the tool names
+    /// that were removed. Used when a server is deleted or reconfigured.
+    pub fn unregister_mcp_group(&mut self, server_name: &str) -> Vec<String> {
+        if let Some(pos) = self.mcp_groups.iter().position(|(n, _)| n == server_name) {
+            let (_, names) = self.mcp_groups.remove(pos);
+            self.mcp.remove(pos);
+            names
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Return names of all registered tools (built-in + custom + MCP).
     pub fn all_names(&self) -> impl Iterator<Item = &String> {
         self.builtin_names

@@ -1,18 +1,18 @@
 //! "Custom Tools" settings tab: each user-defined command-line tool is
 //! shown as a collapsible card; expanding a card reveals its edit form.
 
-use super::form_card_style;
-use super::{SettingsEvent, SettingsState, SettingsTab, ToolTextField};
+use super::{
+    SettingsEvent, SettingsState, SettingsTab, ToolTextField, card_rule, delete_button_style,
+    field_row, form_card_style, sub_card_style, textarea_field_row,
+};
 use crate::Message;
-use crate::views::theme::{CRABOT_BORDER, CRABOT_DANGER, CRABOT_PRIMARY, CRABOT_TEXT_MUTED};
+use crate::views::theme::{CRABOT_PRIMARY, CRABOT_TEXT_MUTED};
 use crate::widgets::textarea::TextArea;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolParameter};
 use iced::padding;
 use iced::{
-    Alignment, Border, Color, Element, Length,
-    widget::{
-        button, checkbox, column, container, mouse_area, pick_list, row, rule, text, text_input,
-    },
+    Alignment, Element, Length,
+    widget::{button, checkbox, column, container, mouse_area, pick_list, row, text, text_input},
 };
 
 /// Simple parameter kinds offered by the type picker. Complex kinds
@@ -296,7 +296,7 @@ fn param_card<'a>(
         .spacing(6),
     )
     .padding(8)
-    .style(param_card_style)
+    .style(sub_card_style)
     .width(Length::Fill)
     .into()
 }
@@ -326,85 +326,5 @@ fn kind_name(kind: &ParameterType) -> &'static str {
         ParameterType::Array(_) => "array",
         ParameterType::Object(_) => "object",
         ParameterType::Union(_) => "union",
-    }
-}
-
-// ── Form helpers ──────────────────────────────────────────────────
-
-/// A labelled multi-line [`TextArea`] row for editing longer text fields.
-fn textarea_field_row<'a>(
-    label: &'static str,
-    area: &'a TextArea,
-    placeholder: &'a str,
-    on_action: impl Fn(crate::widgets::textarea::Message) -> Message + 'a,
-) -> Element<'a, Message> {
-    let label_col = container(text(label).size(14))
-        .width(90)
-        .align_x(Alignment::End)
-        .align_y(Alignment::Start)
-        .padding(padding::top(4));
-    let editor = area
-        .view(on_action)
-        .placeholder(placeholder)
-        .height(Length::Fixed(64.0));
-    row![label_col, container(editor).width(Length::Fill)]
-        .spacing(10)
-        .align_y(Alignment::Start)
-        .into()
-}
-
-fn field_row<'a>(
-    label: &'static str,
-    value: &'a str,
-    placeholder: &'a str,
-    mono: bool,
-    on_input: impl Fn(String) -> Message + 'a,
-) -> Element<'a, Message> {
-    let label_col = container(text(label).size(14))
-        .width(90)
-        .align_x(Alignment::End);
-    let mut input = text_input(placeholder, value)
-        .on_input(on_input)
-        .width(Length::Fill)
-        .padding(4)
-        .size(13);
-    if mono {
-        input = input.font(iced::Font::MONOSPACE);
-    }
-    row![label_col, input]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
-}
-
-/// Thin separator between a card header and the expanded form.
-fn card_rule() -> Element<'static, Message> {
-    rule::horizontal(1)
-        .style(|_: &iced::Theme| rule::Style {
-            color: CRABOT_BORDER,
-            fill_mode: rule::FillMode::Full,
-            radius: 0.0.into(),
-            snap: false,
-        })
-        .into()
-}
-
-/// White sub-card used for parameter editors inside a tool card.
-fn param_card_style(_theme: &iced::Theme) -> container::Style {
-    container::Style {
-        background: Some(Color::WHITE.into()),
-        border: Border::default().rounded(6).width(1).color(CRABOT_BORDER),
-        ..container::Style::default()
-    }
-}
-
-/// Subtle "✕" button — muted normally, red on hover.
-fn delete_button_style(_theme: &iced::Theme, status: button::Status) -> button::Style {
-    button::Style {
-        text_color: match status {
-            button::Status::Hovered | button::Status::Pressed => CRABOT_DANGER,
-            _ => CRABOT_TEXT_MUTED,
-        },
-        ..button::Style::default()
     }
 }
