@@ -43,11 +43,11 @@ impl Tool for SearchTool {
         workspace: &Path,
         cancel: &AtomicBool,
     ) -> Result<String, String> {
-        execute(args, workspace, cancel)
+        execute_search(args, workspace, cancel)
     }
 }
 
-pub(super) fn execute(
+pub(super) fn execute_search(
     args: &Value,
     workspace: &Path,
     cancel: &AtomicBool,
@@ -92,7 +92,11 @@ pub(super) fn execute(
             .standard_filters(true)
             .build();
         for entry in walker {
-            if out_lines >= MAX_LINES || cancel.load(Ordering::Relaxed) {
+            if out_lines >= MAX_LINES {
+                truncated = true;
+                break;
+            }
+            if cancel.load(Ordering::Relaxed) {
                 break;
             }
             let entry = match entry {
@@ -130,12 +134,12 @@ pub(super) fn execute(
             super::make_workspace_relative(&search_path, workspace)
         ));
     }
-    if !found {
-        Ok("No matches found.".into())
-    } else if cancel.load(Ordering::Relaxed) {
+    if cancel.load(Ordering::Relaxed) {
         let _ =
             std::fmt::Write::write_fmt(&mut out, format_args!("\n... [search was cancelled]\n"));
         Ok(super::truncate_output(out))
+    } else if !found {
+        Ok("No matches found.".into())
     } else if truncated {
         let _ = std::fmt::Write::write_fmt(
             &mut out,
