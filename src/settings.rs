@@ -1,6 +1,10 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
+
+use crate::system::SystemPrompt;
+use crate::tools::ToolRegistry;
 
 /// All persistable app-level state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +87,52 @@ impl Settings {
         match std::fs::read_to_string(&path) {
             Ok(text) => ron::from_str::<Settings>(&text).unwrap_or_default(),
             Err(_) => Self::default(),
+        }
+    }
+
+    /// Copy enabled flags and workspace path from a `SystemPrompt`.
+    pub fn sync_system_prompt(&mut self, prompt: &SystemPrompt) {
+        self.preamble_enabled = prompt.preamble.0;
+        self.rules_enabled = prompt.rules.0;
+        self.tools_enabled = prompt.tools.0;
+        self.workspace_enabled = prompt.workspace.0;
+        self.agents_md_enabled = prompt.agents_md.0;
+        self.date_enabled = prompt.date.0;
+        self.workspace = prompt.workspace.1.clone();
+    }
+
+    /// Rebuild `mcp_servers` and `agent_tools` from live registry state.
+    pub fn sync_tools(
+        &mut self,
+        registry: &ToolRegistry,
+        enabled_tools: &HashSet<String>,
+        enabled_mcp_servers: &HashSet<String>,
+    ) {
+        self.mcp_servers = registry
+            .mcp_servers
+            .iter()
+            .map(|s| (s.name.clone(), enabled_mcp_servers.contains(&s.name)))
+            .collect();
+        self.agent_tools = registry
+            .all_names()
+            .map(|name| {
+                let enabled = enabled_tools.contains(name);
+                (name.clone(), enabled)
+            })
+            .collect();
+    }
+
+    /// Look up whether a tool is enabled in saved agent-tool preferences.
+    pub fn is_tool_enabled(&self, name: &str) -> bool {
+        self.agent_tools.get(name).copied().unwrap_or(false)
+    }
+
+    /// Set `agents_md_enabled` for a workspace path in recents.
+    pub fn set_recent_workspace_enabled(&mut self, path: &PathBuf, enabled: bool) {
+        if let Some(entry) = self.recent_workspaces.iter_mut().find(|(p, _)| p == path) {
+            entry.1 = enabled;
+        } else {
+            self.recent_workspaces.push((path.clone(), enabled));
         }
     }
 

@@ -15,7 +15,6 @@ use iced::widget::{column, container, row, text_editor};
 use iced::{
     Element, Event, Length, Point, Size, Subscription, Task, Theme, event, keyboard, mouse, window,
 };
-use indexmap::IndexMap;
 use llm::DialogPhase;
 use std::collections::HashSet;
 use std::env;
@@ -87,8 +86,7 @@ pub enum FocusedTarget {
 }
 
 struct App {
-    left_pane_width: f32,
-    right_pane_width: f32,
+    settings: settings::Settings,
     window_size: Size,
     window_pos: Point,
     cursor: Point,
@@ -96,30 +94,22 @@ struct App {
     right_divider: DividerState,
     provided_models: ModelList,
     provider_entries: Vec<ProviderEntry>,
-    selected_model: String,
     theme: Theme,
     system_prompt: SystemPrompt,
     tools_expanded: bool,
     tool_list_state: ToolListState,
-    selected_preamble: String,
     preamble_options: Vec<FilepathEntry>,
-    selected_rules: String,
     rules_options: Vec<FilepathEntry>,
     workspace_options: Vec<FilepathEntry>,
     /// Whether an AGENTS.md file exists in the current workspace.
     agents_md_exists: bool,
-    /// Recent workspace paths with their per-workspace agents_md_enabled preference.
-    recent_workspaces: Vec<(PathBuf, bool)>,
     // user-editable Content need to persist between view calls to maintain editor state
     files_content: text_editor::Content,
-    files_enabled: bool,
     files_expanded: bool,
     tools_content: text_editor::Content,
     tool_registry: tools::ToolRegistry,
     enabled_tools: HashSet<String>,
     enabled_mcp_servers: HashSet<String>,
-    /// Snapshot of saved agent-tool enable states.
-    saved_agent_tools: IndexMap<String, bool>,
     user_prompt: TextArea,
     workmode: WorkMode,
     workmode_enabled: bool,
@@ -146,8 +136,6 @@ struct App {
     shift_held: bool,
     /// Whether the Ctrl key is currently held. Used for Ctrl+Click on markdown links.
     ctrl_held: bool,
-    /// Font scale factor for center pane dialog blocks.
-    font_scale: f32,
     /// Cached viewport height for the message scrollable, used by PageUp/PageDown.
     scroll_viewport_height: f32,
     /// Which widget currently holds keyboard focus; `None` when no editable
@@ -163,16 +151,12 @@ struct App {
     default_workspace_path: PathBuf,
     /// Center-pane search UI state and measurement cache.
     search: views::search_bar::SearchState,
-    /// Prompt recipes loaded from settings: work-mode name → list of prompt templates.
-    prompt_recipe: IndexMap<String, Vec<String>>,
     /// Whether the recipe DropDown is currently expanded.
     recipe_dropdown_expanded: bool,
     /// Cached snapshot of the todo list, refreshed when the todo tool executes.
     cached_todo_items: Vec<TodoItem>,
     /// Latest version from crates.io when newer than current, shown as a banner.
     update_available: Option<String>,
-    /// Cached latest version from the last crates.io check.
-    cached_update_version: Option<String>,
 }
 
 #[derive(Clone)]
@@ -280,7 +264,7 @@ pub(crate) enum Message {
 // ── App impl ──────────────────────────────────────────────────────
 
 impl App {
-    fn boot(saved: settings::Settings) -> (Self, Task<Message>) {
+    fn boot(mut saved: settings::Settings) -> (Self, Task<Message>) {
         let provided_models = model::load_models();
         let provider_entries: Vec<ProviderEntry> = provided_models
             .providers
@@ -290,7 +274,7 @@ impl App {
                 name: p.name.clone(),
             })
             .collect();
-        let selected_model = provided_models.ensure_valid_name(&saved.selected_model);
+        saved.selected_model = provided_models.ensure_valid_name(&saved.selected_model);
 
         let custom_tool_list = tools::custom::ToolList::load();
         let mcp_list = tools::mcp::McpList::load();
@@ -313,7 +297,7 @@ impl App {
         let (rules_options, rules_content) =
             views::load_prompt_options("rules", &saved.selected_rules);
 
-        let workspace_path = saved.workspace;
+        let workspace_path = saved.workspace.clone();
         let files_tree = workspace::build_files_tree(&workspace_path);
         let (agents_md_exists, agents_md_content) = load_agents_md(&workspace_path);
         let enabled_mcp_servers: HashSet<_> = saved
@@ -344,15 +328,13 @@ impl App {
             ),
         };
 
-        let cached_update_version = saved.last_update_version;
-        let update_available = cached_update_version
+        let update_available = saved
+            .last_update_version
             .as_ref()
             .filter(|v| views::update::version_gt(v, views::update::CURRENT_VERSION))
             .cloned();
 
         let mut app = Self {
-            left_pane_width: saved.left_pane_width,
-            right_pane_width: saved.right_pane_width,
             window_size: Size::new(saved.window_size.0, saved.window_size.1),
             window_pos: Point::new(saved.window_pos.0, saved.window_pos.1),
             cursor: Point::ORIGIN,
@@ -364,22 +346,16 @@ impl App {
             rules_options,
             system_prompt,
             theme: default_theme(),
-            selected_model,
-            selected_preamble: saved.selected_preamble,
-            selected_rules: saved.selected_rules,
             workspace_options: views::build_workspace_options(&saved.recent_workspaces),
             agents_md_exists,
-            recent_workspaces: saved.recent_workspaces,
             tools_expanded: false,
             tool_list_state: ToolListState::default(),
             files_content,
-            files_enabled: saved.files_enabled,
             files_expanded: false,
             tools_content,
             tool_registry,
             enabled_tools,
             enabled_mcp_servers: enabled_mcp_servers.clone(),
-            saved_agent_tools: saved.agent_tools,
             user_prompt: TextArea::new(),
             workmode: WorkMode::default_mode(),
             workmode_enabled: true,
@@ -393,7 +369,6 @@ impl App {
             show_restart,
             selectable_msgs: HashSet::new(),
             shift_held: false,
-            font_scale: saved.font_scale,
             scroll_viewport_height: 0.0,
             focused: None,
             show_workspace_dialog: false,
@@ -401,12 +376,11 @@ impl App {
             show_settings_dialog: false,
             settings_state: views::SettingsState::default(),
             search: views::search_bar::SearchState::default(),
-            prompt_recipe: saved.prompt_recipe,
             recipe_dropdown_expanded: false,
             cached_todo_items: Vec::new(),
             update_available,
-            cached_update_version,
             ctrl_held: false,
+            settings: saved,
         };
         let session_task = app.refresh_session_list();
         let discover_task = mcp_list
@@ -447,25 +421,28 @@ impl App {
         match msg {
             Message::CursorMoved(pos) => {
                 self.cursor = pos;
-                self.left_divider.hovered =
-                    pos.x >= self.left_pane_width && pos.x <= self.left_pane_width + HANDLE;
-                let right_x = self.window_size.width - self.right_pane_width - HANDLE;
+                self.left_divider.hovered = pos.x >= self.settings.left_pane_width
+                    && pos.x <= self.settings.left_pane_width + HANDLE;
+                let right_x = self.window_size.width - self.settings.right_pane_width - HANDLE;
                 self.right_divider.hovered = pos.x >= right_x && pos.x <= right_x + HANDLE;
 
                 if self.left_divider.dragging {
                     let delta = pos.x - self.left_divider.origin;
                     let gutter = 2.0 * HANDLE;
-                    let max = (self.window_size.width - self.right_pane_width - gutter - MIN_W)
-                        .max(MIN_W);
-                    self.left_pane_width = (self.left_divider.start + delta).clamp(MIN_W, max);
+                    let max =
+                        (self.window_size.width - self.settings.right_pane_width - gutter - MIN_W)
+                            .max(MIN_W);
+                    self.settings.left_pane_width =
+                        (self.left_divider.start + delta).clamp(MIN_W, max);
                 } else if self.right_divider.dragging {
                     let delta = pos.x - self.right_divider.origin;
                     let gutter = 2.0 * HANDLE;
                     let max =
-                        (self.window_size.width - self.left_pane_width - gutter - MIN_W).max(MIN_W);
+                        (self.window_size.width - self.settings.left_pane_width - gutter - MIN_W)
+                            .max(MIN_W);
                     let new = (self.right_divider.start - delta).max(0.0);
                     // Shrink below MIN_W → hide, expand from hidden → snap to MIN_W.
-                    self.right_pane_width = if self.right_divider.start == 0.0 {
+                    self.settings.right_pane_width = if self.right_divider.start == 0.0 {
                         if new > 10.0 {
                             new.clamp(MIN_W, max)
                         } else {
@@ -479,21 +456,21 @@ impl App {
                 }
             }
             Message::LeftPressed => {
-                let left_x = self.left_pane_width;
-                let right_x = self.window_size.width - self.right_pane_width - HANDLE;
+                let left_x = self.settings.left_pane_width;
+                let right_x = self.window_size.width - self.settings.right_pane_width - HANDLE;
 
                 if self.cursor.x >= left_x && self.cursor.x <= left_x + HANDLE {
                     self.left_divider.dragging = true;
                     self.left_divider.origin = self.cursor.x;
-                    self.left_divider.start = self.left_pane_width;
+                    self.left_divider.start = self.settings.left_pane_width;
                 } else if self.cursor.x >= right_x && self.cursor.x <= right_x + HANDLE {
                     // When the right pane is hidden, a single click on the divider shows it
-                    if self.right_pane_width == 0.0 {
-                        self.right_pane_width = MIN_W;
+                    if self.settings.right_pane_width == 0.0 {
+                        self.settings.right_pane_width = MIN_W;
                     } else {
                         self.right_divider.dragging = true;
                         self.right_divider.origin = self.cursor.x;
-                        self.right_divider.start = self.right_pane_width;
+                        self.right_divider.start = self.settings.right_pane_width;
                     }
                 }
 
@@ -569,7 +546,7 @@ impl App {
                 } else if views::model_config::update(
                     event,
                     &mut self.provided_models,
-                    &mut self.selected_model,
+                    &mut self.settings.selected_model,
                 ) {
                     self.provided_models.save();
                 }
@@ -578,7 +555,7 @@ impl App {
                 if name == WORKSPACE {
                     self.system_prompt.workspace.0 = enabled;
                 } else if name == WORKSPACE_TREE {
-                    self.files_enabled = enabled;
+                    self.settings.files_enabled = enabled;
                 } else if let Some(field) = self.system_prompt.get_mut(name) {
                     field.0 = enabled;
                 }
@@ -625,9 +602,9 @@ impl App {
                     // Auto-enable tools that were previously saved as enabled.
                     // New tools default to disabled (opt-in).
                     self.enabled_tools.extend(
-                        new_names.into_iter().filter(|name| {
-                            self.saved_agent_tools.get(name).copied().unwrap_or(false)
-                        }),
+                        new_names
+                            .into_iter()
+                            .filter(|name| self.settings.is_tool_enabled(name)),
                     );
                 }
                 self.refresh_tools_summary();
@@ -702,7 +679,7 @@ impl App {
             Message::SelectPreamble(entry) => {
                 return Self::select_prompt_file(
                     entry,
-                    &mut self.selected_preamble,
+                    &mut self.settings.selected_preamble,
                     Message::PreambleFileResult,
                 );
             }
@@ -714,7 +691,7 @@ impl App {
             Message::SelectRules(entry) => {
                 return Self::select_prompt_file(
                     entry,
-                    &mut self.selected_rules,
+                    &mut self.settings.selected_rules,
                     Message::RulesFileResult,
                 );
             }
@@ -743,7 +720,7 @@ impl App {
                 // Refresh workspace tree so the system prompt reflects current files.
                 let tree = workspace::build_files_tree(&self.system_prompt.workspace.1);
                 self.files_content = text_editor::Content::with_text(&tree);
-                self.files_enabled = true;
+                self.settings.files_enabled = true;
                 let (exists, agents_md_content) = load_agents_md(&self.system_prompt.workspace.1);
                 self.agents_md_exists = exists;
                 self.system_prompt.agents_md.1 = agents_md_content;
@@ -845,7 +822,7 @@ impl App {
 
                 let Some(model) = self
                     .provided_models
-                    .get_config(&self.selected_model)
+                    .get_config(&self.settings.selected_model)
                     .cloned()
                 else {
                     return Task::none();
@@ -863,14 +840,14 @@ impl App {
                 } else {
                     None
                 };
-                let workspace_tree = if self.files_enabled {
+                let workspace_tree = if self.settings.files_enabled {
                     let tree = self.files_content.text();
                     (!tree.is_empty()).then(|| tree.to_string())
                 } else {
                     None
                 };
                 let user_prompt = UserPrompt::new(mode, content.clone(), workspace_tree);
-                self.files_enabled = false;
+                self.settings.files_enabled = false;
                 self.user_prompt.clear();
 
                 // During streaming: stash the prompt for the agent loop to pick up.
@@ -911,7 +888,7 @@ impl App {
                 }
                 let Some(model) = self
                     .provided_models
-                    .get_config(&self.selected_model)
+                    .get_config(&self.settings.selected_model)
                     .cloned()
                 else {
                     return Task::none();
@@ -994,7 +971,7 @@ impl App {
                 self.shift_held = held;
             }
             Message::Zoom(delta) => {
-                self.font_scale = (self.font_scale + delta).clamp(0.5, 2.0);
+                self.settings.font_scale = (self.settings.font_scale + delta).clamp(0.5, 2.0);
                 self.search.invalidate_offsets();
             }
             Message::EscapePressed => {
@@ -1035,7 +1012,7 @@ impl App {
             }
             Message::SelectRecipe(index) => {
                 let mode_key = self.workmode.name.to_lowercase();
-                if let Some(recipes) = self.prompt_recipe.get(&mode_key)
+                if let Some(recipes) = self.settings.prompt_recipe.get(&mode_key)
                     && let Some(recipe) = recipes.get(index)
                 {
                     self.user_prompt.replace_text(recipe);
@@ -1090,8 +1067,12 @@ impl App {
                             })
                             .collect();
                         // Re-validate the selected model label.
-                        self.selected_model =
-                            self.provided_models.ensure_valid_name(&self.selected_model);
+                        {
+                            let model = self
+                                .provided_models
+                                .ensure_valid_name(&self.settings.selected_model);
+                            self.settings.selected_model = model;
+                        }
                     }
                     views::SettingsEvent::SaveTools => {
                         self.settings_state.update(event);
@@ -1375,24 +1356,23 @@ impl App {
         let cur = &self.system_prompt.workspace.1;
         if !cur.as_os_str().is_empty() {
             let enabled = self.system_prompt.agents_md.0;
-            if let Some(entry) = self.recent_workspaces.iter_mut().find(|(p, _)| p == cur) {
-                entry.1 = enabled;
-            } else {
-                self.recent_workspaces.push((cur.clone(), enabled));
-            }
+            self.settings.set_recent_workspace_enabled(cur, enabled);
         }
 
         // Move the new workspace to the front of recents.
         let (exists, content) = load_agents_md(&path);
         let enabled = self
+            .settings
             .recent_workspaces
             .iter()
             .find_map(|(p, e)| (p == &path).then_some(*e))
             .unwrap_or(true)
             && exists;
-        self.recent_workspaces.retain(|(p, _)| p != &path);
-        self.recent_workspaces.insert(0, (path.clone(), enabled));
-        self.recent_workspaces.truncate(10);
+        self.settings.recent_workspaces.retain(|(p, _)| p != &path);
+        self.settings
+            .recent_workspaces
+            .insert(0, (path.clone(), enabled));
+        self.settings.recent_workspaces.truncate(10);
 
         // Apply workspace.
         let tree = workspace::build_files_tree(&path);
@@ -1403,47 +1383,20 @@ impl App {
             .ok()
             .is_some_and(|exe| exe.starts_with(&path));
         self.system_prompt.workspace.1 = path;
-        self.workspace_options = views::build_workspace_options(&self.recent_workspaces);
+        self.workspace_options = views::build_workspace_options(&self.settings.recent_workspaces);
     }
 
-    /// Collect current app state into `Settings` and persist to disk.
-    fn save_settings(&self) {
-        let settings = settings::Settings {
-            left_pane_width: self.left_pane_width,
-            right_pane_width: self.right_pane_width,
-            window_size: (self.window_size.width, self.window_size.height),
-            window_pos: (self.window_pos.x.max(0.0), self.window_pos.y.max(0.0)),
-            selected_model: self.selected_model.clone(),
-            selected_preamble: self.selected_preamble.clone(),
-            selected_rules: self.selected_rules.clone(),
-            preamble_enabled: self.system_prompt.preamble.0,
-            rules_enabled: self.system_prompt.rules.0,
-            tools_enabled: self.system_prompt.tools.0,
-            workspace_enabled: self.system_prompt.workspace.0,
-            agents_md_enabled: self.system_prompt.agents_md.0,
-            files_enabled: self.files_enabled,
-            date_enabled: self.system_prompt.date.0,
-            workspace: self.system_prompt.workspace.1.clone(),
-            recent_workspaces: self.recent_workspaces.clone(),
-            font_scale: self.font_scale,
-            mcp_servers: self
-                .tool_registry
-                .mcp_servers
-                .iter()
-                .map(|s| (s.name.clone(), self.enabled_mcp_servers.contains(&s.name)))
-                .collect(),
-            agent_tools: self
-                .tool_registry
-                .all_names()
-                .map(|name| {
-                    let enabled = self.enabled_tools.contains(name);
-                    (name.clone(), enabled)
-                })
-                .collect(),
-            prompt_recipe: self.prompt_recipe.clone(),
-            last_update_version: self.cached_update_version.clone(),
-        };
-        settings.save();
+    /// Sync derived fields back into `settings` and persist to disk.
+    fn save_settings(&mut self) {
+        self.settings.window_size = (self.window_size.width, self.window_size.height);
+        self.settings.window_pos = (self.window_pos.x.max(0.0), self.window_pos.y.max(0.0));
+        self.settings.sync_system_prompt(&self.system_prompt);
+        self.settings.sync_tools(
+            &self.tool_registry,
+            &self.enabled_tools,
+            &self.enabled_mcp_servers,
+        );
+        self.settings.save();
     }
 
     /// Read a prompt file (preamble or rules) from disk and return a task
@@ -1491,7 +1444,10 @@ impl App {
         self.session
             .model
             .as_ref()
-            .or_else(|| self.provided_models.get_config(&self.selected_model))
+            .or_else(|| {
+                self.provided_models
+                    .get_config(&self.settings.selected_model)
+            })
             .and_then(|cfg| self.provided_models.get_model(cfg))
     }
 
@@ -1502,7 +1458,8 @@ impl App {
     /// Return the recipe list for the currently active work mode (lowercase key).
     fn current_recipe_list(&self) -> &[String] {
         let key = self.workmode.name.to_lowercase();
-        self.prompt_recipe
+        self.settings
+            .prompt_recipe
             .get(&key)
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -1511,17 +1468,17 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let main_content: Element<_> = row![
             left_pane(
-                self.left_pane_width,
+                self.settings.left_pane_width,
                 &self.provided_models,
                 &self.provider_entries,
-                &self.selected_model,
+                &self.settings.selected_model,
                 &self.system_prompt,
                 self.agents_md_exists,
                 self.tools_expanded,
                 &self.tool_list_state,
-                &self.selected_preamble,
+                &self.settings.selected_preamble,
                 &self.preamble_options,
-                &self.selected_rules,
+                &self.settings.selected_rules,
                 &self.rules_options,
                 &self.workspace_options,
                 &self.files_content,
@@ -1532,7 +1489,7 @@ impl App {
                 self.workmode,
                 self.workmode_enabled,
                 self.files_expanded,
-                self.files_enabled,
+                self.settings.files_enabled,
                 self.current_recipe_list(),
                 self.recipe_dropdown_expanded,
                 self.session_state.phase,
@@ -1550,7 +1507,7 @@ impl App {
                 &self.theme,
                 self.session_state.phase,
                 &self.selectable_msgs,
-                self.font_scale,
+                self.settings.font_scale,
                 self.session_state.pending_display.as_deref(),
                 self.session_state.ask_request.as_ref(),
                 &self.session_state.ask_input,
@@ -1560,7 +1517,7 @@ impl App {
             ),
             divider(&self.right_divider),
             right_pane(
-                self.right_pane_width,
+                self.settings.right_pane_width,
                 self.get_current_model(),
                 &self.last_usage,
                 &self.session,

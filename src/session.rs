@@ -372,10 +372,13 @@ impl Session {
         Ok(session)
     }
 
-    /// DeepSeek require every Assistant has a ReasoningContent part, fix history created by other Models when resend to deepseek
+    /// Fix history created by other models when resend to deepseek.
     pub fn fix_history(&mut self) {
+        // Ensure every Assistant message with Text part also has a ReasoningContent part
         for message in &mut self.history {
-            if message.role == ChatRole::Assistant && !message.content.contains_reasoning_content()
+            if message.role == ChatRole::Assistant
+                && message.content.contains_text()
+                && !message.content.contains_reasoning_content()
             {
                 message
                     .content
