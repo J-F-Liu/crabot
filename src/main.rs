@@ -1190,6 +1190,7 @@ impl App {
                                 views::SettingsEvent::PlaygroundToolResult(
                                     0,
                                     Err(format!("Tool '{}' not found in registry", info.name)),
+                                    false,
                                 ),
                             ));
                         };
@@ -1204,6 +1205,7 @@ impl App {
                         );
                         let workspace = self.system_prompt.workspace.1.clone();
                         let cancel = self.settings_state.playground_cancel.clone();
+                        let is_todo = info.name == "todo";
                         return Task::perform(
                             async move {
                                 // Run on a blocking thread so the UI stays responsive.
@@ -1215,14 +1217,17 @@ impl App {
                             },
                             move |result| {
                                 Message::SettingsEvent(views::SettingsEvent::PlaygroundToolResult(
-                                    generation, result,
+                                    generation, result, is_todo,
                                 ))
                             },
                         );
                     }
-                    views::SettingsEvent::PlaygroundToolResult(generation, _) => {
+                    views::SettingsEvent::PlaygroundToolResult(generation, _, is_todo) => {
                         if self.settings_state.playground_generation == generation {
                             self.settings_state.update(event);
+                            if is_todo {
+                                self.cached_todo_items = self.tool_registry.snapshot_todo();
+                            }
                         }
                     }
                     views::SettingsEvent::SelectTab(tab) => {

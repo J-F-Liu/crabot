@@ -150,8 +150,8 @@ pub(crate) enum SettingsEvent {
     ExecutePlaygroundTool,
     /// Cancel the in-flight playground execution.
     CancelPlaygroundTool,
-    /// Result of a playground tool execution (generation, result).
-    PlaygroundToolResult(u64, Result<String, String>),
+    /// Result of a playground tool execution (generation, result, is_todo).
+    PlaygroundToolResult(u64, Result<String, String>, bool),
 }
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -941,7 +941,7 @@ impl SettingsState {
                 self.playground_cancel
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            SettingsEvent::PlaygroundToolResult(generation, result) => {
+            SettingsEvent::PlaygroundToolResult(generation, result, _is_todo) => {
                 // Ignore stale results from cancelled or superseded executions.
                 if self.playground_generation == generation {
                     self.playground_running = false;
