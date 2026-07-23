@@ -674,37 +674,40 @@ pub(crate) fn center_pane<'a>(
         })
         .collect();
 
-    container(column![
-        session_header(title),
-        pending_header(pending_user_prompt),
-        if search_state.visible {
-            super::search_bar::view(search_query, search_results, search_state.current)
-                .map(Message::SearchEvent)
-        } else {
-            row![].into()
-        },
-        scrollable(
-            column![
-                session_info(model_id, created_at, font_scale),
-                column(dialog_blocks).spacing(8),
-            ]
-            .spacing(8)
-            .padding(14),
-        )
+    mouse_area(
+        container(column![
+            session_header(title),
+            pending_header(pending_user_prompt),
+            if search_state.visible {
+                super::search_bar::view(search_query, search_results, search_state.current)
+                    .map(Message::SearchEvent)
+            } else {
+                row![].into()
+            },
+            scrollable(
+                column![
+                    session_info(model_id, created_at, font_scale),
+                    column(dialog_blocks).spacing(8),
+                ]
+                .spacing(8)
+                .padding(14),
+            )
+            .height(Fill)
+            .direction(Direction::Vertical(
+                Scrollbar::new().width(6).scroller_width(6)
+            ))
+            .id(MESSAGE_SCROLL.clone())
+            .on_scroll(Message::SessionViewScrolled),
+            ask_request
+                .map(|request| super::tool_message::ask_view(request, ask_input, font_scale))
+                .unwrap_or_else(|| Space::new().into()),
+            status_line(status, streaming, font_scale),
+        ])
+        .width(Fill)
         .height(Fill)
-        .direction(Direction::Vertical(
-            Scrollbar::new().width(6).scroller_width(6)
-        ))
-        .id(MESSAGE_SCROLL.clone())
-        .on_scroll(Message::SessionViewScrolled),
-        ask_request
-            .map(|request| super::tool_message::ask_view(request, ask_input, font_scale))
-            .unwrap_or_else(|| Space::new().into()),
-        status_line(status, streaming, font_scale),
-    ])
-    .width(Fill)
-    .height(Fill)
-    .style(pane_center)
+        .style(pane_center),
+    )
+    .on_press(Message::DefocusSessionPicker)
     .into()
 }
 

@@ -257,6 +257,8 @@ pub(crate) enum Message {
     SelectRecipe(usize),
     /// Dismiss the recipe DropDown without selecting.
     DismissRecipeDropdown,
+    /// Clear keyboard focus from the session picker (e.g. center-pane clicked).
+    DefocusSessionPicker,
     /// Result of checking crates.io for a newer version.
     VersionCheckResult(Option<String>),
     /// User dismissed the update-available banner.
@@ -733,11 +735,13 @@ impl App {
                 let present = self.expanded_turns.contains(&key);
                 self.expanded_turns.set(key, !present);
                 self.search.invalidate_offsets();
+                self.focused = None;
             }
             Message::ToggleDialogExpand(idx) => {
                 let present = self.expanded_dialogs.contains(&idx);
                 self.expanded_dialogs.set(idx, !present);
                 self.search.invalidate_offsets();
+                self.focused = None;
             }
             Message::LoadSession(entry) => {
                 if self.session_state.phase != DialogPhase::Idle {
@@ -810,6 +814,9 @@ impl App {
                 if let Some(entry) = new_entry {
                     return Task::done(Message::LoadSession(entry));
                 }
+            }
+            Message::DefocusSessionPicker => {
+                self.focused = None;
             }
             Message::SendPrompt => {
                 let content_raw = self.user_prompt.text();
