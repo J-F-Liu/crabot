@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, make_workspace_relative, normalize_newlines, resolve_path};
+use super::{Tool, arg_path, make_workspace_relative, normalize_newlines, resolve_path};
 
 /// A single edit operation with flexible field-name aliases for cross‑model
 /// compatibility (e.g. `old_text` / `old` / `search`).
@@ -80,7 +80,7 @@ impl Tool for EditTool {
 }
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
-    let path = arg_str(args, "path").ok_or("Missing 'path' argument")?;
+    let path = arg_path(args).ok_or("Missing 'path' argument")?;
     let file_path = resolve_path(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
     let display_path = make_workspace_relative(&file_path, workspace);

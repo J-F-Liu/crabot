@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, arg_u64, make_workspace_relative, resolve_path};
+use super::{Tool, arg_path, arg_u64, make_workspace_relative, resolve_path};
 
 pub struct ReadTool;
 
@@ -82,7 +82,7 @@ fn strip_newline(s: &str) -> &str {
 }
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
-    let path = arg_str(args, "path").ok_or("Missing 'path' argument")?;
+    let path = arg_path(args).ok_or("Missing 'path' argument")?;
     let file_path = resolve_path(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
     let display_path = make_workspace_relative(&file_path, workspace);
