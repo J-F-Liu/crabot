@@ -320,6 +320,32 @@ impl ToolRegistry {
         }
         tools
     }
+
+    /// Look up a tool by name across builtin, custom, and MCP groups.
+    /// Returns a reference-counted tool for execution.
+    pub fn find_tool(&self, name: &str) -> Option<ToolRef> {
+        // Search builtin tools.
+        for tool in self.builtin.iter() {
+            if tool.name() == name {
+                return Some(Arc::clone(tool));
+            }
+        }
+        // Search custom tools.
+        for tool in &self.custom {
+            if tool.name() == name {
+                return Some(Arc::new(tool.clone()));
+            }
+        }
+        // Search MCP tools.
+        for (_server, tools) in &self.mcp {
+            for tool in tools {
+                if tool.name() == name {
+                    return Some(Arc::new(tool.clone()));
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Default for ToolRegistry {

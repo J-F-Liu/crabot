@@ -16,10 +16,13 @@ use iced::{
 };
 use indexmap::IndexMap;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 pub mod ai_models;
 pub mod custom_tools;
 pub mod mcp_servers;
+pub mod tool_playground;
 
 /// Widget id of the new-label text input — used to focus it and detect blur.
 pub(crate) const NEW_LABEL_INPUT_ID: &str = "settings-new-label-input";
@@ -33,6 +36,7 @@ pub(crate) enum SettingsTab {
     AiModels,
     CustomTools,
     McpServers,
+    ToolPlayground,
 }
 
 impl SettingsTab {
@@ -41,6 +45,7 @@ impl SettingsTab {
             SettingsTab::AiModels => "AI Models",
             SettingsTab::CustomTools => "Custom Tools",
             SettingsTab::McpServers => "MCP Servers",
+            SettingsTab::ToolPlayground => "Tool Playground",
         }
     }
 }
@@ -130,6 +135,23 @@ pub(crate) enum SettingsEvent {
     SaveMcp,
     /// A [`TextArea`] edit in the MCP server prompt form.
     McpTextArea(crate::widgets::textarea::Message),
+    // ── Tool Playground actions ───────────────────────────────
+    /// Select a tool by index in the playground list.  `None` clears the selection.
+    SelectPlaygroundTool(Option<usize>),
+    /// Edit a parameter value in the playground form.
+    EditPlaygroundParam(String, String),
+    /// Add an empty item to an array parameter (param name, optional item type).
+    AddPlaygroundArrayItem(String, Option<String>),
+    /// Remove an item from an array parameter by index.
+    RemovePlaygroundArrayItem(String, usize),
+    /// Edit an item of an array parameter (name, index, value, items_type).
+    EditPlaygroundArrayItem(String, usize, String, Option<String>),
+    /// Execute the selected playground tool with the given JSON args.
+    ExecutePlaygroundTool,
+    /// Cancel the in-flight playground execution.
+    CancelPlaygroundTool,
+    /// Result of a playground tool execution (generation, result).
+    PlaygroundToolResult(u64, Result<String, String>),
 }
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -185,6 +207,22 @@ pub(crate) struct SettingsState {
     pub(super) mcp_prompt_area: TextArea,
     /// Which tab just saved — drives the "Saved ✓" button label.
     pub(super) save_feedback: Option<SettingsTab>,
+    // ── Tool Playground state ────────────────────────────────
+    /// Snapshot of all registered tools for the playground picker.
+    pub(crate) playground_tools: Vec<tool_playground::ToolInfo>,
+    /// Index of the currently selected tool, if any.
+    pub(crate) playground_selected_index: Option<usize>,
+    /// Per-parameter text values for the selected tool's parameter form.
+    pub(crate) playground_param_values: std::collections::HashMap<String, String>,
+    /// Last execution result (Ok or Err), if any.
+    pub(crate) playground_result: Option<Result<String, String>>,
+    /// Whether a playground tool is currently executing.
+    pub(crate) playground_running: bool,
+    /// Cancellation token for in-progress playground execution.
+    pub(crate) playground_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Monotonically incrementing generation counter — used to discard stale
+    /// [`PlaygroundToolResult`] messages from cancelled or superseded executions.
+    pub(crate) playground_generation: u64,
 }
 
 impl Default for SettingsState {
@@ -219,6 +257,13 @@ impl Default for SettingsState {
             expanded_mcp: None,
             mcp_prompt_area: TextArea::new(),
             save_feedback: None,
+            playground_tools: Vec::new(),
+            playground_selected_index: None,
+            playground_param_values: std::collections::HashMap::new(),
+            playground_result: None,
+            playground_running: false,
+            playground_cancel: Arc::new(AtomicBool::new(false)),
+            playground_generation: 0,
         }
     }
 }
@@ -270,6 +315,26 @@ impl SettingsState {
         self.working_mcp = servers;
         self.expanded_mcp = None;
         self.mcp_prompt_area = TextArea::new();
+    }
+
+    /// Load tool snapshots from the live registry for the playground picker.
+    /// Resets selection, parameters, result, and cancels any in-flight execution.
+    pub(crate) fn load_playground_tools(&mut self, tools: Vec<tool_playground::ToolInfo>) {
+        self.refresh_playground_tools(tools);
+        self.playground_selected_index = None;
+        self.playground_param_values.clear();
+        self.playground_result = None;
+        self.playground_running = false;
+        // Cancel any in-flight execution and bump generation.
+        self.playground_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.playground_cancel = Arc::new(AtomicBool::new(false));
+        self.playground_generation = self.playground_generation.wrapping_add(1);
+    }
+
+    /// Refresh the playground tool list without resetting user selection or parameters.
+    pub(crate) fn refresh_playground_tools(&mut self, tools: Vec<tool_playground::ToolInfo>) {
+        self.playground_tools = tools;
     }
 
     /// Select the first provider from the working models.
@@ -803,6 +868,86 @@ impl SettingsState {
                 }
             }
             SettingsEvent::McpTextArea(msg) => self.mcp_prompt_area.update(msg, false),
+            // ── Tool Playground actions ───────────────────────
+            SettingsEvent::SelectPlaygroundTool(selected) => {
+                if let Some(index) = selected
+                    && index < self.playground_tools.len()
+                {
+                    self.playground_selected_index = Some(index);
+                    // Reset param values when switching tools.
+                    self.playground_param_values.clear();
+                    self.playground_result = None;
+                    self.playground_running = false;
+                }
+            }
+            SettingsEvent::EditPlaygroundParam(name, value) => {
+                self.playground_param_values.insert(name, value);
+            }
+            SettingsEvent::AddPlaygroundArrayItem(name, items_type) => {
+                let mut items: Vec<serde_json::Value> = self
+                    .playground_param_values
+                    .get(&name)
+                    .and_then(|v| serde_json::from_str(v).ok())
+                    .unwrap_or_default();
+                let default = match items_type.as_deref() {
+                    Some("object") => serde_json::Value::Object(serde_json::Map::new()),
+                    Some("boolean") => serde_json::Value::Bool(false),
+                    Some("number") | Some("integer") => serde_json::Value::Number(0_i32.into()),
+                    _ => serde_json::Value::String(String::new()),
+                };
+                items.push(default);
+                if let Ok(json) = serde_json::to_string(&items) {
+                    self.playground_param_values.insert(name, json);
+                }
+            }
+            SettingsEvent::RemovePlaygroundArrayItem(name, index) => {
+                let mut items: Vec<serde_json::Value> = self
+                    .playground_param_values
+                    .get(&name)
+                    .and_then(|v| serde_json::from_str(v).ok())
+                    .unwrap_or_default();
+                if index < items.len() {
+                    items.remove(index);
+                }
+                if let Ok(json) = serde_json::to_string(&items) {
+                    self.playground_param_values.insert(name, json);
+                }
+            }
+            SettingsEvent::EditPlaygroundArrayItem(name, index, value, items_type) => {
+                let mut items: Vec<serde_json::Value> = self
+                    .playground_param_values
+                    .get(&name)
+                    .and_then(|v| serde_json::from_str(v).ok())
+                    .unwrap_or_default();
+                if index < items.len() {
+                    let type_str = items_type.as_deref().unwrap_or("string");
+                    items[index] = tool_playground::coerce_value(&value, type_str);
+                }
+                if let Ok(json) = serde_json::to_string(&items) {
+                    self.playground_param_values.insert(name, json);
+                }
+            }
+            SettingsEvent::ExecutePlaygroundTool => {
+                // Cancel any in-flight execution before starting a new one.
+                self.playground_cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.playground_cancel = Arc::new(AtomicBool::new(false));
+                self.playground_running = true;
+                self.playground_result = None;
+                // Bump generation so stale results from previous runs are ignored.
+                self.playground_generation = self.playground_generation.wrapping_add(1);
+            }
+            SettingsEvent::CancelPlaygroundTool => {
+                self.playground_cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            SettingsEvent::PlaygroundToolResult(generation, result) => {
+                // Ignore stale results from cancelled or superseded executions.
+                if self.playground_generation == generation {
+                    self.playground_running = false;
+                    self.playground_result = Some(result);
+                }
+            }
         }
     }
 
@@ -947,6 +1092,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Messa
         SettingsTab::AiModels,
         SettingsTab::CustomTools,
         SettingsTab::McpServers,
+        SettingsTab::ToolPlayground,
     ];
     let sidebar_buttons: Vec<Element<'a, Message>> = tabs
         .iter()
@@ -974,6 +1120,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Messa
         SettingsTab::AiModels => ai_models::ai_models_page(state),
         SettingsTab::CustomTools => custom_tools::custom_tools_page(state),
         SettingsTab::McpServers => mcp_servers::mcp_servers_page(state),
+        SettingsTab::ToolPlayground => tool_playground::playground_page(state),
     };
 
     let content_area = scrollable(tab_content)

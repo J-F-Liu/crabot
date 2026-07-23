@@ -70,7 +70,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
             .find(|&&t| t == state.provider_api_type)
             .copied();
 
-        const AUTH_TYPES: &[&str] = &["apiKey", "bearer", "basic", "none"];
+        const AUTH_TYPES: &[&str] = &["apiKey", "none"];
         let selected_auth = AUTH_TYPES
             .iter()
             .find(|&&t| t == state.provider_auth)
@@ -93,12 +93,27 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
                 None,
                 Some(Message::SettingsEvent(SettingsEvent::RefreshModels)),
             ),
-            label_pick_row("API Type", API_TYPES, selected_api_type, |v| {
-                Message::SettingsEvent(SettingsEvent::EditProviderApiType(v.to_string()))
-            }),
-            label_pick_row("Auth", AUTH_TYPES, selected_auth, |v| {
-                Message::SettingsEvent(SettingsEvent::EditProviderAuth(v.to_string()))
-            }),
+            {
+                let label_col = |label: &'static str| {
+                    container(text(label).size(14))
+                        .width(90)
+                        .align_x(Alignment::End)
+                };
+                row![
+                    label_col("API Type"),
+                    pick_list(API_TYPES, selected_api_type, |v| {
+                        Message::SettingsEvent(SettingsEvent::EditProviderApiType(v.to_string()))
+                    })
+                    .width(Length::Fill),
+                    label_col("Auth Type"),
+                    pick_list(AUTH_TYPES, selected_auth, |v| {
+                        Message::SettingsEvent(SettingsEvent::EditProviderAuth(v.to_string()))
+                    })
+                    .width(Length::Fill),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center)
+            },
             field_row(
                 "API Key",
                 &state.provider_api_key,
@@ -364,24 +379,6 @@ fn field_row<'a>(
         .spacing(10)
         .align_y(Alignment::Center)
         .into()
-}
-
-fn label_pick_row<'a>(
-    label: &'static str,
-    options: &'a [&'static str],
-    selected: Option<&'static str>,
-    on_select: impl Fn(&'static str) -> Message + 'a,
-) -> Element<'a, Message> {
-    let label_col = container(text(label).size(14))
-        .width(90)
-        .align_x(Alignment::End);
-    row![
-        label_col,
-        pick_list(options, selected, on_select).width(Length::Fill),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center)
-    .into()
 }
 
 fn checkbox_row<'a>(

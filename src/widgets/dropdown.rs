@@ -181,6 +181,12 @@ where
     menu_height: Length,
     on_open: Option<Message>,
     on_close: Option<Message>,
+    /// Optional predicate: returns `true` if the item at this index is a non-selectable header.
+    item_is_header: Option<Box<dyn Fn(usize) -> bool + 'a>>,
+    /// Font used for header items (usually a bold variant).
+    header_font: Option<Renderer::Font>,
+    /// Left-padding for non-header items, in logical pixels.
+    item_indent: f32,
 }
 
 /// Internal state stored in the widget tree.
@@ -258,6 +264,9 @@ where
             menu_height: Length::Shrink,
             on_open: None,
             on_close: None,
+            item_is_header: None,
+            header_font: None,
+            item_indent: 0.0,
         }
     }
 
@@ -330,6 +339,24 @@ where
     /// Sets the message that will be produced when the [`DropDown`] is closed.
     pub fn on_close(mut self, message: Message) -> Self {
         self.on_close = Some(message);
+        self
+    }
+
+    /// Provide a predicate that marks certain items as non-selectable headers.
+    pub fn item_is_header(mut self, f: impl Fn(usize) -> bool + 'a) -> Self {
+        self.item_is_header = Some(Box::new(f));
+        self
+    }
+
+    /// Set the font used for header items (typically a bold variant).
+    pub fn header_font(mut self, font: impl Into<Renderer::Font>) -> Self {
+        self.header_font = Some(font.into());
+        self
+    }
+
+    /// Set the left-indent for non-header items, in logical pixels.
+    pub fn item_indent(mut self, indent: f32) -> Self {
+        self.item_indent = indent;
         self
     }
 }
@@ -589,6 +616,9 @@ where
                 is_dragging_scrollbar: &mut state.is_dragging_scrollbar,
                 scrollbar_drag_offset: &mut state.scrollbar_drag_offset,
                 needs_scroll_to_hovered: &mut state.needs_scroll_to_hovered,
+                is_header: self.item_is_header.as_deref(),
+                header_font: self.header_font,
+                item_indent: self.item_indent,
             })))
         } else {
             None
@@ -639,6 +669,12 @@ where
     scrollbar_drag_offset: &'a mut f32,
     /// Triggers scroll-to-hovered on the next layout pass.
     needs_scroll_to_hovered: &'a mut bool,
+    /// Optional predicate: `true` if the item at this index is a header.
+    is_header: Option<&'a dyn Fn(usize) -> bool>,
+    /// Font for header items (typically a bold variant).
+    header_font: Option<Renderer::Font>,
+    /// Left-indent for non-header items, in logical pixels.
+    item_indent: f32,
 }
 
 impl<'a, T, Message, Theme, Renderer> Overlay<'a, T, Message, Theme, Renderer>
@@ -653,6 +689,31 @@ where
     /// Total content height of all options.
     fn total_height(&self) -> f32 {
         self.option_height() * self.options.len() as f32
+    }
+
+    /// Advance `idx` forward past any header items.  Returns `option_count - 1`
+    /// if all remaining items are headers.
+    fn skip_headers_forward(&self, mut idx: usize, option_count: usize) -> usize {
+        while idx < option_count && self.is_header.is_some_and(|f| f(idx)) {
+            idx += 1;
+        }
+        if idx >= option_count {
+            idx = option_count - 1;
+        }
+        idx
+    }
+
+    /// Retreat `idx` backward past any header items.
+    fn skip_headers_backward(&self, mut idx: usize) -> usize {
+        while idx > 0 && self.is_header.is_some_and(|f| f(idx)) {
+            idx = idx.saturating_sub(1);
+        }
+        // If idx is still a header (happens when idx == 0 is a header),
+        // move forward to the first non-header item instead.
+        if self.is_header.is_some_and(|f| f(idx)) {
+            idx = self.skip_headers_forward(idx + 1, self.options.len());
+        }
+        idx
     }
 }
 
@@ -750,13 +811,16 @@ where
                     && let Some(idx) = *self.hovered_option
                     && let Some(option) = self.options.get(idx)
                 {
-                    *self.is_open = false;
-                    *self.is_dragging_scrollbar = false;
-                    shell.publish((self.on_select)(option.clone()));
-                    if let Some(on_close) = self.on_close {
-                        shell.publish(on_close.clone());
+                    // Ignore clicks on header items.
+                    if !self.is_header.is_some_and(|f| f(idx)) {
+                        *self.is_open = false;
+                        *self.is_dragging_scrollbar = false;
+                        shell.publish((self.on_select)(option.clone()));
+                        if let Some(on_close) = self.on_close {
+                            shell.publish(on_close.clone());
+                        }
+                        shell.capture_event();
                     }
-                    shell.capture_event();
                 }
             }
 
@@ -788,7 +852,11 @@ where
                     // `position_in` returns coordinates relative to `bounds`,
                     // so `pos.y` is already relative to the menu top.
                     let idx = ((pos.y + *self.scroll_offset) / option_height) as usize;
-                    if idx < self.options.len() && *self.hovered_option != Some(idx) {
+                    // Skip header items when hovering — they're not selectable.
+                    if idx < self.options.len()
+                        && *self.hovered_option != Some(idx)
+                        && !self.is_header.is_some_and(|f| f(idx))
+                    {
                         *self.hovered_option = Some(idx);
                         shell.request_redraw();
                     }
@@ -820,10 +888,11 @@ where
 
                 match key {
                     keyboard::Key::Named(Named::ArrowDown) => {
-                        let new_idx = match *self.hovered_option {
+                        let start = match *self.hovered_option {
                             None => 0,
                             Some(idx) => (idx + 1).min(option_count - 1),
                         };
+                        let new_idx = self.skip_headers_forward(start, option_count);
                         *self.hovered_option = Some(new_idx);
                         scroll_to_option(
                             self.scroll_offset,
@@ -836,10 +905,11 @@ where
                         shell.capture_event();
                     }
                     keyboard::Key::Named(Named::ArrowUp) => {
-                        let new_idx = match *self.hovered_option {
+                        let start = match *self.hovered_option {
                             None => option_count - 1,
                             Some(idx) => idx.saturating_sub(1),
                         };
+                        let new_idx = self.skip_headers_backward(start);
                         *self.hovered_option = Some(new_idx);
                         scroll_to_option(
                             self.scroll_offset,
@@ -852,10 +922,11 @@ where
                         shell.capture_event();
                     }
                     keyboard::Key::Named(Named::PageDown) => {
-                        let new_idx = match *self.hovered_option {
+                        let start = match *self.hovered_option {
                             None => 0,
                             Some(idx) => (idx + page_steps).min(option_count - 1),
                         };
+                        let new_idx = self.skip_headers_forward(start, option_count);
                         *self.hovered_option = Some(new_idx);
                         scroll_to_option(
                             self.scroll_offset,
@@ -868,10 +939,11 @@ where
                         shell.capture_event();
                     }
                     keyboard::Key::Named(Named::PageUp) => {
-                        let new_idx = match *self.hovered_option {
+                        let start = match *self.hovered_option {
                             None => option_count - 1,
                             Some(idx) => idx.saturating_sub(page_steps),
                         };
+                        let new_idx = self.skip_headers_backward(start);
                         *self.hovered_option = Some(new_idx);
                         scroll_to_option(
                             self.scroll_offset,
@@ -884,7 +956,8 @@ where
                         shell.capture_event();
                     }
                     keyboard::Key::Named(Named::Home) => {
-                        *self.hovered_option = Some(0);
+                        let new_idx = self.skip_headers_forward(0, option_count);
+                        *self.hovered_option = Some(new_idx.min(option_count - 1));
                         *self.scroll_offset = 0.0;
                         shell.request_redraw();
                         shell.capture_event();
@@ -899,14 +972,17 @@ where
                         if let Some(idx) = *self.hovered_option
                             && let Some(option) = self.options.get(idx)
                         {
-                            *self.is_open = false;
-                            *self.is_dragging_scrollbar = false;
-                            shell.publish((self.on_select)(option.clone()));
-                            if let Some(on_close) = self.on_close {
-                                shell.publish(on_close.clone());
+                            // Ignore Enter on header items.
+                            if !self.is_header.is_some_and(|f| f(idx)) {
+                                *self.is_open = false;
+                                *self.is_dragging_scrollbar = false;
+                                shell.publish((self.on_select)(option.clone()));
+                                if let Some(on_close) = self.on_close {
+                                    shell.publish(on_close.clone());
+                                }
+                                shell.request_redraw();
+                                shell.capture_event();
                             }
-                            shell.request_redraw();
-                            shell.capture_event();
                         }
                     }
                     keyboard::Key::Named(Named::Escape) => {
@@ -979,7 +1055,8 @@ where
                 height: option_height,
             };
 
-            let is_hovered = *self.hovered_option == Some(i);
+            let is_header_item = self.is_header.is_some_and(|f| f(i));
+            let is_hovered = !is_header_item && *self.hovered_option == Some(i);
 
             if is_hovered {
                 renderer.fill_quad(
@@ -1002,6 +1079,18 @@ where
                 style.text_color
             };
 
+            let render_font = if is_header_item {
+                self.header_font.unwrap_or(self.font)
+            } else {
+                self.font
+            };
+
+            let indent_x = if is_header_item {
+                0.0
+            } else {
+                self.item_indent
+            };
+
             renderer.fill_text(
                 Text {
                     content: option.to_string(),
@@ -1011,14 +1100,14 @@ where
                     bounds: Size::new(f32::MAX / 2.0, opt_bounds.height),
                     size: self.text_size,
                     line_height: self.text_line_height,
-                    font: self.font,
+                    font: render_font,
                     align_x: text::Alignment::Default,
                     align_y: alignment::Vertical::Center,
                     shaping: text::Shaping::default(),
                     wrapping: text::Wrapping::None,
                 },
                 Point::new(
-                    opt_bounds.x + self.padding.left,
+                    opt_bounds.x + self.padding.left + indent_x,
                     opt_bounds.y + opt_bounds.height * 0.5,
                 ),
                 text_color,

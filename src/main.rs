@@ -534,6 +534,16 @@ impl App {
                         .load_tools(tools::custom::ToolList::load());
                     self.settings_state.load_mcp(tools::mcp::McpList::load());
                     self.settings_state.select_first_provider();
+                    // Load playground tools if the last-selected tab is the playground.
+                    if self.settings_state.selected_tab
+                        == views::settings::SettingsTab::ToolPlayground
+                    {
+                        self.settings_state.load_playground_tools(
+                            views::settings::tool_playground::build_playground_tools(
+                                &self.tool_registry,
+                            ),
+                        );
+                    }
                     self.show_settings_dialog = true;
                     if self.settings_state.needs_fetch() {
                         let base_url = self.settings_state.provider_base_url().to_string();
@@ -1162,6 +1172,68 @@ impl App {
                                     },
                                 );
                             }
+                        }
+                    }
+                    views::SettingsEvent::ExecutePlaygroundTool => {
+                        // Clone data needed for execution *before* mutating state.
+                        let info = self
+                            .settings_state
+                            .playground_selected_index
+                            .and_then(|i| self.settings_state.playground_tools.get(i).cloned());
+                        let param_values = self.settings_state.playground_param_values.clone();
+
+                        let Some(info) = info else {
+                            return Task::none();
+                        };
+                        let Some(tool) = self.tool_registry.find_tool(&info.name) else {
+                            return Task::done(Message::SettingsEvent(
+                                views::SettingsEvent::PlaygroundToolResult(
+                                    0,
+                                    Err(format!("Tool '{}' not found in registry", info.name)),
+                                ),
+                            ));
+                        };
+
+                        // Now safe to update state (sets running, bumps generation, resets cancel).
+                        self.settings_state.update(event);
+
+                        let generation = self.settings_state.playground_generation;
+                        let args = views::settings::tool_playground::build_params_json(
+                            &info.schema_raw,
+                            &param_values,
+                        );
+                        let workspace = self.system_prompt.workspace.1.clone();
+                        let cancel = self.settings_state.playground_cancel.clone();
+                        return Task::perform(
+                            async move {
+                                // Run on a blocking thread so the UI stays responsive.
+                                tokio::task::spawn_blocking(move || {
+                                    tool.execute(&args, &workspace, &cancel)
+                                })
+                                .await
+                                .unwrap_or_else(|e| Err(format!("Tool panicked: {e}")))
+                            },
+                            move |result| {
+                                Message::SettingsEvent(views::SettingsEvent::PlaygroundToolResult(
+                                    generation, result,
+                                ))
+                            },
+                        );
+                    }
+                    views::SettingsEvent::PlaygroundToolResult(generation, _) => {
+                        if self.settings_state.playground_generation == generation {
+                            self.settings_state.update(event);
+                        }
+                    }
+                    views::SettingsEvent::SelectTab(tab) => {
+                        self.settings_state.update(event);
+                        // Refresh playground tools when switching to the playground tab
+                        if tab == views::settings::SettingsTab::ToolPlayground {
+                            self.settings_state.refresh_playground_tools(
+                                views::settings::tool_playground::build_playground_tools(
+                                    &self.tool_registry,
+                                ),
+                            );
                         }
                     }
                     _ => {
