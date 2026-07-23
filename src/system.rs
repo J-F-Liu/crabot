@@ -36,7 +36,6 @@ pub struct SystemPrompt {
     pub tools: (bool, String),
     pub workspace: (bool, PathBuf),
     pub agents_md: (bool, String),
-    pub files: (bool, String),
     pub date: (bool, String),
 }
 
@@ -47,7 +46,6 @@ impl SystemPrompt {
             RULES => Some(&mut self.rules),
             TOOLS => Some(&mut self.tools),
             AGENTS_MD => Some(&mut self.agents_md),
-            WORKSPACE_TREE => Some(&mut self.files),
             DATE => Some(&mut self.date),
             _ => None,
         }
@@ -91,14 +89,6 @@ impl SystemPrompt {
         {
             prompt.push_str(agents_md);
             prompt.push('\n');
-        }
-        if let (true, files) = &self.files
-            && !files.is_empty()
-        {
-            prompt.push_str("<workspace-tree>\nWorking directory layout (sorted by mtime, recent first; depth ≤ 3):\n");
-            prompt.push_str(files);
-            prompt.push_str("\n</workspace-tree>\n");
-            prompt.push_str("Use relative paths for files inside the workspace.\n");
         }
         if let (true, date) = &self.date
             && !date.is_empty()

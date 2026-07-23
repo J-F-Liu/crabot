@@ -15,7 +15,6 @@ use crate::views::search_bar::SearchState;
 use crate::widgets::textarea::TextArea;
 use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use crabot::session::Session;
-use crabot::user::UserPrompt;
 use genai::chat::{ChatMessage, ChatRole};
 
 /// Streaming session state bundled together for the LLM interaction lifecycle.
@@ -206,8 +205,7 @@ pub(crate) fn update(
             if let Ok(mut pending) = state.pending_user_prompt.lock()
                 && let Some(prompt) = pending.take()
             {
-                let raw = UserPrompt::strip_mode_tag(&prompt);
-                user_prompt.set_text(raw);
+                user_prompt.set_text(&prompt);
             }
             state.pending_display = None;
             session.history.extend(genai_messages);

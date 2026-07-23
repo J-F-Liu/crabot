@@ -33,7 +33,6 @@ use crabot::user::{UserPrompt, WorkMode};
 use views::model_config::ProviderEntry;
 use views::session_list::SessionEntry;
 use views::session_state::AskAction;
-use views::system_prompt::PromptSectionState;
 use views::theme::{CRABOT_MODAL_SCRIM, HANDLE, MIN_W, default_theme};
 use views::tool_list::ToolListState;
 use views::{
@@ -100,7 +99,7 @@ struct App {
     selected_model: String,
     theme: Theme,
     system_prompt: SystemPrompt,
-    prompt_section_state: PromptSectionState,
+    tools_expanded: bool,
     tool_list_state: ToolListState,
     selected_preamble: String,
     preamble_options: Vec<FilepathEntry>,
@@ -113,6 +112,8 @@ struct App {
     recent_workspaces: Vec<(PathBuf, bool)>,
     // user-editable Content need to persist between view calls to maintain editor state
     files_content: text_editor::Content,
+    files_enabled: bool,
+    files_expanded: bool,
     tools_content: text_editor::Content,
     tool_registry: tools::ToolRegistry,
     enabled_tools: HashSet<String>,
@@ -336,7 +337,6 @@ impl App {
             rules: (saved.rules_enabled, rules_content),
             tools: (saved.tools_enabled, tools_summary),
             workspace: (saved.workspace_enabled, workspace_path),
-            files: (saved.files_enabled, files_tree),
             agents_md: (saved.agents_md_enabled, agents_md_content),
             date: (
                 saved.date_enabled,
@@ -370,9 +370,11 @@ impl App {
             workspace_options: views::build_workspace_options(&saved.recent_workspaces),
             agents_md_exists,
             recent_workspaces: saved.recent_workspaces,
-            prompt_section_state: PromptSectionState::default(),
+            tools_expanded: false,
             tool_list_state: ToolListState::default(),
             files_content,
+            files_enabled: saved.files_enabled,
+            files_expanded: false,
             tools_content,
             tool_registry,
             enabled_tools,
@@ -565,6 +567,8 @@ impl App {
             Message::ToggleEnabled(name, enabled) => {
                 if name == WORKSPACE {
                     self.system_prompt.workspace.0 = enabled;
+                } else if name == WORKSPACE_TREE {
+                    self.files_enabled = enabled;
                 } else if let Some(field) = self.system_prompt.get_mut(name) {
                     field.0 = enabled;
                 }
@@ -619,7 +623,11 @@ impl App {
                 self.refresh_tools_summary();
             }
             Message::ToggleExpanded(name) => {
-                if !self.prompt_section_state.update(name) {
+                if name == WORKSPACE_TREE {
+                    self.files_expanded = !self.files_expanded;
+                } else if name == TOOLS {
+                    self.tools_expanded = !self.tools_expanded;
+                } else {
                     self.tool_list_state.update(name);
                 }
             }
@@ -723,9 +731,9 @@ impl App {
                 self.cached_todo_items.clear();
                 self.tool_registry.clear_todo();
                 // Refresh workspace tree so the system prompt reflects current files.
-                self.system_prompt.files.1 =
-                    workspace::build_files_tree(&self.system_prompt.workspace.1);
-                self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
+                let tree = workspace::build_files_tree(&self.system_prompt.workspace.1);
+                self.files_content = text_editor::Content::with_text(&tree);
+                self.files_enabled = true;
                 let (exists, agents_md_content) = load_agents_md(&self.system_prompt.workspace.1);
                 self.agents_md_exists = exists;
                 self.system_prompt.agents_md.1 = agents_md_content;
@@ -845,13 +853,20 @@ impl App {
                 } else {
                     None
                 };
-                let user_prompt = UserPrompt::new(mode, content.clone()).get_prompt();
+                let workspace_tree = if self.files_enabled {
+                    let tree = self.files_content.text();
+                    (!tree.is_empty()).then(|| tree.to_string())
+                } else {
+                    None
+                };
+                let user_prompt = UserPrompt::new(mode, content.clone(), workspace_tree);
+                self.files_enabled = false;
                 self.user_prompt.clear();
 
                 // During streaming: stash the prompt for the agent loop to pick up.
                 if self.session_state.phase != DialogPhase::Idle {
                     if let Ok(mut pending) = self.session_state.pending_user_prompt.lock() {
-                        *pending = Some(user_prompt.clone());
+                        *pending = Some(user_prompt.content.clone());
                     }
                     self.session_state.pending_display = Some(content);
                     return Task::none();
@@ -864,7 +879,8 @@ impl App {
                 self.expanded_dialogs.clear();
                 self.expanded_dialogs.insert(new_dialog_idx);
                 self.session.add_dialog(title);
-                self.session.push_turn(Turn::user(user_prompt.clone()));
+                self.session
+                    .push_turn(Turn::user(user_prompt.content.clone()));
 
                 return self.start_dialog(&model, Some(user_prompt));
             }
@@ -1178,7 +1194,7 @@ impl App {
     fn start_dialog(
         &mut self,
         model_config: &ModelConfig,
-        user_prompt: Option<String>,
+        user_prompt: Option<UserPrompt>,
     ) -> Task<Message> {
         // Update session state with the selected model and workspace.
         let Some(model) = self.provided_models.get_model_info(model_config) else {
@@ -1302,8 +1318,8 @@ impl App {
         self.recent_workspaces.truncate(10);
 
         // Apply workspace.
-        self.system_prompt.files.1 = workspace::build_files_tree(&path);
-        self.files_content = text_editor::Content::with_text(&self.system_prompt.files.1);
+        let tree = workspace::build_files_tree(&path);
+        self.files_content = text_editor::Content::with_text(&tree);
         self.agents_md_exists = exists;
         self.system_prompt.agents_md = (enabled, content);
         self.show_restart = env::current_exe()
@@ -1328,7 +1344,7 @@ impl App {
             tools_enabled: self.system_prompt.tools.0,
             workspace_enabled: self.system_prompt.workspace.0,
             agents_md_enabled: self.system_prompt.agents_md.0,
-            files_enabled: self.system_prompt.files.0,
+            files_enabled: self.files_enabled,
             date_enabled: self.system_prompt.date.0,
             workspace: self.system_prompt.workspace.1.clone(),
             recent_workspaces: self.recent_workspaces.clone(),
@@ -1424,7 +1440,7 @@ impl App {
                 &self.selected_model,
                 &self.system_prompt,
                 self.agents_md_exists,
-                &self.prompt_section_state,
+                self.tools_expanded,
                 &self.tool_list_state,
                 &self.selected_preamble,
                 &self.preamble_options,
@@ -1438,6 +1454,8 @@ impl App {
                 &self.user_prompt,
                 self.workmode,
                 self.workmode_enabled,
+                self.files_expanded,
+                self.files_enabled,
                 self.current_recipe_list(),
                 self.recipe_dropdown_expanded,
                 self.session_state.phase,

@@ -58,7 +58,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
     let form: Element<_> = if is_editing {
         const API_TYPES: &[&str] = &[
             "openai",
-            "openai-completions",
+            "openai_resp",
             "anthropic",
             "gemini",
             "groq",

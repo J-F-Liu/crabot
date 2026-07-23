@@ -1,45 +1,21 @@
 use iced::{
-    Alignment, Element, Fill, Length, Padding,
+    Alignment, Element, Fill, Length,
     widget::{
-        Space, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
-        text_editor, text_input,
+        Space, checkbox, column, mouse_area, pick_list, row, scrollable, text, text_editor,
+        text_input,
     },
 };
 
 use crate::Message;
-use crabot::system::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE, WORKSPACE_TREE};
+use crabot::system::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE};
 
 use super::theme::thin_vertical;
 
 use std::path::PathBuf;
 
-/// Collapse/expand state for the expandable sections in the system prompt
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PromptSectionState {
-    pub tools_expanded: bool,
-    pub files_expanded: bool,
-}
-
-impl PromptSectionState {
-    /// Handle a `ToggleExpanded` message for prompt section titles.
-    pub(crate) fn update(&mut self, name: &str) -> bool {
-        match name {
-            TOOLS => {
-                self.tools_expanded = !self.tools_expanded;
-                true
-            }
-            WORKSPACE_TREE => {
-                self.files_expanded = !self.files_expanded;
-                true
-            }
-            _ => false,
-        }
-    }
-}
-
 // ── internal helper ──────────────────────────────────────────────────
 
-fn expandable_header<'a>(
+pub(crate) fn expandable_header<'a>(
     name: &'static str,
     checked: bool,
     expanded: bool,
@@ -138,46 +114,6 @@ pub(crate) fn workspace_field_view<'a>(
     .spacing(4)
     .align_y(Alignment::Center)
     .into()
-}
-
-pub(crate) fn files_field_view<'a>(
-    expanded: bool,
-    field: &'a (bool, String),
-    content: &'a text_editor::Content,
-) -> Element<'a, Message> {
-    let name = WORKSPACE_TREE;
-    let header = expandable_header(name, field.0, expanded);
-
-    use iced::widget::scrollable::{Direction, Scrollbar};
-    use iced::widget::text::Wrapping;
-
-    if expanded {
-        column![
-            header,
-            container(
-                scrollable(
-                    container(
-                        text_editor(content)
-                            .on_action(move |a| Message::EditTextContent(name, a))
-                            .font(iced::Font::MONOSPACE)
-                            .wrapping(Wrapping::None),
-                    )
-                    .padding(Padding::new(0.0).bottom(12.0)),
-                )
-                .direction(Direction::Both {
-                    vertical: Scrollbar::new().width(4).scroller_width(4),
-                    horizontal: Scrollbar::new().width(4).scroller_width(4),
-                })
-                .height(Length::Fixed(200.0)),
-            )
-            .style(container::bordered_box)
-            .width(Fill),
-        ]
-        .spacing(4)
-        .into()
-    } else {
-        header
-    }
 }
 
 pub fn build_md_file_options(subdir: &str) -> Vec<FilepathEntry> {

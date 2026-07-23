@@ -8,8 +8,8 @@ use super::model_config::model_config_view;
 use super::session_list::session_view;
 use super::styles::{label, pane_side};
 use super::system_prompt::{
-    PromptSectionState, agents_md_field_view, date_field_view, file_picker_field_view,
-    files_field_view, tools_field_view, workspace_field_view,
+    agents_md_field_view, date_field_view, file_picker_field_view, tools_field_view,
+    workspace_field_view,
 };
 use super::theme::thin_vertical;
 use super::tool_list::{
@@ -34,7 +34,7 @@ pub(crate) fn left_pane<'a>(
     selected_model: &'a String,
     system_prompt: &'a SystemPrompt,
     agents_md_exists: bool,
-    prompt_section_state: &'a PromptSectionState,
+    tools_expanded: bool,
     tool_list_state: &'a ToolListState,
     selected_preamble: &'a str,
     preamble_options: &'a [FilepathEntry],
@@ -48,6 +48,8 @@ pub(crate) fn left_pane<'a>(
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     workmode_enabled: bool,
+    files_expanded: bool,
+    files_enabled: bool,
     prompt_recipes: &'a [String],
     recipe_dropdown_expanded: bool,
     streaming: DialogPhase,
@@ -79,22 +81,13 @@ pub(crate) fn left_pane<'a>(
                         selected_rules,
                         Message::SelectRules,
                     ),
-                    tools_field_view(
-                        prompt_section_state.tools_expanded,
-                        &system_prompt.tools,
-                        tools_content,
-                    ),
+                    tools_field_view(tools_expanded, &system_prompt.tools, tools_content,),
                     workspace_field_view(&system_prompt.workspace, workspace_options),
                     if agents_md_exists {
                         agents_md_field_view(&system_prompt.agents_md)
                     } else {
                         column![].into()
                     },
-                    files_field_view(
-                        prompt_section_state.files_expanded,
-                        &system_prompt.files,
-                        files_content,
-                    ),
                     date_field_view(&system_prompt.date),
                     session_view(streaming, session_options, current_session_id),
                     label("User Prompt", 140.0),
@@ -104,6 +97,9 @@ pub(crate) fn left_pane<'a>(
                         workmode_enabled,
                         prompt_recipes,
                         recipe_dropdown_expanded,
+                        files_expanded,
+                        files_enabled,
+                        files_content,
                     ),
                     tools_section(
                         BUILTIN_TOOLS,

@@ -13,6 +13,7 @@ use crate::tools::{self, ToolRef};
 use crate::views::session_state::SessionEvent;
 use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult};
 use crabot::model::ModelInfo;
+use crabot::user::UserPrompt;
 
 // ── DialogPhase: tracks the current phase of an LLM interaction ────
 
@@ -61,7 +62,7 @@ pub struct SendConfig {
     pub model: ModelInfo,
     pub workspace: std::path::PathBuf,
     pub system_prompt: String,
-    pub user_prompt: Option<String>,
+    pub user_prompt: Option<UserPrompt>,
     pub tools: Vec<ToolRef>,
     /// Shared slot for a user prompt injected during streaming (tool execution / thinking).
     pub pending_user_prompt: Arc<Mutex<Option<String>>>,
@@ -110,7 +111,8 @@ pub async fn send_stream(
     // Optionally add a new user message (None when resending history as-is).
     let mut genai_messages: Vec<ChatMessage> = Vec::new();
     if let Some(prompt) = &user_prompt {
-        let user_msg = ChatMessage::user(prompt);
+        let parts = prompt.to_content_parts();
+        let user_msg = ChatMessage::user(MessageContent::from_parts(parts));
         chat_req.messages.push(user_msg.clone());
         genai_messages.push(user_msg);
     }

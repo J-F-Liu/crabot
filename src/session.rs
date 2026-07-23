@@ -244,9 +244,13 @@ impl Session {
             match msg.role {
                 ChatRole::System => {}
                 ChatRole::User => {
-                    let text = msg.content.joined_texts().unwrap_or_default();
-                    let text_for_title = crate::user::UserPrompt::strip_mode_tag(&text);
-                    let title = Self::derive_title(text_for_title);
+                    let text = msg
+                        .content
+                        .parts()
+                        .last()
+                        .and_then(|p| p.as_text())
+                        .unwrap_or_default();
+                    let title = Self::derive_title(text);
                     let turn = Turn::user(text);
                     dialogs.push(Dialog {
                         title,

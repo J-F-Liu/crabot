@@ -19,13 +19,6 @@ IMPORTANT: Never invent or guess URLs, file paths, directory names, or filenames
 - Never run `git push --force` without explicit approval
 - Never commit secrets, API keys, or credentials
 
-# Workspace Rules
-The bash tool always starts with the workspace path as current dir. Never prepend commands with:
-  - cd <workspace> &&
-  - cd . &&
-  - pushd <workspace>
-Only use `cd` when the task explicitly requires changing to a subdirectory outside the current working directory.
-
-## Workspace-Relative Paths
-All file paths must be relative to the workspace path. Never use absolute paths unless explicitly requested by the user.
+## Workspace Rules
+Use relative paths for files inside the workspace. Never use absolute paths unless explicitly requested by the user.
 Example: If the workspace path is `/home/project` or unknown, use `src/main.rs` instead of `/home/project/src/main.rs`.

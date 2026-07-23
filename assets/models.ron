@@ -215,7 +215,7 @@
         "kimi": (
             name: "Kimi",
             base_url: "https://api.kimi.com/coding/v1",
-            api_type: "openai-completions",
+            api_type: "openai",
             auth: "apiKey",
             api_key: "KIMI_API_KEY",
             strict_mode: false,
@@ -268,7 +268,7 @@
             name: "OpenAI",
             base_url: "https://api.openai.com/v1",
             api_key: "OPENAI_API_KEY",
-            api_type: "openai",
+            api_type: "openai_resp",
             auth: "apiKey",
             strict_mode: true,
             headers: {},

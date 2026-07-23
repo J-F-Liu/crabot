@@ -1,6 +1,8 @@
 use iced::{
-    Alignment, Border, Element, Length, padding,
-    widget::{button, checkbox, column, container, row, scrollable, text, text::Wrapping},
+    Alignment, Border, Element, Fill, Length, Padding, padding,
+    widget::{
+        button, checkbox, column, container, row, scrollable, text, text::Wrapping, text_editor,
+    },
 };
 
 use crate::views::theme::{CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_SURFACE, CRABOT_TEXT};
@@ -12,17 +14,23 @@ use iced_aw::{
     widget::tab_bar::{TabBar, TabLabel},
 };
 
+use super::system_prompt::expandable_header;
 use crate::FocusedTarget;
 use crate::Message;
 use crate::widgets::textarea::TextArea;
+use crabot::system::WORKSPACE_TREE;
 use crabot::user::WorkMode;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn user_prompt_view<'a>(
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     workmode_enabled: bool,
     prompt_recipes: &'a [String],
     recipe_dropdown_expanded: bool,
+    files_expanded: bool,
+    files_enabled: bool,
+    files_content: &'a text_editor::Content,
 ) -> Element<'a, Message> {
     let mut tab_bar_builder = TabBar::new(Message::SelectWorkMode);
     for mode in WorkMode::all() {
@@ -94,6 +102,7 @@ pub(crate) fn user_prompt_view<'a>(
         ]
         .spacing(8)
         .align_y(Alignment::Center),
+        files_field_view(files_expanded, files_enabled, files_content),
         user_prompt
             .view(|msg| Message::EditTextArea(FocusedTarget::UserPrompt, msg))
             .height(120),
@@ -111,6 +120,47 @@ pub(crate) fn user_prompt_view<'a>(
     .spacing(4)
     .padding(padding::bottom(4))
     .into()
+}
+
+// ── Workspace tree view ──────────────────────────────────────────
+
+fn files_field_view<'a>(
+    expanded: bool,
+    enabled: bool,
+    content: &'a text_editor::Content,
+) -> Element<'a, Message> {
+    let name = WORKSPACE_TREE;
+    let header = expandable_header(name, enabled, expanded);
+
+    use iced::widget::scrollable::{Direction, Scrollbar};
+
+    if expanded {
+        column![
+            header,
+            container(
+                scrollable(
+                    container(
+                        text_editor(content)
+                            .on_action(move |a| Message::EditTextContent(name, a))
+                            .font(iced::Font::MONOSPACE)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .padding(Padding::new(0.0).bottom(12.0)),
+                )
+                .direction(Direction::Both {
+                    vertical: Scrollbar::new().width(4).scroller_width(4),
+                    horizontal: Scrollbar::new().width(4).scroller_width(4),
+                })
+                .height(Length::Fixed(200.0)),
+            )
+            .style(container::bordered_box)
+            .width(Fill),
+        ]
+        .spacing(4)
+        .into()
+    } else {
+        header
+    }
 }
 
 // ── Recipe dropdown menu styles ───────────────────────────────────
