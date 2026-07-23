@@ -67,8 +67,8 @@ fn main() {
         let entry = by_day.entry(day).or_default().entry(model_id).or_default();
         entry.count += 1;
         entry.total_cost += session.cost;
-        entry.total_input_tokens += session.usage.input as u64;
-        entry.total_output_tokens += session.usage.output as u64;
+        entry.total_input_tokens += session.tokens.input as u64;
+        entry.total_output_tokens += session.tokens.output as u64;
     }
 
     // 3. Print per-day per-model summary and grand total.

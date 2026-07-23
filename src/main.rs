@@ -754,7 +754,7 @@ impl App {
                     }
                 }
                 self.last_usage = genai::chat::Usage {
-                    prompt_tokens: Some(self.session.size),
+                    prompt_tokens: Some(self.session.tokens.prompt),
                     ..Default::default()
                 };
                 self.center_pane_title = self.session.title.clone();
@@ -1461,9 +1461,7 @@ impl App {
                 self.right_pane_width,
                 self.get_current_model(),
                 &self.last_usage,
-                &self.session.usage,
-                self.session.cost,
-                &self.session.modified_files,
+                &self.session,
                 self.show_restart,
                 &self.cached_todo_items,
             ),

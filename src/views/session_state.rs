@@ -179,8 +179,7 @@ pub(crate) fn update(
         SessionEvent::TokenUsage(usage) => {
             let u = usage.unwrap_or_default();
             let tokens = TokenAmount::from_genai(&u);
-            session.accumulate_usage(&tokens, model_cost);
-            session.size = u.prompt_tokens.unwrap_or(0);
+            session.accumulate_tokens(&tokens, model_cost);
             *last_usage = u;
             // Refresh the markdown cache after all chunks are collected.
             if let Some(last) = session.last_turn_mut()

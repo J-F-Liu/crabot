@@ -159,9 +159,8 @@ impl Cost {
     /// Calculate cost breakdown from token usage.
     /// Prices are per million tokens; token counts are raw integers.
     pub fn calculate(&self, tokens: &TokenAmount) -> f64 {
-        let regular_input = (tokens.input - tokens.cached - tokens.cache_write).max(0);
-        let input_cost = regular_input as f64 / 1_000_000.0 * self.input;
-        let cached_read_cost = tokens.cached as f64 / 1_000_000.0 * self.cache_read;
+        let input_cost = tokens.input as f64 / 1_000_000.0 * self.input;
+        let cached_read_cost = tokens.cache_read as f64 / 1_000_000.0 * self.cache_read;
         let cache_write_cost = tokens.cache_write as f64 / 1_000_000.0 * self.cache_write;
         let output_cost = tokens.output as f64 / 1_000_000.0 * self.output;
         input_cost + cached_read_cost + cache_write_cost + output_cost
@@ -171,17 +170,20 @@ impl Cost {
 /// Accumulated token counts for a session or single response.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TokenAmount {
+    /// total input tokens (cached + uncached + cache-write)
+    pub prompt: i32,
+    /// fresh input tokens
     pub input: i32,
-    pub cached: i32,
+    pub output: i32,
+    pub cache_read: i32,
     #[serde(default)]
     pub cache_write: i32,
-    pub output: i32,
 }
 
 impl TokenAmount {
     /// Extract token counts from a `genai::chat::Usage`.
     pub fn from_genai(usage: &genai::chat::Usage) -> Self {
-        let cached = usage
+        let cache_read = usage
             .prompt_tokens_details
             .as_ref()
             .and_then(|d| d.cached_tokens)
@@ -192,9 +194,11 @@ impl TokenAmount {
             .and_then(|d| d.cache_creation_tokens)
             .unwrap_or(0);
         let prompt = usage.prompt_tokens.unwrap_or(0);
+        let input = (prompt - cache_read - cache_write).max(0);
         Self {
-            input: prompt, // total input (cached + uncached + cache-write)
-            cached,
+            prompt,
+            input,
+            cache_read,
             cache_write,
             output: usage.completion_tokens.unwrap_or(0),
         }
@@ -202,12 +206,13 @@ impl TokenAmount {
     /// Percentage of `context_window` used by the estimated next-turn
     /// context size: last prompt plus the response just generated.
     pub fn window_used(&self, context_window_size: u32) -> f32 {
-        (self.input + self.output) as f32 * 100.0 / context_window_size as f32
+        (self.prompt + self.output) as f32 * 100.0 / context_window_size as f32
     }
     /// Accumulate `incoming` into `self` in place.
     pub fn accumulate(&mut self, incoming: &TokenAmount) {
+        self.prompt = incoming.prompt;
         self.input += incoming.input;
-        self.cached += incoming.cached;
+        self.cache_read += incoming.cache_read;
         self.cache_write += incoming.cache_write;
         self.output += incoming.output;
     }

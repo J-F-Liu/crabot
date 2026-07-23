@@ -6,34 +6,33 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::chat::{Dialog, ToolResult, Turn};
-use crate::model::{ModelConfig, TokenAmount};
+use crate::model::{ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
 
 /// A conversation session, persisted to `.agent/sessions/`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Session {
     pub id: String,
-    #[serde(default)]
     pub title: String,
     pub model: Option<ModelConfig>,
     pub workspace: PathBuf,
+    /// Raw genai messages — exact history sent to / received from the LLM.
+    pub history: Vec<ChatMessage>,
     /// Dialogs — each dialog groups one user prompt with its responses.
     #[serde(skip)]
     pub dialogs: Vec<Dialog>,
-    /// Raw genai messages — exact history sent to / received from the LLM.
-    pub history: Vec<ChatMessage>,
+    /// number of successful LLM requests in the session
+    pub requests: u32,
     /// Accumulated token usage across all turns.
-    #[serde(default)]
-    pub usage: TokenAmount,
+    pub tokens: TokenAmount,
     /// Accumulated token cost.
-    #[serde(default)]
     pub cost: f64,
-    /// Size of the last prompt in tokens.
-    #[serde(default)]
-    pub size: i32,
+    /// Currency for the accumulated cost (ISO 4217 code, e.g. "USD", "CNY").
+    pub currency: String,
     /// Files modified during this session (write / edit tools).
     /// Derived from history on load; not serialised directly.
-    #[serde(skip, default)]
+    #[serde(skip)]
     pub modified_files: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -58,9 +57,10 @@ impl Session {
             workspace: PathBuf::new(),
             history: Vec::new(),
             dialogs: Vec::new(),
-            usage: TokenAmount::default(),
+            requests: 0,
+            tokens: TokenAmount::default(),
             cost: 0.0,
-            size: 0,
+            currency: String::new(),
             modified_files: Vec::new(),
             created_at: time.clone(),
             updated_at: time,
@@ -79,7 +79,7 @@ impl Session {
         session.created_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
         session.updated_at = session.created_at.clone();
         // Fresh accumulators — the fork starts its own usage/cost accounting.
-        session.usage = TokenAmount::default();
+        session.tokens = TokenAmount::default();
         session.cost = 0.0;
         session
     }
@@ -132,10 +132,25 @@ impl Session {
     }
 
     /// Accumulate token usage and recalculate cost from the model's pricing.
-    pub fn accumulate_usage(&mut self, tokens: &TokenAmount, cost: Option<crate::model::Cost>) {
-        self.usage.accumulate(tokens);
+    pub fn accumulate_tokens(&mut self, tokens: &TokenAmount, cost: Option<crate::model::Cost>) {
+        self.requests += 1;
+        self.tokens.accumulate(tokens);
         if let Some(c) = cost {
             self.cost += c.calculate(tokens);
+            if self.currency != c.currency {
+                self.currency = c.currency.clone();
+            }
+        }
+    }
+
+    /// Format session cost as a string with the currency symbol prefix.
+    /// Small amounts get 4 decimal places, larger amounts get 2 decimal places.
+    pub fn formatted_cost(&self) -> String {
+        let sym = currency_symbol(&self.currency);
+        if self.cost > 0.0 && self.cost < 0.01 {
+            format!("{sym}{:.4}", self.cost)
+        } else {
+            format!("{sym}{:.2}", self.cost)
         }
     }
 
