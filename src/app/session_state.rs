@@ -5,13 +5,12 @@ use iced::Task;
 use iced::widget::scrollable::Viewport;
 use tokio::sync::mpsc;
 
-use crate::Message;
+use crate::app::ConversationState;
 use crate::llm::DialogPhase;
 use crate::model::Cost;
 use crate::model::TokenAmount;
 use crate::views::ASK_INPUT;
 use crate::views::scroll_to_end;
-use crate::views::search_bar::SearchState;
 use crate::widgets::textarea::TextArea;
 use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use crabot::session::Session;
@@ -28,7 +27,7 @@ pub(crate) struct SessionState {
     /// Shared slot for a user prompt injected during streaming.
     pub(crate) pending_user_prompt: Arc<Mutex<Option<String>>>,
     /// UI-side mirror of `pending_user_prompt`, updated alongside it.
-    pub(crate) pending_display: Option<String>,
+    pub(crate) pending_prompt: Option<String>,
     /// Active ask-tool request shown in the tool turn.
     pub(crate) ask_request: Option<AskRequest>,
     pub(crate) ask_input: String,
@@ -48,7 +47,7 @@ impl SessionState {
             start_index: 0,
             cancel_token: Arc::new(AtomicBool::new(false)),
             pending_user_prompt: Arc::new(Mutex::new(None)),
-            pending_display: None,
+            pending_prompt: None,
             ask_request: None,
             ask_input: String::new(),
             ask_sender: ask_tx,
@@ -113,13 +112,19 @@ pub(crate) enum SessionEvent {
 /// and related app state as needed.
 pub(crate) fn update(
     event: SessionEvent,
-    state: &mut SessionState,
-    session: &mut Session,
-    search: &mut SearchState,
-    last_usage: &mut genai::chat::Usage,
+    conversation: &mut ConversationState,
     model_cost: Option<Cost>,
     user_prompt: &mut TextArea,
-) -> Task<Message> {
+) -> Task<()> {
+    let ConversationState {
+        session_state,
+        session,
+        search,
+        last_usage,
+        ..
+    } = conversation;
+    let state: &mut SessionState = session_state;
+
     match event {
         SessionEvent::ToolCalls(tcs) => {
             session.push_turn(Turn::from_tool_results(vec![]));
@@ -172,7 +177,7 @@ pub(crate) fn update(
         }
         SessionEvent::UserPrompt(content) => {
             session.push_turn(Turn::user(content));
-            state.pending_display = None;
+            state.pending_prompt = None;
             return maybe_scroll_to_end(&state.auto_scroll);
         }
         SessionEvent::TokenUsage(usage) => {
@@ -207,7 +212,7 @@ pub(crate) fn update(
             {
                 user_prompt.set_text(&prompt);
             }
-            state.pending_display = None;
+            state.pending_prompt = None;
             session.history.extend(genai_messages);
             // Refresh the markdown cache so partial content renders as markdown.
             if let Some(last) = session.last_turn_mut()
@@ -242,7 +247,7 @@ pub(crate) fn handle_scroll(state: &SessionState, viewport: Viewport) {
 
 // ── private helpers ───────────────────────────────────────────────
 
-fn maybe_scroll_to_end(auto_scroll: &AtomicBool) -> Task<Message> {
+fn maybe_scroll_to_end(auto_scroll: &AtomicBool) -> Task<()> {
     if auto_scroll.load(Ordering::Relaxed) {
         scroll_to_end()
     } else {
@@ -304,11 +309,10 @@ fn handle_stream_error(
     genai_messages: Vec<ChatMessage>,
 ) {
     state.phase = DialogPhase::Idle;
-
     session.history.extend(genai_messages);
+    let _ = session.save();
 
     let error_msg = format!("Error: {err}");
-
     if let Some(turn) = session.last_turn_mut()
         && turn.role == ChatRole::Assistant
         && matches!(
@@ -323,5 +327,4 @@ fn handle_stream_error(
     } else {
         session.push_turn(Turn::assistant(error_msg, None));
     }
-    let _ = session.save();
 }

@@ -3,7 +3,6 @@ use super::theme::{
     CRABOT_BORDER, CRABOT_DANGER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY,
     CRABOT_SURFACE, CRABOT_TEXT, CRABOT_TEXT_MUTED,
 };
-use crate::Message;
 use crate::widgets::textarea::TextArea;
 use crabot::model::{Model, ModelConfig, ModelList, Provider};
 use crabot::model_database::ModelDatabase;
@@ -152,6 +151,9 @@ pub(crate) enum SettingsEvent {
     CancelPlaygroundTool,
     /// Result of a playground tool execution (generation, result, is_todo).
     PlaygroundToolResult(u64, Result<String, String>, bool),
+    /// Result of a focus check on the new-label input; `false` means the
+    /// input lost focus and the pending label should be confirmed.
+    LabelInputFocus(bool),
 }
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -362,6 +364,17 @@ impl SettingsState {
         }
     }
 
+    /// Trim the pending new-label name and insert if non-empty and not already present.
+    fn commit_new_label(&mut self) {
+        let name = self.new_label_name.trim().to_string();
+        self.new_label_name.clear();
+        if !name.is_empty() && !self.working_models.models.contains_key(&name) {
+            self.working_models
+                .models
+                .insert(name, ModelConfig::default());
+        }
+    }
+
     /// Write the current form fields back into `working_models` for the
     /// selected provider (or create a new provider entry if `is_new_provider`).
     fn flush_current_provider(&mut self) {
@@ -415,13 +428,7 @@ impl SettingsState {
                 self.drag_label = None;
                 self.flush_current_provider();
                 // Also confirm any pending label input.
-                let name = self.new_label_name.trim().to_string();
-                self.new_label_name.clear();
-                if !name.is_empty() && !self.working_models.models.contains_key(&name) {
-                    self.working_models
-                        .models
-                        .insert(name, ModelConfig::default());
-                }
+                self.commit_new_label();
                 self.save_feedback = Some(SettingsTab::AiModels);
             }
             SettingsEvent::SaveTools => {
@@ -607,13 +614,7 @@ impl SettingsState {
             SettingsEvent::NewLabelName(v) => self.new_label_name = v,
             SettingsEvent::AddLabel => {
                 self.adding_label = false;
-                let name = self.new_label_name.trim().to_string();
-                self.new_label_name.clear();
-                if !name.is_empty() && !self.working_models.models.contains_key(&name) {
-                    self.working_models
-                        .models
-                        .insert(name, ModelConfig::default());
-                }
+                self.commit_new_label();
             }
             SettingsEvent::LabelDragStart(index) => {
                 self.drag_label = Some(index);
@@ -942,10 +943,14 @@ impl SettingsState {
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
             SettingsEvent::PlaygroundToolResult(generation, result, _is_todo) => {
-                // Ignore stale results from cancelled or superseded executions.
                 if self.playground_generation == generation {
                     self.playground_running = false;
                     self.playground_result = Some(result);
+                }
+            }
+            SettingsEvent::LabelInputFocus(focused) => {
+                if !focused && self.adding_label {
+                    self.update(SettingsEvent::AddLabel);
                 }
             }
         }
@@ -1061,7 +1066,7 @@ impl SettingsState {
 /// Returns the settings dialog content with a left sidebar of vertical tabs
 /// and a content area that switches between tab pages.
 /// The caller is responsible for placing it inside a modal structure.
-pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let header = container(
         row![
             text("Settings")
@@ -1082,7 +1087,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Messa
             )
             .padding([4, 8])
             .style(crate::views::styles::secondary_button)
-            .on_press(Message::SettingsEvent(SettingsEvent::Close)),
+            .on_press(SettingsEvent::Close),
         ]
         .align_y(Alignment::Center),
     );
@@ -1094,14 +1099,14 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Messa
         SettingsTab::McpServers,
         SettingsTab::ToolPlayground,
     ];
-    let sidebar_buttons: Vec<Element<'a, Message>> = tabs
+    let sidebar_buttons: Vec<Element<'a, SettingsEvent>> = tabs
         .iter()
         .map(|&tab| {
             let is_active = state.selected_tab == tab;
             button(text(tab.label()).size(13))
                 .width(Length::Fill)
                 .style(sidebar_tab_style(is_active))
-                .on_press(Message::SettingsEvent(SettingsEvent::SelectTab(tab)))
+                .on_press(SettingsEvent::SelectTab(tab))
                 .into()
         })
         .collect();
@@ -1116,7 +1121,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Messa
         });
 
     // ── Tab content ────────────────────────────────────────────────
-    let tab_content: Element<'a, Message> = match state.selected_tab {
+    let tab_content: Element<'a, SettingsEvent> = match state.selected_tab {
         SettingsTab::AiModels => ai_models::ai_models_page(state),
         SettingsTab::CustomTools => custom_tools::custom_tools_page(state),
         SettingsTab::McpServers => mcp_servers::mcp_servers_page(state),
@@ -1162,7 +1167,7 @@ pub(super) fn form_card_style(_theme: &iced::Theme) -> container::Style {
     }
 }
 
-pub(super) fn section_rule() -> Element<'static, Message> {
+pub(super) fn section_rule() -> Element<'static, SettingsEvent> {
     rule::horizontal(1)
         .style(|_: &iced::Theme| rule::Style {
             color: CRABOT_PRIMARY,
@@ -1175,14 +1180,35 @@ pub(super) fn section_rule() -> Element<'static, Message> {
 
 // ── Shared form helpers ────────────────────────────────────────────
 
+/// Build the bottom-right "Save" action row, showing "Saved ✓" briefly after `on_save`.
+pub(super) fn save_action_row<'a>(
+    state: &'a SettingsState,
+    tab: SettingsTab,
+    on_save: SettingsEvent,
+) -> Element<'a, SettingsEvent> {
+    let label = if state.save_feedback == Some(tab) {
+        "Saved ✓"
+    } else {
+        "Save"
+    };
+    let save_button = button(text(label).size(13))
+        .style(crate::views::styles::primary_button)
+        .on_press(on_save);
+
+    row![iced::widget::Space::new().width(Length::Fill), save_button]
+        .spacing(10)
+        .padding(padding::top(8))
+        .into()
+}
+
 /// A labelled single-line text input row used by the settings forms.
 pub(super) fn field_row<'a>(
     label: &'static str,
     value: &'a str,
     placeholder: &'a str,
     mono: bool,
-    on_input: impl Fn(String) -> Message + 'a,
-) -> Element<'a, Message> {
+    on_input: impl Fn(String) -> SettingsEvent + 'a,
+) -> Element<'a, SettingsEvent> {
     let label_col = container(text(label).size(14))
         .width(90)
         .align_x(Alignment::End);
@@ -1205,8 +1231,8 @@ pub(super) fn textarea_field_row<'a>(
     label: &'static str,
     area: &'a TextArea,
     placeholder: &'a str,
-    on_action: impl Fn(crate::widgets::textarea::Message) -> Message + 'a,
-) -> Element<'a, Message> {
+    on_action: impl Fn(crate::widgets::textarea::Message) -> SettingsEvent + 'a,
+) -> Element<'a, SettingsEvent> {
     let label_col = container(text(label).size(14))
         .width(90)
         .align_x(Alignment::End)
@@ -1223,7 +1249,7 @@ pub(super) fn textarea_field_row<'a>(
 }
 
 /// Thin separator between a card header and the expanded form.
-pub(super) fn card_rule() -> Element<'static, Message> {
+pub(super) fn card_rule() -> Element<'static, SettingsEvent> {
     rule::horizontal(1)
         .style(|_: &iced::Theme| rule::Style {
             color: CRABOT_BORDER,

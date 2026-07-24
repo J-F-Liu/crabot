@@ -6,7 +6,7 @@ use iced::{
     },
 };
 
-use crate::Message;
+use crate::PromptEvent;
 use crabot::system::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE};
 
 use super::theme::thin_vertical;
@@ -19,15 +19,15 @@ pub(crate) fn expandable_header<'a>(
     name: &'static str,
     checked: bool,
     expanded: bool,
-) -> Element<'a, Message> {
+) -> Element<'a, PromptEvent> {
     let arrow = if expanded { "▼" } else { "⯈" };
     row![
         checkbox(checked)
             .label(name)
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| Message::ToggleEnabled(name, v)),
+            .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v)),
         Space::new().width(Length::Fill),
-        mouse_area(text(arrow).size(12).width(16)).on_press(Message::ToggleExpanded(name)),
+        mouse_area(text(arrow).size(12).width(16)).on_press(PromptEvent::ToggleExpanded(name)),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
@@ -41,8 +41,8 @@ pub(crate) fn file_picker_field_view<'a>(
     field: &'a (bool, String),
     options: &'a [FilepathEntry],
     selected_display: &'a str,
-    on_select: fn(FilepathEntry) -> Message,
-) -> Element<'a, Message> {
+    on_select: fn(FilepathEntry) -> PromptEvent,
+) -> Element<'a, PromptEvent> {
     let checked = field.0;
     let selected = if selected_display.is_empty() {
         None
@@ -57,7 +57,7 @@ pub(crate) fn file_picker_field_view<'a>(
         checkbox(checked)
             .label(name)
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| Message::ToggleEnabled(name, v))
+            .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
             .width(Fill),
         pick_list(options, selected, on_select).width(Fill),
     ]
@@ -70,7 +70,7 @@ pub(crate) fn tools_field_view<'a>(
     expanded: bool,
     field: &'a (bool, String),
     content: &'a text_editor::Content,
-) -> Element<'a, Message> {
+) -> Element<'a, PromptEvent> {
     let name = TOOLS;
     let header = expandable_header(name, field.0, expanded);
 
@@ -79,7 +79,7 @@ pub(crate) fn tools_field_view<'a>(
             header,
             scrollable(
                 text_editor(content)
-                    .on_action(move |a| Message::EditTextContent(name, a))
+                    .on_action(move |a| PromptEvent::EditTextContent(name, a))
                     .height(Length::Fixed(120.0)),
             )
             .direction(thin_vertical()),
@@ -94,7 +94,7 @@ pub(crate) fn tools_field_view<'a>(
 pub(crate) fn workspace_field_view<'a>(
     field: &'a (bool, PathBuf),
     options: &'a [FilepathEntry],
-) -> Element<'a, Message> {
+) -> Element<'a, PromptEvent> {
     let checked = field.0;
     let name = WORKSPACE;
     let selected = if field.1.as_os_str().is_empty() {
@@ -107,9 +107,9 @@ pub(crate) fn workspace_field_view<'a>(
         checkbox(checked)
             .label(name)
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| Message::ToggleEnabled(name, v))
+            .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
             .width(Fill),
-        pick_list(options, selected, Message::SelectWorkspace).width(Fill),
+        pick_list(options, selected, PromptEvent::SelectWorkspace).width(Fill),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
@@ -189,18 +189,18 @@ pub fn build_workspace_options(recent: &[(PathBuf, bool)]) -> Vec<FilepathEntry>
     entries
 }
 
-pub(crate) fn agents_md_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
+pub(crate) fn agents_md_field_view<'a>(field: &'a (bool, String)) -> Element<'a, PromptEvent> {
     let checked = field.0;
     let name = AGENTS_MD;
 
     checkbox(checked)
         .label(name)
         .style(crate::views::primary_checkbox)
-        .on_toggle(move |v| Message::ToggleEnabled(name, v))
+        .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
         .into()
 }
 
-pub(crate) fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Message> {
+pub(crate) fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, PromptEvent> {
     let checked = field.0;
     let name = DATE;
 
@@ -208,9 +208,9 @@ pub(crate) fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, Mess
         checkbox(checked)
             .label(name)
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| Message::ToggleEnabled(name, v)),
+            .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v)),
         text_input("YYYY-MM-DD", &field.1)
-            .on_input(move |s| Message::EditTextField(name, s))
+            .on_input(move |s| PromptEvent::EditTextField(name, s))
             .width(Length::Fixed(110.0))
             .padding(4)
             .align_x(iced::alignment::Horizontal::Center),

@@ -16,9 +16,10 @@ use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
 use serde_json::Value;
 
-use crate::Message;
+use crate::app::ConversationState;
 use crate::llm::DialogPhase;
 use crate::views::search_bar::SearchState;
+use crate::{AskRequest, CenterPaneEvent, ConversationEvent};
 
 use super::icons;
 use super::styles::{
@@ -45,7 +46,7 @@ const PAGE_SCROLL_FRACTION: f32 = 0.9;
 pub(crate) const SCROLL_STEP: f32 = 40.0;
 
 /// Snap the message scroll to the end unconditionally.
-pub(crate) fn scroll_to_end() -> Task<Message> {
+pub(crate) fn scroll_to_end() -> Task<()> {
     task_widget(scrollable_op::snap_to(
         MESSAGE_SCROLL.clone(),
         scrollable::RelativeOffset::END.into(),
@@ -53,7 +54,7 @@ pub(crate) fn scroll_to_end() -> Task<Message> {
 }
 
 /// Snap the message scroll to the start unconditionally.
-pub(crate) fn scroll_to_start() -> Task<Message> {
+pub(crate) fn scroll_to_start() -> Task<()> {
     task_widget(scrollable_op::snap_to(
         MESSAGE_SCROLL.clone(),
         scrollable::RelativeOffset::START.into(),
@@ -61,7 +62,7 @@ pub(crate) fn scroll_to_start() -> Task<Message> {
 }
 
 /// Scroll the message viewport vertically by `delta_y` pixels (positive = down).
-pub(crate) fn scroll_by(delta_y: f32) -> Task<Message> {
+pub(crate) fn scroll_by(delta_y: f32) -> Task<()> {
     task_widget(scrollable_op::scroll_by(
         MESSAGE_SCROLL.clone(),
         scrollable::AbsoluteOffset { x: 0.0, y: delta_y },
@@ -69,12 +70,12 @@ pub(crate) fn scroll_by(delta_y: f32) -> Task<Message> {
 }
 
 /// Scroll the message viewport down by one page.
-pub(crate) fn scroll_page_down(viewport_height: f32) -> Task<Message> {
+pub(crate) fn scroll_page_down(viewport_height: f32) -> Task<()> {
     scroll_by(viewport_height * PAGE_SCROLL_FRACTION)
 }
 
 /// Scroll the message viewport up by one page.
-pub(crate) fn scroll_page_up(viewport_height: f32) -> Task<Message> {
+pub(crate) fn scroll_page_up(viewport_height: f32) -> Task<()> {
     scroll_by(-viewport_height * PAGE_SCROLL_FRACTION)
 }
 
@@ -138,7 +139,7 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
 }
 
 /// Scroll to a turn using a pre-measured offset.
-pub(crate) fn scroll_to_turn_at(y: f32) -> Task<Message> {
+pub(crate) fn scroll_to_turn_at(y: f32) -> Task<()> {
     task_widget(scrollable_op::scroll_to(
         MESSAGE_SCROLL.clone(),
         scrollable::AbsoluteOffset {
@@ -191,7 +192,7 @@ fn search_current_style(_theme: &Theme) -> container::Style {
 }
 
 /// Small turn-count pill.
-fn turn_count_badge(count: usize, font_scale: f32) -> Element<'static, Message> {
+fn turn_count_badge(count: usize, font_scale: f32) -> Element<'static, CenterPaneEvent> {
     container(
         text(format!(
             "{} turn{}",
@@ -214,6 +215,15 @@ fn turn_count_badge(count: usize, font_scale: f32) -> Element<'static, Message> 
     .into()
 }
 
+/// Shared context for building turn blocks.
+struct TurnView<'a> {
+    expanded_turns: &'a HashSet<(usize, usize)>,
+    selectable_msgs: &'a HashSet<usize>,
+    theme: &'a Theme,
+    font_scale: f32,
+    search_query: &'a str,
+}
+
 // ── turn block builders ────────────────────────────────────────────
 
 /// Build the colored role badge shown in a turn header.
@@ -221,7 +231,7 @@ fn role_badge(
     badge_text: String,
     style_label: &'static str,
     font_scale: f32,
-) -> Element<'static, Message> {
+) -> Element<'static, CenterPaneEvent> {
     container(text(badge_text).size(12.0 * font_scale).font(Font {
         weight: font::Weight::Bold,
         ..Font::DEFAULT
@@ -233,9 +243,9 @@ fn role_badge(
 
 /// Wrap a turn's content in its role-colored bubble.
 fn wrap_bubble<'a>(
-    content: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, CenterPaneEvent>>,
     style: fn(&Theme) -> container::Style,
-) -> Element<'a, Message> {
+) -> Element<'a, CenterPaneEvent> {
     container(content)
         .width(Fill)
         .padding([8, 12])
@@ -249,7 +259,7 @@ fn args_preview<'a>(
     args: &'a Value,
     font_scale: f32,
     search_query: &str,
-) -> Vec<Element<'a, Message>> {
+) -> Vec<Element<'a, CenterPaneEvent>> {
     if name == "edit" || name == "write" {
         path_arg_row(args, font_scale, search_query)
             .into_iter()
@@ -265,10 +275,8 @@ fn args_preview<'a>(
 fn tool_turn_block<'a>(
     msg: &'a Turn,
     i: usize,
-    expanded_turns: &HashSet<(usize, usize)>,
-    font_scale: f32,
-    search_query: &str,
-) -> Element<'a, Message> {
+    ctx: &TurnView<'_>,
+) -> Element<'a, CenterPaneEvent> {
     // Build a unified list of (name, args, result_opt, timestamp) from either variant.
     type ToolItem<'a> = (
         &'a str,
@@ -300,14 +308,14 @@ fn tool_turn_block<'a>(
         _ => unreachable!("tool_turn_block called on non-tool turn"),
     };
 
-    let mut elements: Vec<Element<'a, Message>> = Vec::new();
+    let mut elements: Vec<Element<'a, CenterPaneEvent>> = Vec::new();
 
     for (idx, (name, args, result, ts)) in items.into_iter().enumerate() {
         if idx > 0 {
             elements.push(Space::new().height(8).into());
         }
 
-        let badge = role_badge(format!("Tool - {name}"), "Tool", font_scale);
+        let badge = role_badge(format!("Tool - {name}"), "Tool", ctx.font_scale);
         let completed = result.is_some();
 
         let (status_icon, status_color) = match result {
@@ -317,7 +325,7 @@ fn tool_turn_block<'a>(
         };
 
         let status_text = text(status_icon)
-            .size(12.0 * font_scale)
+            .size(12.0 * ctx.font_scale)
             .color(status_color)
             .font(if completed {
                 Font {
@@ -328,7 +336,9 @@ fn tool_turn_block<'a>(
                 Font::DEFAULT
             });
 
-        let ts_text = text(ts).size(11.0 * font_scale).color(CRABOT_TEXT_MUTED);
+        let ts_text = text(ts)
+            .size(11.0 * ctx.font_scale)
+            .color(CRABOT_TEXT_MUTED);
 
         // Completed ask tool: render question + answer without expand/collapse.
         if name == "ask" && completed {
@@ -341,11 +351,14 @@ fn tool_turn_block<'a>(
             .spacing(6)
             .align_y(Alignment::Center);
             elements.push(header.into());
-            elements.push(ask_result_view(args, result.unwrap(), font_scale));
+            elements.push(
+                ask_result_view(args, result.unwrap(), ctx.font_scale)
+                    .map(CenterPaneEvent::Conversation),
+            );
             continue;
         }
 
-        let expanded = completed && expanded_turns.contains(&(i, idx));
+        let expanded = completed && ctx.expanded_turns.contains(&(i, idx));
         let indicator = if expanded { "▼" } else { "⏵" };
 
         if completed {
@@ -353,7 +366,7 @@ fn tool_turn_block<'a>(
                 badge,
                 status_text,
                 text(indicator)
-                    .size(10.0 * font_scale)
+                    .size(10.0 * ctx.font_scale)
                     .color(CRABOT_TOOL_ACCENT),
                 Space::new().width(Length::Fill),
                 ts_text,
@@ -362,7 +375,9 @@ fn tool_turn_block<'a>(
             .align_y(Alignment::Center);
             elements.push(
                 mouse_area(header)
-                    .on_press(Message::ToggleTurnExpand(i, idx))
+                    .on_press(CenterPaneEvent::Conversation(
+                        ConversationEvent::ToggleTurnExpand(i, idx),
+                    ))
                     .interaction(mouse::Interaction::Pointer)
                     .into(),
             );
@@ -379,10 +394,14 @@ fn tool_turn_block<'a>(
         }
 
         if expanded {
-            elements.extend(args_rows(name, args, font_scale, search_query));
-            elements.push(result_text(result.unwrap(), font_scale, search_query));
+            elements.extend(args_rows(name, args, ctx.font_scale, ctx.search_query));
+            elements.push(result_text(
+                result.unwrap(),
+                ctx.font_scale,
+                ctx.search_query,
+            ));
         } else {
-            elements.extend(args_preview(name, args, font_scale, search_query));
+            elements.extend(args_preview(name, args, ctx.font_scale, ctx.search_query));
         }
     }
 
@@ -393,25 +412,28 @@ fn tool_turn_block<'a>(
 /// transparent inline-code styling (shared by content and reasoning bodies).
 fn markdown_element<'a>(
     md: &'a markdown::Content,
-    theme: &'a Theme,
     i: usize,
     text_size: f32,
-    code_size: f32,
-) -> Element<'a, Message> {
-    let mut md_style = markdown::Style::from(theme.clone());
+    ctx: &TurnView<'a>,
+) -> Element<'a, CenterPaneEvent> {
+    let code_size = (text_size - 1.0) * ctx.font_scale;
+    let text_size = text_size * ctx.font_scale;
+    let mut md_style = markdown::Style::from(ctx.theme.clone());
     md_style.inline_code_highlight = Highlight {
         background: Background::Color(Color::TRANSPARENT),
         border: Border::default(),
     };
     md_style.inline_code_padding = 0.into();
-    md_style.inline_code_color = color_text(theme);
+    md_style.inline_code_color = color_text(ctx.theme);
     md_style.code_block_font = Font::MONOSPACE;
     let md_settings = markdown::Settings {
         code_size: code_size.into(),
         ..markdown::Settings::with_text_size(text_size, md_style)
     };
-    mouse_area(markdown::view(md.items(), md_settings).map(Message::LinkClicked))
-        .on_double_click(Message::ToggleSelectableMode(Some(i)))
+    mouse_area(markdown::view(md.items(), md_settings).map(CenterPaneEvent::LinkClicked))
+        .on_double_click(CenterPaneEvent::Conversation(
+            ConversationEvent::ToggleSelectableMode(Some(i)),
+        ))
         .into()
 }
 
@@ -419,12 +441,8 @@ fn markdown_element<'a>(
 fn text_turn_block<'a>(
     msg: &'a Turn,
     i: usize,
-    expanded_turns: &HashSet<(usize, usize)>,
-    selectable_msgs: &HashSet<usize>,
-    theme: &'a Theme,
-    font_scale: f32,
-    search_query: &str,
-) -> Element<'a, Message> {
+    ctx: &TurnView<'a>,
+) -> Element<'a, CenterPaneEvent> {
     let TurnBody::Text(tc) = &msg.body else {
         unreachable!("text_turn_block called on non-Text turn")
     };
@@ -435,21 +453,21 @@ fn text_turn_block<'a>(
         ChatRole::Assistant => ("Assistant", assistant_bubble_style),
         _ => ("System", assistant_bubble_style),
     };
-    let badge = role_badge(role_label.to_string(), role_label, font_scale);
+    let badge = role_badge(role_label.to_string(), role_label, ctx.font_scale);
     let ts_text = text(&msg.timestamp)
-        .size(11.0 * font_scale)
+        .size(11.0 * ctx.font_scale)
         .color(CRABOT_TEXT_MUTED);
     let mut content_col = column![].spacing(8).width(Fill);
 
     // ── header: badge + (indicator if reasoning) + timestamp ──
     if tc.reasoning.is_some() {
         // Reasoning by default is expanded so inverse membership.
-        let expanded = !expanded_turns.contains(&(i, 0));
+        let expanded = !ctx.expanded_turns.contains(&(i, 0));
         let indicator = if expanded { "▼" } else { "⏵" };
         let header = row![
             badge,
             text(indicator)
-                .size(10.0 * font_scale)
+                .size(10.0 * ctx.font_scale)
                 .color(CRABOT_PRIMARY),
             Space::new().width(Length::Fill),
             ts_text,
@@ -458,7 +476,9 @@ fn text_turn_block<'a>(
         .align_y(Alignment::Center);
         content_col = content_col.push(
             mouse_area(header)
-                .on_press(Message::ToggleTurnExpand(i, 0))
+                .on_press(CenterPaneEvent::Conversation(
+                    ConversationEvent::ToggleTurnExpand(i, 0),
+                ))
                 .interaction(mouse::Interaction::Pointer),
         );
     } else {
@@ -470,20 +490,21 @@ fn text_turn_block<'a>(
     // ── body: reasoning + content ──
     if let Some(reasoning) = &tc.reasoning {
         // Default expanded; badge-row click toggles collapse.
-        if !expanded_turns.contains(&(i, 0)) {
-            let reasoning_body: Element<'_, Message> = if !search_query.trim().is_empty() {
-                // When searching, use highlighted plain text instead of markdown.
-                highlighted_text(reasoning, search_query, 13.0 * font_scale)
-            } else if !selectable_msgs.contains(&i)
-                && let Some(md) = &tc.reasoning_md
-            {
-                markdown_element(md, theme, i, 13.0 * font_scale, 12.0 * font_scale)
-            } else {
-                SelectableText::new(reasoning)
-                    .size(13.0 * font_scale)
-                    .style(sel_secondary)
-                    .into()
-            };
+        if !ctx.expanded_turns.contains(&(i, 0)) {
+            let reasoning_body: Element<'_, CenterPaneEvent> =
+                if !ctx.search_query.trim().is_empty() {
+                    // When searching, use highlighted plain text instead of markdown.
+                    highlighted_text(reasoning, ctx.search_query, 13.0 * ctx.font_scale)
+                } else if !ctx.selectable_msgs.contains(&i)
+                    && let Some(md) = &tc.reasoning_md
+                {
+                    markdown_element(md, i, 13.0, ctx)
+                } else {
+                    SelectableText::new(reasoning)
+                        .size(13.0 * ctx.font_scale)
+                        .style(sel_secondary)
+                        .into()
+                };
             content_col = content_col.push(
                 container(reasoning_body)
                     .style(reasoning_box_style)
@@ -497,26 +518,20 @@ fn text_turn_block<'a>(
             );
         }
     }
-    if !search_query.trim().is_empty() {
+    if !ctx.search_query.trim().is_empty() {
         content_col = content_col.push(highlighted_text(
             &tc.content,
-            search_query,
-            14.0 * font_scale,
+            ctx.search_query,
+            14.0 * ctx.font_scale,
         ));
-    } else if !selectable_msgs.contains(&i)
+    } else if !ctx.selectable_msgs.contains(&i)
         && let Some(md) = &tc.content_md
     {
-        content_col = content_col.push(markdown_element(
-            md,
-            theme,
-            i,
-            14.0 * font_scale,
-            13.0 * font_scale,
-        ));
+        content_col = content_col.push(markdown_element(md, i, 14.0, ctx));
     } else {
         content_col = content_col.push(
             SelectableText::new(&tc.content)
-                .size(14.0 * font_scale)
+                .size(14.0 * ctx.font_scale)
                 .style(sel_default),
         );
     }
@@ -525,49 +540,35 @@ fn text_turn_block<'a>(
 }
 
 /// Build a single turn block (header + body) wrapped in its role-colored bubble.
-fn turn_block<'a>(
-    msg: &'a Turn,
-    i: usize,
-    expanded_turns: &'a HashSet<(usize, usize)>,
-    selectable_msgs: &HashSet<usize>,
-    theme: &'a Theme,
-    font_scale: f32,
-    search_query: &str,
-) -> Element<'a, Message> {
+fn turn_block<'a>(msg: &'a Turn, i: usize, ctx: &TurnView<'a>) -> Element<'a, CenterPaneEvent> {
     match &msg.body {
-        TurnBody::Tool(_) | TurnBody::Temp(_) => {
-            tool_turn_block(msg, i, expanded_turns, font_scale, search_query)
-        }
-        TurnBody::Text(_) => text_turn_block(
-            msg,
-            i,
-            expanded_turns,
-            selectable_msgs,
-            theme,
-            font_scale,
-            search_query,
-        ),
+        TurnBody::Tool(_) | TurnBody::Temp(_) => tool_turn_block(msg, i, ctx),
+        TurnBody::Text(_) => text_turn_block(msg, i, ctx),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn center_pane<'a>(
-    title: &'a str,
-    dialogs: &'a [Dialog],
-    expanded_turns: &'a HashSet<(usize, usize)>,
-    expanded_dialogs: &'a HashSet<usize>,
-    status: &'a str,
+    conversation: &'a ConversationState,
     theme: &'a Theme,
-    streaming: DialogPhase,
-    selectable_msgs: &HashSet<usize>,
     font_scale: f32,
-    pending_user_prompt: Option<&'a str>,
-    ask_request: Option<&'a super::session_state::AskRequest>,
-    ask_input: &'a str,
-    search_state: &'a SearchState,
-    model_id: Option<&'a str>,
-    created_at: &'a str,
-) -> Element<'a, Message> {
+) -> Element<'a, CenterPaneEvent> {
+    let title: &str = &conversation.center_pane_title;
+    let dialogs: &[Dialog] = conversation.session.dialogs.as_slice();
+    let expanded_turns: &HashSet<(usize, usize)> = &conversation.expanded_turns;
+    let expanded_dialogs: &HashSet<usize> = &conversation.expanded_dialogs;
+    let status: &str = conversation.status();
+    let streaming: DialogPhase = conversation.session_state.phase;
+    let selectable_msgs: &HashSet<usize> = &conversation.selectable_msgs;
+    let pending_user_prompt: Option<&str> = conversation.session_state.pending_prompt.as_deref();
+    let ask_request: Option<&AskRequest> = conversation.session_state.ask_request.as_ref();
+    let ask_input: &str = &conversation.session_state.ask_input;
+    let search_state: &SearchState = &conversation.search;
+    let model_id: Option<&str> = conversation
+        .session
+        .model
+        .as_ref()
+        .map(|m| m.model_id.as_str());
+    let created_at: &str = &conversation.session.created_at;
     // Ensure turn widget IDs match the current dialog layout so that
     // scroll-to-match measurement can find each turn by its ID.
     let total: usize = dialogs.iter().map(|d| d.turns.len()).sum();
@@ -575,9 +576,17 @@ pub(crate) fn center_pane<'a>(
     let turn_ids = search_state.turn_ids();
     let search_query: &str = &search_state.query;
     let search_results: &[usize] = &search_state.results;
+    // Set up shared context for turn block builders.
+    let turn_ctx = TurnView {
+        expanded_turns,
+        selectable_msgs,
+        theme,
+        font_scale,
+        search_query,
+    };
     // Flatten dialogs into turns with a running flat index per dialog.
     let mut flat_idx: usize = 0;
-    let dialog_blocks: Vec<Element<'_, Message>> = dialogs
+    let dialog_blocks: Vec<Element<'_, CenterPaneEvent>> = dialogs
         .iter()
         .enumerate()
         .map(|(di, dialog)| {
@@ -614,11 +623,13 @@ pub(crate) fn center_pane<'a>(
                 .width(Fill)
                 .padding([8, 12]),
             )
-            .on_press(Message::ToggleDialogExpand(di))
+            .on_press(CenterPaneEvent::Conversation(
+                ConversationEvent::ToggleDialogExpand(di),
+            ))
             .interaction(mouse::Interaction::Pointer);
 
             // ── turn blocks (only built when expanded) ────────────
-            let turn_blocks: Vec<Element<'_, Message>> = if collapsed {
+            let turn_blocks: Vec<Element<'_, CenterPaneEvent>> = if collapsed {
                 flat_idx += dialog.turns.len();
                 Vec::new()
             } else {
@@ -632,15 +643,7 @@ pub(crate) fn center_pane<'a>(
                         let is_current = is_match
                             && !search_results.is_empty()
                             && search_results[search_state.current] == i;
-                        let block = turn_block(
-                            msg,
-                            i,
-                            expanded_turns,
-                            selectable_msgs,
-                            theme,
-                            font_scale,
-                            search_query,
-                        );
+                        let block = turn_block(msg, i, &turn_ctx);
                         let style: fn(&Theme) -> container::Style = if is_current {
                             search_current_style
                         } else if is_match {
@@ -679,8 +682,9 @@ pub(crate) fn center_pane<'a>(
             session_header(title),
             pending_header(pending_user_prompt),
             if search_state.visible {
-                super::search_bar::view(search_query, search_results, search_state.current)
-                    .map(Message::SearchEvent)
+                super::search_bar::view(search_query, search_results, search_state.current).map(
+                    |event| CenterPaneEvent::Conversation(ConversationEvent::SearchEvent(event)),
+                )
             } else {
                 row![].into()
             },
@@ -697,9 +701,12 @@ pub(crate) fn center_pane<'a>(
                 Scrollbar::new().width(6).scroller_width(6)
             ))
             .id(MESSAGE_SCROLL.clone())
-            .on_scroll(Message::SessionViewScrolled),
+            .on_scroll(CenterPaneEvent::SessionViewScrolled),
             ask_request
-                .map(|request| super::tool_message::ask_view(request, ask_input, font_scale))
+                .map(|request| {
+                    super::tool_message::ask_view(request, ask_input, font_scale)
+                        .map(CenterPaneEvent::Conversation)
+                })
                 .unwrap_or_else(|| Space::new().into()),
             status_line(status, streaming, font_scale),
         ])
@@ -707,7 +714,9 @@ pub(crate) fn center_pane<'a>(
         .height(Fill)
         .style(pane_center),
     )
-    .on_press(Message::DefocusSessionPicker)
+    .on_press(CenterPaneEvent::Conversation(
+        ConversationEvent::DefocusSessionPicker,
+    ))
     .into()
 }
 
@@ -715,7 +724,7 @@ pub(crate) fn center_pane<'a>(
 
 /// Header bar at the top of the center pane: prompt text or "New session",
 /// plus copy-to-clipboard and resend action icons on the far right.
-fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
+fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
     let header = row![
         container(
             SelectableText::new(prompt)
@@ -730,11 +739,15 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, Message> {
         )
         .width(Length::Fill)
         .clip(true),
-        icons::icon_action(icons::COPY, "Copy session title", Message::CopySessionTitle),
+        icons::icon_action(
+            icons::COPY,
+            "Copy session title",
+            CenterPaneEvent::Conversation(ConversationEvent::CopySessionTitle)
+        ),
         icons::icon_action(
             icons::RESEND,
             "Resend session history",
-            Message::ResendSessionHistory
+            CenterPaneEvent::Conversation(ConversationEvent::ResendSessionHistory)
         ),
     ]
     .spacing(6)
@@ -754,7 +767,7 @@ fn session_info<'a>(
     model_id: Option<&'a str>,
     created_at: &'a str,
     font_scale: f32,
-) -> Element<'a, Message> {
+) -> Element<'a, CenterPaneEvent> {
     let Some(model_id) = model_id else {
         return row![].into();
     };
@@ -782,9 +795,9 @@ fn session_info<'a>(
 /// Wraps content in a bordered container that scrolls vertically
 /// when its natural height exceeds `max_h`.
 fn header_container<'a>(
-    content: impl Into<Element<'a, Message>>,
+    content: impl Into<Element<'a, CenterPaneEvent>>,
     max_h: f32,
-) -> Element<'a, Message> {
+) -> Element<'a, CenterPaneEvent> {
     container(
         scrollable(content)
             .direction(thin_vertical())
@@ -795,7 +808,7 @@ fn header_container<'a>(
 }
 
 /// Displays the pending prompt text with a muted style.
-fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, Message> {
+fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
     let Some(prompt) = prompt else {
         return row![].into();
     };
@@ -814,7 +827,7 @@ fn status_line<'a>(
     status_text: &'a str,
     streaming: DialogPhase,
     font_scale: f32,
-) -> Element<'a, Message> {
+) -> Element<'a, CenterPaneEvent> {
     let mut row = row![
         text(status_text)
             .size(12.0 * font_scale)
@@ -825,8 +838,8 @@ fn status_line<'a>(
     if streaming != DialogPhase::Idle {
         row = row.push(
             button(text("⏹ Stop").size(11.0 * font_scale))
-                .on_press(Message::SessionEvent(
-                    crate::views::session_state::SessionEvent::Stop,
+                .on_press(CenterPaneEvent::Conversation(
+                    ConversationEvent::SessionEvent(crate::SessionEvent::Stop),
                 ))
                 .padding([4, 10])
                 .style(icon_button_style),

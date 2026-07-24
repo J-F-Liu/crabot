@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::Message;
+use crate::ConversationEvent;
 use crate::llm::DialogPhase;
 use crate::widgets::dropdown::DropDown;
 
@@ -39,20 +39,12 @@ pub(crate) fn session_view<'a>(
     streaming: DialogPhase,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
-) -> Element<'a, Message> {
+) -> Element<'a, ConversationEvent> {
     let selected = session_options.iter().find(|e| e.id == current_session_id);
 
-    let mut list = DropDown::new(
-        session_options,
-        selected,
-        if streaming == DialogPhase::Idle {
-            Message::LoadSession
-        } else {
-            |_| Message::Noop
-        },
-    )
-    .width(Fill)
-    .menu_width(600.0);
+    let mut list = DropDown::new(session_options, selected, ConversationEvent::LoadSession)
+        .width(Fill)
+        .menu_width(600.0);
 
     list = if streaming != DialogPhase::Idle {
         list.style(crate::views::disabled_dropdown_style)
@@ -60,7 +52,7 @@ pub(crate) fn session_view<'a>(
         list
     };
     if streaming == DialogPhase::Idle {
-        list = list.on_open(Message::SessionPickerFocused);
+        list = list.on_open(ConversationEvent::SessionPickerFocused);
     }
 
     column![
@@ -74,7 +66,7 @@ pub(crate) fn session_view<'a>(
                 .on_press_maybe(if streaming != DialogPhase::Idle {
                     None
                 } else {
-                    Some(Message::NewSession)
+                    Some(ConversationEvent::NewSession)
                 })
                 .style(crate::views::primary_button),
         ]

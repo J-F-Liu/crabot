@@ -9,7 +9,8 @@ use iced::{Alignment, Element, Length};
 use super::styles::{bordered_bar_style, icon_button_style};
 use super::theme::CRABOT_TEXT_MUTED;
 
-use crate::Message;
+use crate::ConversationEvent;
+use crate::app::ConversationState;
 use crate::views::{SEARCH_INPUT, measure_turn_offsets, scroll_to_turn_at};
 use crabot::chat::TurnBody;
 use crabot::session::Session;
@@ -89,11 +90,11 @@ impl SearchState {
     }
 
     /// Scroll to a turn using stored offsets. Callers must ensure offsets have been measured.
-    pub(crate) fn scroll_to_target(&self, target: usize) -> Option<Task<Message>> {
+    pub(crate) fn scroll_to_target(&self, target: usize) -> Option<Task<ConversationEvent>> {
         self.turn_offsets
             .get(target)
             .copied()
-            .map(scroll_to_turn_at)
+            .map(|y| scroll_to_turn_at(y).discard())
     }
 
     /// Store measured offsets if they are from the latest measurement task.
@@ -117,7 +118,11 @@ impl SearchState {
     }
 
     /// Measure all turn offsets, cache them, and scroll to `target`.
-    pub(crate) fn measure_and_scroll(&mut self, total: usize, target: usize) -> Task<Message> {
+    pub(crate) fn measure_and_scroll(
+        &mut self,
+        total: usize,
+        target: usize,
+    ) -> Task<ConversationEvent> {
         self.ensure_turn_ids(total);
         self.measure_generation += 1;
         let generation = self.measure_generation;
@@ -125,8 +130,8 @@ impl SearchState {
         measure_turn_offsets(turn_ids).then(move |offsets| {
             let y = offsets.get(target).copied();
             Task::batch([
-                Task::done(Message::TurnOffsetsMeasured(generation, offsets)),
-                y.map_or(Task::none(), scroll_to_turn_at),
+                Task::done(ConversationEvent::TurnOffsetsMeasured(generation, offsets)),
+                y.map_or(Task::none(), |y| scroll_to_turn_at(y).discard()),
             ])
         })
     }
@@ -144,11 +149,12 @@ pub(crate) enum SearchEvent {
 /// Handle a search event, mutating search state and dialog/turn expansion as needed.
 pub(crate) fn update(
     event: SearchEvent,
-    state: &mut SearchState,
-    session: &Session,
-    expanded_dialogs: &mut HashSet<usize>,
-    expanded_turns: &mut HashSet<(usize, usize)>,
-) -> Task<Message> {
+    conversation: &mut ConversationState,
+) -> Task<ConversationEvent> {
+    let state = &mut conversation.search;
+    let session = &conversation.session;
+    let expanded_dialogs = &mut conversation.expanded_dialogs;
+    let expanded_turns = &mut conversation.expanded_turns;
     match event {
         SearchEvent::ToggleSearch => {
             state.visible = !state.visible;

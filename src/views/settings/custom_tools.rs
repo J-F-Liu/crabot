@@ -5,11 +5,9 @@ use super::{
     SettingsEvent, SettingsState, SettingsTab, ToolTextField, card_rule, delete_button_style,
     field_row, form_card_style, sub_card_style, textarea_field_row,
 };
-use crate::Message;
 use crate::views::theme::{CRABOT_PRIMARY, CRABOT_TEXT_MUTED};
 use crate::widgets::textarea::TextArea;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolParameter};
-use iced::padding;
 use iced::{
     Alignment, Element, Length,
     widget::{button, checkbox, column, container, mouse_area, pick_list, row, text, text_input},
@@ -21,7 +19,7 @@ const PARAM_KINDS: &[&str] = &["string", "integer", "number", "boolean"];
 
 // ── Page ───────────────────────────────────────────────────────────
 
-pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let header = row![
         text("Custom Tools")
             .size(13)
@@ -34,11 +32,11 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Mes
         button(text("+ New Tool").size(12))
             .padding([4, 10])
             .style(crate::views::styles::primary_button)
-            .on_press(Message::SettingsEvent(SettingsEvent::NewTool)),
+            .on_press(SettingsEvent::NewTool),
     ]
     .align_y(Alignment::Center);
 
-    let body: Element<'a, Message> = if state.working_tools.custom_tools.is_empty() {
+    let body: Element<'a, SettingsEvent> = if state.working_tools.custom_tools.is_empty() {
         container(
             text("No custom tools yet. Click + New Tool to define a command-line tool.")
                 .size(12)
@@ -48,7 +46,7 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Mes
         .center_x(Length::Fill)
         .into()
     } else {
-        let cards: Vec<Element<'a, Message>> = state
+        let cards: Vec<Element<'a, SettingsEvent>> = state
             .working_tools
             .custom_tools
             .iter()
@@ -67,18 +65,8 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Mes
         column(cards).spacing(8).into()
     };
 
-    let save_label = if state.save_feedback == Some(SettingsTab::CustomTools) {
-        "Saved ✓"
-    } else {
-        "Save"
-    };
-    let save_button = button(text(save_label).size(13))
-        .style(crate::views::styles::primary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::SaveTools));
-
-    let action_row = row![iced::widget::Space::new().width(Length::Fill), save_button,]
-        .spacing(10)
-        .padding(padding::top(8));
+    let action_row =
+        super::save_action_row(state, SettingsTab::CustomTools, SettingsEvent::SaveTools);
 
     column![header, body, action_row].spacing(12).into()
 }
@@ -93,7 +81,7 @@ fn tool_card<'a>(
     expanded: bool,
     desc_area: &'a TextArea,
     instr_area: &'a TextArea,
-) -> Element<'a, Message> {
+) -> Element<'a, SettingsEvent> {
     let arrow = if expanded { "▼" } else { "⯈" };
     let named = !tool.name.trim().is_empty();
     let display_name = if named { &tool.name } else { "untitled" };
@@ -115,12 +103,12 @@ fn tool_card<'a>(
         )
         .width(Length::Fill),
     )
-    .on_press(Message::SettingsEvent(SettingsEvent::ToggleTool(index)));
+    .on_press(SettingsEvent::ToggleTool(index));
 
     let delete = button(text("✕").size(11))
         .padding([2, 6])
         .style(delete_button_style)
-        .on_press(Message::SettingsEvent(SettingsEvent::DeleteTool(index)));
+        .on_press(SettingsEvent::DeleteTool(index));
 
     let header_row = row![title, delete].spacing(4).align_y(Alignment::Center);
 
@@ -147,39 +135,33 @@ fn tool_form<'a>(
     tool: &'a CustomTool,
     desc_area: &'a TextArea,
     instr_area: &'a TextArea,
-) -> Element<'a, Message> {
+) -> Element<'a, SettingsEvent> {
     column![
         field_row(
             "Name",
             &tool.name,
             "snake_case name used by the model",
             false,
-            move |v| { Message::SettingsEvent(SettingsEvent::EditToolName(index, v)) }
+            move |v| SettingsEvent::EditToolName(index, v)
         ),
         textarea_field_row(
             "Description",
             desc_area,
             "What the tool does — shown to the model",
-            move |msg| Message::SettingsEvent(SettingsEvent::ToolTextArea(
-                ToolTextField::Description,
-                msg,
-            )),
+            move |msg| SettingsEvent::ToolTextArea(ToolTextField::Description, msg,),
         ),
         textarea_field_row(
             "Instruction",
             instr_area,
             "When and how the model should use this tool",
-            move |msg| Message::SettingsEvent(SettingsEvent::ToolTextArea(
-                ToolTextField::Instruction,
-                msg,
-            )),
+            move |msg| SettingsEvent::ToolTextArea(ToolTextField::Instruction, msg,),
         ),
         field_row(
             "Command",
             &tool.command,
             "Command template, e.g. git log {args}",
             true,
-            move |v| Message::SettingsEvent(SettingsEvent::EditToolCommand(index, v)),
+            move |v| SettingsEvent::EditToolCommand(index, v),
         ),
         params_section(index, tool),
         text(
@@ -195,7 +177,7 @@ fn tool_form<'a>(
 
 // ── Parameters ────────────────────────────────────────────────────
 
-fn params_section<'a>(tool_index: usize, tool: &'a CustomTool) -> Element<'a, Message> {
+fn params_section<'a>(tool_index: usize, tool: &'a CustomTool) -> Element<'a, SettingsEvent> {
     let header = row![
         container(text("Parameters").size(14))
             .width(90)
@@ -203,9 +185,7 @@ fn params_section<'a>(tool_index: usize, tool: &'a CustomTool) -> Element<'a, Me
         button(text("+ Add").size(12))
             .padding([4, 10])
             .style(crate::views::styles::secondary_button)
-            .on_press(Message::SettingsEvent(SettingsEvent::AddToolParam(
-                tool_index
-            ))),
+            .on_press(SettingsEvent::AddToolParam(tool_index)),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -214,7 +194,7 @@ fn params_section<'a>(tool_index: usize, tool: &'a CustomTool) -> Element<'a, Me
         return column![header].spacing(6).into();
     }
 
-    let cards: Vec<Element<'a, Message>> = tool
+    let cards: Vec<Element<'a, SettingsEvent>> = tool
         .parameters
         .iter()
         .enumerate()
@@ -239,13 +219,9 @@ fn param_card<'a>(
     tool_index: usize,
     index: usize,
     param: &'a ToolParameter,
-) -> Element<'a, Message> {
+) -> Element<'a, SettingsEvent> {
     let kind_picker = pick_list(PARAM_KINDS, simple_kind(&param.kind), move |kind| {
-        Message::SettingsEvent(SettingsEvent::EditParamKind(
-            tool_index,
-            index,
-            kind.to_string(),
-        ))
+        SettingsEvent::EditParamKind(tool_index, index, kind.to_string())
     })
     .text_size(12)
     .placeholder(kind_name(&param.kind))
@@ -254,25 +230,19 @@ fn param_card<'a>(
     let required = checkbox(param.required)
         .label("required")
         .text_size(12)
-        .on_toggle(move |v| {
-            Message::SettingsEvent(SettingsEvent::ToggleParamRequired(tool_index, index, v))
-        })
+        .on_toggle(move |v| SettingsEvent::ToggleParamRequired(tool_index, index, v))
         .style(crate::views::primary_checkbox);
 
     let remove = button(text("✕").size(10))
         .padding([2, 6])
         .style(delete_button_style)
-        .on_press(Message::SettingsEvent(SettingsEvent::DeleteToolParam(
-            tool_index, index,
-        )));
+        .on_press(SettingsEvent::DeleteToolParam(tool_index, index));
 
     container(
         column![
             row![
                 text_input("Parameter name", &param.name)
-                    .on_input(move |v| {
-                        Message::SettingsEvent(SettingsEvent::EditParamName(tool_index, index, v))
-                    })
+                    .on_input(move |v| { SettingsEvent::EditParamName(tool_index, index, v) })
                     .padding(4)
                     .size(13)
                     .width(Length::Fill),
@@ -286,9 +256,7 @@ fn param_card<'a>(
                 "Parameter description — shown to the model",
                 &param.description
             )
-            .on_input(move |v| {
-                Message::SettingsEvent(SettingsEvent::EditParamDescription(tool_index, index, v))
-            })
+            .on_input(move |v| { SettingsEvent::EditParamDescription(tool_index, index, v) })
             .padding(4)
             .size(13)
             .width(Length::Fill),

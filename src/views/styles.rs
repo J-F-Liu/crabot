@@ -5,7 +5,6 @@ use iced::{
 use iced_selection::text::Style as SelectionStyle;
 
 use super::theme::*;
-use crate::Message;
 
 /// White background with a thin border, used for status bars and the search bar.
 pub(crate) fn bordered_bar_style(_theme: &Theme) -> container::Style {
@@ -38,7 +37,10 @@ pub(crate) fn pane_center(_theme: &Theme) -> container::Style {
 
 // ── label helper ──────────────────────────────────────────────────
 
-pub(crate) fn label<'a>(text: &'a str, width: impl Into<Length>) -> Element<'a, Message> {
+pub(crate) fn label<'a, M: Clone + 'static>(
+    text: &'a str,
+    width: impl Into<Length>,
+) -> Element<'a, M> {
     container(iced::widget::text(text).size(14).font(Font {
         weight: font::Weight::Bold,
         ..Font::DEFAULT
@@ -50,7 +52,7 @@ pub(crate) fn label<'a>(text: &'a str, width: impl Into<Length>) -> Element<'a, 
 // ── divider ───────────────────────────────────────────────────────
 
 /// Per-divider hover + drag state.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct DividerState {
     pub(crate) hovered: bool,
     pub(crate) dragging: bool,
@@ -58,7 +60,7 @@ pub(crate) struct DividerState {
     pub(crate) start: f32,
 }
 
-pub(crate) fn divider(state: &DividerState) -> Element<'static, Message> {
+pub(crate) fn divider<M: Clone + 'static>(state: &DividerState) -> Element<'static, M> {
     let color = if state.dragging {
         CRABOT_PRIMARY
     } else if state.hovered {

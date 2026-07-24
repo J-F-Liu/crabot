@@ -2,12 +2,10 @@ use super::{
     NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState, SettingsTab,
     form_card_style,
 };
-use crate::Message;
 use crate::views::theme::{
     CRABOT_BORDER, CRABOT_DANGER, CRABOT_PRIMARY, CRABOT_SURFACE, CRABOT_TEXT, CRABOT_TEXT_MUTED,
 };
 use crabot::model::{ModelList, currency_symbol};
-use iced::padding;
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
@@ -32,7 +30,7 @@ impl std::fmt::Display for ProviderPickEntry {
 
 // ── Provider section ────────────────────────────────────────────────
 
-pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let entries: Vec<ProviderPickEntry> = state
         .working_models
         .providers
@@ -49,7 +47,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
         .cloned();
 
     let picker = pick_list(entries, selected, |e: ProviderPickEntry| {
-        Message::SettingsEvent(SettingsEvent::SelectProvider(e.id))
+        SettingsEvent::SelectProvider(e.id)
     })
     .width(Length::Fill);
 
@@ -80,7 +78,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
             field_row(
                 "Name",
                 &state.provider_name,
-                |v| { Message::SettingsEvent(SettingsEvent::EditProviderName(v)) },
+                SettingsEvent::EditProviderName,
                 "Provider name",
                 Some(NEW_PROVIDER_NAME_INPUT_ID),
                 None,
@@ -88,10 +86,10 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
             field_row(
                 "Base URL",
                 &state.provider_base_url,
-                |v| { Message::SettingsEvent(SettingsEvent::EditProviderBaseUrl(v)) },
+                SettingsEvent::EditProviderBaseUrl,
                 "Base URL of the provider, press Enter to fetch model list",
                 None,
-                Some(Message::SettingsEvent(SettingsEvent::RefreshModels)),
+                Some(SettingsEvent::RefreshModels),
             ),
             {
                 let label_col = |label: &'static str| {
@@ -102,12 +100,12 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
                 row![
                     label_col("API Type"),
                     pick_list(API_TYPES, selected_api_type, |v| {
-                        Message::SettingsEvent(SettingsEvent::EditProviderApiType(v.to_string()))
+                        SettingsEvent::EditProviderApiType(v.to_string())
                     })
                     .width(Length::Fill),
                     label_col("Auth Type"),
                     pick_list(AUTH_TYPES, selected_auth, |v| {
-                        Message::SettingsEvent(SettingsEvent::EditProviderAuth(v.to_string()))
+                        SettingsEvent::EditProviderAuth(v.to_string())
                     })
                     .width(Length::Fill),
                 ]
@@ -117,13 +115,13 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
             field_row(
                 "API Key",
                 &state.provider_api_key,
-                |v| { Message::SettingsEvent(SettingsEvent::EditProviderApiKey(v)) },
+                SettingsEvent::EditProviderApiKey,
                 "API Key or its enviroment variable name",
                 None,
                 None,
             ),
             checkbox_row("Strict Mode", state.provider_strict_mode, |v| {
-                Message::SettingsEvent(SettingsEvent::ToggleProviderStrictMode(v))
+                SettingsEvent::ToggleProviderStrictMode(v)
             },),
             models_section_view(state, &state.working_models),
         ]
@@ -142,7 +140,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
             iced::widget::Space::new().height(Length::Fill),
             button(text("New"))
                 .style(crate::views::styles::primary_button)
-                .on_press(Message::SettingsEvent(SettingsEvent::NewProvider)),
+                .on_press(SettingsEvent::NewProvider),
         ]
         .spacing(12)
         .align_x(Alignment::Center)
@@ -150,10 +148,10 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
         .into()
     };
 
-    let action_button: Element<'_, Message> = if state.is_new_provider {
+    let action_button: Element<'_, SettingsEvent> = if state.is_new_provider {
         button(text("Cancel"))
             .style(crate::views::styles::secondary_button)
-            .on_press(Message::SettingsEvent(SettingsEvent::CancelNewProvider))
+            .on_press(SettingsEvent::CancelNewProvider)
             .into()
     } else if !state.selected_provider_id.is_empty() {
         button(text("Delete"))
@@ -162,9 +160,9 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
                 s.text_color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
                 s
             })
-            .on_press(Message::SettingsEvent(SettingsEvent::DeleteProvider(
+            .on_press(SettingsEvent::DeleteProvider(
                 state.selected_provider_id.clone(),
-            )))
+            ))
             .into()
     } else {
         iced::widget::Space::new().width(0).into()
@@ -183,7 +181,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
             row![
                 button(text("New"))
                     .style(crate::views::styles::primary_button)
-                    .on_press(Message::SettingsEvent(SettingsEvent::NewProvider)),
+                    .on_press(SettingsEvent::NewProvider),
                 action_button,
             ]
             .spacing(8),
@@ -201,7 +199,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Mes
 /// Labels are shown as draggable capsules on a single (scrollable) row.
 /// The trailing "+" capsule opens a blank input capsule; the new label is
 /// confirmed with Enter or when the input loses focus.
-pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let section_header = text("Model Labels")
         .size(13)
         .font(iced::Font {
@@ -212,7 +210,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Messag
 
     let dragging = state.dragging_label();
 
-    let mut chips: Vec<Element<'a, Message>> = state
+    let mut chips: Vec<Element<'a, SettingsEvent>> = state
         .working_models
         .models
         .keys()
@@ -224,9 +222,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Messag
                     button(text("✕").size(10))
                         .padding(0)
                         .style(chip_close_style)
-                        .on_press(Message::SettingsEvent(SettingsEvent::DeleteLabel(
-                            name.clone(),
-                        ))),
+                        .on_press(SettingsEvent::DeleteLabel(name.clone(),)),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -235,8 +231,8 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Messag
             .style(chip_style(dragging == Some(i)));
 
             mouse_area(chip)
-                .on_press(Message::SettingsEvent(SettingsEvent::LabelDragStart(i)))
-                .on_enter(Message::SettingsEvent(SettingsEvent::LabelDragEnter(i)))
+                .on_press(SettingsEvent::LabelDragStart(i))
+                .on_enter(SettingsEvent::LabelDragEnter(i))
                 .interaction(if dragging.is_some() {
                     mouse::Interaction::Grabbing
                 } else {
@@ -259,8 +255,8 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Messag
         chips.push(
             text_input("Label name", &state.new_label_name)
                 .id(NEW_LABEL_INPUT_ID)
-                .on_input(|v| Message::SettingsEvent(SettingsEvent::NewLabelName(v)))
-                .on_submit(Message::SettingsEvent(SettingsEvent::AddLabel))
+                .on_input(SettingsEvent::NewLabelName)
+                .on_submit(SettingsEvent::AddLabel)
                 .size(13)
                 .padding([5, 12])
                 .width(140)
@@ -274,7 +270,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Messag
                     .padding([5, 12])
                     .style(add_chip_style),
             )
-            .on_press(Message::SettingsEvent(SettingsEvent::StartAddLabel))
+            .on_press(SettingsEvent::StartAddLabel)
             .into(),
         );
     }
@@ -357,11 +353,11 @@ fn chip_input_style(_theme: &iced::Theme, _status: text_input::Status) -> text_i
 fn field_row<'a>(
     label: &'static str,
     value: &str,
-    on_input: impl Fn(String) -> Message + 'a,
+    on_input: impl Fn(String) -> SettingsEvent + 'a,
     placeholder: &'a str,
     id: Option<&'static str>,
-    on_submit: Option<Message>,
-) -> Element<'a, Message> {
+    on_submit: Option<SettingsEvent>,
+) -> Element<'a, SettingsEvent> {
     let mut input = text_input(placeholder, value)
         .on_input(on_input)
         .width(Length::Fill)
@@ -384,8 +380,8 @@ fn field_row<'a>(
 fn checkbox_row<'a>(
     label: &'static str,
     checked: bool,
-    on_toggle: impl Fn(bool) -> Message + 'a,
-) -> Element<'a, Message> {
+    on_toggle: impl Fn(bool) -> SettingsEvent + 'a,
+) -> Element<'a, SettingsEvent> {
     let label_col = container(text(label).size(14))
         .width(90)
         .align_x(Alignment::End);
@@ -403,7 +399,7 @@ fn checkbox_row<'a>(
 fn models_section_view<'a>(
     state: &'a SettingsState,
     models: &'a ModelList,
-) -> Element<'a, Message> {
+) -> Element<'a, SettingsEvent> {
     let provider_model_ids: Vec<&str> = models
         .providers
         .get(&state.selected_provider_id)
@@ -426,7 +422,7 @@ fn models_section_view<'a>(
     };
 
     // Body: status or table + details
-    let body: Element<'_, Message> = if state.fetching_models {
+    let body: Element<'_, SettingsEvent> = if state.fetching_models {
         text("Loading models…")
             .size(12)
             .color(CRABOT_TEXT_MUTED)
@@ -435,7 +431,7 @@ fn models_section_view<'a>(
         let mut btn =
             button(text("Fetch Models").size(12)).style(crate::views::styles::primary_button);
         if !state.provider_base_url.trim().is_empty() {
-            btn = btn.on_press(Message::SettingsEvent(SettingsEvent::RefreshModels));
+            btn = btn.on_press(SettingsEvent::RefreshModels);
         }
         if let Some(err) = &state.models_fetch_error {
             column![btn, text(err).size(11).color(CRABOT_DANGER),]
@@ -446,7 +442,7 @@ fn models_section_view<'a>(
         }
     } else {
         // ── Table column ──────────────────────────────────────────
-        let model_rows: Vec<Element<'_, Message>> = display_ids
+        let model_rows: Vec<Element<'_, SettingsEvent>> = display_ids
             .iter()
             .map(|&id| {
                 let checked = provider_model_ids.contains(&id);
@@ -458,9 +454,7 @@ fn models_section_view<'a>(
                 let can_toggle = !(state.is_new_provider && state.provider_name.trim().is_empty());
                 let cb = if can_toggle {
                     checkbox(checked)
-                        .on_toggle(move |v| {
-                            Message::SettingsEvent(SettingsEvent::ToggleModel(id_string.clone(), v))
-                        })
+                        .on_toggle(move |v| SettingsEvent::ToggleModel(id_string.clone(), v))
                         .style(crate::views::primary_checkbox)
                 } else {
                     checkbox(checked).style(crate::views::primary_checkbox)
@@ -484,9 +478,7 @@ fn models_section_view<'a>(
                         container::Style::default()
                     }
                 }))
-                .on_press(Message::SettingsEvent(
-                    SettingsEvent::SelectModelDetail(id_string2),
-                ));
+                .on_press(SettingsEvent::SelectModelDetail(id_string2));
 
                 let row_bg: Element<_> =
                     container(row![cb, id_cell].spacing(8).align_y(Alignment::Center))
@@ -508,101 +500,113 @@ fn models_section_view<'a>(
         });
 
         // ── Details panel ────────────────────────────────────────
-        let details: Element<'_, Message> = if let Some(selected_id) = &state.selected_model_id {
-            let provider_models = models
-                .providers
-                .get(&state.selected_provider_id)
-                .map(|p| &p.models);
+        let details: Element<'_, SettingsEvent> =
+            if let Some(selected_id) = &state.selected_model_id {
+                let provider_models = models
+                    .providers
+                    .get(&state.selected_provider_id)
+                    .map(|p| &p.models);
 
-            if let Some(model) =
-                provider_models.and_then(|ml| ml.iter().find(|m| &m.id == selected_id))
-            {
-                let name = if model.name.is_empty() {
-                    "—".to_string()
-                } else {
-                    model.name.clone()
-                };
-                let mut header = vec![
-                    detail_row("Name", name),
-                    detail_row(
-                        "Thinking",
-                        if model.thinking {
-                            "yes".into()
-                        } else {
-                            "no".into()
-                        },
-                    ),
-                ];
-                if !model.thinking_levels.is_empty() {
-                    header.push(detail_row("Think Levels", model.thinking_levels.join(", ")));
-                }
-                model_detail_panel(
-                    &model.cost,
-                    &model.input,
-                    model.context_window,
-                    model.max_tokens,
-                    header,
-                )
-            } else if let Some(details) = state.model_db.get(selected_id) {
-                // Pick the active offer: user-selected source, or first.
-                let active_cost = state
-                    .selected_offer_source
-                    .as_deref()
-                    .and_then(|src| details.offers.iter().find(|o| o.source == src))
-                    .unwrap_or_else(|| details.offers.first().unwrap_or(&details.cost));
-
-                let header = vec![
-                    detail_row("Name", details.name.clone()),
-                    detail_row(
-                        "Thinking",
-                        if details.thinking {
-                            "yes".into()
-                        } else {
-                            "no".into()
-                        },
-                    ),
-                ];
-
-                let detail = model_detail_panel(
-                    active_cost,
-                    &details.input,
-                    details.context_window,
-                    details.max_tokens,
-                    header,
-                );
-
-                // Show offer-source picker when multiple offers exist.
-                if details.offers.len() > 1 {
-                    let sources: Vec<String> =
-                        details.offers.iter().map(|o| o.source.clone()).collect();
-                    let selected_source = state
+                if let Some(model) =
+                    provider_models.and_then(|ml| ml.iter().find(|m| &m.id == selected_id))
+                {
+                    let name = if model.name.is_empty() {
+                        "—".to_string()
+                    } else {
+                        model.name.clone()
+                    };
+                    let mut header = vec![
+                        detail_row("Name", name),
+                        detail_row(
+                            "Thinking",
+                            if model.thinking {
+                                "yes".into()
+                            } else {
+                                "no".into()
+                            },
+                        ),
+                    ];
+                    if !model.thinking_levels.is_empty() {
+                        header.push(detail_row("Think Levels", model.thinking_levels.join(", ")));
+                    }
+                    model_detail_panel(
+                        &model.cost,
+                        &model.input,
+                        model.context_window,
+                        model.max_tokens,
+                        header,
+                    )
+                } else if let Some(details) = state.model_db.get(selected_id) {
+                    // Pick the active offer: user-selected source, or first.
+                    let active_cost = state
                         .selected_offer_source
-                        .clone()
-                        .unwrap_or_else(|| active_cost.source.clone());
-                    let picker = pick_list(sources, Some(selected_source), |src| {
-                        Message::SettingsEvent(SettingsEvent::SelectOfferSource(src))
-                    })
-                    .text_size(12);
-                    column![
-                        container(
-                            row![
-                                text("Offer").size(12).color(CRABOT_TEXT_MUTED).width(60),
-                                picker.width(Length::Fill),
-                            ]
-                            .spacing(10)
-                            .align_y(Alignment::Center),
-                        )
-                        .padding([4, 0]),
-                        detail,
-                    ]
-                    .spacing(4)
-                    .into()
+                        .as_deref()
+                        .and_then(|src| details.offers.iter().find(|o| o.source == src))
+                        .unwrap_or_else(|| details.offers.first().unwrap_or(&details.cost));
+
+                    let header = vec![
+                        detail_row("Name", details.name.clone()),
+                        detail_row(
+                            "Thinking",
+                            if details.thinking {
+                                "yes".into()
+                            } else {
+                                "no".into()
+                            },
+                        ),
+                    ];
+
+                    let detail = model_detail_panel(
+                        active_cost,
+                        &details.input,
+                        details.context_window,
+                        details.max_tokens,
+                        header,
+                    );
+
+                    // Show offer-source picker when multiple offers exist.
+                    if details.offers.len() > 1 {
+                        let sources: Vec<String> =
+                            details.offers.iter().map(|o| o.source.clone()).collect();
+                        let selected_source = state
+                            .selected_offer_source
+                            .clone()
+                            .unwrap_or_else(|| active_cost.source.clone());
+                        let picker = pick_list(sources, Some(selected_source), |src| {
+                            SettingsEvent::SelectOfferSource(src)
+                        })
+                        .text_size(12);
+                        column![
+                            container(
+                                row![
+                                    text("Offer").size(12).color(CRABOT_TEXT_MUTED).width(60),
+                                    picker.width(Length::Fill),
+                                ]
+                                .spacing(10)
+                                .align_y(Alignment::Center),
+                            )
+                            .padding([4, 0]),
+                            detail,
+                        ]
+                        .spacing(4)
+                        .into()
+                    } else {
+                        detail
+                    }
                 } else {
-                    detail
+                    container(
+                        text("Check the box to add this model,\nthen save to see parameters.")
+                            .size(11)
+                            .color(CRABOT_TEXT_MUTED),
+                    )
+                    .padding(8)
+                    .style(form_card_style)
+                    .width(Length::FillPortion(1))
+                    .into()
                 }
             } else {
                 container(
-                    text("Check the box to add this model,\nthen save to see parameters.")
+                    text("Click a model ID to see details.")
                         .size(11)
                         .color(CRABOT_TEXT_MUTED),
                 )
@@ -610,18 +614,7 @@ fn models_section_view<'a>(
                 .style(form_card_style)
                 .width(Length::FillPortion(1))
                 .into()
-            }
-        } else {
-            container(
-                text("Click a model ID to see details.")
-                    .size(11)
-                    .color(CRABOT_TEXT_MUTED),
-            )
-            .padding(8)
-            .style(form_card_style)
-            .width(Length::FillPortion(1))
-            .into()
-        };
+            };
         row![table, details].spacing(10).into()
     };
     row![header, body]
@@ -636,8 +629,8 @@ fn model_detail_panel<'a>(
     input: &[String],
     context_window: u32,
     max_tokens: u32,
-    header: Vec<Element<'a, Message>>,
-) -> Element<'a, Message> {
+    header: Vec<Element<'a, SettingsEvent>>,
+) -> Element<'a, SettingsEvent> {
     let sym = currency_symbol(&cost.currency);
     let ctx = if context_window > 0 {
         context_window.to_string()
@@ -680,7 +673,7 @@ fn model_detail_panel<'a>(
 }
 
 /// Single label–value row for the model detail panel.
-fn detail_row(label: &'static str, value: String) -> Element<'static, Message> {
+fn detail_row(label: &'static str, value: String) -> Element<'static, SettingsEvent> {
     row![
         text(label).size(11).color(CRABOT_TEXT_MUTED).width(70),
         text(value).size(11).color(CRABOT_TEXT),
@@ -693,22 +686,12 @@ fn detail_row(label: &'static str, value: String) -> Element<'static, Message> {
 // ── Page ───────────────────────────────────────────────────────────
 
 /// Full "AI Models" tab page: provider editor, label editor, and action buttons.
-pub(super) fn ai_models_page<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+pub(super) fn ai_models_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let providers_section = provider_tab_view(state);
     let labels_section = label_tab_view(state);
 
-    let save_label = if state.save_feedback == Some(SettingsTab::AiModels) {
-        "Saved ✓"
-    } else {
-        "Save"
-    };
-    let save_button = button(text(save_label).size(13))
-        .style(crate::views::styles::primary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::SaveModels));
-
-    let action_row = row![iced::widget::Space::new().width(Length::Fill), save_button,]
-        .spacing(10)
-        .padding(padding::top(8));
+    let action_row =
+        super::save_action_row(state, SettingsTab::AiModels, SettingsEvent::SaveModels);
 
     column![providers_section, labels_section, action_row]
         .spacing(16)

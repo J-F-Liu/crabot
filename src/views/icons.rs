@@ -7,8 +7,6 @@ use iced::{
     widget::{button, svg, text, tooltip},
 };
 
-use crate::Message;
-
 use super::styles::{icon_button_style, tooltip_style};
 use super::theme::{CRABOT_TEXT, CRABOT_TEXT_MUTED};
 
@@ -26,11 +24,11 @@ pub(crate) const CLOSE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" vie
 
 /// A small SVG icon button with a tooltip shown below on hover.
 #[must_use]
-pub(crate) fn icon_action(
+pub(crate) fn icon_action<M: Clone + 'static>(
     icon: &'static [u8],
     tip: &'static str,
-    on_press: Message,
-) -> Element<'static, Message> {
+    on_press: M,
+) -> Element<'static, M> {
     let icon = svg(svg::Handle::from_memory(icon))
         .width(14)
         .height(14)

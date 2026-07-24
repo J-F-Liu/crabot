@@ -259,6 +259,16 @@ impl ToolRegistry {
         }
     }
 
+    /// Look up an MCP server config by name.
+    pub fn find_mcp_server(&self, server: &str) -> Option<mcp::McpServer> {
+        self.mcp_servers.iter().find(|s| s.name == server).cloned()
+    }
+
+    /// Return a clone of all custom tool names.
+    pub fn custom_names(&self) -> Vec<String> {
+        self.custom_names.to_vec()
+    }
+
     /// Return names of all registered tools (built-in + custom + MCP).
     pub fn all_names(&self) -> impl Iterator<Item = &String> {
         self.builtin_names

@@ -10,7 +10,7 @@ use iced::{
 use semver::Version;
 use serde::Deserialize;
 
-use crate::Message;
+use crate::OverlayEvent;
 
 /// Version of the running binary.
 pub(crate) const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -68,7 +68,7 @@ pub(crate) fn version_gt(a: &str, b: &str) -> bool {
 }
 
 /// Renders the "new version available" banner at the top of the window.
-pub(crate) fn update_banner(latest: &str) -> Element<'static, Message> {
+pub(crate) fn update_banner(latest: &str) -> Element<'static, OverlayEvent> {
     container(
         row![
             text(format!(
@@ -77,9 +77,9 @@ pub(crate) fn update_banner(latest: &str) -> Element<'static, Message> {
             .size(13)
             .color(Color::WHITE),
             Space::new().width(Length::Fill),
-            banner_button("View Release Notes", 13.0, Message::OpenReleaseNotes),
+            banner_button("View Release Notes", 13.0, OverlayEvent::OpenReleaseNotes),
             Space::new().width(8),
-            banner_button("✕", 14.0, Message::DismissUpdateBanner),
+            banner_button("✕", 14.0, OverlayEvent::DismissUpdateBanner),
         ]
         .align_y(Alignment::Center)
         .padding([4, 12]),
@@ -92,8 +92,8 @@ pub(crate) fn update_banner(latest: &str) -> Element<'static, Message> {
 fn banner_button(
     label: &'static str,
     size: f32,
-    on_press: Message,
-) -> button::Button<'static, Message> {
+    on_press: OverlayEvent,
+) -> button::Button<'static, OverlayEvent> {
     button(text(label).size(size).color(Color::WHITE))
         .style(update_banner_link_style)
         .on_press(on_press)

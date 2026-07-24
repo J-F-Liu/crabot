@@ -6,7 +6,6 @@ pub mod model_config;
 pub mod right_pane;
 pub mod search_bar;
 pub mod session_list;
-pub mod session_state;
 pub mod settings;
 pub mod styles;
 pub mod system_prompt;
@@ -30,7 +29,6 @@ pub(crate) use left_pane::left_pane;
 pub(crate) use modal::workspace_modal;
 pub(crate) use right_pane::right_pane;
 pub(crate) use search_bar::SearchEvent;
-pub(crate) use session_state::{SessionEvent, SessionState};
 pub(crate) use settings::{
     NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState, settings_dialog,
 };

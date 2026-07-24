@@ -151,10 +151,10 @@ impl TextArea {
     /// [`Message::Edit`] and forwarded via the provided `on_action` callback.
     /// Callers can chain widget methods (e.g. `.height()`) before converting
     /// to [`Element`] via `.into()`.
-    pub fn view<'a>(
+    pub fn view<'a, AppMessage: Clone>(
         &'a self,
-        on_action: impl Fn(Message) -> crate::Message + 'a,
-    ) -> TextEditor<'a, PlainText, crate::Message> {
+        on_action: impl Fn(Message) -> AppMessage + 'a,
+    ) -> TextEditor<'a, PlainText, AppMessage> {
         text_editor(&self.content).on_action(move |action| on_action(Message::Edit(action)))
     }
 

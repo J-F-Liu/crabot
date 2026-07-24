@@ -5,11 +5,9 @@ use super::{
     SettingsEvent, SettingsState, SettingsTab, card_rule, delete_button_style, field_row,
     form_card_style, sub_card_style, textarea_field_row,
 };
-use crate::Message;
 use crate::views::theme::{CRABOT_PRIMARY, CRABOT_TEXT_MUTED};
 use crate::widgets::textarea::TextArea;
 use crabot::tools::mcp::{McpServer, McpTransport};
-use iced::padding;
 use iced::{
     Alignment, Element, Length,
     widget::{button, checkbox, column, container, mouse_area, pick_list, row, text, text_input},
@@ -21,7 +19,7 @@ const TRANSPORT_KINDS: &[&str] = &["stdio", "http"];
 
 // ── Page ───────────────────────────────────────────────────────────
 
-pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let header = row![
         text("MCP Servers")
             .size(13)
@@ -34,11 +32,11 @@ pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Mess
         button(text("+ New Server").size(12))
             .padding([4, 10])
             .style(crate::views::styles::primary_button)
-            .on_press(Message::SettingsEvent(SettingsEvent::NewMcp)),
+            .on_press(SettingsEvent::NewMcp),
     ]
     .align_y(Alignment::Center);
 
-    let body: Element<'a, Message> = if state.working_mcp.servers.is_empty() {
+    let body: Element<'a, SettingsEvent> = if state.working_mcp.servers.is_empty() {
         container(
             text("No MCP servers yet. Click + New Server to configure one.")
                 .size(12)
@@ -48,7 +46,7 @@ pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Mess
         .center_x(Length::Fill)
         .into()
     } else {
-        let cards: Vec<Element<'a, Message>> = state
+        let cards: Vec<Element<'a, SettingsEvent>> = state
             .working_mcp
             .servers
             .iter()
@@ -65,18 +63,7 @@ pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Mess
         column(cards).spacing(8).into()
     };
 
-    let save_label = if state.save_feedback == Some(SettingsTab::McpServers) {
-        "Saved ✓"
-    } else {
-        "Save"
-    };
-    let save_button = button(text(save_label).size(13))
-        .style(crate::views::styles::primary_button)
-        .on_press(Message::SettingsEvent(SettingsEvent::SaveMcp));
-
-    let action_row = row![iced::widget::Space::new().width(Length::Fill), save_button,]
-        .spacing(10)
-        .padding(padding::top(8));
+    let action_row = super::save_action_row(state, SettingsTab::McpServers, SettingsEvent::SaveMcp);
 
     column![header, body, action_row].spacing(12).into()
 }
@@ -90,7 +77,7 @@ fn server_card<'a>(
     server: &'a McpServer,
     expanded: bool,
     prompt_area: &'a TextArea,
-) -> Element<'a, Message> {
+) -> Element<'a, SettingsEvent> {
     let arrow = if expanded { "▼" } else { "⯈" };
     let named = !server.name.trim().is_empty();
     let display_name = if named { &server.name } else { "untitled" };
@@ -111,12 +98,12 @@ fn server_card<'a>(
         )
         .width(Length::Fill),
     )
-    .on_press(Message::SettingsEvent(SettingsEvent::ToggleMcp(index)));
+    .on_press(SettingsEvent::ToggleMcp(index));
 
     let delete = button(text("✕").size(11))
         .padding([2, 6])
         .style(delete_button_style)
-        .on_press(Message::SettingsEvent(SettingsEvent::DeleteMcp(index)));
+        .on_press(SettingsEvent::DeleteMcp(index));
 
     let header_row = row![title, delete].spacing(4).align_y(Alignment::Center);
 
@@ -167,15 +154,15 @@ fn server_form<'a>(
     index: usize,
     server: &'a McpServer,
     prompt_area: &'a TextArea,
-) -> Element<'a, Message> {
-    let transport_fields: Element<'a, Message> = match &server.transport {
+) -> Element<'a, SettingsEvent> {
+    let transport_fields: Element<'a, SettingsEvent> = match &server.transport {
         McpTransport::Stdio { cmd, env_vars } => column![
             field_row(
                 "Command",
                 cmd,
                 "Command to spawn, e.g. npx -y @org/server",
                 true,
-                move |v| Message::SettingsEvent(SettingsEvent::EditMcpCmd(index, v)),
+                move |v| SettingsEvent::EditMcpCmd(index, v),
             ),
             map_section(index, "Env Vars", "NAME", env_vars),
         ]
@@ -187,7 +174,7 @@ fn server_form<'a>(
                 url,
                 "Server URL, e.g. http://localhost:8000/mcp",
                 true,
-                move |v| Message::SettingsEvent(SettingsEvent::EditMcpUrl(index, v)),
+                move |v| SettingsEvent::EditMcpUrl(index, v),
             ),
             map_section(index, "Headers", "Header-Name", headers),
         ]
@@ -201,7 +188,7 @@ fn server_form<'a>(
             &server.name,
             "Unique name for this server",
             false,
-            move |v| Message::SettingsEvent(SettingsEvent::EditMcpName(index, v)),
+            move |v| SettingsEvent::EditMcpName(index, v),
         ),
         transport_row(index, &server.transport),
         transport_fields,
@@ -210,7 +197,7 @@ fn server_form<'a>(
             "Prompt",
             prompt_area,
             "System-prompt text injected when this server is enabled",
-            move |msg| Message::SettingsEvent(SettingsEvent::McpTextArea(msg)),
+            SettingsEvent::McpTextArea,
         ),
         text(
             "Prompt is added to the system prompt when the server is enabled and \
@@ -224,7 +211,7 @@ fn server_form<'a>(
 }
 
 /// Transport kind picker row.
-fn transport_row<'a>(index: usize, transport: &'a McpTransport) -> Element<'a, Message> {
+fn transport_row<'a>(index: usize, transport: &'a McpTransport) -> Element<'a, SettingsEvent> {
     let selected = match transport {
         McpTransport::Stdio { .. } => Some("stdio"),
         McpTransport::Http { .. } => Some("http"),
@@ -233,7 +220,7 @@ fn transport_row<'a>(index: usize, transport: &'a McpTransport) -> Element<'a, M
         .width(90)
         .align_x(Alignment::End);
     let picker = pick_list(TRANSPORT_KINDS, selected, move |kind| {
-        Message::SettingsEvent(SettingsEvent::EditMcpTransport(index, kind.to_string()))
+        SettingsEvent::EditMcpTransport(index, kind.to_string())
     })
     .text_size(12)
     .width(Length::Fixed(110.0));
@@ -244,7 +231,7 @@ fn transport_row<'a>(index: usize, transport: &'a McpTransport) -> Element<'a, M
 }
 
 /// Checkbox controlling whether tool names are prefixed with the server name.
-fn qualify_row<'a>(index: usize, server: &'a McpServer) -> Element<'a, Message> {
+fn qualify_row<'a>(index: usize, server: &'a McpServer) -> Element<'a, SettingsEvent> {
     let label_col = container(text("Qualify").size(14))
         .width(90)
         .align_x(Alignment::End);
@@ -256,7 +243,7 @@ fn qualify_row<'a>(index: usize, server: &'a McpServer) -> Element<'a, Message> 
     let toggle = checkbox(server.qualify_tool_names)
         .label(format!("Prefix tool names with \"{name}_\""))
         .text_size(12)
-        .on_toggle(move |v| Message::SettingsEvent(SettingsEvent::ToggleMcpQualify(index, v)))
+        .on_toggle(move |v| SettingsEvent::ToggleMcpQualify(index, v))
         .style(crate::views::primary_checkbox);
     row![label_col, toggle]
         .spacing(10)
@@ -273,7 +260,7 @@ fn map_section<'a>(
     label: &'static str,
     key_placeholder: &'static str,
     map: &'a IndexMap<String, String>,
-) -> Element<'a, Message> {
+) -> Element<'a, SettingsEvent> {
     let header = row![
         container(text(label).size(14))
             .width(90)
@@ -281,9 +268,7 @@ fn map_section<'a>(
         button(text("+ Add").size(12))
             .padding([4, 10])
             .style(crate::views::styles::secondary_button)
-            .on_press(Message::SettingsEvent(SettingsEvent::AddMcpMapEntry(
-                server_index
-            ))),
+            .on_press(SettingsEvent::AddMcpMapEntry(server_index)),
     ]
     .spacing(10)
     .align_y(Alignment::Center);
@@ -292,7 +277,7 @@ fn map_section<'a>(
         return column![header].spacing(6).into();
     }
 
-    let cards: Vec<Element<'a, Message>> = map
+    let cards: Vec<Element<'a, SettingsEvent>> = map
         .iter()
         .enumerate()
         .map(|(i, (key, value))| map_entry_card(server_index, i, key, value, key_placeholder))
@@ -317,28 +302,21 @@ fn map_entry_card<'a>(
     key: &'a str,
     value: &'a str,
     key_placeholder: &'static str,
-) -> Element<'a, Message> {
+) -> Element<'a, SettingsEvent> {
     let remove = button(text("✕").size(10))
         .padding([2, 6])
         .style(delete_button_style)
-        .on_press(Message::SettingsEvent(SettingsEvent::DeleteMcpMapEntry(
-            server_index,
-            index,
-        )));
+        .on_press(SettingsEvent::DeleteMcpMapEntry(server_index, index));
 
     container(
         row![
             text_input(key_placeholder, key)
-                .on_input(move |v| {
-                    Message::SettingsEvent(SettingsEvent::EditMcpMapKey(server_index, index, v))
-                })
+                .on_input(move |v| { SettingsEvent::EditMcpMapKey(server_index, index, v) })
                 .padding(4)
                 .size(13)
                 .width(Length::FillPortion(2)),
             text_input("value", value)
-                .on_input(move |v| {
-                    Message::SettingsEvent(SettingsEvent::EditMcpMapValue(server_index, index, v))
-                })
+                .on_input(move |v| { SettingsEvent::EditMcpMapValue(server_index, index, v) })
                 .padding(4)
                 .size(13)
                 .width(Length::FillPortion(3)),

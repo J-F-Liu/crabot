@@ -15,9 +15,8 @@ use iced_aw::{
 };
 
 use super::system_prompt::expandable_header;
-use crate::FocusedTarget;
-use crate::Message;
 use crate::widgets::textarea::TextArea;
+use crate::{FocusedTarget, PromptEvent};
 use crabot::system::WORKSPACE_TREE;
 use crabot::user::WorkMode;
 
@@ -31,12 +30,12 @@ pub(crate) fn user_prompt_view<'a>(
     files_expanded: bool,
     files_enabled: bool,
     files_content: &'a text_editor::Content,
-) -> Element<'a, Message> {
-    let mut tab_bar_builder = TabBar::new(Message::SelectWorkMode);
+) -> Element<'a, PromptEvent> {
+    let mut tab_bar_builder = TabBar::new(PromptEvent::SelectWorkMode);
     for mode in WorkMode::all() {
         tab_bar_builder = tab_bar_builder.push(*mode, TabLabel::Text(mode.name.to_string()));
     }
-    let tab_bar: Element<'_, Message> = tab_bar_builder
+    let tab_bar: Element<'_, PromptEvent> = tab_bar_builder
         .set_active_tab(&workmode)
         .tab_width(Length::Shrink)
         .width(Length::Shrink)
@@ -59,8 +58,8 @@ pub(crate) fn user_prompt_view<'a>(
         .into();
 
     // ── Recipe dropdown ──────────────────────────────────────────
-    let underlay: Element<'_, Message> = button(text("Recipes ▾").size(13))
-        .on_press(Message::ToggleRecipeDropdown)
+    let underlay: Element<'_, PromptEvent> = button(text("Recipes ▾").size(13))
+        .on_press(PromptEvent::ToggleRecipeDropdown)
         .padding([2, 8])
         .style(crate::views::secondary_button)
         .into();
@@ -69,7 +68,7 @@ pub(crate) fn user_prompt_view<'a>(
         scrollable(
             column(prompt_recipes.iter().enumerate().map(|(i, recipe)| {
                 button(text(recipe.clone()).size(13))
-                    .on_press(Message::SelectRecipe(i))
+                    .on_press(PromptEvent::SelectRecipe(i))
                     .padding([4, 10])
                     .width(Length::Fill)
                     .style(menu_item_style)
@@ -81,13 +80,13 @@ pub(crate) fn user_prompt_view<'a>(
     )
     .style(menu_container_style);
 
-    let recipe_dropdown: Element<'_, Message> =
+    let recipe_dropdown: Element<'_, PromptEvent> =
         DropDown::new(underlay, overlay, recipe_dropdown_expanded)
             .width(Length::Fixed(360.0))
             .height(Length::Fixed(180.0))
             .alignment(drop_down::Alignment::Bottom)
             .offset(Offset { x: 8.0, y: 4.0 })
-            .on_dismiss(Message::DismissRecipeDropdown)
+            .on_dismiss(PromptEvent::DismissRecipeDropdown)
             .into();
 
     column![
@@ -95,7 +94,7 @@ pub(crate) fn user_prompt_view<'a>(
             checkbox(workmode_enabled)
                 .label("Work mode")
                 .width(Length::Fill)
-                .on_toggle(Message::ToggleWorkMode)
+                .on_toggle(PromptEvent::ToggleWorkMode)
                 .style(crate::views::primary_checkbox)
                 .text_wrapping(Wrapping::None),
             tab_bar,
@@ -104,14 +103,14 @@ pub(crate) fn user_prompt_view<'a>(
         .align_y(Alignment::Center),
         files_field_view(files_expanded, files_enabled, files_content),
         user_prompt
-            .view(|msg| Message::EditTextArea(FocusedTarget::UserPrompt, msg))
+            .view(|msg| PromptEvent::EditTextArea(FocusedTarget::UserPrompt, msg))
             .height(120),
         row![
             recipe_dropdown,
             iced::widget::Space::new().width(Length::Fill),
             button(text("Send").size(13).align_x(Alignment::Center))
                 .width(80)
-                .on_press(Message::SendPrompt)
+                .on_press(PromptEvent::SendPrompt)
                 .style(crate::views::primary_button),
         ]
         .spacing(8)
@@ -128,7 +127,7 @@ fn files_field_view<'a>(
     expanded: bool,
     enabled: bool,
     content: &'a text_editor::Content,
-) -> Element<'a, Message> {
+) -> Element<'a, PromptEvent> {
     let name = WORKSPACE_TREE;
     let header = expandable_header(name, enabled, expanded);
 
@@ -141,7 +140,7 @@ fn files_field_view<'a>(
                 scrollable(
                     container(
                         text_editor(content)
-                            .on_action(move |a| Message::EditTextContent(name, a))
+                            .on_action(move |a| PromptEvent::EditTextContent(name, a))
                             .font(iced::Font::MONOSPACE)
                             .wrapping(text::Wrapping::None),
                     )

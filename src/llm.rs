@@ -9,8 +9,8 @@ use genai::chat::{
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
+use crate::app::session_state::{AskRequest, SessionEvent};
 use crate::tools::{self, ToolRef};
-use crate::views::session_state::SessionEvent;
 use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult};
 use crabot::model::ModelInfo;
 use crabot::user::UserPrompt;
@@ -474,11 +474,7 @@ async fn handle_ask_tool(
     // answered after the previous timeout had already fired).
     while ask_receiver.try_recv().is_ok() {}
 
-    if !on_event(SessionEvent::AskRequest(
-        crate::views::session_state::AskRequest { question, options },
-    ))
-    .await
-    {
+    if !on_event(SessionEvent::AskRequest(AskRequest { question, options })).await {
         return None;
     }
 

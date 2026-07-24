@@ -3,7 +3,6 @@ use iced::{
     widget::{column, container, scrollable, text_editor},
 };
 
-use super::model_config::ProviderEntry;
 use super::model_config::model_config_view;
 use super::session_list::session_view;
 use super::styles::{label, pane_side};
@@ -16,52 +15,62 @@ use super::tool_list::{
     BUILTIN_TOOLS, CUSTOM_TOOLS, ToolListState, mcp_tools_section, tools_section,
 };
 use super::user_prompt::user_prompt_view;
-use crate::Message;
+use crate::app::{ConversationState, ModelSettingsState, PromptWorkspaceState, ToolState};
 use crate::llm::DialogPhase;
-use crate::tools;
 use crate::views::session_list::SessionEntry;
 use crate::widgets::textarea::TextArea;
-use crabot::model::ModelList;
+use crate::{LeftPaneEvent, PromptEvent, ToolEvent};
 use crabot::system::{FilepathEntry, SystemPrompt};
 use crabot::user::WorkMode;
 use std::collections::HashSet;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn left_pane<'a>(
-    left_w: f32,
-    provided_models: &'a ModelList,
-    provider_entries: &'a [ProviderEntry],
-    selected_model: &'a String,
-    system_prompt: &'a SystemPrompt,
-    agents_md_exists: bool,
-    tools_expanded: bool,
-    tool_list_state: &'a ToolListState,
-    selected_preamble: &'a str,
-    preamble_options: &'a [FilepathEntry],
-    selected_rules: &'a str,
-    rules_options: &'a [FilepathEntry],
-    workspace_options: &'a [FilepathEntry],
-    files_content: &'a text_editor::Content,
-    tools_content: &'a text_editor::Content,
-    enabled_tools: &'a HashSet<String>,
-    tool_registry: &'a tools::ToolRegistry,
-    user_prompt: &'a TextArea,
-    workmode: WorkMode,
-    workmode_enabled: bool,
-    files_expanded: bool,
-    files_enabled: bool,
-    prompt_recipes: &'a [String],
-    recipe_dropdown_expanded: bool,
-    streaming: DialogPhase,
-    session_options: &'a [SessionEntry],
-    current_session_id: &'a str,
-    enabled_mcp_servers: &'a HashSet<String>,
-) -> Element<'a, Message> {
+    settings: &'a crabot::settings::Settings,
+    prompt: &'a PromptWorkspaceState,
+    conversation: &'a ConversationState,
+    tools: &'a ToolState,
+    model_settings: &'a ModelSettingsState,
+) -> Element<'a, LeftPaneEvent> {
+    let provided_models = &model_settings.provided_models;
+    let provider_entries = &model_settings.provider_entries;
+    let left_w: f32 = settings.left_pane_width;
+    let selected_model: &String = &settings.selected_model;
+    let system_prompt: &SystemPrompt = &prompt.system_prompt;
+    let agents_md_exists: bool = prompt.agents_md_exists;
+    let tools_expanded: bool = prompt.tools_expanded;
+    let tool_list_state: &ToolListState = &tools.tool_list_state;
+    let selected_preamble: &str = &settings.selected_preamble;
+    let preamble_options: &[FilepathEntry] = &prompt.preamble_options;
+    let selected_rules: &str = &settings.selected_rules;
+    let rules_options: &[FilepathEntry] = &prompt.rules_options;
+    let workspace_options: &[FilepathEntry] = &prompt.workspace_options;
+    let files_content: &text_editor::Content = &prompt.files_content;
+    let tools_content: &text_editor::Content = &prompt.tools_content;
+    let enabled_tools: &HashSet<String> = &tools.enabled_tools;
+    let tool_registry: &crabot::tools::ToolRegistry = &tools.tool_registry;
+    let user_prompt: &TextArea = &prompt.user_prompt;
+    let workmode: WorkMode = prompt.workmode;
+    let workmode_enabled: bool = prompt.workmode_enabled;
+    let files_expanded: bool = prompt.files_expanded;
+    let files_enabled: bool = settings.files_enabled;
+    let prompt_recipes: &[String] = {
+        let key = prompt.workmode.name.to_lowercase();
+        settings
+            .prompt_recipe
+            .get(&key)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    };
+    let recipe_dropdown_expanded: bool = prompt.recipe_dropdown_expanded;
+    let streaming: DialogPhase = conversation.session_state.phase;
+    let session_options: &[SessionEntry] = &conversation.session_list;
+    let current_session_id: &str = &conversation.session.id;
+    let enabled_mcp_servers: &HashSet<String> = &tools.enabled_mcp_servers;
     container(
         column![
             container(
                 model_config_view(provided_models, provider_entries, selected_model)
-                    .map(Message::ModelConfigEvent),
+                    .map(LeftPaneEvent::ModelConfig),
             )
             .padding([2, 10]),
             scrollable(
@@ -72,24 +81,29 @@ pub(crate) fn left_pane<'a>(
                         &system_prompt.preamble,
                         preamble_options,
                         selected_preamble,
-                        Message::SelectPreamble,
-                    ),
+                        PromptEvent::SelectPreamble,
+                    )
+                    .map(LeftPaneEvent::Prompt),
                     file_picker_field_view(
                         crabot::system::RULES,
                         &system_prompt.rules,
                         rules_options,
                         selected_rules,
-                        Message::SelectRules,
-                    ),
-                    tools_field_view(tools_expanded, &system_prompt.tools, tools_content,),
-                    workspace_field_view(&system_prompt.workspace, workspace_options),
+                        PromptEvent::SelectRules,
+                    )
+                    .map(LeftPaneEvent::Prompt),
+                    tools_field_view(tools_expanded, &system_prompt.tools, tools_content,)
+                        .map(LeftPaneEvent::Prompt),
+                    workspace_field_view(&system_prompt.workspace, workspace_options)
+                        .map(LeftPaneEvent::Prompt),
                     if agents_md_exists {
-                        agents_md_field_view(&system_prompt.agents_md)
+                        agents_md_field_view(&system_prompt.agents_md).map(LeftPaneEvent::Prompt)
                     } else {
                         column![].into()
                     },
-                    date_field_view(&system_prompt.date),
-                    session_view(streaming, session_options, current_session_id),
+                    date_field_view(&system_prompt.date).map(LeftPaneEvent::Prompt),
+                    session_view(streaming, session_options, current_session_id)
+                        .map(LeftPaneEvent::Conversation),
                     label("User Prompt", 140.0),
                     user_prompt_view(
                         user_prompt,
@@ -100,25 +114,29 @@ pub(crate) fn left_pane<'a>(
                         files_expanded,
                         files_enabled,
                         files_content,
-                    ),
+                    )
+                    .map(LeftPaneEvent::Prompt),
                     tools_section(
                         BUILTIN_TOOLS,
                         tool_list_state.builtin_expanded,
                         enabled_tools,
                         &tool_registry.builtin_names,
-                    ),
+                    )
+                    .map(map_tool_list_event),
                     tools_section(
                         CUSTOM_TOOLS,
                         tool_list_state.custom_expanded,
                         enabled_tools,
                         &tool_registry.custom_names,
-                    ),
+                    )
+                    .map(map_tool_list_event),
                     mcp_tools_section(
                         tool_list_state.mcp_expanded,
                         enabled_tools,
                         &tool_registry.mcp,
                         enabled_mcp_servers,
-                    ),
+                    )
+                    .map(map_tool_list_event),
                 ]
                 .spacing(8)
                 .padding([4, 12]),
@@ -132,4 +150,20 @@ pub(crate) fn left_pane<'a>(
     .height(Fill)
     .style(pane_side)
     .into()
+}
+
+/// Map a [`super::tool_list::ToolListEvent`] to the pane [`LeftPaneEvent`].
+fn map_tool_list_event(event: super::tool_list::ToolListEvent) -> LeftPaneEvent {
+    use super::tool_list::ToolListEvent;
+    match event {
+        ToolListEvent::ExpandSection(name) => {
+            LeftPaneEvent::Prompt(PromptEvent::ToggleExpanded(name))
+        }
+        ToolListEvent::ToggleMcpServer(server, enabled) => {
+            LeftPaneEvent::Tools(ToolEvent::ToggleMcpServer(server, enabled))
+        }
+        ToolListEvent::ToggleAgentTool(name, enabled) => {
+            LeftPaneEvent::Tools(ToolEvent::ToggleAgentTool(name, enabled))
+        }
+    }
 }

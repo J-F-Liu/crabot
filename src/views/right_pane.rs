@@ -6,13 +6,13 @@ use iced_selection::Text as SelectableText;
 
 use super::styles::{pane_side, primary_button, sel_primary};
 use super::theme::thin_vertical;
-use crate::Message;
+use crate::ConversationEvent;
+use crate::app::ConversationState;
 use crabot::model::{Model, TokenAmount};
-use crabot::session::Session;
 use crabot::tools::todo::{TodoItem, TodoStatus};
 
 /// Label-value row with the value right-aligned via a fill spacer.
-fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
+fn token_row<'a>(label: &'a str, value: String) -> Element<'a, ConversationEvent> {
     let mono = Font {
         family: font::Family::Monospace,
         ..Font::DEFAULT
@@ -25,7 +25,7 @@ fn token_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
     .into()
 }
 
-fn section_header<'a>(title: &'a str) -> Element<'a, Message> {
+fn section_header<'a>(title: &'a str) -> Element<'a, ConversationEvent> {
     text(title)
         .size(14)
         .font(Font {
@@ -36,11 +36,11 @@ fn section_header<'a>(title: &'a str) -> Element<'a, Message> {
 }
 
 /// Build the todo-list section, returning `None` when the list is empty.
-fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, Message>> {
+fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, ConversationEvent>> {
     if todo_items.is_empty() {
         return None;
     }
-    let rows: Vec<Element<'_, Message>> = todo_items
+    let rows: Vec<Element<'_, ConversationEvent>> = todo_items
         .iter()
         .map(|item| {
             let indent = item.depth as u16 * 16;
@@ -68,11 +68,12 @@ fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, Message>> 
 pub(crate) fn right_pane<'a>(
     pane_width: f32,
     model: Option<&Model>,
-    usage: &genai::chat::Usage,
-    session: &'a Session,
+    conversation: &'a ConversationState,
     show_restart: bool,
     todo_items: &'a [TodoItem],
-) -> Element<'a, Message> {
+) -> Element<'a, ConversationEvent> {
+    let usage = &conversation.last_usage;
+    let session = &conversation.session;
     let context_window = model.map(|m| m.context_window);
     let mut col = column![].spacing(8);
     let token_amount = TokenAmount::from_genai(usage);
@@ -130,7 +131,7 @@ pub(crate) fn right_pane<'a>(
 
     // ── modified files ──
     if !session.modified_files.is_empty() {
-        let files: Vec<Element<'_, Message>> = session
+        let files: Vec<Element<'_, ConversationEvent>> = session
             .modified_files
             .iter()
             .map(|p| {
@@ -150,7 +151,7 @@ pub(crate) fn right_pane<'a>(
         col = col.push(Space::new().height(Fill)).push(
             container(
                 button(text("Restart").size(14))
-                    .on_press(Message::Restart)
+                    .on_press(ConversationEvent::Restart)
                     .style(primary_button)
                     .width(Length::Shrink),
             )

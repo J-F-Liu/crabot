@@ -7,7 +7,6 @@ use iced::{
 
 use iced_selection::Text as SelectableText;
 
-use crate::Message;
 use crate::tools::{Tool, ToolRegistry};
 use crate::views::styles::sel_default;
 use crate::views::theme::{
@@ -253,7 +252,7 @@ pub(crate) fn coerce_value(raw: &str, param_type: &str) -> serde_json::Value {
 
 // ── Parameter field rendering ───────────────────────────────────
 
-fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Message> {
+fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, SettingsEvent> {
     match p.param_type.as_str() {
         "boolean" => {
             let checked = current_value == "true";
@@ -261,12 +260,7 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Mess
             checkbox(checked)
                 .label(p.name.clone())
                 .text_size(13)
-                .on_toggle(move |v| {
-                    Message::SettingsEvent(SettingsEvent::EditPlaygroundParam(
-                        name.clone(),
-                        v.to_string(),
-                    ))
-                })
+                .on_toggle(move |v| SettingsEvent::EditPlaygroundParam(name.clone(), v.to_string()))
                 .into()
         }
         "array" => {
@@ -288,19 +282,19 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Mess
             let is_object_item = items_type.as_deref() == Some("object");
 
             let name = p.name.clone();
-            let mut item_rows: Vec<Element<'_, Message>> = Vec::new();
+            let mut item_rows: Vec<Element<'_, SettingsEvent>> = Vec::new();
             for (i, item_text) in items.iter().enumerate() {
                 let del_name = name.clone();
                 let edit_name = name.clone();
                 let edit_itype = items_type.clone();
                 let mut input = text_input("", item_text)
                     .on_input(move |v| {
-                        Message::SettingsEvent(SettingsEvent::EditPlaygroundArrayItem(
+                        SettingsEvent::EditPlaygroundArrayItem(
                             edit_name.clone(),
                             i,
                             v,
                             edit_itype.clone(),
-                        ))
+                        )
                     })
                     .padding(4)
                     .size(13)
@@ -314,8 +308,9 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Mess
                         button(text("×").size(13).color(CRABOT_DANGER).font(BOLD_FONT),)
                             .style(secondary_button)
                             .padding([2, 6])
-                            .on_press(Message::SettingsEvent(
-                                SettingsEvent::RemovePlaygroundArrayItem(del_name.clone(), i),
+                            .on_press(SettingsEvent::RemovePlaygroundArrayItem(
+                                del_name.clone(),
+                                i
                             )),
                     ]
                     .spacing(4)
@@ -328,9 +323,7 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Mess
             let add_btn = button(text("＋ Add item").size(12).color(CRABOT_TEXT_MUTED))
                 .style(secondary_button)
                 .padding([2, 8])
-                .on_press(Message::SettingsEvent(
-                    SettingsEvent::AddPlaygroundArrayItem(add_name, items_type),
-                ));
+                .on_press(SettingsEvent::AddPlaygroundArrayItem(add_name, items_type));
 
             column(item_rows).spacing(4).push(add_btn).into()
         }
@@ -339,9 +332,7 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Mess
             let name = p.name.clone();
             let is_mono = p.param_type == "object";
             let mut input = text_input(placeholder, current_value)
-                .on_input(move |v| {
-                    Message::SettingsEvent(SettingsEvent::EditPlaygroundParam(name.clone(), v))
-                })
+                .on_input(move |v| SettingsEvent::EditPlaygroundParam(name.clone(), v))
                 .padding(4)
                 .size(13)
                 .width(Length::Fill);
@@ -355,7 +346,7 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Mess
 
 // ── Result widget ───────────────────────────────────────────────
 
-fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     match &state.playground_result {
         Some(Ok(output)) => container(
             scrollable(
@@ -431,7 +422,7 @@ const BOLD_FONT: iced::Font = iced::Font {
     ..iced::Font::DEFAULT
 };
 
-pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Message> {
+pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     // Build selector entries with group headers.
     let entries = build_selector_entries(&state.playground_tools);
 
@@ -451,10 +442,10 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Messa
     // Tool selector dropdown with treeview-style overlay.
     let selector: Element<_> = DropDown::new(entries, selected_entry, move |entry| {
         if let SelectorEntry::Tool(idx, _) = entry {
-            Message::SettingsEvent(SettingsEvent::SelectPlaygroundTool(Some(idx)))
+            SettingsEvent::SelectPlaygroundTool(Some(idx))
         } else {
             // Headers are never selectable, this branch is a defensive fallback.
-            Message::SettingsEvent(SettingsEvent::SelectPlaygroundTool(None))
+            SettingsEvent::SelectPlaygroundTool(None)
         }
     })
     .width(Length::Fill)
@@ -508,7 +499,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Messa
         } else {
             let param_label = text("Parameters:").size(13).color(CRABOT_TEXT);
 
-            let fields: Vec<Element<'_, Message>> = params
+            let fields: Vec<Element<'_, SettingsEvent>> = params
                 .iter()
                 .map(|p| {
                     let p_name = p.name.clone();
@@ -568,7 +559,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Messa
                 button(text("⏳ Running…").size(13)).style(secondary_button),
                 button(text("✕ Cancel").size(13))
                     .style(secondary_button)
-                    .on_press(Message::SettingsEvent(SettingsEvent::CancelPlaygroundTool)),
+                    .on_press(SettingsEvent::CancelPlaygroundTool),
             ]
             .spacing(8)
             .into()
@@ -576,7 +567,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Messa
             row![
                 button(text("▶ Execute").size(13))
                     .style(primary_button)
-                    .on_press(Message::SettingsEvent(SettingsEvent::ExecutePlaygroundTool)),
+                    .on_press(SettingsEvent::ExecutePlaygroundTool),
                 iced::widget::Space::new().width(Length::Fill),
             ]
             .width(Length::Fill)

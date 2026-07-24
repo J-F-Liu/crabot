@@ -5,12 +5,23 @@ use iced::{
     widget::{Space, checkbox, column, container, mouse_area, row, text, text::Wrapping},
 };
 
-use crate::Message;
 use crate::tools::mcp::McpTool;
 
 pub const BUILTIN_TOOLS: &str = "Builtin Tools";
 pub const CUSTOM_TOOLS: &str = "Custom Tools";
 pub const MCP_TOOLS: &str = "MCP Tools";
+
+/// Events emitted by the tool-list views in the left pane.
+///
+/// Callers should map these to their owning domain events:
+/// - `ExpandSection` → [`crate::PromptEvent::ToggleExpanded`]
+/// - `ToggleMcpServer` / `ToggleAgentTool` → [`crate::ToolEvent`] variants
+#[derive(Clone)]
+pub(crate) enum ToolListEvent {
+    ExpandSection(&'static str),
+    ToggleMcpServer(String, bool),
+    ToggleAgentTool(String, bool),
+}
 
 /// Collapse/expand state for the tools sections in the left pane.
 #[derive(Debug, Clone)]
@@ -32,23 +43,35 @@ impl Default for ToolListState {
 
 impl ToolListState {
     /// Handle a `ToggleExpanded` message for tool-list section titles.
-    pub(crate) fn update(&mut self, name: &str) -> bool {
+    pub(crate) fn update(&mut self, name: &str) {
         match name {
             BUILTIN_TOOLS => {
                 self.builtin_expanded = !self.builtin_expanded;
-                true
             }
             CUSTOM_TOOLS => {
                 self.custom_expanded = !self.custom_expanded;
-                true
             }
             MCP_TOOLS => {
                 self.mcp_expanded = !self.mcp_expanded;
-                true
             }
-            _ => false,
+            _ => {}
         }
     }
+}
+
+/// Clickable header row for a collapsible section.
+fn section_header<'a>(title: &'static str, expanded: bool) -> Element<'a, ToolListEvent> {
+    let arrow = if expanded { "▼" } else { "⯈" };
+    mouse_area(
+        row![
+            text(title).size(14),
+            Space::new().width(Length::Fill),
+            text(arrow).size(12),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .on_press(ToolListEvent::ExpandSection(title))
+    .into()
 }
 
 /// A labelled section of tool checkboxes (e.g. "Builtin Tools", "Custom Tools").
@@ -57,22 +80,12 @@ pub(crate) fn tools_section<'a>(
     expanded: bool,
     selected: &'a HashSet<String>,
     names: &'a [String],
-) -> Element<'a, Message> {
+) -> Element<'a, ToolListEvent> {
     if names.is_empty() {
         return column![].into();
     }
 
-    let arrow = if expanded { "▼" } else { "⯈" };
-    let header = mouse_area(
-        row![
-            text(title).size(14),
-            Space::new().width(Length::Fill),
-            text(arrow).size(12),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .on_press(Message::ToggleExpanded(title));
-
+    let header = section_header(title, expanded);
     if expanded {
         column![header, tools_view(selected, names)]
             .spacing(4)
@@ -82,26 +95,40 @@ pub(crate) fn tools_section<'a>(
     }
 }
 
+/// Number of columns used to lay out tool checkboxes in a grid.
+const TOOL_GRID_COLS: usize = 3;
+
+/// Distribute items into `TOOL_GRID_COLS` columns (row-major: fill across, then down).
+fn distribute_into_columns<T: Copy>(items: &[T]) -> Vec<Vec<T>> {
+    let n_rows = items.len().div_ceil(TOOL_GRID_COLS);
+    let mut cols: Vec<Vec<T>> = (0..TOOL_GRID_COLS)
+        .map(|_| Vec::with_capacity(n_rows))
+        .collect();
+    for (i, item) in items.iter().enumerate() {
+        cols[i % TOOL_GRID_COLS].push(*item);
+    }
+    cols
+}
+
+/// Wrap pre-built checkbox columns in a spaced, left-padded row.
+fn checkbox_grid<'a>(cols: Vec<Element<'a, ToolListEvent>>) -> Element<'a, ToolListEvent> {
+    container(row(cols).spacing(12))
+        .padding(padding::left(8))
+        .width(Length::Fill)
+        .into()
+}
+
 pub(crate) fn tools_view<'a>(
     selected: &'a HashSet<String>,
     names: &'a [String],
-) -> Element<'a, Message> {
-    const COLS: usize = 3;
-
-    // Distribute names into columns (row-major: fill across, then down).
-    let n_rows = names.len().div_ceil(COLS);
-    let mut cols: Vec<Vec<&str>> = (0..COLS).map(|_| Vec::with_capacity(n_rows)).collect();
-    for (i, name) in names.iter().enumerate() {
-        let col = i % COLS;
-        cols[col].push(name.as_str());
-    }
-
+) -> Element<'a, ToolListEvent> {
     // Build actual iced columns: each column naturally sizes to its widest
     // checkbox, giving pixel-perfect alignment without width estimation.
-    let cols: Vec<Element<'a, Message>> = cols
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let cols: Vec<Element<'a, ToolListEvent>> = distribute_into_columns(&name_refs)
         .into_iter()
         .map(|names| {
-            let checkboxes: Vec<Element<'a, Message>> = names
+            let checkboxes: Vec<Element<'a, ToolListEvent>> = names
                 .into_iter()
                 .map(|name| checkbox_cell(name, None, selected, true))
                 .collect();
@@ -109,10 +136,7 @@ pub(crate) fn tools_view<'a>(
         })
         .collect();
 
-    container(row(cols).spacing(12))
-        .padding(padding::left(8))
-        .width(Length::Fill)
-        .into()
+    checkbox_grid(cols)
 }
 
 /// A labelled section for MCP tools, with server sub-groups nested under a
@@ -122,24 +146,14 @@ pub(crate) fn mcp_tools_section<'a>(
     selected: &'a HashSet<String>,
     groups: &'a [(String, Vec<McpTool>)],
     enabled_mcp_servers: &'a HashSet<String>,
-) -> Element<'a, Message> {
+) -> Element<'a, ToolListEvent> {
     if groups.is_empty() {
         return column![].into();
     }
 
-    let arrow = if expanded { "▼" } else { "⯈" };
-    let header = mouse_area(
-        row![
-            text(MCP_TOOLS).size(14),
-            Space::new().width(Length::Fill),
-            text(arrow).size(12),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .on_press(Message::ToggleExpanded(MCP_TOOLS));
-
+    let header = section_header(MCP_TOOLS, expanded);
     if expanded {
-        let group_cols: Vec<Element<'a, Message>> = groups
+        let group_cols: Vec<Element<'a, ToolListEvent>> = groups
             .iter()
             .map(|(server, tools)| {
                 let enabled = enabled_mcp_servers.contains(server);
@@ -162,7 +176,7 @@ fn mcp_server_group_view<'a>(
     enabled: bool,
     selected: &'a HashSet<String>,
     tools: &'a [McpTool],
-) -> Element<'a, Message> {
+) -> Element<'a, ToolListEvent> {
     if tools.is_empty() {
         return column![].into();
     }
@@ -170,7 +184,7 @@ fn mcp_server_group_view<'a>(
         .label(server)
         .style(crate::views::primary_checkbox)
         .text_wrapping(Wrapping::None)
-        .on_toggle(move |v| Message::ToggleMcpServer(server.to_string(), v));
+        .on_toggle(move |v| ToolListEvent::ToggleMcpServer(server.to_string(), v));
     let checkboxes = mcp_tools_view(selected, tools, enabled);
     column![server_cb, checkboxes].spacing(2).into()
 }
@@ -179,20 +193,12 @@ fn mcp_tools_view<'a>(
     selected: &'a HashSet<String>,
     tools: &'a [McpTool],
     enabled: bool,
-) -> Element<'a, Message> {
-    const COLS: usize = 3;
-
-    let n_rows = tools.len().div_ceil(COLS);
-    let mut cols: Vec<Vec<&McpTool>> = (0..COLS).map(|_| Vec::with_capacity(n_rows)).collect();
-    for (i, tool) in tools.iter().enumerate() {
-        let col = i % COLS;
-        cols[col].push(tool);
-    }
-
-    let cols: Vec<Element<'a, Message>> = cols
+) -> Element<'a, ToolListEvent> {
+    let tool_refs: Vec<&McpTool> = tools.iter().collect();
+    let cols: Vec<Element<'a, ToolListEvent>> = distribute_into_columns(&tool_refs)
         .into_iter()
         .map(|tools| {
-            let checkboxes: Vec<Element<'a, Message>> = tools
+            let checkboxes: Vec<Element<'a, ToolListEvent>> = tools
                 .into_iter()
                 .map(|tool| checkbox_cell(&tool.name, tool.title.as_deref(), selected, enabled))
                 .collect();
@@ -200,10 +206,7 @@ fn mcp_tools_view<'a>(
         })
         .collect();
 
-    container(row(cols).spacing(12))
-        .padding(padding::left(8))
-        .width(Length::Fill)
-        .into()
+    checkbox_grid(cols)
 }
 
 fn checkbox_cell<'a>(
@@ -211,7 +214,7 @@ fn checkbox_cell<'a>(
     title: Option<&'a str>,
     selected: &'a HashSet<String>,
     enabled: bool,
-) -> Element<'a, Message> {
+) -> Element<'a, ToolListEvent> {
     let checked = selected.contains(name);
     let label = title.unwrap_or(name);
     let mut cb = checkbox(checked)
@@ -219,7 +222,7 @@ fn checkbox_cell<'a>(
         .style(crate::views::primary_checkbox)
         .text_wrapping(Wrapping::None);
     if enabled {
-        cb = cb.on_toggle(move |v| Message::ToggleAgentTool(name.to_string(), v));
+        cb = cb.on_toggle(move |v| ToolListEvent::ToggleAgentTool(name.to_string(), v));
     }
     Element::from(cb)
 }

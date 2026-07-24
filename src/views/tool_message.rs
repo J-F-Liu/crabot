@@ -6,20 +6,21 @@ use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
 
 use super::ASK_INPUT;
-use super::session_state::{AskAction, AskRequest};
 use super::styles::{primary_button, secondary_button};
 use super::styles::{sel_default, sel_primary, sel_secondary};
 use super::theme::{
     CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, CRABOT_TOOL_CONTENT_BG,
     CRABOT_TOOL_CONTENT_BORDER, color_text,
 };
-use crate::Message;
 use crate::tools::edit::EditParam;
 use crate::tools::todo::{TodoItem, TodoStatus};
+use crate::{AskAction, AskRequest, ConversationEvent};
 use iced::widget::{button, text_input};
 
 /// Shared container style for ask tool views (active and completed).
-fn ask_tool_container(content: impl Into<Element<'static, Message>>) -> Element<'static, Message> {
+fn ask_tool_container(
+    content: impl Into<Element<'static, ConversationEvent>>,
+) -> Element<'static, ConversationEvent> {
     container(content.into())
         .padding([10, 14])
         .style(|_theme: &Theme| container::Style {
@@ -43,16 +44,16 @@ fn ask_option_list(
     selected: &str,
     font_scale: f32,
     interactive: bool,
-) -> Vec<Element<'static, Message>> {
+) -> Vec<Element<'static, ConversationEvent>> {
     options
         .iter()
         .map(|option| {
             let is_selected = option == selected;
             let check = if is_selected { "✓" } else { " " };
-            let label: Element<'static, Message> = if interactive {
+            let label: Element<'static, ConversationEvent> = if interactive {
                 button(text(option.clone()).size(13.0 * font_scale))
                     .style(secondary_button)
-                    .on_press(Message::AskAction(AskAction::OptionSelected(
+                    .on_press(ConversationEvent::AskAction(AskAction::OptionSelected(
                         option.clone(),
                     )))
                     .into()
@@ -77,24 +78,25 @@ pub(crate) fn ask_view(
     request: &AskRequest,
     input: &str,
     font_scale: f32,
-) -> Element<'static, Message> {
+) -> Element<'static, ConversationEvent> {
     let header = text("🤖 LLM asks:").size(13.0).color(CRABOT_TOOL_ACCENT);
-    let question: Element<'static, Message> = SelectableText::new(request.question.clone())
-        .style(sel_default)
-        .into();
+    let question: Element<'static, ConversationEvent> =
+        SelectableText::new(request.question.clone())
+            .style(sel_default)
+            .into();
     let skip = button(text("Skip"))
         .style(secondary_button)
-        .on_press(Message::AskAction(AskAction::Skip));
-    let controls: Element<'static, Message> = if request.options.is_empty() {
+        .on_press(ConversationEvent::AskAction(AskAction::Skip));
+    let controls: Element<'static, ConversationEvent> = if request.options.is_empty() {
         row![
             text_input("Type your answer…", input)
                 .id(ASK_INPUT.clone())
-                .on_input(Message::AskInputChanged)
-                .on_submit(Message::AskAction(AskAction::Ok))
+                .on_input(ConversationEvent::AskInputChanged)
+                .on_submit(ConversationEvent::AskAction(AskAction::Ok))
                 .width(Fill),
             button(text("Ok"))
                 .style(primary_button)
-                .on_press(Message::AskAction(AskAction::Ok)),
+                .on_press(ConversationEvent::AskAction(AskAction::Ok)),
             skip
         ]
         .spacing(8)
@@ -107,7 +109,7 @@ pub(crate) fn ask_view(
             button(text("Ok"))
                 .style(primary_button)
                 .on_press_maybe(if ok_enabled {
-                    Some(Message::AskAction(AskAction::Ok))
+                    Some(ConversationEvent::AskAction(AskAction::Ok))
                 } else {
                     None
                 }),
@@ -127,7 +129,7 @@ pub(crate) fn ask_result_view(
     args: &serde_json::Value,
     result: &Result<String, String>,
     font_scale: f32,
-) -> Element<'static, Message> {
+) -> Element<'static, ConversationEvent> {
     let question = args
         .get("question")
         .and_then(|v| v.as_str())
@@ -147,9 +149,10 @@ pub(crate) fn ask_result_view(
         Err(e) => (e.as_str(), false),
     };
 
-    let question_text: Element<'static, Message> = SelectableText::new(question.to_string())
-        .style(sel_default)
-        .into();
+    let question_text: Element<'static, ConversationEvent> =
+        SelectableText::new(question.to_string())
+            .style(sel_default)
+            .into();
 
     let answer_label = if is_ok { "Answer" } else { "Error" };
     let answer_color = if is_ok { CRABOT_SUCCESS } else { CRABOT_DANGER };
@@ -195,10 +198,11 @@ pub(crate) fn ask_result_view(
                 );
         }
     } else {
-        let answer_element: Element<'static, Message> = SelectableText::new(answer.to_string())
-            .size(13.0 * font_scale)
-            .style(sel_default)
-            .into();
+        let answer_element: Element<'static, ConversationEvent> =
+            SelectableText::new(answer.to_string())
+                .size(13.0 * font_scale)
+                .style(sel_default)
+                .into();
         answer_col = answer_col.push(
             row![
                 text(format!("{answer_label}: "))
@@ -263,7 +267,11 @@ pub(super) fn highlighted_spans(
 
 /// Build text with inline search keyword highlighting.
 /// Returns a `rich_text` element when a query is active, or plain `text` otherwise.
-pub(super) fn highlighted_text(content: &str, query: &str, size: f32) -> Element<'static, Message> {
+pub(super) fn highlighted_text<M: Clone + 'static>(
+    content: &str,
+    query: &str,
+    size: f32,
+) -> Element<'static, M> {
     if query.trim().is_empty() {
         return text(content.to_string()).size(size).into();
     }
@@ -297,7 +305,7 @@ const DIFF_BG_ADD: Color = Color::from_rgb8(0xF0, 0xFA, 0xF4);
 /// `marker` is the leading glyph (e.g. "−", "+", "⚠"), coloured with
 /// `marker_color`. `content` is rendered as selectable monospace text using
 /// `sel_style`, all on a `bg` background with rounded corners.
-fn diff_row<'a>(
+fn diff_row<'a, M: Clone + 'static>(
     marker: &'a str,
     marker_color: Color,
     content: String,
@@ -305,7 +313,7 @@ fn diff_row<'a>(
     bg: Color,
     font_scale: f32,
     search_query: &str,
-) -> Element<'a, Message> {
+) -> Element<'a, M> {
     container(
         row![
             text(marker)
@@ -339,12 +347,12 @@ fn diff_row<'a>(
 }
 
 /// Single tool-argument key-value row.
-pub(super) fn arg_row<'a>(
+pub(super) fn arg_row<'a, M: Clone + 'static>(
     key: &'a str,
     value: String,
     font_scale: f32,
     search_query: &str,
-) -> Element<'a, Message> {
+) -> Element<'a, M> {
     row![
         text(format!("{}:", key))
             .size(12.0 * font_scale)
@@ -366,12 +374,12 @@ pub(super) fn arg_row<'a>(
 }
 
 /// Embedded table for the `edits` argument — each edit becomes a labelled block.
-fn edits_table<'a>(
+fn edits_table<'a, M: Clone + 'static>(
     key: &'a str,
     edits: &'a [serde_json::Value],
     font_scale: f32,
     search_query: &str,
-) -> Element<'a, Message> {
+) -> Element<'a, M> {
     let header = row![
         text(format!("{}:", key))
             .size(12.0 * font_scale)
@@ -384,7 +392,7 @@ fn edits_table<'a>(
     ]
     .spacing(0);
 
-    let rows: Vec<Element<'_, Message>> = edits
+    let rows: Vec<Element<'_, M>> = edits
         .iter()
         .enumerate()
         .flat_map(|(i, edit)| {
@@ -396,42 +404,42 @@ fn edits_table<'a>(
             .padding([2, 0])
             .into();
 
-            let items: Vec<Element<'_, Message>> =
-                match serde_json::from_value::<EditParam>(edit.clone()) {
-                    Ok(EditParam { old_text, new_text }) => vec![
-                        idx,
-                        diff_row(
-                            "−",
-                            CRABOT_DANGER,
-                            old_text,
-                            sel_secondary,
-                            DIFF_BG_DEL,
-                            font_scale,
-                            search_query,
-                        ),
-                        diff_row(
-                            "+",
-                            CRABOT_SUCCESS,
-                            new_text,
-                            sel_primary,
-                            DIFF_BG_ADD,
-                            font_scale,
-                            search_query,
-                        ),
-                    ],
-                    Err(_) => vec![
-                        idx,
-                        diff_row(
-                            "⚠",
-                            CRABOT_DANGER,
-                            edit.to_string(),
-                            sel_secondary,
-                            DIFF_BG_DEL,
-                            font_scale,
-                            search_query,
-                        ),
-                    ],
-                };
+            let items: Vec<Element<'_, M>> = match serde_json::from_value::<EditParam>(edit.clone())
+            {
+                Ok(EditParam { old_text, new_text }) => vec![
+                    idx,
+                    diff_row(
+                        "−",
+                        CRABOT_DANGER,
+                        old_text,
+                        sel_secondary,
+                        DIFF_BG_DEL,
+                        font_scale,
+                        search_query,
+                    ),
+                    diff_row(
+                        "+",
+                        CRABOT_SUCCESS,
+                        new_text,
+                        sel_primary,
+                        DIFF_BG_ADD,
+                        font_scale,
+                        search_query,
+                    ),
+                ],
+                Err(_) => vec![
+                    idx,
+                    diff_row(
+                        "⚠",
+                        CRABOT_DANGER,
+                        edit.to_string(),
+                        sel_secondary,
+                        DIFF_BG_DEL,
+                        font_scale,
+                        search_query,
+                    ),
+                ],
+            };
             items
         })
         .collect();
@@ -447,11 +455,11 @@ const TODO_STATUS_PENDING: Color = Color::from_rgb8(0x99, 0x99, 0x99);
 const TODO_STATUS_IN_PROGRESS: Color = Color::from_rgb8(0x29, 0x76, 0xFF);
 const TODO_STATUS_WIDTH: f32 = 96.0;
 
-fn todo_text_cell(
+fn todo_text_cell<M: Clone + 'static>(
     content: String,
     font_scale: f32,
     search_query: &str,
-) -> Element<'static, Message> {
+) -> Element<'static, M> {
     if search_query.trim().is_empty() {
         SelectableText::new(content)
             .size(12.0 * font_scale)
@@ -463,13 +471,13 @@ fn todo_text_cell(
     }
 }
 
-fn todo_row(
+fn todo_row<M: Clone + 'static>(
     content: String,
     status: &'static str,
     status_color: Color,
     font_scale: f32,
     search_query: &str,
-) -> Element<'static, Message> {
+) -> Element<'static, M> {
     row![
         container(todo_text_cell(content, font_scale, search_query))
             .width(Fill)
@@ -488,11 +496,11 @@ fn todo_row(
     .into()
 }
 
-fn todo_item_row(
+fn todo_item_row<M: Clone + 'static>(
     item: &serde_json::Value,
     font_scale: f32,
     search_query: &str,
-) -> Element<'static, Message> {
+) -> Element<'static, M> {
     match serde_json::from_value::<TodoItem>(item.clone()) {
         Ok(todo) => {
             let (status, color) = match todo.status {
@@ -514,11 +522,11 @@ fn todo_item_row(
 }
 
 /// Embedded table for the `items` argument of the `todo` tool.
-fn todo_table(
+fn todo_table<M: Clone + 'static>(
     items: &[serde_json::Value],
     font_scale: f32,
     search_query: &str,
-) -> Element<'static, Message> {
+) -> Element<'static, M> {
     let col_header = row![
         container(
             text("Text")
@@ -540,7 +548,7 @@ fn todo_table(
     ]
     .spacing(8);
 
-    let mut elements: Vec<Element<'static, Message>> = vec![col_header.into()];
+    let mut elements: Vec<Element<'static, M>> = vec![col_header.into()];
     for (index, item) in items.iter().enumerate() {
         if index > 0 {
             elements.push(
@@ -570,12 +578,12 @@ fn todo_table(
 }
 
 /// All tool-argument rows.
-pub(super) fn args_rows<'a>(
+pub(super) fn args_rows<'a, M: Clone + 'static>(
     tool_name: &str,
     args: &'a serde_json::Value,
     font_scale: f32,
     search_query: &str,
-) -> Vec<Element<'a, Message>> {
+) -> Vec<Element<'a, M>> {
     let Some(map) = args.as_object() else {
         return Vec::new();
     };
@@ -587,7 +595,7 @@ pub(super) fn args_rows<'a>(
         return vec![todo_table(items, font_scale, search_query)];
     }
 
-    let mut rows: Vec<Element<'_, Message>> = Vec::new();
+    let mut rows: Vec<Element<'_, M>> = Vec::new();
 
     // Combine offset + limit into a single row when both are present
     // (used by the `read` tool).
@@ -655,21 +663,21 @@ fn fmt_arg(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Strin
 }
 
 /// Only the "path" argument row, when present.
-pub(super) fn path_arg_row<'a>(
+pub(super) fn path_arg_row<'a, M: Clone + 'static>(
     args: &'a serde_json::Value,
     font_scale: f32,
     search_query: &str,
-) -> Option<Element<'a, Message>> {
+) -> Option<Element<'a, M>> {
     let path = args.as_object()?.get("path")?.as_str()?;
     Some(arg_row("path", path.to_string(), font_scale, search_query))
 }
 
 /// Tool result text (success or error).
-pub(super) fn result_text<'a>(
+pub(super) fn result_text<'a, M: Clone + 'static>(
     result: &'a Result<String, String>,
     font_scale: f32,
     search_query: &str,
-) -> Element<'a, Message> {
+) -> Element<'a, M> {
     let display: &str = result
         .as_ref()
         .map(|s| s.as_str())
@@ -681,7 +689,7 @@ pub(super) fn result_text<'a>(
         CRABOT_DANGER
     };
 
-    let body: Element<'_, Message> = if search_query.trim().is_empty() {
+    let body: Element<'_, M> = if search_query.trim().is_empty() {
         SelectableText::new(display)
             .size(13.0 * font_scale)
             .style(move |theme: &Theme| SelectionStyle {
