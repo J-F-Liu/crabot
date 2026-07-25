@@ -37,13 +37,6 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::CopySessionTitle => {
             return iced::clipboard::write(app.conversation.center_pane_title.clone());
         }
-        ConversationEvent::Restart => {
-            app.save_settings();
-            let _ = std::process::Command::new("cargo")
-                .args(["run", "--release"])
-                .spawn();
-            return iced::exit();
-        }
         ConversationEvent::AppClosing => {
             app.conversation
                 .session_state

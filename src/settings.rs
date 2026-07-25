@@ -37,6 +37,8 @@ pub struct Settings {
     pub prompt_recipes: IndexMap<String, Vec<String>>,
     /// Latest version found in the last check, if newer than current.
     pub last_update_version: Option<String>,
+    /// Whether the dark color theme is active.
+    pub dark_mode: bool,
 }
 
 impl Default for Settings {
@@ -62,6 +64,7 @@ impl Default for Settings {
             agent_tools: IndexMap::new(),
             prompt_recipes: IndexMap::new(),
             last_update_version: None,
+            dark_mode: false,
         }
     }
 }

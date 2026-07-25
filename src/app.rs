@@ -23,7 +23,7 @@ use crate::views::{
     model_config::ProviderEntry,
     right_pane,
     session_list::SessionEntry,
-    theme::{CRABOT_MODAL_SCRIM, default_theme},
+    theme::{CRABOT_MODAL_SCRIM, set_dark_mode, theme_for},
     tool_list::ToolListState,
 };
 use crate::widgets::textarea::{self, TextArea};
@@ -270,6 +270,7 @@ pub(crate) enum LayoutEvent {
     UndoRedo(textarea::Message),
     EscapePressed,
     Zoom(f32),
+    ToggleTheme(bool),
 }
 
 /// Events from the prompt, workspace, and user-input area.
@@ -318,7 +319,6 @@ pub(crate) enum ConversationEvent {
     AskAction(session_state::AskAction),
     SessionEvent(session_state::SessionEvent),
     CopySessionTitle,
-    Restart,
     AppClosing,
     ToggleSelectableMode(Option<usize>),
     SearchEvent(crate::views::SearchEvent),
@@ -360,6 +360,13 @@ pub(crate) enum CenterPaneEvent {
     LinkClicked(String),
 }
 
+/// Events emitted by the right pane (conversation stats + theme toggle + restart).
+#[derive(Clone)]
+pub(crate) enum RightPaneEvent {
+    ToggleTheme(bool),
+    Restart,
+}
+
 // ── Root Message ──────────────────────────────────────────────────
 
 /// Root message type dispatched through the Iced event loop.
@@ -371,6 +378,7 @@ pub(crate) enum Message {
     Conversation(ConversationEvent),
     Overlay(OverlayEvent),
     ModelSettings(ModelSettingsEvent),
+    RestartApp,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -446,6 +454,8 @@ impl App {
         let window_size = Size::new(saved.window_size.0, saved.window_size.1);
         let window_pos = Point::new(saved.window_pos.0, saved.window_pos.1);
         let tools_enabled = saved.tools_enabled;
+        let dark_mode = saved.dark_mode;
+        set_dark_mode(dark_mode);
 
         let prompt = PromptWorkspaceState {
             preamble: (saved.preamble_enabled, preamble_content),
@@ -481,7 +491,7 @@ impl App {
                 cursor: Point::ORIGIN,
                 left_divider: DividerState::default(),
                 right_divider: DividerState::default(),
-                theme: default_theme(),
+                theme: theme_for(dark_mode),
                 shift_held: false,
                 ctrl_held: false,
                 scroll_viewport_height: 0.0,
@@ -559,6 +569,13 @@ impl App {
                 }
                 ModelSettingsEvent::Settings(e) => settings::handle_event(self, e),
             },
+            Message::RestartApp => {
+                self.save_settings();
+                let _ = std::process::Command::new("cargo")
+                    .args(["run", "--release"])
+                    .spawn();
+                iced::exit()
+            }
         }
     }
 
@@ -701,8 +718,13 @@ impl App {
                 &self.conversation,
                 self.overlay.show_restart,
                 &self.tools.cached_todo_items,
+                self.settings.dark_mode,
             )
-            .map(Message::Conversation),
+            .map(|event| match event {
+                RightPaneEvent::ToggleTheme(dark) =>
+                    Message::Layout(LayoutEvent::ToggleTheme(dark)),
+                RightPaneEvent::Restart => Message::RestartApp,
+            }),
         ]
         .spacing(0)
         .into()

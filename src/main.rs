@@ -19,7 +19,7 @@ pub(crate) use app::prompt::{
 pub(crate) use app::session_state::{AskAction, AskRequest, SessionEvent};
 pub(crate) use app::{
     CenterPaneEvent, ConversationEvent, FocusedTarget, LeftPaneEvent, OverlayEvent, PromptEvent,
-    ToolEvent,
+    RightPaneEvent, ToolEvent,
 };
 
 use crate::views::theme::MIN_W;

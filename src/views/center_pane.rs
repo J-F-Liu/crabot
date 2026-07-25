@@ -28,8 +28,8 @@ use super::styles::{
     user_bubble_style,
 };
 use super::theme::{
-    CRABOT_DANGER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS,
-    CRABOT_TEXT, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, color_text, thin_vertical,
+    CRABOT_DANGER, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT,
+    color_dialog_bg, color_muted, color_surface, color_text, color_text_strong, thin_vertical,
 };
 use super::tool_message::{
     args_rows, ask_result_view, highlighted_text, path_arg_row, result_text,
@@ -153,7 +153,7 @@ pub(crate) fn scroll_to_turn_at(y: f32) -> Task<()> {
 
 fn dialog_container_style(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(CRABOT_DIALOG_BG.into()),
+        background: Some(color_dialog_bg().into()),
         border: Border {
             color: Color::TRANSPARENT,
             width: 0.0,
@@ -204,12 +204,12 @@ fn turn_count_badge(count: usize, font_scale: f32) -> Element<'static, CenterPan
     )
     .padding([2, 8])
     .style(|_theme: &Theme| container::Style {
-        background: Some(Color::from_rgb8(0xE0, 0xE0, 0xE0).into()),
+        background: Some(color_surface().into()),
         border: Border {
             radius: 10.0.into(),
             ..Default::default()
         },
-        text_color: Some(CRABOT_TEXT_MUTED),
+        text_color: Some(color_muted()),
         ..container::Style::default()
     })
     .into()
@@ -321,7 +321,7 @@ fn tool_turn_block<'a>(
         let (status_icon, status_color) = match result {
             Some(Ok(_)) => ("✓", CRABOT_SUCCESS),
             Some(Err(_)) => ("✗", CRABOT_DANGER),
-            None => ("⏳", CRABOT_TEXT_MUTED),
+            None => ("⏳", color_muted()),
         };
 
         let status_text = text(status_icon)
@@ -336,9 +336,7 @@ fn tool_turn_block<'a>(
                 Font::DEFAULT
             });
 
-        let ts_text = text(ts)
-            .size(11.0 * ctx.font_scale)
-            .color(CRABOT_TEXT_MUTED);
+        let ts_text = text(ts).size(11.0 * ctx.font_scale).color(color_muted());
 
         // Completed ask tool: render question + answer without expand/collapse.
         if name == "ask" && completed {
@@ -456,7 +454,7 @@ fn text_turn_block<'a>(
     let badge = role_badge(role_label.to_string(), role_label, ctx.font_scale);
     let ts_text = text(&msg.timestamp)
         .size(11.0 * ctx.font_scale)
-        .color(CRABOT_TEXT_MUTED);
+        .color(color_muted());
     let mut content_col = column![].spacing(8).width(Fill);
 
     // ── header: badge + (indicator if reasoning) + timestamp ──
@@ -732,7 +730,7 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
                 .style(|theme: &Theme| {
                     let p = theme.extended_palette();
                     SelectionStyle {
-                        color: Some(CRABOT_TEXT),
+                        color: Some(color_text_strong()),
                         selection: p.primary.base.color,
                     }
                 }),
@@ -773,10 +771,10 @@ fn session_info<'a>(
     };
     let model_text = text(format!("Model: {model_id}"))
         .size(12.0 * font_scale)
-        .color(CRABOT_TEXT_MUTED);
+        .color(color_muted());
     let time_text = text(format!("Created: {created_at}"))
         .size(12.0 * font_scale)
-        .color(CRABOT_TEXT_MUTED);
+        .color(color_muted());
     container(
         row![model_text, Space::new().width(Length::Fill), time_text]
             .spacing(8)
@@ -813,7 +811,7 @@ fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
         return row![].into();
     };
     header_container(
-        container(text(prompt).size(13.0).color(CRABOT_TEXT_MUTED))
+        container(text(prompt).size(13.0).color(color_muted()))
             .width(Fill)
             .padding([6, 14])
             .style(bordered_bar_style),
@@ -831,7 +829,7 @@ fn status_line<'a>(
     let mut row = row![
         text(status_text)
             .size(12.0 * font_scale)
-            .color(CRABOT_TEXT_MUTED),
+            .color(color_muted()),
     ]
     .align_y(Alignment::Center)
     .spacing(8);

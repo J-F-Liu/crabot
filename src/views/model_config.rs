@@ -1,5 +1,5 @@
 use super::icons;
-use super::theme::CRABOT_BORDER;
+use super::theme::color_border;
 use crabot::model::{Model, ModelList};
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Length,
@@ -180,7 +180,7 @@ pub(crate) fn model_config_view<'a>(
         .style(|_theme: &iced::Theme| iced::widget::container::Style {
             background: None,
             border: Border {
-                color: CRABOT_BORDER,
+                color: color_border(),
                 radius: Radius {
                     top_left: 0.0,
                     top_right: 0.0,

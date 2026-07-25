@@ -3,7 +3,8 @@ use super::{
     form_card_style,
 };
 use crate::views::theme::{
-    CRABOT_BORDER, CRABOT_DANGER, CRABOT_PRIMARY, CRABOT_SURFACE, CRABOT_TEXT, CRABOT_TEXT_MUTED,
+    CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_surface,
+    color_text_strong,
 };
 use crabot::model::{ModelList, currency_symbol};
 use iced::{
@@ -246,7 +247,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
         chips.push(
             text("No labels yet. Click + to add one.")
                 .size(13)
-                .color(CRABOT_TEXT_MUTED)
+                .color(color_muted())
                 .into(),
         );
     }
@@ -283,7 +284,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
 
     let hint = text("Drag labels to reorder · Click + to add a new label")
         .size(12)
-        .color(CRABOT_TEXT_MUTED);
+        .color(color_muted());
     column![
         section_header,
         container(column![labels_section, super::section_rule(), hint].spacing(10))
@@ -300,11 +301,11 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
 /// Filled capsule for an existing label; the border highlights while dragged.
 fn chip_style(dragged: bool) -> impl Fn(&iced::Theme) -> container::Style {
     move |_: &iced::Theme| container::Style {
-        background: Some(CRABOT_SURFACE.into()),
+        background: Some(color_surface().into()),
         border: Border::default().rounded(999).width(1).color(if dragged {
             CRABOT_PRIMARY
         } else {
-            CRABOT_BORDER
+            color_border()
         }),
         ..container::Style::default()
     }
@@ -313,7 +314,7 @@ fn chip_style(dragged: bool) -> impl Fn(&iced::Theme) -> container::Style {
 /// Outlined "+" capsule that starts a new label.
 fn add_chip_style(_: &iced::Theme) -> container::Style {
     container::Style {
-        background: Some(Color::WHITE.into()),
+        background: Some(color_card().into()),
         border: Border::default()
             .rounded(999)
             .width(1)
@@ -327,7 +328,7 @@ fn chip_close_style(_theme: &iced::Theme, status: button::Status) -> button::Sty
     button::Style {
         text_color: match status {
             button::Status::Hovered | button::Status::Pressed => CRABOT_DANGER,
-            _ => CRABOT_TEXT_MUTED,
+            _ => color_muted(),
         },
         ..button::Style::default()
     }
@@ -336,14 +337,14 @@ fn chip_close_style(_theme: &iced::Theme, status: button::Status) -> button::Sty
 /// Capsule-shaped style for the new-label text input.
 fn chip_input_style(_theme: &iced::Theme, _status: text_input::Status) -> text_input::Style {
     text_input::Style {
-        background: Color::WHITE.into(),
+        background: color_card().into(),
         border: Border::default()
             .rounded(999)
             .width(1)
             .color(CRABOT_PRIMARY),
-        icon: CRABOT_TEXT_MUTED,
-        placeholder: CRABOT_TEXT_MUTED,
-        value: CRABOT_TEXT,
+        icon: color_muted(),
+        placeholder: color_muted(),
+        value: color_text_strong(),
         selection: CRABOT_PRIMARY.scale_alpha(0.3),
     }
 }
@@ -423,10 +424,7 @@ fn models_section_view<'a>(
 
     // Body: status or table + details
     let body: Element<'_, SettingsEvent> = if state.fetching_models {
-        text("Loading models…")
-            .size(12)
-            .color(CRABOT_TEXT_MUTED)
-            .into()
+        text("Loading models…").size(12).color(color_muted()).into()
     } else if display_ids.is_empty() {
         let mut btn =
             button(text("Fetch Models").size(12)).style(crate::views::styles::primary_button);
@@ -495,7 +493,7 @@ fn models_section_view<'a>(
         )
         .padding(2)
         .style(|_: &iced::Theme| container::Style {
-            border: Border::default().rounded(4).width(1).color(CRABOT_BORDER),
+            border: Border::default().rounded(4).width(1).color(color_border()),
             ..container::Style::default()
         });
 
@@ -579,7 +577,7 @@ fn models_section_view<'a>(
                         column![
                             container(
                                 row![
-                                    text("Offer").size(12).color(CRABOT_TEXT_MUTED).width(60),
+                                    text("Offer").size(12).color(color_muted()).width(60),
                                     picker.width(Length::Fill),
                                 ]
                                 .spacing(10)
@@ -597,7 +595,7 @@ fn models_section_view<'a>(
                     container(
                         text("Check the box to add this model,\nthen save to see parameters.")
                             .size(11)
-                            .color(CRABOT_TEXT_MUTED),
+                            .color(color_muted()),
                     )
                     .padding(8)
                     .style(form_card_style)
@@ -608,7 +606,7 @@ fn models_section_view<'a>(
                 container(
                     text("Click a model ID to see details.")
                         .size(11)
-                        .color(CRABOT_TEXT_MUTED),
+                        .color(color_muted()),
                 )
                 .padding(8)
                 .style(form_card_style)
@@ -675,8 +673,8 @@ fn model_detail_panel<'a>(
 /// Single label–value row for the model detail panel.
 fn detail_row(label: &'static str, value: String) -> Element<'static, SettingsEvent> {
     row![
-        text(label).size(11).color(CRABOT_TEXT_MUTED).width(70),
-        text(value).size(11).color(CRABOT_TEXT),
+        text(label).size(11).color(color_muted()).width(70),
+        text(value).size(11).color(color_text_strong()),
     ]
     .spacing(6)
     .align_y(Alignment::Center)

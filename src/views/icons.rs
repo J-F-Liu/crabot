@@ -8,7 +8,7 @@ use iced::{
 };
 
 use super::styles::{icon_button_style, tooltip_style};
-use super::theme::{CRABOT_TEXT, CRABOT_TEXT_MUTED};
+use super::theme::{color_muted, color_text_strong};
 
 /// Lucide "copy" icon.
 pub(crate) const COPY: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>"##;
@@ -34,8 +34,8 @@ pub(crate) fn icon_action<M: Clone + 'static>(
         .height(14)
         .style(|_theme, status| svg::Style {
             color: Some(match status {
-                svg::Status::Hovered => CRABOT_TEXT,
-                svg::Status::Idle => CRABOT_TEXT_MUTED,
+                svg::Status::Hovered => color_text_strong(),
+                svg::Status::Idle => color_muted(),
             }),
         });
 

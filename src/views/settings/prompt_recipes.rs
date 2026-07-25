@@ -6,7 +6,7 @@ use iced::{
 use super::{
     SettingsEvent, SettingsState, SettingsTab, card_rule, delete_button_style, form_card_style,
 };
-use crate::views::theme::{CRABOT_PRIMARY, CRABOT_TEXT_MUTED};
+use crate::views::theme::{CRABOT_PRIMARY, color_muted};
 use crabot::user::WorkMode;
 
 // ── Page ───────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ pub(super) fn prompt_recipes_page<'a>(state: &'a SettingsState) -> Element<'a, S
         container(
             text("No work modes found. Ensure workmode.md is configured.")
                 .size(12)
-                .color(CRABOT_TEXT_MUTED),
+                .color(color_muted()),
         )
         .padding(16)
         .center_x(Length::Fill)
@@ -78,12 +78,12 @@ fn mode_card<'a>(
     let title = iced::widget::mouse_area(
         container(
             row![
-                text(arrow).size(10).color(CRABOT_TEXT_MUTED).width(14),
+                text(arrow).size(10).color(color_muted()).width(14),
                 text(display_name).size(13).font(iced::Font {
                     weight: iced::font::Weight::Bold,
                     ..iced::Font::DEFAULT
                 }),
-                text(summary).size(11).color(CRABOT_TEXT_MUTED),
+                text(summary).size(11).color(color_muted()),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -114,7 +114,7 @@ fn recipe_list<'a>(mode_key: &str, recipes: &'a [String]) -> Element<'a, Setting
         return column![
             text("No recipes for this mode. Click + Add Recipe to create one.")
                 .size(12)
-                .color(CRABOT_TEXT_MUTED),
+                .color(color_muted()),
             add_recipe_button(mk),
         ]
         .spacing(8)
@@ -144,7 +144,7 @@ fn add_recipe_button(mode_key: String) -> Element<'static, SettingsEvent> {
 
 fn recipe_row<'a>(mode_key: String, index: usize, recipe: &'a str) -> Element<'a, SettingsEvent> {
     let label_text = format!("Recipe {}", index + 1);
-    let label = container(text(label_text).size(12).color(CRABOT_TEXT_MUTED))
+    let label = container(text(label_text).size(12).color(color_muted()))
         .width(Length::Fixed(70.0))
         .align_x(Alignment::End)
         .align_y(Alignment::Center);

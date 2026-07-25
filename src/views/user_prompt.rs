@@ -5,7 +5,7 @@ use iced::{
     },
 };
 
-use crate::views::theme::{CRABOT_BORDER, CRABOT_DIALOG_BG, CRABOT_SURFACE, CRABOT_TEXT};
+use crate::views::theme::{color_border, color_dialog_bg, color_surface, color_text_strong};
 use iced_aw::{
     DropDown,
     core::offset::Offset,
@@ -161,9 +161,9 @@ fn files_field_view<'a>(files: &'a ExpandableEditor) -> Element<'a, PromptEvent>
 /// Container style for the recipe dropdown popup — surface card with subtle border.
 fn menu_container_style(_theme: &iced::Theme) -> container::Style {
     container::Style {
-        background: Some(CRABOT_DIALOG_BG.into()),
+        background: Some(color_dialog_bg().into()),
         border: Border {
-            color: CRABOT_BORDER,
+            color: color_border(),
             width: 1.0,
             radius: 8.0.into(),
         },
@@ -175,13 +175,13 @@ fn menu_container_style(_theme: &iced::Theme) -> container::Style {
 fn menu_item_style(_theme: &iced::Theme, status: button::Status) -> button::Style {
     let base = button::Style {
         background: None,
-        text_color: CRABOT_TEXT,
+        text_color: color_text_strong(),
         border: Border::default(),
         ..button::Style::default()
     };
     match status {
         button::Status::Hovered | button::Status::Pressed => button::Style {
-            background: Some(CRABOT_SURFACE.into()),
+            background: Some(color_surface().into()),
             ..base
         },
         _ => base,

@@ -1,18 +1,18 @@
 use iced::{
-    Color, Element, Fill, Font, Length, alignment, font, padding,
-    widget::{Space, button, column, container, rule, scrollable, text},
+    Alignment, Color, Element, Fill, Font, Length, alignment, font, padding,
+    widget::{Space, button, column, container, row, rule, scrollable, text, toggler},
 };
 use iced_selection::Text as SelectableText;
 
-use super::styles::{pane_side, primary_button, sel_primary};
+use super::styles::{pane_side, primary_button, primary_toggler, sel_primary};
 use super::theme::thin_vertical;
-use crate::ConversationEvent;
+use crate::RightPaneEvent;
 use crate::app::ConversationState;
 use crabot::model::{Model, TokenAmount};
 use crabot::tools::todo::{TodoItem, TodoStatus};
 
 /// Label-value row with the value right-aligned via a fill spacer.
-fn token_row<'a>(label: &'a str, value: String) -> Element<'a, ConversationEvent> {
+fn token_row<'a>(label: &'a str, value: String) -> Element<'a, RightPaneEvent> {
     let mono = Font {
         family: font::Family::Monospace,
         ..Font::DEFAULT
@@ -25,7 +25,7 @@ fn token_row<'a>(label: &'a str, value: String) -> Element<'a, ConversationEvent
     .into()
 }
 
-fn section_header<'a>(title: &'a str) -> Element<'a, ConversationEvent> {
+fn section_header<'a>(title: &'a str) -> Element<'a, RightPaneEvent> {
     text(title)
         .size(14)
         .font(Font {
@@ -36,11 +36,11 @@ fn section_header<'a>(title: &'a str) -> Element<'a, ConversationEvent> {
 }
 
 /// Build the todo-list section, returning `None` when the list is empty.
-fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, ConversationEvent>> {
+fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, RightPaneEvent>> {
     if todo_items.is_empty() {
         return None;
     }
-    let rows: Vec<Element<'_, ConversationEvent>> = todo_items
+    let rows: Vec<Element<'_, RightPaneEvent>> = todo_items
         .iter()
         .map(|item| {
             let indent = item.depth as u16 * 16;
@@ -71,7 +71,8 @@ pub(crate) fn right_pane<'a>(
     conversation: &'a ConversationState,
     show_restart: bool,
     todo_items: &'a [TodoItem],
-) -> Element<'a, ConversationEvent> {
+    dark_mode: bool,
+) -> Element<'a, RightPaneEvent> {
     let usage = &conversation.last_usage;
     let session = &conversation.session;
     let context_window = model.map(|m| m.context_window);
@@ -131,7 +132,7 @@ pub(crate) fn right_pane<'a>(
 
     // ── modified files ──
     if !session.modified_files.is_empty() {
-        let files: Vec<Element<'_, ConversationEvent>> = session
+        let files: Vec<Element<'_, RightPaneEvent>> = session
             .modified_files
             .iter()
             .map(|p| {
@@ -147,24 +148,41 @@ pub(crate) fn right_pane<'a>(
             .push(files_col);
     }
 
+    let theme_toggle = row![
+        text("Dark theme").size(14),
+        Space::new().width(Fill),
+        toggler(dark_mode)
+            .on_toggle(RightPaneEvent::ToggleTheme)
+            .style(primary_toggler)
+            .size(18),
+    ]
+    .align_y(Alignment::Center)
+    .padding(padding::top(12).right(16).left(16));
+
+    let mut footer = column![].spacing(0);
     if show_restart {
-        col = col.push(Space::new().height(Fill)).push(
+        footer = footer.push(
             container(
                 button(text("Restart").size(14))
-                    .on_press(ConversationEvent::Restart)
+                    .on_press(RightPaneEvent::Restart)
                     .style(primary_button)
                     .width(Length::Shrink),
             )
             .width(Fill)
-            .align_x(alignment::Horizontal::Center),
+            .align_x(alignment::Horizontal::Center)
+            .padding(padding::bottom(12)),
         );
     }
 
-    container(
-        scrollable(container(col.padding(padding::all(20).left(16)))).direction(thin_vertical()),
-    )
-    .width(Length::Fixed(pane_width))
-    .height(Fill)
-    .style(pane_side)
-    .into()
+    let body: Element<'_, RightPaneEvent> =
+        scrollable(container(col.padding(padding::all(20).left(16).top(8))))
+            .direction(thin_vertical())
+            .height(Fill)
+            .into();
+
+    container(column![theme_toggle, body, footer,])
+        .width(Length::Fixed(pane_width))
+        .height(Fill)
+        .style(pane_side)
+        .into()
 }

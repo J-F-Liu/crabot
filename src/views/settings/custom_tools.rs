@@ -5,7 +5,7 @@ use super::{
     SettingsEvent, SettingsState, SettingsTab, ToolTextField, card_rule, delete_button_style,
     field_row, form_card_style, sub_card_style, textarea_field_row,
 };
-use crate::views::theme::{CRABOT_PRIMARY, CRABOT_TEXT_MUTED};
+use crate::views::theme::{CRABOT_PRIMARY, color_muted};
 use crate::widgets::textarea::TextArea;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolParameter};
 use iced::{
@@ -40,7 +40,7 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Set
         container(
             text("No custom tools yet. Click + New Tool to define a command-line tool.")
                 .size(12)
-                .color(CRABOT_TEXT_MUTED),
+                .color(color_muted()),
         )
         .padding(16)
         .center_x(Length::Fill)
@@ -91,12 +91,12 @@ fn tool_card<'a>(
     let title = mouse_area(
         container(
             row![
-                text(arrow).size(10).color(CRABOT_TEXT_MUTED).width(14),
+                text(arrow).size(10).color(color_muted()).width(14),
                 text(display_name).size(13).font(iced::Font {
                     weight: iced::font::Weight::Bold,
                     ..iced::Font::DEFAULT
                 }),
-                text(summary).size(11).color(CRABOT_TEXT_MUTED),
+                text(summary).size(11).color(color_muted()),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -169,7 +169,7 @@ fn tool_form<'a>(
               {{ if param }}…{{ endif }} adds conditional arguments."
         )
         .size(11)
-        .color(CRABOT_TEXT_MUTED),
+        .color(color_muted()),
     ]
     .spacing(8)
     .into()

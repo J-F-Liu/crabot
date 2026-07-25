@@ -10,7 +10,8 @@ use iced_selection::Text as SelectableText;
 use crate::tools::{Tool, ToolRegistry};
 use crate::views::styles::sel_default;
 use crate::views::theme::{
-    CRABOT_BORDER, CRABOT_DANGER, CRABOT_PRIMARY, CRABOT_TEXT, CRABOT_TEXT_MUTED,
+    CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_text_strong,
+    is_dark,
 };
 use crate::views::{primary_button, secondary_button};
 use crate::widgets::dropdown::DropDown;
@@ -320,7 +321,7 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Sett
             }
 
             let add_name = name.clone();
-            let add_btn = button(text("＋ Add item").size(12).color(CRABOT_TEXT_MUTED))
+            let add_btn = button(text("＋ Add item").size(12).color(color_muted()))
                 .style(secondary_button)
                 .padding([2, 8])
                 .on_press(SettingsEvent::AddPlaygroundArrayItem(add_name, items_type));
@@ -359,7 +360,14 @@ fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEve
             .height(Length::Fixed(160.0)),
         )
         .style(|_: &iced::Theme| container::Style {
-            background: Some(Color::from_rgb8(0xF0, 0xFF, 0xF0).into()),
+            background: Some(
+                if is_dark() {
+                    Color::from_rgb8(0x1B, 0x2E, 0x24)
+                } else {
+                    Color::from_rgb8(0xF0, 0xFF, 0xF0)
+                }
+                .into(),
+            ),
             border: Border::default()
                 .rounded(6)
                 .width(1)
@@ -380,7 +388,14 @@ fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEve
             .height(Length::Fixed(160.0)),
         )
         .style(|_: &iced::Theme| container::Style {
-            background: Some(Color::from_rgb8(0xFF, 0xF0, 0xF0).into()),
+            background: Some(
+                if is_dark() {
+                    Color::from_rgb8(0x33, 0x20, 0x20)
+                } else {
+                    Color::from_rgb8(0xFF, 0xF0, 0xF0)
+                }
+                .into(),
+            ),
             border: Border::default().rounded(6).width(1).color(CRABOT_DANGER),
             ..container::Style::default()
         })
@@ -388,10 +403,10 @@ fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEve
         .width(Length::Fill)
         .into(),
         None if state.playground_running => {
-            container(text("Executing…").size(13).color(CRABOT_TEXT_MUTED))
+            container(text("Executing…").size(13).color(color_muted()))
                 .style(|_: &iced::Theme| container::Style {
-                    background: Some(Color::from_rgb8(0xF4, 0xF4, 0xF4).into()),
-                    border: Border::default().rounded(6).width(1).color(CRABOT_BORDER),
+                    background: Some(color_card().into()),
+                    border: Border::default().rounded(6).width(1).color(color_border()),
                     ..container::Style::default()
                 })
                 .padding(8)
@@ -401,11 +416,11 @@ fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEve
         None => container(
             text("Result will appear here.")
                 .size(13)
-                .color(CRABOT_TEXT_MUTED),
+                .color(color_muted()),
         )
         .style(|_: &iced::Theme| container::Style {
-            background: Some(Color::from_rgb8(0xF4, 0xF4, 0xF4).into()),
-            border: Border::default().rounded(6).width(1).color(CRABOT_BORDER),
+            background: Some(color_card().into()),
+            border: Border::default().rounded(6).width(1).color(color_border()),
             ..container::Style::default()
         })
         .padding(8)
@@ -467,19 +482,16 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
 
         // Tool description
         let desc = if info.description.is_empty() {
-            text("(no description)").size(13).color(CRABOT_TEXT_MUTED)
+            text("(no description)").size(13).color(color_muted())
         } else {
             text(info.description.clone())
                 .size(13)
-                .color(CRABOT_TEXT)
+                .color(color_text_strong())
                 .wrapping(Wrapping::Word)
         };
 
         let desc_row = row![
-            text("Description:")
-                .size(13)
-                .color(CRABOT_TEXT_MUTED)
-                .width(80),
+            text("Description:").size(13).color(color_muted()).width(80),
             desc,
         ]
         .spacing(8)
@@ -490,14 +502,14 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
             container(
                 text("This tool takes no parameters.")
                     .size(13)
-                    .color(CRABOT_TEXT_MUTED),
+                    .color(color_muted()),
             )
             .style(form_card_style)
             .padding(12)
             .width(Length::Fill)
             .into()
         } else {
-            let param_label = text("Parameters:").size(13).color(CRABOT_TEXT);
+            let param_label = text("Parameters:").size(13).color(color_text_strong());
 
             let fields: Vec<Element<'_, SettingsEvent>> = params
                 .iter()
@@ -514,9 +526,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
 
                     let field = render_param_field(p, &current_value);
 
-                    let type_badge = text(format!("[{}]", p_type))
-                        .size(11)
-                        .color(CRABOT_TEXT_MUTED);
+                    let type_badge = text(format!("[{}]", p_type)).size(11).color(color_muted());
 
                     let desc_text = if p_desc.is_empty() {
                         None
@@ -524,14 +534,14 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
                         Some(
                             text(p_desc)
                                 .size(11)
-                                .color(CRABOT_TEXT_MUTED)
+                                .color(color_muted())
                                 .wrapping(Wrapping::Word),
                         )
                     };
 
                     let mut col = column![
                         row![
-                            text(p_name).size(13).color(CRABOT_TEXT).width(120),
+                            text(p_name).size(13).color(color_text_strong()).width(120),
                             type_badge,
                         ]
                         .spacing(4)
@@ -577,7 +587,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         // Result area
         let result_widget = render_result_widget(state);
 
-        let result_label = text("Result:").size(13).color(CRABOT_TEXT);
+        let result_label = text("Result:").size(13).color(color_text_strong());
 
         column![
             desc_row,
@@ -592,7 +602,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         container(
             text("Select a tool from the list above to see its description and test it with custom arguments.")
                 .size(13)
-                .color(CRABOT_TEXT_MUTED)
+                .color(color_muted())
                 .wrapping(Wrapping::Word),
         )
         .style(form_card_style)
@@ -608,7 +618,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
             .color(CRABOT_PRIMARY),
         text("Select a tool, fill in parameters, and execute it directly.")
             .size(12)
-            .color(CRABOT_TEXT_MUTED),
+            .color(color_muted()),
         selector,
         tool_detail,
     ]

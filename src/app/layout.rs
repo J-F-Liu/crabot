@@ -43,6 +43,12 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
             app.settings.font_scale = (app.settings.font_scale + delta).clamp(0.5, 2.0);
             app.conversation.search.invalidate_offsets();
         }
+        LayoutEvent::ToggleTheme(dark) => {
+            app.settings.dark_mode = dark;
+            views::theme::set_dark_mode(dark);
+            app.layout.theme = views::theme::theme_for(dark);
+            app.save_settings();
+        }
     }
     Task::none()
 }

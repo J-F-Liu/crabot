@@ -7,7 +7,7 @@ use iced::widget::{button, container, row, text, text_input};
 use iced::{Alignment, Element, Length};
 
 use super::styles::{bordered_bar_style, icon_button_style};
-use super::theme::CRABOT_TEXT_MUTED;
+use super::theme::color_muted;
 
 use crate::ConversationEvent;
 use crate::app::ConversationState;
@@ -262,7 +262,7 @@ pub(crate) fn view<'a>(
         .size(13.0);
 
     let label_text = if !label.is_empty() {
-        text(label).size(12.0).color(CRABOT_TEXT_MUTED)
+        text(label).size(12.0).color(color_muted())
     } else {
         text("").size(12.0)
     };

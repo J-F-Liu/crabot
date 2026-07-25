@@ -9,8 +9,8 @@ use super::ASK_INPUT;
 use super::styles::{primary_button, secondary_button};
 use super::styles::{sel_default, sel_primary, sel_secondary};
 use super::theme::{
-    CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TEXT_MUTED, CRABOT_TOOL_ACCENT, CRABOT_TOOL_CONTENT_BG,
-    CRABOT_TOOL_CONTENT_BORDER, color_text,
+    CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT, color_muted, color_text,
+    color_tool_content_bg, color_tool_content_border,
 };
 use crate::tools::edit::EditParam;
 use crate::tools::todo::{TodoItem, TodoStatus};
@@ -24,9 +24,9 @@ fn ask_tool_container(
     container(content.into())
         .padding([10, 14])
         .style(|_theme: &Theme| container::Style {
-            background: Some(CRABOT_TOOL_CONTENT_BG.into()),
+            background: Some(color_tool_content_bg().into()),
             border: Border {
-                color: CRABOT_TOOL_CONTENT_BORDER,
+                color: color_tool_content_border(),
                 width: 1.0,
                 radius: 4.0.into(),
             },
@@ -383,12 +383,12 @@ fn edits_table<'a, M: Clone + 'static>(
     let header = row![
         text(format!("{}:", key))
             .size(12.0 * font_scale)
-            .color(CRABOT_TEXT_MUTED)
+            .color(color_muted())
             .font(bold_font()),
         Space::new().width(8),
         text(format!("{} edit(s)", edits.len()))
             .size(12.0 * font_scale)
-            .color(CRABOT_TEXT_MUTED),
+            .color(color_muted()),
     ]
     .spacing(0);
 
@@ -399,7 +399,7 @@ fn edits_table<'a, M: Clone + 'static>(
             let idx = container(
                 text(format!("Edit #{}", i + 1))
                     .size(11.0 * font_scale)
-                    .color(CRABOT_TEXT_MUTED),
+                    .color(color_muted()),
             )
             .padding([2, 0])
             .into();
@@ -531,7 +531,7 @@ fn todo_table<M: Clone + 'static>(
         container(
             text("Text")
                 .size(11.0 * font_scale)
-                .color(CRABOT_TEXT_MUTED)
+                .color(color_muted())
                 .font(bold_font()),
         )
         .width(Fill)
@@ -539,7 +539,7 @@ fn todo_table<M: Clone + 'static>(
         container(
             text("Status")
                 .size(11.0 * font_scale)
-                .color(CRABOT_TEXT_MUTED)
+                .color(color_muted())
                 .font(bold_font())
                 .wrapping(Wrapping::None),
         )
@@ -554,7 +554,7 @@ fn todo_table<M: Clone + 'static>(
             elements.push(
                 container(Space::new().width(Fill).height(1.0))
                     .style(|_theme: &Theme| container::Style {
-                        background: Some(CRABOT_TOOL_CONTENT_BORDER.into()),
+                        background: Some(color_tool_content_border().into()),
                         ..container::Style::default()
                     })
                     .into(),
@@ -567,7 +567,7 @@ fn todo_table<M: Clone + 'static>(
         .padding(4)
         .style(|_theme: &Theme| container::Style {
             border: Border {
-                color: CRABOT_TOOL_CONTENT_BORDER,
+                color: color_tool_content_border(),
                 width: 1.0,
                 radius: 4.0.into(),
             },
@@ -619,9 +619,9 @@ pub(super) fn args_rows<'a, M: Clone + 'static>(
             )
             .padding([4, 8])
             .style(|_theme: &Theme| container::Style {
-                background: Some(CRABOT_TOOL_CONTENT_BG.into()),
+                background: Some(color_tool_content_bg().into()),
                 border: Border {
-                    color: CRABOT_TOOL_CONTENT_BORDER,
+                    color: color_tool_content_border(),
                     width: 1.0,
                     radius: 4.0.into(),
                 },
@@ -717,7 +717,7 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
     .style(move |_theme: &Theme| container::Style {
         background: Some(
             if is_ok {
-                CRABOT_TOOL_CONTENT_BG
+                color_tool_content_bg()
             } else {
                 DIFF_BG_DEL
             }
@@ -725,7 +725,7 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
         ),
         border: Border {
             color: if is_ok {
-                CRABOT_TOOL_CONTENT_BORDER
+                color_tool_content_border()
             } else {
                 accent.scale_alpha(0.4)
             },

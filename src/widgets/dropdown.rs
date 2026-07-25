@@ -41,10 +41,10 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
-            text_color: Color::from_rgb(0.2, 0.2, 0.2),
-            placeholder_color: Color::from_rgb(0.5, 0.5, 0.5),
-            handle_color: Color::from_rgb(0.4, 0.4, 0.4),
-            background: Background::Color(Color::from_rgb(0.9, 0.9, 0.9)),
+            text_color: crate::views::theme::color_text_strong(),
+            placeholder_color: crate::views::theme::color_muted(),
+            handle_color: crate::views::theme::color_muted(),
+            background: Background::Color(crate::views::theme::color_card()),
             border: Border::default().rounded(6),
         }
     }
@@ -64,9 +64,9 @@ pub struct MenuStyle {
 impl Default for MenuStyle {
     fn default() -> Self {
         Self {
-            background: Background::Color(Color::from_rgb(0.9, 0.9, 0.9)),
+            background: Background::Color(crate::views::theme::color_card()),
             border: Border::default().rounded(6),
-            text_color: Color::from_rgb(0.2, 0.2, 0.2),
+            text_color: crate::views::theme::color_text_strong(),
             selected_text_color: Color::WHITE,
             selected_background: Background::Color(Color::from_rgb(0.1, 0.6, 0.55)),
             shadow: Shadow::default(),

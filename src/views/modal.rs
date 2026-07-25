@@ -8,7 +8,7 @@ use iced::{
 use crate::OverlayEvent;
 
 use super::styles::{primary_button, secondary_button};
-use super::theme::{CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_MODAL_SCRIM, CRABOT_PRIMARY};
+use super::theme::{CRABOT_DIALOG_RADIUS, CRABOT_MODAL_SCRIM, CRABOT_PRIMARY, color_dialog_bg};
 
 pub fn workspace_modal(default_path: &Path) -> Element<'_, OverlayEvent> {
     let backdrop = mouse_area(
@@ -61,7 +61,7 @@ pub fn workspace_modal(default_path: &Path) -> Element<'_, OverlayEvent> {
         .align_x(iced::Alignment::Center),
     )
     .style(|_: &Theme| container::Style {
-        background: Some(CRABOT_DIALOG_BG.into()),
+        background: Some(color_dialog_bg().into()),
         border: Border::default().rounded(CRABOT_DIALOG_RADIUS),
         ..container::Style::default()
     })

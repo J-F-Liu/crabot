@@ -1,7 +1,7 @@
 use super::icons;
 use super::theme::{
-    CRABOT_BORDER, CRABOT_DANGER, CRABOT_DIALOG_BG, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY,
-    CRABOT_SURFACE, CRABOT_TEXT, CRABOT_TEXT_MUTED,
+    CRABOT_DANGER, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, color_border, color_card, color_dialog_bg,
+    color_muted, color_surface, color_text_strong,
 };
 use crate::widgets::textarea::TextArea;
 use crabot::model::{Model, ModelConfig, ModelList, Provider};
@@ -1182,7 +1182,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
         .width(160)
         .height(Length::Fill)
         .style(|_: &iced::Theme| container::Style {
-            background: Some(CRABOT_SURFACE.into()),
+            background: Some(color_surface().into()),
             border: Border::default().rounded(CRABOT_DIALOG_RADIUS),
             ..container::Style::default()
         });
@@ -1218,7 +1218,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
         .padding(20),
     )
     .style(|_: &iced::Theme| container::Style {
-        background: Some(CRABOT_DIALOG_BG.into()),
+        background: Some(color_dialog_bg().into()),
         border: Border::default().rounded(CRABOT_DIALOG_RADIUS),
         ..container::Style::default()
     })
@@ -1229,8 +1229,15 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
 
 pub(super) fn form_card_style(_theme: &iced::Theme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgb8(0xF4, 0xF4, 0xF4).into()),
-        border: Border::default().rounded(8).width(1).color(CRABOT_BORDER),
+        background: Some(
+            if crate::views::theme::is_dark() {
+                color_card()
+            } else {
+                Color::from_rgb8(0xF4, 0xF4, 0xF4)
+            }
+            .into(),
+        ),
+        border: Border::default().rounded(8).width(1).color(color_border()),
         ..container::Style::default()
     }
 }
@@ -1320,7 +1327,7 @@ pub(super) fn textarea_field_row<'a>(
 pub(super) fn card_rule() -> Element<'static, SettingsEvent> {
     rule::horizontal(1)
         .style(|_: &iced::Theme| rule::Style {
-            color: CRABOT_BORDER,
+            color: color_border(),
             fill_mode: rule::FillMode::Full,
             radius: 0.0.into(),
             snap: false,
@@ -1328,11 +1335,11 @@ pub(super) fn card_rule() -> Element<'static, SettingsEvent> {
         .into()
 }
 
-/// White sub-card used for nested editors inside a form card.
+/// Sub-card used for nested editors inside a form card.
 pub(super) fn sub_card_style(_theme: &iced::Theme) -> container::Style {
     container::Style {
-        background: Some(Color::WHITE.into()),
-        border: Border::default().rounded(6).width(1).color(CRABOT_BORDER),
+        background: Some(color_card().into()),
+        border: Border::default().rounded(6).width(1).color(color_border()),
         ..container::Style::default()
     }
 }
@@ -1342,7 +1349,7 @@ pub(super) fn delete_button_style(_theme: &iced::Theme, status: button::Status) 
     button::Style {
         text_color: match status {
             button::Status::Hovered | button::Status::Pressed => CRABOT_DANGER,
-            _ => CRABOT_TEXT_MUTED,
+            _ => color_muted(),
         },
         ..button::Style::default()
     }
@@ -1363,7 +1370,7 @@ fn sidebar_tab_style(active: bool) -> impl Fn(&iced::Theme, button::Status) -> b
         } else {
             button::Style {
                 background: Some(Color::TRANSPARENT.into()),
-                text_color: CRABOT_TEXT,
+                text_color: color_text_strong(),
                 border: Border::default().rounded(6),
                 ..button::Style::default()
             }
