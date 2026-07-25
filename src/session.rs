@@ -377,6 +377,7 @@ impl Session {
         // Ensure every Assistant message with Text part also has a ReasoningContent part
         for message in &mut self.history {
             if message.role == ChatRole::Assistant
+                && message.content.parts().len() > 1
                 && message.content.contains_text()
                 && !message.content.contains_reasoning_content()
             {

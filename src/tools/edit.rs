@@ -85,10 +85,12 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
     let display_path = make_workspace_relative(&file_path, workspace);
 
-    let edits = args
-        .get("edits")
-        .and_then(|v| v.as_array())
-        .ok_or("Missing 'edits' argument")?;
+    let edits = match args.get("edits") {
+        Some(v) => v
+            .as_array()
+            .ok_or_else(|| format!("'edits' must be an array, got {}", v))?,
+        None => return Err("Missing 'edits' argument".to_string()),
+    };
     if edits.is_empty() {
         return Err("'edits' array must not be empty".to_string());
     }
