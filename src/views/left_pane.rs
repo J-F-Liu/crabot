@@ -51,7 +51,7 @@ pub(crate) fn left_pane<'a>(
     let prompt_recipes: &[String] = {
         let key = prompt.workmode.name.to_lowercase();
         settings
-            .prompt_recipe
+            .prompt_recipes
             .get(&key)
             .map(Vec::as_slice)
             .unwrap_or(&[])

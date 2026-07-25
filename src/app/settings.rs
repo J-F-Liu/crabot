@@ -10,6 +10,9 @@ pub(crate) fn open_settings(app: &mut App) -> Task<Message> {
     app.model_settings.settings_state.working_models = app.model_settings.provided_models.clone();
     app.model_settings
         .settings_state
+        .load_prompt_recipes(app.settings.prompt_recipes.clone());
+    app.model_settings
+        .settings_state
         .load_tools(tools::custom::ToolList::load());
     app.model_settings
         .settings_state
@@ -71,6 +74,15 @@ pub(crate) fn handle_event(app: &mut App, event: crate::views::SettingsEvent) ->
                     .ensure_valid_name(&app.settings.selected_model);
                 app.settings.selected_model = model;
             }
+        }
+        crate::views::SettingsEvent::SavePromptRecipes => {
+            app.model_settings.settings_state.update(event);
+            app.settings.prompt_recipes = app
+                .model_settings
+                .settings_state
+                .working_prompt_recipes
+                .clone();
+            app.settings.save();
         }
         crate::views::SettingsEvent::SaveTools => {
             app.model_settings.settings_state.update(event);

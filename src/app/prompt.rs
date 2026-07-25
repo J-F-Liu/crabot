@@ -128,7 +128,7 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         }
         PromptEvent::SelectRecipe(index) => {
             let mode_key = app.prompt.workmode.name.to_lowercase();
-            if let Some(recipes) = app.settings.prompt_recipe.get(&mode_key)
+            if let Some(recipes) = app.settings.prompt_recipes.get(&mode_key)
                 && let Some(recipe) = recipes.get(index)
             {
                 app.prompt.user_prompt.replace_text(recipe);

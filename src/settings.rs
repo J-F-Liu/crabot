@@ -34,7 +34,7 @@ pub struct Settings {
     /// Enabled agent tools: tool name → enabled.
     pub agent_tools: IndexMap<String, bool>,
     /// Prompt recipes: work-mode name (lowercase) → list of prompt templates.
-    pub prompt_recipe: IndexMap<String, Vec<String>>,
+    pub prompt_recipes: IndexMap<String, Vec<String>>,
     /// Latest version found in the last check, if newer than current.
     pub last_update_version: Option<String>,
 }
@@ -60,7 +60,7 @@ impl Default for Settings {
             font_scale: 1.0,
             mcp_servers: IndexMap::new(),
             agent_tools: IndexMap::new(),
-            prompt_recipe: IndexMap::new(),
+            prompt_recipes: IndexMap::new(),
             last_update_version: None,
         }
     }

@@ -21,6 +21,7 @@ use std::sync::atomic::AtomicBool;
 pub mod ai_models;
 pub mod custom_tools;
 pub mod mcp_servers;
+pub mod prompt_recipes;
 pub mod tool_playground;
 
 /// Widget id of the new-label text input — used to focus it and detect blur.
@@ -33,6 +34,7 @@ pub(crate) const NEW_PROVIDER_NAME_INPUT_ID: &str = "settings-new-provider-name-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
     AiModels,
+    PromptRecipes,
     CustomTools,
     McpServers,
     ToolPlayground,
@@ -42,6 +44,7 @@ impl SettingsTab {
     fn label(&self) -> &'static str {
         match self {
             SettingsTab::AiModels => "AI Models",
+            SettingsTab::PromptRecipes => "Prompt Recipes",
             SettingsTab::CustomTools => "Custom Tools",
             SettingsTab::McpServers => "MCP Servers",
             SettingsTab::ToolPlayground => "Tool Playground",
@@ -93,6 +96,17 @@ pub(crate) enum SettingsEvent {
     LabelDragEnter(usize),
     /// End the capsule drag, saving if the order changed.
     LabelDragEnd,
+    // ── Prompt Recipe actions ───────────────────────────────
+    /// Expand/collapse the work-mode recipe card at the given index.
+    ToggleRecipeMode(usize),
+    /// Append a new blank recipe to a work mode.
+    NewRecipe(String),
+    /// Delete a recipe from a work mode by index.
+    DeleteRecipe(String, usize),
+    /// Edit a recipe text at the given index within a work mode.
+    EditRecipe(String, usize, String),
+    /// Persist working recipes to disk.
+    SavePromptRecipes,
     // Custom tool actions
     /// Expand/collapse the tool card at the given index.
     ToggleTool(usize),
@@ -193,6 +207,10 @@ pub(crate) struct SettingsState {
     pub(super) selected_offer_source: Option<String>,
     /// Working copy of models edited within the dialog — saved to disk on Save.
     pub(crate) working_models: ModelList,
+    /// Working copy of prompt recipes edited within the dialog — saved on Save.
+    pub(crate) working_prompt_recipes: indexmap::IndexMap<String, Vec<String>>,
+    /// Index of the work-mode recipe card currently expanded, if any.
+    pub(super) expanded_recipe_mode: Option<usize>,
     /// Working copy of custom tools edited within the dialog — saved on Save.
     pub(crate) working_tools: ToolList,
     /// Index of the custom-tool card currently expanded, if any.
@@ -251,6 +269,8 @@ impl Default for SettingsState {
             model_db: ModelDatabase::default(),
             selected_offer_source: None,
             working_models: ModelList::default(),
+            working_prompt_recipes: indexmap::IndexMap::new(),
+            expanded_recipe_mode: None,
             working_tools: ToolList::default(),
             expanded_tool: None,
             tool_desc_area: TextArea::new(),
@@ -633,6 +653,47 @@ impl SettingsState {
             SettingsEvent::LabelDragEnd => {
                 self.drag_label = None;
                 self.drag_reordered = false;
+            }
+            // ── Prompt Recipe actions ───────────────────────
+            SettingsEvent::ToggleRecipeMode(index) => {
+                self.expanded_recipe_mode = if self.expanded_recipe_mode == Some(index) {
+                    None
+                } else {
+                    Some(index)
+                };
+            }
+            SettingsEvent::NewRecipe(mode_key) => {
+                self.working_prompt_recipes
+                    .entry(mode_key)
+                    .or_default()
+                    .push(String::new());
+            }
+            SettingsEvent::DeleteRecipe(mode_key, index) => {
+                if let Some(recipes) = self.working_prompt_recipes.get_mut(&mode_key)
+                    && index < recipes.len()
+                {
+                    recipes.remove(index);
+                }
+            }
+            SettingsEvent::EditRecipe(mode_key, index, v) => {
+                if let Some(recipes) = self.working_prompt_recipes.get_mut(&mode_key)
+                    && index < recipes.len()
+                {
+                    recipes[index] = v;
+                }
+            }
+            SettingsEvent::SavePromptRecipes => {
+                // Trim leading/trailing whitespace from recipes.
+                for recipes in self.working_prompt_recipes.values_mut() {
+                    for recipe in recipes.iter_mut() {
+                        *recipe = recipe.trim().to_string();
+                    }
+                    recipes.retain(|r| !r.is_empty());
+                }
+                // Remove work modes with zero recipes.
+                self.working_prompt_recipes
+                    .retain(|_, recipes| !recipes.is_empty());
+                self.save_feedback = Some(SettingsTab::PromptRecipes);
             }
             // ── Custom tool actions ────────────────────────────────
             SettingsEvent::ToggleTool(index) => {
@@ -1024,6 +1085,12 @@ impl SettingsState {
         }
     }
 
+    /// Load prompt recipes into the dialog's working copy (on dialog open).
+    pub(crate) fn load_prompt_recipes(&mut self, recipes: indexmap::IndexMap<String, Vec<String>>) {
+        self.working_prompt_recipes = recipes;
+        self.expanded_recipe_mode = None;
+    }
+
     /// Whether the new-label capsule input is currently active.
     pub(crate) fn is_adding_label(&self) -> bool {
         self.adding_label
@@ -1094,6 +1161,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
     // ── Sidebar ────────────────────────────────────────────────────
     let tabs = [
         SettingsTab::AiModels,
+        SettingsTab::PromptRecipes,
         SettingsTab::CustomTools,
         SettingsTab::McpServers,
         SettingsTab::ToolPlayground,
@@ -1122,6 +1190,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
     // ── Tab content ────────────────────────────────────────────────
     let tab_content: Element<'a, SettingsEvent> = match state.selected_tab {
         SettingsTab::AiModels => ai_models::ai_models_page(state),
+        SettingsTab::PromptRecipes => prompt_recipes::prompt_recipes_page(state),
         SettingsTab::CustomTools => custom_tools::custom_tools_page(state),
         SettingsTab::McpServers => mcp_servers::mcp_servers_page(state),
         SettingsTab::ToolPlayground => tool_playground::playground_page(state),
