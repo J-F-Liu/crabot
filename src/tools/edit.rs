@@ -9,6 +9,7 @@ use super::{Tool, arg_path, make_workspace_relative, normalize_newlines, resolve
 /// A single edit operation with flexible field-name aliases for cross‑model
 /// compatibility (e.g. `old_text` / `old` / `search`).
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EditParam {
     #[serde(alias = "old")]
     #[serde(alias = "old_str")]
@@ -80,20 +81,52 @@ impl Tool for EditTool {
 }
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
-    let path = arg_path(args).ok_or("Missing 'path' argument")?;
-    let file_path = resolve_path(path, workspace)
-        .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
-    let display_path = make_workspace_relative(&file_path, workspace);
+    let mut errors: Vec<String> = Vec::new();
 
-    let edits = match args.get("edits") {
-        Some(v) => v
-            .as_array()
-            .ok_or_else(|| format!("'edits' must be an array, got {}", v))?,
-        None => return Err("Missing 'edits' argument".to_string()),
+    // ── Validate path argument ────────────────────────────────────
+    let path = arg_path(args);
+    let file_path = match &path {
+        Some(p) => match resolve_path(p, workspace) {
+            Ok(fp) => Some(fp),
+            Err(e) => {
+                errors.push(format!("Failed to resolve path '{p}': {e}"));
+                None
+            }
+        },
+        None => {
+            errors.push("Missing 'path' argument".to_string());
+            None
+        }
     };
-    if edits.is_empty() {
-        return Err("'edits' array must not be empty".to_string());
+
+    // ── Validate edits argument ───────────────────────────────────
+    let edits = match args.get("edits") {
+        Some(v) => match v.as_array() {
+            Some(arr) if !arr.is_empty() => Some(arr),
+            Some(_) => {
+                errors.push("'edits' array must not be empty".to_string());
+                None
+            }
+            None => {
+                errors.push(format!("'edits' must be an array, got {}", v));
+                None
+            }
+        },
+        None => {
+            errors.push("Missing 'edits' argument".to_string());
+            None
+        }
+    };
+
+    // Report arg-level errors before proceeding.
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
     }
+
+    // Safe: we returned above if either was invalid.
+    let file_path = file_path.unwrap();
+    let display_path = make_workspace_relative(&file_path, workspace);
+    let edits = edits.unwrap();
 
     let raw = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read {display_path}: {e}"))?;
@@ -110,23 +143,34 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         end: usize,
         new_text: String,
     }
-
     let mut located: Vec<LocatedEdit> = Vec::with_capacity(edits.len());
     for (i, edit_value) in edits.iter().enumerate() {
         let idx = i + 1; // 1‑based for human‑readable messages
-        let edit: EditParam =
-            serde_json::from_value(edit_value.clone()).map_err(|e| format!("Edit {idx}: {e}"))?;
+        let edit: EditParam = match serde_json::from_value(edit_value.clone()) {
+            Ok(e) => e,
+            Err(e) => {
+                errors.push(format!("Edit {idx}: {e}"));
+                continue;
+            }
+        };
         let old_text = normalize_newlines(&edit.old_text);
         let new_text = normalize_newlines(&edit.new_text);
 
         // An empty old_text matches everywhere; reject it before the search.
         if old_text.is_empty() {
-            return Err(format!("Edit {idx}: 'old_text' must not be empty"));
+            errors.push(format!("Edit {idx}: 'old_text' must not be empty"));
+            continue;
         }
 
-        let start = content.find(old_text.as_ref()).ok_or_else(|| {
-            format!("Edit {idx}: string not found in {display_path}: '{old_text}'",)
-        })?;
+        let start = match content.find(old_text.as_ref()) {
+            Some(s) => s,
+            None => {
+                errors.push(format!(
+                    "Edit {idx}: string not found in {display_path}: '{old_text}'",
+                ));
+                continue;
+            }
+        };
 
         // Verify uniqueness: no second occurrence (including overlapping ones).
         // Search from the next character boundary after `start` to avoid
@@ -137,10 +181,11 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             .map(|(i, _)| start + i)
             .unwrap_or(content.len());
         if let Some(pos) = content[search_from..].find(old_text.as_ref()) {
-            return Err(format!(
+            errors.push(format!(
                 "Edit {idx}: found multiple occurrences of '{old_text}' in {display_path} (positions {start} and {}) — need unique match",
                 search_from + pos,
             ));
+            continue;
         }
 
         located.push(LocatedEdit {
@@ -157,11 +202,16 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         let a = &pair[0];
         let b = &pair[1];
         if a.end > b.start {
-            return Err(format!(
+            errors.push(format!(
                 "Edits {} and {} overlap: edit {} range [{}..{}) conflicts with edit {} range [{}..{})",
                 a.idx, b.idx, a.idx, a.start, a.end, b.idx, b.start, b.end,
             ));
         }
+    }
+
+    // Report all collected errors at once.
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
     }
 
     // ── Phase 3: apply edits ───────────────────────────────────────
