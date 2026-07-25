@@ -97,12 +97,6 @@ impl McpList {
         }
     }
 
-    /// Return all server names.
-    #[allow(dead_code)]
-    pub fn server_names(&self) -> Vec<String> {
-        self.servers.iter().map(|s| s.name.clone()).collect()
-    }
-
     /// Save the server list to disk as RON text.
     pub fn save(&self) {
         let path = Self::path();

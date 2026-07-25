@@ -4,7 +4,6 @@ pub mod model_database;
 pub mod session;
 pub mod settings;
 pub mod setup;
-pub mod system;
 pub mod tools;
 pub mod user;
 pub mod workspace;

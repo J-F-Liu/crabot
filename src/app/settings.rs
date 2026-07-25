@@ -211,7 +211,7 @@ fn execute_playground_tool(app: &mut App, event: crate::views::SettingsEvent) ->
     let generation = app.model_settings.settings_state.playground_generation;
     let args =
         crate::views::settings::tool_playground::build_params_json(&info.schema_raw, &param_values);
-    let workspace = app.prompt.system_prompt.workspace.1.clone();
+    let workspace = app.prompt.workspace.1.clone();
     let cancel = app.model_settings.settings_state.playground_cancel.clone();
     let is_todo = info.name == "todo";
     Task::perform(

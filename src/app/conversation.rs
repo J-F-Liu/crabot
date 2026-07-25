@@ -108,13 +108,13 @@ fn new_session(app: &mut App) {
     app.tools.cached_todo_items.clear();
     app.tools.tool_registry.clear_todo();
 
-    let workspace = app.prompt.system_prompt.workspace.1.clone();
+    let workspace = app.prompt.workspace.1.clone();
     let tree = crabot::workspace::build_files_tree(&workspace);
-    app.prompt.files_content = text_editor::Content::with_text(&tree);
-    app.settings.files_enabled = true;
+    app.prompt.files.content = text_editor::Content::with_text(&tree);
+    app.prompt.files.enabled = true;
     let (exists, content) = crate::app::prompt::load_agents_md(&workspace);
     app.prompt.agents_md_exists = exists;
-    app.prompt.system_prompt.agents_md.1 = content;
+    app.prompt.agents_md.1 = content;
 }
 
 fn load_session(
@@ -219,20 +219,20 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
     let Some(model) = selected_model_config(app) else {
         return Task::none();
     };
-    if app.prompt.system_prompt.workspace.1.as_os_str().is_empty() {
+    if app.prompt.workspace.1.as_os_str().is_empty() {
         app.overlay.show_workspace_dialog = true;
         return Task::none();
     }
 
     let mode = app.prompt.workmode_enabled.then_some(app.prompt.workmode);
-    let workspace_tree = if app.settings.files_enabled {
-        let tree = app.prompt.files_content.text();
+    let workspace_tree = if app.prompt.files.enabled {
+        let tree = app.prompt.files.content.text();
         (!tree.is_empty()).then(|| tree.to_string())
     } else {
         None
     };
     let user_prompt = UserPrompt::new(mode, content.clone(), workspace_tree);
-    app.settings.files_enabled = false;
+    app.prompt.files.enabled = false;
     app.prompt.user_prompt.clear();
 
     if app.conversation.session_state.phase != DialogPhase::Idle {
@@ -312,7 +312,7 @@ pub(crate) fn start_dialog(
         false
     };
     conversation.session.model = Some(model_config.clone());
-    conversation.session.workspace = app.prompt.system_prompt.workspace.1.clone();
+    conversation.session.workspace = app.prompt.workspace.1.clone();
     conversation.session.save().ok();
 
     // Add current session to the dropdown list so it appears immediately.
@@ -344,11 +344,8 @@ pub(crate) fn start_dialog(
 
     let config = crate::llm::SendConfig {
         model,
-        workspace: app.prompt.system_prompt.workspace.1.clone(),
-        system_prompt: app
-            .prompt
-            .system_prompt
-            .get_prompt(app.prompt.workmode_enabled),
+        workspace: app.prompt.workspace.1.clone(),
+        system_prompt: app.prompt.get_prompt(),
         user_prompt,
         tools: app
             .tools

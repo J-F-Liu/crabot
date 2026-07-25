@@ -1,6 +1,6 @@
 use iced::{
     Element, Fill, Length,
-    widget::{column, container, scrollable, text_editor},
+    widget::{column, container, scrollable},
 };
 
 use super::model_config::model_config_view;
@@ -15,12 +15,12 @@ use super::tool_list::{
     BUILTIN_TOOLS, CUSTOM_TOOLS, ToolListState, mcp_tools_section, tools_section,
 };
 use super::user_prompt::user_prompt_view;
+use crate::FilepathEntry;
 use crate::app::{ConversationState, ModelSettingsState, PromptWorkspaceState, ToolState};
 use crate::llm::DialogPhase;
 use crate::views::session_list::SessionEntry;
 use crate::widgets::textarea::TextArea;
 use crate::{LeftPaneEvent, PromptEvent, ToolEvent};
-use crabot::system::{FilepathEntry, SystemPrompt};
 use crabot::user::WorkMode;
 use std::collections::HashSet;
 
@@ -35,24 +35,19 @@ pub(crate) fn left_pane<'a>(
     let provider_entries = &model_settings.provider_entries;
     let left_w: f32 = settings.left_pane_width;
     let selected_model: &String = &settings.selected_model;
-    let system_prompt: &SystemPrompt = &prompt.system_prompt;
     let agents_md_exists: bool = prompt.agents_md_exists;
-    let tools_expanded: bool = prompt.tools_expanded;
     let tool_list_state: &ToolListState = &tools.tool_list_state;
     let selected_preamble: &str = &settings.selected_preamble;
     let preamble_options: &[FilepathEntry] = &prompt.preamble_options;
     let selected_rules: &str = &settings.selected_rules;
     let rules_options: &[FilepathEntry] = &prompt.rules_options;
     let workspace_options: &[FilepathEntry] = &prompt.workspace_options;
-    let files_content: &text_editor::Content = &prompt.files_content;
-    let tools_content: &text_editor::Content = &prompt.tools_content;
+    let files: &crate::app::ExpandableEditor = &prompt.files;
     let enabled_tools: &HashSet<String> = &tools.enabled_tools;
     let tool_registry: &crabot::tools::ToolRegistry = &tools.tool_registry;
     let user_prompt: &TextArea = &prompt.user_prompt;
     let workmode: WorkMode = prompt.workmode;
     let workmode_enabled: bool = prompt.workmode_enabled;
-    let files_expanded: bool = prompt.files_expanded;
-    let files_enabled: bool = settings.files_enabled;
     let prompt_recipes: &[String] = {
         let key = prompt.workmode.name.to_lowercase();
         settings
@@ -77,31 +72,30 @@ pub(crate) fn left_pane<'a>(
                 column![
                     label("System Prompt", 140.0),
                     file_picker_field_view(
-                        crabot::system::PREAMBLE,
-                        &system_prompt.preamble,
+                        crate::PREAMBLE,
+                        &prompt.preamble,
                         preamble_options,
                         selected_preamble,
                         PromptEvent::SelectPreamble,
                     )
                     .map(LeftPaneEvent::Prompt),
                     file_picker_field_view(
-                        crabot::system::RULES,
-                        &system_prompt.rules,
+                        crate::RULES,
+                        &prompt.rules,
                         rules_options,
                         selected_rules,
                         PromptEvent::SelectRules,
                     )
                     .map(LeftPaneEvent::Prompt),
-                    tools_field_view(tools_expanded, &system_prompt.tools, tools_content,)
-                        .map(LeftPaneEvent::Prompt),
-                    workspace_field_view(&system_prompt.workspace, workspace_options)
+                    tools_field_view(&prompt.tools).map(LeftPaneEvent::Prompt),
+                    workspace_field_view(&prompt.workspace, workspace_options)
                         .map(LeftPaneEvent::Prompt),
                     if agents_md_exists {
-                        agents_md_field_view(&system_prompt.agents_md).map(LeftPaneEvent::Prompt)
+                        agents_md_field_view(&prompt.agents_md).map(LeftPaneEvent::Prompt)
                     } else {
                         column![].into()
                     },
-                    date_field_view(&system_prompt.date).map(LeftPaneEvent::Prompt),
+                    date_field_view(&prompt.date).map(LeftPaneEvent::Prompt),
                     session_view(streaming, session_options, current_session_id)
                         .map(LeftPaneEvent::Conversation),
                     label("User Prompt", 140.0),
@@ -111,9 +105,7 @@ pub(crate) fn left_pane<'a>(
                         workmode_enabled,
                         prompt_recipes,
                         recipe_dropdown_expanded,
-                        files_expanded,
-                        files_enabled,
-                        files_content,
+                        files,
                     )
                     .map(LeftPaneEvent::Prompt),
                     tools_section(

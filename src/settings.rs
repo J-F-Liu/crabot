@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::system::SystemPrompt;
 use crate::tools::ToolRegistry;
 
 /// All persistable app-level state.
@@ -23,7 +22,6 @@ pub struct Settings {
     pub tools_enabled: bool,
     pub workspace_enabled: bool,
     pub agents_md_enabled: bool,
-    pub files_enabled: bool,
     pub date_enabled: bool,
     /// Current workspace path.
     pub workspace: PathBuf,
@@ -56,7 +54,6 @@ impl Default for Settings {
             tools_enabled: true,
             workspace_enabled: true,
             agents_md_enabled: true,
-            files_enabled: true,
             date_enabled: true,
             workspace: PathBuf::new(),
             recent_workspaces: Vec::new(),
@@ -88,17 +85,6 @@ impl Settings {
             Ok(text) => ron::from_str::<Settings>(&text).unwrap_or_default(),
             Err(_) => Self::default(),
         }
-    }
-
-    /// Copy enabled flags and workspace path from a `SystemPrompt`.
-    pub fn sync_system_prompt(&mut self, prompt: &SystemPrompt) {
-        self.preamble_enabled = prompt.preamble.0;
-        self.rules_enabled = prompt.rules.0;
-        self.tools_enabled = prompt.tools.0;
-        self.workspace_enabled = prompt.workspace.0;
-        self.agents_md_enabled = prompt.agents_md.0;
-        self.date_enabled = prompt.date.0;
-        self.workspace = prompt.workspace.1.clone();
     }
 
     /// Rebuild `mcp_servers` and `agent_tools` from live registry state.

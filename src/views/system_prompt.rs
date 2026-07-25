@@ -7,9 +7,10 @@ use iced::{
 };
 
 use crate::PromptEvent;
-use crabot::system::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE};
+use crate::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE};
 
 use super::theme::thin_vertical;
+use crate::app::ExpandableEditor;
 
 use std::path::PathBuf;
 
@@ -66,19 +67,15 @@ pub(crate) fn file_picker_field_view<'a>(
     .into()
 }
 
-pub(crate) fn tools_field_view<'a>(
-    expanded: bool,
-    field: &'a (bool, String),
-    content: &'a text_editor::Content,
-) -> Element<'a, PromptEvent> {
+pub(crate) fn tools_field_view<'a>(tools: &'a ExpandableEditor) -> Element<'a, PromptEvent> {
     let name = TOOLS;
-    let header = expandable_header(name, field.0, expanded);
+    let header = expandable_header(name, tools.enabled, tools.expanded);
 
-    if expanded {
+    if tools.expanded {
         column![
             header,
             scrollable(
-                text_editor(content)
+                text_editor(&tools.content)
                     .on_action(move |a| PromptEvent::EditTextContent(name, a))
                     .height(Length::Fixed(120.0)),
             )

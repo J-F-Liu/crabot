@@ -15,21 +15,19 @@ use iced_aw::{
 };
 
 use super::system_prompt::expandable_header;
+use crate::WORKSPACE_TREE;
+use crate::app::ExpandableEditor;
 use crate::widgets::textarea::TextArea;
 use crate::{FocusedTarget, PromptEvent};
-use crabot::system::WORKSPACE_TREE;
 use crabot::user::WorkMode;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn user_prompt_view<'a>(
     user_prompt: &'a TextArea,
     workmode: WorkMode,
     workmode_enabled: bool,
     prompt_recipes: &'a [String],
     recipe_dropdown_expanded: bool,
-    files_expanded: bool,
-    files_enabled: bool,
-    files_content: &'a text_editor::Content,
+    files: &'a ExpandableEditor,
 ) -> Element<'a, PromptEvent> {
     let mut tab_bar_builder = TabBar::new(PromptEvent::SelectWorkMode);
     for mode in WorkMode::all() {
@@ -101,7 +99,7 @@ pub(crate) fn user_prompt_view<'a>(
         ]
         .spacing(8)
         .align_y(Alignment::Center),
-        files_field_view(files_expanded, files_enabled, files_content),
+        files_field_view(files),
         user_prompt
             .view(|msg| PromptEvent::EditTextArea(FocusedTarget::UserPrompt, msg))
             .height(120),
@@ -123,23 +121,19 @@ pub(crate) fn user_prompt_view<'a>(
 
 // ── Workspace tree view ──────────────────────────────────────────
 
-fn files_field_view<'a>(
-    expanded: bool,
-    enabled: bool,
-    content: &'a text_editor::Content,
-) -> Element<'a, PromptEvent> {
+fn files_field_view<'a>(files: &'a ExpandableEditor) -> Element<'a, PromptEvent> {
     let name = WORKSPACE_TREE;
-    let header = expandable_header(name, enabled, expanded);
+    let header = expandable_header(name, files.enabled, files.expanded);
 
     use iced::widget::scrollable::{Direction, Scrollbar};
 
-    if expanded {
+    if files.expanded {
         column![
             header,
             container(
                 scrollable(
                     container(
-                        text_editor(content)
+                        text_editor(&files.content)
                             .on_action(move |a| PromptEvent::EditTextContent(name, a))
                             .font(iced::Font::MONOSPACE)
                             .wrapping(text::Wrapping::None),

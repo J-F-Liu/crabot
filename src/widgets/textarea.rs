@@ -109,17 +109,6 @@ impl TextArea {
         }
     }
 
-    /// Creates a `TextArea` pre-filled with the given text.
-    #[allow(dead_code)]
-    pub fn with_text(text: &str) -> Self {
-        Self {
-            content: text_editor::Content::with_text(text),
-            undo_stack: VecDeque::new(),
-            redo_stack: VecDeque::new(),
-            last_edit: None,
-        }
-    }
-
     /// Processes a [`Message`] and updates internal state accordingly.
     ///
     /// `shift_held` should be `true` when the Shift key is pressed during

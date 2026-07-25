@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::chat::{Dialog, ToolResult, Turn};
-use crate::model::{ModelConfig, TokenAmount, currency_symbol};
+use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
 
 /// A conversation session, persisted to `.agent/sessions/`.
@@ -29,7 +29,7 @@ pub struct Session {
     /// Accumulated token cost.
     pub cost: f64,
     /// Currency for the accumulated cost (ISO 4217 code, e.g. "USD", "CNY").
-    pub currency: String,
+    pub currency: Currency,
     /// Files modified during this session (write / edit tools).
     /// Derived from history on load; not serialised directly.
     #[serde(skip)]
@@ -60,7 +60,7 @@ impl Session {
             requests: 0,
             tokens: TokenAmount::default(),
             cost: 0.0,
-            currency: String::new(),
+            currency: Currency::new(),
             modified_files: Vec::new(),
             created_at: time.clone(),
             updated_at: time,
@@ -138,7 +138,7 @@ impl Session {
         if let Some(c) = cost {
             self.cost += c.calculate(tokens);
             if self.currency != c.currency {
-                self.currency = c.currency.clone();
+                self.currency = c.currency;
             }
         }
     }

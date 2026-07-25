@@ -13,6 +13,9 @@ use crabot::{model, setup, tools};
 use iced::{Point, Size};
 
 // Re-export items that view modules access via `crate::*`.
+pub(crate) use app::prompt::{
+    AGENTS_MD, DATE, FilepathEntry, PREAMBLE, RULES, TOOLS, WORKSPACE, WORKSPACE_TREE,
+};
 pub(crate) use app::session_state::{AskAction, AskRequest, SessionEvent};
 pub(crate) use app::{
     CenterPaneEvent, ConversationEvent, FocusedTarget, LeftPaneEvent, OverlayEvent, PromptEvent,

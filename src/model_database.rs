@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use crate::model::{Cost, Model};
+use crate::model::{Cost, Currency, Model};
 
 // ── Raw deserialisation types ───────────────────────────────────────
 
@@ -32,7 +32,7 @@ struct RawModel {
 #[serde(default)]
 struct RawOffer {
     source: Option<String>,
-    currency: String,
+    currency: Currency,
     prices: Vec<RawPrice>,
 }
 
@@ -158,7 +158,7 @@ fn extract_costs(offers: &[RawOffer]) -> (Cost, Vec<Cost>) {
                 output: price.output.as_ref().map(|a| a.amount).unwrap_or(0.0),
                 cache_read: price.cache_read.as_ref().map(|a| a.amount).unwrap_or(0.0),
                 cache_write: price.cache_write.as_ref().map(|a| a.amount).unwrap_or(0.0),
-                currency: offer.currency.clone(),
+                currency: offer.currency,
                 source: offer.source.clone().unwrap_or_default(),
             })
         })

@@ -14,9 +14,9 @@ use std::path::PathBuf;
 
 use crabot::model::{Cost, Model, ModelList};
 use crabot::session::Session;
-use crabot::system::{FilepathEntry, SystemPrompt};
 use crabot::tools::todo::TodoItem;
 use crabot::user::WorkMode;
+use prompt::{FilepathEntry, TOOLS, WORKSPACE_TREE};
 
 use crate::views::{
     DividerState, center_pane, divider, left_pane,
@@ -31,7 +31,7 @@ use crate::widgets::textarea::{self, TextArea};
 mod conversation;
 mod layout;
 mod overlay;
-mod prompt;
+pub(crate) mod prompt;
 pub(crate) mod session_state;
 mod settings;
 mod subscription;
@@ -67,21 +67,96 @@ pub(crate) struct LayoutState {
     pub(crate) focused: Option<FocusedTarget>,
 }
 
+/// Collapsible text-editor field with enable/expand state.
+#[derive(Debug)]
+pub(crate) struct ExpandableEditor {
+    pub(crate) expanded: bool,
+    pub(crate) enabled: bool,
+    pub(crate) content: text_editor::Content,
+}
+
 /// System prompt, workspace, prompt-file options, and user-prompt editor.
 pub(crate) struct PromptWorkspaceState {
-    pub(crate) system_prompt: SystemPrompt,
+    pub(crate) preamble: (bool, String),
+    pub(crate) rules: (bool, String),
+    pub(crate) workspace: (bool, PathBuf),
+    pub(crate) agents_md: (bool, String),
+    pub(crate) date: (bool, String),
     pub(crate) preamble_options: Vec<FilepathEntry>,
     pub(crate) rules_options: Vec<FilepathEntry>,
     pub(crate) workspace_options: Vec<FilepathEntry>,
     pub(crate) agents_md_exists: bool,
-    pub(crate) files_content: text_editor::Content,
-    pub(crate) files_expanded: bool,
-    pub(crate) tools_expanded: bool,
-    pub(crate) tools_content: text_editor::Content,
+    pub(crate) files: ExpandableEditor,
+    pub(crate) tools: ExpandableEditor,
     pub(crate) user_prompt: TextArea,
     pub(crate) workmode: WorkMode,
     pub(crate) workmode_enabled: bool,
     pub(crate) recipe_dropdown_expanded: bool,
+}
+
+impl PromptWorkspaceState {
+    pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut (bool, String)> {
+        match name {
+            prompt::PREAMBLE => Some(&mut self.preamble),
+            prompt::RULES => Some(&mut self.rules),
+            prompt::AGENTS_MD => Some(&mut self.agents_md),
+            prompt::DATE => Some(&mut self.date),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
+        match name {
+            TOOLS => Some(&mut self.tools.content),
+            WORKSPACE_TREE => Some(&mut self.files.content),
+            _ => None,
+        }
+    }
+
+    /// Concatenate all enabled components, returning the full prompt string.
+    pub(crate) fn get_prompt(&self) -> String {
+        let mut prompt = String::new();
+        if let (true, content) = &self.preamble
+            && !content.is_empty()
+        {
+            prompt.push_str(content);
+            prompt.push('\n');
+        }
+        if self.workmode_enabled
+            && let Some(file) = crabot::setup::ASSETS.get_file("workmode.md")
+            && let Some(contents) = file.contents_utf8()
+        {
+            prompt.push_str(contents);
+        }
+        if let (true, content) = &self.rules
+            && !content.is_empty()
+        {
+            prompt.push_str(content);
+            prompt.push('\n');
+        }
+        if self.tools.enabled && !self.tools.content.text().is_empty() {
+            prompt.push_str(&self.tools.content.text());
+            prompt.push('\n');
+        }
+        if let (true, workspace) = &self.workspace
+            && workspace.is_dir()
+        {
+            let path = crabot::tools::convert_path_to_unix_style(workspace);
+            prompt.push_str(&format!("Current Workspace: {}\n", path));
+        }
+        if let (true, agents_md) = &self.agents_md
+            && !agents_md.is_empty()
+        {
+            prompt.push_str(agents_md);
+            prompt.push('\n');
+        }
+        if let (true, date) = &self.date
+            && !date.is_empty()
+        {
+            prompt.push_str(&format!("Current Date: {}\n", date));
+        }
+        prompt
+    }
 }
 
 /// Tool registry, enabled-tool sets, and todo snapshot.
@@ -359,17 +434,7 @@ impl App {
                 .ok()
                 .is_some_and(|exe| exe.starts_with(&workspace_path));
 
-        let system_prompt = SystemPrompt {
-            preamble: (saved.preamble_enabled, preamble_content),
-            rules: (saved.rules_enabled, rules_content),
-            tools: (saved.tools_enabled, tools_summary),
-            workspace: (saved.workspace_enabled, workspace_path),
-            agents_md: (saved.agents_md_enabled, agents_md_content),
-            date: (
-                saved.date_enabled,
-                chrono::Local::now().format("%Y-%m-%d").to_string(),
-            ),
-        };
+        let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         let update_available = saved
             .last_update_version
@@ -380,6 +445,33 @@ impl App {
         let workspace_options = crate::views::build_workspace_options(&saved.recent_workspaces);
         let window_size = Size::new(saved.window_size.0, saved.window_size.1);
         let window_pos = Point::new(saved.window_pos.0, saved.window_pos.1);
+        let tools_enabled = saved.tools_enabled;
+
+        let prompt = PromptWorkspaceState {
+            preamble: (saved.preamble_enabled, preamble_content),
+            rules: (saved.rules_enabled, rules_content),
+            workspace: (saved.workspace_enabled, workspace_path),
+            agents_md: (saved.agents_md_enabled, agents_md_content),
+            date: (saved.date_enabled, date_str),
+            preamble_options,
+            rules_options,
+            workspace_options,
+            agents_md_exists,
+            files: ExpandableEditor {
+                expanded: false,
+                enabled: true,
+                content: files_content,
+            },
+            tools: ExpandableEditor {
+                expanded: false,
+                enabled: tools_enabled,
+                content: tools_content,
+            },
+            user_prompt: TextArea::new(),
+            workmode: WorkMode::default_mode(),
+            workmode_enabled: true,
+            recipe_dropdown_expanded: false,
+        };
 
         let app = Self {
             settings: saved,
@@ -395,21 +487,7 @@ impl App {
                 scroll_viewport_height: 0.0,
                 focused: None,
             },
-            prompt: PromptWorkspaceState {
-                system_prompt,
-                preamble_options,
-                rules_options,
-                workspace_options,
-                agents_md_exists,
-                files_content,
-                files_expanded: false,
-                tools_expanded: false,
-                tools_content,
-                user_prompt: TextArea::new(),
-                workmode: WorkMode::default_mode(),
-                workmode_enabled: true,
-                recipe_dropdown_expanded: false,
-            },
+            prompt,
             tools,
             conversation: ConversationState {
                 session: Session::new(),
@@ -435,8 +513,7 @@ impl App {
                 update_available,
             },
         };
-        let session_task =
-            conversation::refresh_session_list(app.prompt.system_prompt.workspace.1.clone());
+        let session_task = conversation::refresh_session_list(app.prompt.workspace.1.clone());
         let discover_task = mcp_list
             .servers
             .into_iter()
@@ -462,8 +539,7 @@ impl App {
     /// Rebuild the tools summary and refresh all UI fields that depend on it.
     pub(crate) fn refresh_tools_summary(&mut self) {
         let summary = self.tools.summary();
-        self.prompt.tools_content = text_editor::Content::with_text(&summary);
-        self.prompt.system_prompt.tools.1 = summary;
+        self.prompt.tools.content = text_editor::Content::with_text(&summary);
     }
 
     pub(crate) fn update(&mut self, msg: Message) -> Task<Message> {
@@ -503,7 +579,13 @@ impl App {
             self.layout.window_pos.x.max(0.0),
             self.layout.window_pos.y.max(0.0),
         );
-        self.settings.sync_system_prompt(&self.prompt.system_prompt);
+        self.settings.preamble_enabled = self.prompt.preamble.0;
+        self.settings.rules_enabled = self.prompt.rules.0;
+        self.settings.workspace_enabled = self.prompt.workspace.0;
+        self.settings.agents_md_enabled = self.prompt.agents_md.0;
+        self.settings.date_enabled = self.prompt.date.0;
+        self.settings.workspace = self.prompt.workspace.1.clone();
+        self.settings.tools_enabled = self.prompt.tools.enabled;
         self.settings.sync_tools(
             &self.tools.tool_registry,
             &self.tools.enabled_tools,

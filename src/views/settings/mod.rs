@@ -1035,7 +1035,6 @@ impl SettingsState {
     }
 
     /// Whether a label capsule drag is in progress.
-    #[allow(dead_code)]
     pub(crate) fn is_label_dragging(&self) -> bool {
         self.drag_label.is_some()
     }

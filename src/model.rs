@@ -1,3 +1,4 @@
+use arrayvec::ArrayString;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -142,6 +143,8 @@ impl PartialEq for Model {
 
 // ── Cost ────────────────────────────────────────────────────────────
 
+pub type Currency = ArrayString<8>;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Cost {
     pub input: f64,
@@ -149,7 +152,7 @@ pub struct Cost {
     pub cache_read: f64,
     pub cache_write: f64,
     #[serde(default)]
-    pub currency: String,
+    pub currency: Currency,
     /// Offer source (e.g. "openrouter", "litellm", "bailian").
     #[serde(default, skip)]
     pub source: String,
