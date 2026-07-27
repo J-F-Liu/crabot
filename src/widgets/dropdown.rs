@@ -759,10 +759,12 @@ where
 
         let node = layout::Node::new(Size::new(self.menu_width, menu_height));
 
+        const GAP: f32 = 2.0;
+
         if space_below > space_above {
-            node.move_to(self.position + Vector::new(0.0, self.target_height))
+            node.move_to(self.position + Vector::new(0.0, self.target_height + GAP))
         } else {
-            node.move_to(self.position - Vector::new(0.0, menu_height))
+            node.move_to(self.position - Vector::new(0.0, menu_height + GAP))
         }
     }
 

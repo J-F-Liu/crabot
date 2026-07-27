@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use chrono::Datelike;
+
 use crate::chat::{Dialog, ToolResult, Turn};
 use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
@@ -342,12 +344,14 @@ impl Session {
     // ── Persistence ─────────────────────────────────────────────────
 
     /// Compute the save path for this session.
+    /// Sessions are stored under `.agent/sessions/{YYYY-MM}/{id}.json`.
     pub fn save_path(&self) -> Option<PathBuf> {
         if !self.workspace.is_dir() {
             return None;
         }
         let base = self.workspace.join(".agent").join("sessions");
-        Some(base.join(format!("{}.json", self.id)))
+        let year_month = year_month_from_id(&self.id);
+        Some(base.join(&year_month).join(format!("{}.json", self.id)))
     }
 
     /// Save the session to disk.
@@ -389,18 +393,62 @@ impl Session {
     }
 }
 
-/// List all saved session file paths for a workspace (newest first).
+/// Extract YYYY-MM from a session id (format: YYYYMMDD-HHMMSS).
+pub fn year_month_from_id(id: &str) -> String {
+    if id.len() >= 6 {
+        format!("{}-{}", &id[..4], &id[4..6])
+    } else {
+        chrono::Local::now().format("%Y-%m").to_string()
+    }
+}
+
+/// List saved session file paths for a workspace (newest first),
+/// scanning the last 3 months' year-month subdirectories.
 pub fn list_session_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
-    let dir = workspace.join(".agent").join("sessions");
-    if !dir.exists() {
+    let base = workspace.join(".agent").join("sessions");
+    if !base.exists() {
         return Ok(Vec::new());
     }
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .map_err(|e| format!("Failed to read sessions dir: {e}"))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|ext| ext == "json"))
-        .collect();
+
+    // Collect year-month dirs for the last 3 months.
+    let now = chrono::Local::now();
+    let (year, month) = (now.year(), now.month());
+    let mut year_months: Vec<String> = Vec::new();
+    for i in 0..3i32 {
+        let mut m = month as i32 - i;
+        let mut y = year;
+        while m <= 0 {
+            m += 12;
+            y -= 1;
+        }
+        year_months.push(format!("{:04}-{:02}", y, m));
+    }
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for ym in &year_months {
+        let dir = base.join(ym);
+        if dir.is_dir()
+            && let Ok(entries) = std::fs::read_dir(&dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "json") {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+
+    // Also scan the base directory for legacy flat session files.
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
+                paths.push(path);
+            }
+        }
+    }
+
     paths.sort_by(|a, b| b.cmp(a)); // newest first
     Ok(paths)
 }

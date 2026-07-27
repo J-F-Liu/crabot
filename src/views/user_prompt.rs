@@ -56,11 +56,15 @@ pub(crate) fn user_prompt_view<'a>(
         .into();
 
     // ── Recipe dropdown ──────────────────────────────────────────
-    let underlay: Element<'_, PromptEvent> = button(text("Recipes ▾").size(13))
-        .on_press(PromptEvent::ToggleRecipeDropdown)
-        .padding([2, 8])
-        .style(crate::views::secondary_button)
-        .into();
+    let underlay: Element<'_, PromptEvent> = container(
+        button(text("Recipes ▾").size(13))
+            .on_press(PromptEvent::ToggleRecipeDropdown)
+            .padding([2, 8])
+            .style(crate::views::secondary_button),
+    )
+    .width(Length::Fixed(360.0))
+    .align_x(Alignment::Start)
+    .into();
 
     let overlay = container(
         scrollable(
@@ -83,7 +87,7 @@ pub(crate) fn user_prompt_view<'a>(
             .width(Length::Fixed(360.0))
             .height(Length::Fixed(180.0))
             .alignment(drop_down::Alignment::Bottom)
-            .offset(Offset { x: 8.0, y: 4.0 })
+            .offset(Offset { x: 0.0, y: 2.0 })
             .on_dismiss(PromptEvent::DismissRecipeDropdown)
             .into();
 

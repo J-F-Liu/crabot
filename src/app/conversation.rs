@@ -165,22 +165,33 @@ fn navigate_session(
         .session_list
         .iter()
         .position(|entry| entry.id == conversation.session.id);
-    let entry = match current {
-        Some(index) => Some({
-            let next = if up {
-                index
-                    .checked_sub(1)
-                    .unwrap_or_else(|| conversation.session_list.len().saturating_sub(1))
-            } else if index + 1 < conversation.session_list.len() {
-                index + 1
+
+    // Find the next non-header entry, wrapping around the list.
+    let next_idx = |idx: usize, up: bool| -> Option<usize> {
+        let len = conversation.session_list.len();
+        let step = |i: usize| {
+            if up {
+                i.checked_sub(1).unwrap_or(len - 1)
             } else {
-                0
-            };
-            conversation.session_list[next].clone()
-        }),
-        None if up => conversation.session_list.last().cloned(),
-        None => conversation.session_list.first().cloned(),
+                (i + 1) % len
+            }
+        };
+        let start = step(idx);
+        let mut i = start;
+        loop {
+            if !conversation.session_list[i].is_header {
+                return Some(i);
+            }
+            i = step(i);
+            if i == start {
+                return None; // all entries are headers
+            }
+        }
     };
+
+    let entry = current
+        .and_then(|idx| next_idx(idx, up))
+        .map(|i| conversation.session_list[i].clone());
     entry.map_or_else(Task::none, |entry| {
         Task::done(Message::Conversation(ConversationEvent::LoadSession(entry)))
     })
@@ -316,10 +327,13 @@ pub(crate) fn start_dialog(
     if (conversation.session.is_fresh() || session_forked)
         && let Some(path) = conversation.session.save_path()
     {
+        let year_month = crabot::session::year_month_from_id(&conversation.session.id);
         let entry = crate::views::session_list::SessionEntry {
             id: conversation.session.id.clone(),
             title: conversation.session.title.clone(),
             path,
+            year_month,
+            is_header: false,
         };
         conversation.session_list.insert(0, entry);
     }
