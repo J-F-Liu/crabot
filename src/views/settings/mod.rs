@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+pub mod about;
 pub mod ai_models;
 pub mod custom_tools;
 pub mod mcp_servers;
@@ -38,6 +39,7 @@ pub(crate) enum SettingsTab {
     CustomTools,
     McpServers,
     ToolPlayground,
+    About,
 }
 
 impl SettingsTab {
@@ -48,8 +50,22 @@ impl SettingsTab {
             SettingsTab::CustomTools => "Custom Tools",
             SettingsTab::McpServers => "MCP Servers",
             SettingsTab::ToolPlayground => "Tool Playground",
+            SettingsTab::About => "About",
         }
     }
+}
+
+/// Tracks the state of the update check on the About tab.
+#[derive(Debug, Clone)]
+pub(crate) enum UpdateCheck {
+    /// No check has been performed and no cached result is known.
+    Idle,
+    /// An update check is in progress.
+    Checking,
+    /// The latest check found no newer version.
+    UpToDate,
+    /// A newer version is available.
+    Available(String),
 }
 
 /// Identifies which text field in the custom-tool form is being edited.
@@ -168,12 +184,23 @@ pub(crate) enum SettingsEvent {
     /// Result of a focus check on the new-label input; `false` means the
     /// input lost focus and the pending label should be confirmed.
     LabelInputFocus(bool),
+    // ── About page actions ─────────────────────────────────
+    /// User manually requested an update check.
+    CheckForUpdate,
+    /// Result of a manual update check.
+    UpdateCheckResult(Option<String>),
+    /// Open the project homepage in the browser.
+    OpenHomepage,
+    /// Toggle auto-check-updates preference.
+    ToggleAutoCheckUpdates(bool),
 }
 
 // ── State ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub(crate) struct SettingsState {
+    /// Whether the settings dialog is currently open.
+    pub(crate) open: bool,
     /// Currently active tab in the settings sidebar.
     pub(crate) selected_tab: SettingsTab,
     // Provider editing
@@ -243,11 +270,17 @@ pub(crate) struct SettingsState {
     /// Monotonically incrementing generation counter — used to discard stale
     /// [`PlaygroundToolResult`] messages from cancelled or superseded executions.
     pub(crate) playground_generation: u64,
+    // ── About state ────────────────────────────────────────
+    /// Current state of the update check.
+    pub(crate) update_check: UpdateCheck,
+    /// Whether auto-check-updates is enabled.
+    pub(crate) auto_check_updates: bool,
 }
 
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
+            open: false,
             selected_tab: SettingsTab::AiModels,
             selected_provider_id: String::new(),
             provider_name: String::new(),
@@ -279,6 +312,8 @@ impl Default for SettingsState {
             expanded_mcp: None,
             mcp_prompt_area: TextArea::new(),
             save_feedback: None,
+            update_check: UpdateCheck::Idle,
+            auto_check_updates: true,
             playground_tools: Vec::new(),
             playground_selected_index: None,
             playground_param_values: std::collections::HashMap::new(),
@@ -1014,6 +1049,20 @@ impl SettingsState {
                     self.update(SettingsEvent::AddLabel);
                 }
             }
+            // ── About page actions ────────────────────────────
+            SettingsEvent::CheckForUpdate => {
+                self.update_check = UpdateCheck::Checking;
+            }
+            SettingsEvent::UpdateCheckResult(latest) => {
+                self.update_check = match latest {
+                    Some(version) => UpdateCheck::Available(version),
+                    None => UpdateCheck::UpToDate,
+                };
+            }
+            SettingsEvent::ToggleAutoCheckUpdates(v) => {
+                self.auto_check_updates = v;
+            }
+            SettingsEvent::OpenHomepage => {} // handled in app/settings.rs
         }
     }
 
@@ -1165,6 +1214,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
         SettingsTab::CustomTools,
         SettingsTab::McpServers,
         SettingsTab::ToolPlayground,
+        SettingsTab::About,
     ];
     let sidebar_buttons: Vec<Element<'a, SettingsEvent>> = tabs
         .iter()
@@ -1194,6 +1244,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
         SettingsTab::CustomTools => custom_tools::custom_tools_page(state),
         SettingsTab::McpServers => mcp_servers::mcp_servers_page(state),
         SettingsTab::ToolPlayground => tool_playground::playground_page(state),
+        SettingsTab::About => about::about_page(state),
     };
 
     let content_area = scrollable(tab_content)

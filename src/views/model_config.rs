@@ -38,9 +38,17 @@ pub(crate) enum Event {
 
 pub(crate) fn model_config_view<'a>(
     provided_models: &'a ModelList,
-    providers: &'a [ProviderEntry],
     selected: &'a String,
 ) -> Element<'a, Event> {
+    // Derived provider pick-list entries (rebuilt each frame; cheap).
+    let providers: Vec<ProviderEntry> = provided_models
+        .providers
+        .iter()
+        .map(|(id, p)| ProviderEntry {
+            id: id.clone(),
+            name: p.name.clone(),
+        })
+        .collect();
     // ── Tab bar for model config switching ───────────────────────
     let tab_bar: Element<_> = {
         let names: Vec<String> = provided_models.models.keys().cloned().collect();
@@ -100,8 +108,9 @@ pub(crate) fn model_config_view<'a>(
         .into();
 
     let selected_config = provided_models.get_config(selected);
-    let selected_entry: Option<&ProviderEntry> =
-        selected_config.and_then(|cfg| providers.iter().find(|e| e.id == cfg.provider_id));
+    let selected_entry: Option<ProviderEntry> = selected_config
+        .and_then(|cfg| providers.iter().find(|e| e.id == cfg.provider_id))
+        .cloned();
     let selected_provider =
         selected_config.and_then(|cfg| provided_models.providers.get(&cfg.provider_id));
 

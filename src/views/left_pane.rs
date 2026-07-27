@@ -16,7 +16,7 @@ use super::tool_list::{
 };
 use super::user_prompt::user_prompt_view;
 use crate::FilepathEntry;
-use crate::app::{ConversationState, ModelSettingsState, PromptWorkspaceState, ToolState};
+use crate::app::{ConversationState, PromptWorkspaceState, ToolState};
 use crate::llm::DialogPhase;
 use crate::views::session_list::SessionEntry;
 use crate::widgets::textarea::TextArea;
@@ -29,10 +29,8 @@ pub(crate) fn left_pane<'a>(
     prompt: &'a PromptWorkspaceState,
     conversation: &'a ConversationState,
     tools: &'a ToolState,
-    model_settings: &'a ModelSettingsState,
+    models: &'a crabot::model::ModelList,
 ) -> Element<'a, LeftPaneEvent> {
-    let provided_models = &model_settings.provided_models;
-    let provider_entries = &model_settings.provider_entries;
     let left_w: f32 = settings.left_pane_width;
     let selected_model: &String = &settings.selected_model;
     let agents_md_exists: bool = prompt.agents_md_exists;
@@ -63,11 +61,8 @@ pub(crate) fn left_pane<'a>(
     let enabled_mcp_servers: &HashSet<String> = &tools.enabled_mcp_servers;
     container(
         column![
-            container(
-                model_config_view(provided_models, provider_entries, selected_model)
-                    .map(LeftPaneEvent::ModelConfig),
-            )
-            .padding([2, 10]),
+            container(model_config_view(models, selected_model).map(LeftPaneEvent::ModelConfig),)
+                .padding([2, 10]),
             scrollable(
                 column![
                     label("System Prompt", 140.0),

@@ -1,98 +1,80 @@
-use iced::Task;
 use std::collections::HashSet;
+
+use iced::Task;
 
 use crate::app::{App, Message, ModelSettingsEvent};
 use crate::tools;
 use crate::views::model_config;
+use crate::views::settings::{self, SettingsTab, UpdateCheck, about::HOMEPAGE};
+use crate::views::update;
+use crate::views::{NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState};
 
 /// Open the settings dialog, loading working copies of all state.
 pub(crate) fn open_settings(app: &mut App) -> Task<Message> {
-    app.model_settings.settings_state.working_models = app.model_settings.provided_models.clone();
-    app.model_settings
-        .settings_state
+    app.settings_dialog.working_models = app.models.clone();
+    app.settings_dialog
         .load_prompt_recipes(app.settings.prompt_recipes.clone());
-    app.model_settings
-        .settings_state
+    app.settings_dialog
         .load_tools(tools::custom::ToolList::load());
-    app.model_settings
-        .settings_state
-        .load_mcp(tools::mcp::McpList::load());
-    app.model_settings.settings_state.select_first_provider();
-    if app.model_settings.settings_state.selected_tab
-        == crate::views::settings::SettingsTab::ToolPlayground
-    {
-        app.model_settings.settings_state.load_playground_tools(
-            crate::views::settings::tool_playground::build_playground_tools(
-                &app.tools.tool_registry,
-            ),
+    app.settings_dialog.load_mcp(tools::mcp::McpList::load());
+    app.settings_dialog.select_first_provider();
+    if app.settings_dialog.selected_tab == SettingsTab::ToolPlayground {
+        app.settings_dialog.load_playground_tools(
+            settings::tool_playground::build_playground_tools(&app.tools.tool_registry),
         );
     }
-    app.model_settings.show_settings_dialog = true;
-    maybe_fetch_models(&app.model_settings.settings_state).unwrap_or(Task::none())
+    // Load About tab state.
+    app.settings_dialog.auto_check_updates = app.settings.auto_check_updates;
+    app.settings_dialog.update_check = app
+        .overlay
+        .update_available
+        .as_ref()
+        .map(|v| UpdateCheck::Available(v.clone()))
+        .unwrap_or(UpdateCheck::Idle);
+    app.settings_dialog.open = true;
+    maybe_fetch_models(&app.settings_dialog).unwrap_or(Task::none())
 }
 
 /// Handle model-config events that don't open settings (selection changes).
 pub(crate) fn handle_model_config(app: &mut App, event: model_config::Event) -> Task<Message> {
-    if model_config::update(
-        event,
-        &mut app.model_settings.provided_models,
-        &mut app.settings.selected_model,
-    ) {
-        app.model_settings.provided_models.save();
+    if model_config::update(event, &mut app.models, &mut app.settings.selected_model) {
+        app.models.save();
     }
     Task::none()
 }
 
 /// Handle a `SettingsEvent`, mutating form state and applying side effects.
-pub(crate) fn handle_event(app: &mut App, event: crate::views::SettingsEvent) -> Task<Message> {
+pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message> {
     match event {
-        crate::views::SettingsEvent::Close => {
-            app.model_settings.settings_state.update(event);
-            app.model_settings.show_settings_dialog = false;
+        SettingsEvent::Close => {
+            app.settings_dialog.update(event);
+            app.settings.auto_check_updates = app.settings_dialog.auto_check_updates;
+            app.settings_dialog.open = false;
         }
-        crate::views::SettingsEvent::SaveModels => {
-            app.model_settings.settings_state.update(event);
-            app.model_settings.provided_models =
-                app.model_settings.settings_state.working_models.clone();
-            app.model_settings.provided_models.save();
-            // Refresh provider pick-list entries.
-            app.model_settings.provider_entries = app
-                .model_settings
-                .provided_models
-                .providers
-                .iter()
-                .map(|(id, p)| model_config::ProviderEntry {
-                    id: id.clone(),
-                    name: p.name.clone(),
-                })
-                .collect();
+        SettingsEvent::SaveModels => {
+            app.settings_dialog.update(event);
+            app.models = app.settings_dialog.working_models.clone();
+            app.models.save();
             // Re-validate the selected model label.
             {
-                let model = app
-                    .model_settings
-                    .provided_models
-                    .ensure_valid_name(&app.settings.selected_model);
+                let model = app.models.ensure_valid_name(&app.settings.selected_model);
                 app.settings.selected_model = model;
             }
         }
-        crate::views::SettingsEvent::SavePromptRecipes => {
-            app.model_settings.settings_state.update(event);
-            app.settings.prompt_recipes = app
-                .model_settings
-                .settings_state
-                .working_prompt_recipes
-                .clone();
+        SettingsEvent::SavePromptRecipes => {
+            app.settings_dialog.update(event);
+            app.settings.prompt_recipes = app.settings_dialog.working_prompt_recipes.clone();
             app.settings.save();
         }
-        crate::views::SettingsEvent::SaveTools => {
-            app.model_settings.settings_state.update(event);
+        SettingsEvent::SaveTools => {
+            app.settings_dialog.update(event);
             // Persist custom tools and sync the tool registry.
             let old_names: HashSet<String> =
                 app.tools.tool_registry.custom_names().into_iter().collect();
-            app.model_settings.settings_state.working_tools.save();
+            app.settings_dialog.working_tools.save();
             app.tools
                 .tool_registry
-                .register_custom(app.model_settings.settings_state.working_tools.clone());
+                .register_custom(app.settings_dialog.working_tools.clone());
             let new_names: HashSet<String> =
                 app.tools.tool_registry.custom_names().into_iter().collect();
             // Deleted tools lose their enabled state; new tools default to enabled.
@@ -104,18 +86,13 @@ pub(crate) fn handle_event(app: &mut App, event: crate::views::SettingsEvent) ->
             }
             app.refresh_tools_summary();
         }
-        crate::views::SettingsEvent::SaveMcp => {
+        SettingsEvent::SaveMcp => {
             // Snapshot current servers to detect removals / reconfigurations.
             let old_servers = app.tools.tool_registry.mcp_servers.clone();
-            app.model_settings.settings_state.update(event);
+            app.settings_dialog.update(event);
             // Persist MCP servers and sync the tool registry.
-            app.model_settings.settings_state.working_mcp.save();
-            app.tools.tool_registry.mcp_servers = app
-                .model_settings
-                .settings_state
-                .working_mcp
-                .servers
-                .clone();
+            app.settings_dialog.working_mcp.save();
+            app.tools.tool_registry.mcp_servers = app.settings_dialog.working_mcp.servers.clone();
             // Drop live connections whose server was removed or whose
             // connection-affecting config changed.
             for old in &old_servers {
@@ -143,73 +120,85 @@ pub(crate) fn handle_event(app: &mut App, event: crate::views::SettingsEvent) ->
             }
             app.refresh_tools_summary();
         }
-        crate::views::SettingsEvent::SelectProvider(_)
-        | crate::views::SettingsEvent::RefreshModels => {
-            app.model_settings.settings_state.update(event);
+        SettingsEvent::SelectProvider(_) | SettingsEvent::RefreshModels => {
+            app.settings_dialog.update(event);
 
-            return maybe_fetch_models(&app.model_settings.settings_state).unwrap_or(Task::none());
+            return maybe_fetch_models(&app.settings_dialog).unwrap_or(Task::none());
         }
-        crate::views::SettingsEvent::ExecutePlaygroundTool => {
+        SettingsEvent::ExecutePlaygroundTool => {
             return execute_playground_tool(app, event);
         }
-        crate::views::SettingsEvent::PlaygroundToolResult(generation, _, is_todo) => {
-            if app.model_settings.settings_state.playground_generation == generation {
-                app.model_settings.settings_state.update(event);
+        SettingsEvent::PlaygroundToolResult(generation, _, is_todo) => {
+            if app.settings_dialog.playground_generation == generation {
+                app.settings_dialog.update(event);
                 if is_todo {
                     app.tools.cached_todo_items = app.tools.tool_registry.snapshot_todo();
                 }
             }
         }
-        crate::views::SettingsEvent::SelectTab(tab) => {
-            app.model_settings.settings_state.update(event);
-            if tab == crate::views::settings::SettingsTab::ToolPlayground {
-                app.model_settings.settings_state.refresh_playground_tools(
-                    crate::views::settings::tool_playground::build_playground_tools(
-                        &app.tools.tool_registry,
-                    ),
+        SettingsEvent::SelectTab(tab) => {
+            app.settings_dialog.update(event);
+            if tab == SettingsTab::ToolPlayground {
+                app.settings_dialog.refresh_playground_tools(
+                    settings::tool_playground::build_playground_tools(&app.tools.tool_registry),
                 );
             }
         }
+        SettingsEvent::CheckForUpdate => {
+            app.settings_dialog.update(event);
+            return Task::perform(update::check_for_updates(), |result| {
+                Message::ModelSettings(ModelSettingsEvent::Settings(
+                    SettingsEvent::UpdateCheckResult(result),
+                ))
+            });
+        }
+        SettingsEvent::OpenHomepage => {
+            if let Err(error) = open::that(HOMEPAGE) {
+                eprintln!("Failed to open homepage: {error}");
+            }
+        }
+        SettingsEvent::ToggleAutoCheckUpdates(v) => {
+            app.settings_dialog.update(event);
+            app.settings.auto_check_updates = v;
+        }
+        SettingsEvent::UpdateCheckResult(latest) => {
+            app.settings_dialog
+                .update(SettingsEvent::UpdateCheckResult(latest.clone()));
+            if let Some(version) = latest {
+                app.settings.last_update_version = Some(version.clone());
+                app.save_settings();
+                app.overlay.update_available = Some(version);
+            }
+        }
         _ => {
-            let focus_new_label = matches!(event, crate::views::SettingsEvent::StartAddLabel);
-            let focus_new_provider_name = matches!(event, crate::views::SettingsEvent::NewProvider);
-            app.model_settings.settings_state.update(event);
+            let focus_new_label = matches!(event, SettingsEvent::StartAddLabel);
+            let focus_new_provider_name = matches!(event, SettingsEvent::NewProvider);
+            app.settings_dialog.update(event);
             if focus_new_label {
-                return iced::widget::operation::focus(crate::views::NEW_LABEL_INPUT_ID);
+                return iced::widget::operation::focus(NEW_LABEL_INPUT_ID);
             }
             if focus_new_provider_name {
-                return iced::widget::operation::focus(crate::views::NEW_PROVIDER_NAME_INPUT_ID);
+                return iced::widget::operation::focus(NEW_PROVIDER_NAME_INPUT_ID);
             }
         }
     }
     Task::none()
 }
 
-fn execute_playground_tool(app: &mut App, event: crate::views::SettingsEvent) -> Task<Message> {
+fn execute_playground_tool(app: &mut App, event: SettingsEvent) -> Task<Message> {
     // Clone data needed for execution *before* mutating state.
     let info = app
-        .model_settings
-        .settings_state
+        .settings_dialog
         .playground_selected_index
-        .and_then(|i| {
-            app.model_settings
-                .settings_state
-                .playground_tools
-                .get(i)
-                .cloned()
-        });
-    let param_values = app
-        .model_settings
-        .settings_state
-        .playground_param_values
-        .clone();
+        .and_then(|i| app.settings_dialog.playground_tools.get(i).cloned());
+    let param_values = app.settings_dialog.playground_param_values.clone();
 
     let Some(info) = info else {
         return Task::none();
     };
     let Some(tool) = app.tools.tool_registry.find_tool(&info.name) else {
         return Task::done(Message::ModelSettings(ModelSettingsEvent::Settings(
-            crate::views::SettingsEvent::PlaygroundToolResult(
+            SettingsEvent::PlaygroundToolResult(
                 0,
                 Err(format!("Tool '{}' not found in registry", info.name)),
                 false,
@@ -218,13 +207,12 @@ fn execute_playground_tool(app: &mut App, event: crate::views::SettingsEvent) ->
     };
 
     // Now safe to update state (sets running, bumps generation, resets cancel).
-    app.model_settings.settings_state.update(event);
+    app.settings_dialog.update(event);
 
-    let generation = app.model_settings.settings_state.playground_generation;
-    let args =
-        crate::views::settings::tool_playground::build_params_json(&info.schema_raw, &param_values);
+    let generation = app.settings_dialog.playground_generation;
+    let args = settings::tool_playground::build_params_json(&info.schema_raw, &param_values);
     let workspace = app.prompt.workspace.1.clone();
-    let cancel = app.model_settings.settings_state.playground_cancel.clone();
+    let cancel = app.settings_dialog.playground_cancel.clone();
     let is_todo = info.name == "todo";
     Task::perform(
         async move {
@@ -234,7 +222,7 @@ fn execute_playground_tool(app: &mut App, event: crate::views::SettingsEvent) ->
         },
         move |result| {
             Message::ModelSettings(ModelSettingsEvent::Settings(
-                crate::views::SettingsEvent::PlaygroundToolResult(generation, result, is_todo),
+                SettingsEvent::PlaygroundToolResult(generation, result, is_todo),
             ))
         },
     )
@@ -242,15 +230,13 @@ fn execute_playground_tool(app: &mut App, event: crate::views::SettingsEvent) ->
 
 /// Confirm a pending new-label input (Enter or focus loss).
 pub(crate) fn confirm_pending_label(app: &mut App) {
-    if app.model_settings.settings_state.is_adding_label() {
-        app.model_settings
-            .settings_state
-            .update(crate::views::SettingsEvent::AddLabel);
+    if app.settings_dialog.is_adding_label() {
+        app.settings_dialog.update(SettingsEvent::AddLabel);
     }
 }
 
 /// Return a model-fetch [`Task`] if provider needs refresh its model list.
-fn maybe_fetch_models(state: &crate::views::SettingsState) -> Option<Task<Message>> {
+fn maybe_fetch_models(state: &SettingsState) -> Option<Task<Message>> {
     if !state.needs_fetch() {
         return None;
     }
@@ -266,9 +252,10 @@ fn maybe_fetch_models(state: &crate::views::SettingsState) -> Option<Task<Messag
             (provider_id, models)
         },
         |(provider_id, result)| {
-            Message::ModelSettings(ModelSettingsEvent::Settings(
-                crate::views::SettingsEvent::ModelsFetched(provider_id, result),
-            ))
+            Message::ModelSettings(ModelSettingsEvent::Settings(SettingsEvent::ModelsFetched(
+                provider_id,
+                result,
+            )))
         },
     ))
 }

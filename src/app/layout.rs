@@ -104,9 +104,7 @@ fn left_pressed(app: &mut App) -> Task<Message> {
         }
     }
 
-    if app.model_settings.show_settings_dialog
-        && app.model_settings.settings_state.is_adding_label()
-    {
+    if app.settings_dialog.open && app.settings_dialog.is_adding_label() {
         return iced::widget::operation::is_focused(views::NEW_LABEL_INPUT_ID).map(|focused| {
             Message::ModelSettings(ModelSettingsEvent::Settings(
                 views::SettingsEvent::LabelInputFocus(focused),
@@ -120,9 +118,8 @@ fn left_pressed(app: &mut App) -> Task<Message> {
 fn left_released(app: &mut App) {
     app.layout.left_divider.dragging = false;
     app.layout.right_divider.dragging = false;
-    if app.model_settings.settings_state.is_label_dragging() {
-        app.model_settings
-            .settings_state
+    if app.settings_dialog.is_label_dragging() {
+        app.settings_dialog
             .update(views::SettingsEvent::LabelDragEnd);
     }
 }
@@ -135,11 +132,12 @@ fn undo_redo(app: &mut App, message: textarea::Message) {
 }
 
 fn escape(app: &mut App) {
-    if app.model_settings.show_settings_dialog {
-        if app.model_settings.settings_state.is_adding_label() {
+    if app.settings_dialog.open {
+        if app.settings_dialog.is_adding_label() {
             app.confirm_pending_label();
         } else {
-            app.model_settings.show_settings_dialog = false;
+            app.settings.auto_check_updates = app.settings_dialog.auto_check_updates;
+            app.settings_dialog.open = false;
         }
     } else if app.conversation.search.visible {
         app.conversation.search.visible = false;

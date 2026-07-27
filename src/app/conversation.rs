@@ -278,10 +278,7 @@ fn resend_session(app: &mut App) -> Task<Message> {
 
 /// Look up the currently selected model's config, cloned for ownership.
 fn selected_model_config(app: &App) -> Option<ModelConfig> {
-    app.model_settings
-        .provided_models
-        .get_config(&app.settings.selected_model)
-        .cloned()
+    app.models.get_config(&app.settings.selected_model).cloned()
 }
 
 // ── Stream orchestration ──────────────────────────────────────────
@@ -292,11 +289,7 @@ pub(crate) fn start_dialog(
     model_config: &ModelConfig,
     user_prompt: Option<UserPrompt>,
 ) -> Task<Message> {
-    let Some(model) = app
-        .model_settings
-        .provided_models
-        .get_model_info(model_config)
-    else {
+    let Some(model) = app.models.get_model_info(model_config) else {
         return Task::none();
     };
     // When continuing with a different model, fork the session.

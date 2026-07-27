@@ -19,9 +19,7 @@ use crabot::user::WorkMode;
 use prompt::{FilepathEntry, TOOLS, WORKSPACE_TREE};
 
 use crate::views::{
-    DividerState, center_pane, divider, left_pane,
-    model_config::ProviderEntry,
-    right_pane,
+    DividerState, center_pane, divider, left_pane, right_pane,
     session_list::SessionEntry,
     theme::{CRABOT_MODAL_SCRIM, set_dark_mode, theme_for},
     tool_list::ToolListState,
@@ -223,14 +221,6 @@ impl ConversationState {
     }
 }
 
-/// Model list, provider entries, and settings-dialog visibility / working state.
-pub(crate) struct ModelSettingsState {
-    pub(crate) provided_models: ModelList,
-    pub(crate) provider_entries: Vec<ProviderEntry>,
-    pub(crate) show_settings_dialog: bool,
-    pub(crate) settings_state: crate::views::SettingsState,
-}
-
 /// Overlays: empty-workspace confirmation, restart button, update banner.
 pub(crate) struct OverlayState {
     pub(crate) show_workspace_dialog: bool,
@@ -241,13 +231,16 @@ pub(crate) struct OverlayState {
 }
 
 pub(crate) struct App {
+    /// Persisted model/provider list (source of truth for model selection).
+    pub models: ModelList,
     /// Persisted configuration shared across domains.
     pub settings: crabot::settings::Settings,
     pub layout: LayoutState,
     pub prompt: PromptWorkspaceState,
     pub tools: ToolState,
     pub conversation: ConversationState,
-    pub model_settings: ModelSettingsState,
+    /// Settings-dialog visibility and working state.
+    pub settings_dialog: crate::views::SettingsState,
     pub overlay: OverlayState,
 }
 
@@ -390,16 +383,8 @@ pub(crate) enum Message {
 
 impl App {
     pub(crate) fn boot(mut saved: crabot::settings::Settings) -> (Self, Task<Message>) {
-        let provided_models = model::load_models();
-        let provider_entries: Vec<ProviderEntry> = provided_models
-            .providers
-            .iter()
-            .map(|(id, p)| ProviderEntry {
-                id: id.clone(),
-                name: p.name.clone(),
-            })
-            .collect();
-        saved.selected_model = provided_models.ensure_valid_name(&saved.selected_model);
+        let models = model::load_models();
+        saved.selected_model = models.ensure_valid_name(&saved.selected_model);
 
         let custom_tool_list = tools::custom::ToolList::load();
         let mcp_list = tools::mcp::McpList::load();
@@ -515,12 +500,8 @@ impl App {
                 selectable_msgs: HashSet::new(),
                 search: crate::views::search_bar::SearchState::default(),
             },
-            model_settings: ModelSettingsState {
-                provided_models,
-                provider_entries,
-                show_settings_dialog: false,
-                settings_state: crate::views::SettingsState::default(),
-            },
+            models,
+            settings_dialog: crate::views::SettingsState::default(),
             overlay: OverlayState {
                 show_workspace_dialog: false,
                 show_restart,
@@ -540,14 +521,15 @@ impl App {
                 )
             })
             .fold(Task::none(), Task::chain);
-        // Skip the network check when a cached update is already available.
-        let update_task = if show_restart || app.overlay.update_available.is_some() {
-            Task::none()
-        } else {
-            Task::perform(crate::views::update::check_for_updates(), |result| {
-                Message::Overlay(OverlayEvent::VersionCheckResult(result))
-            })
-        };
+        // Skip the network check when auto-check is disabled or a cached update is already available.
+        let update_task =
+            if app.settings.auto_check_updates && app.overlay.update_available.is_none() {
+                Task::perform(crate::views::update::check_for_updates(), |result| {
+                    Message::Overlay(OverlayEvent::VersionCheckResult(result))
+                })
+            } else {
+                Task::none()
+            };
         // Run session refresh, MCP discovery, and version check in parallel.
         (app, Task::batch([session_task, discover_task, update_task]))
     }
@@ -622,12 +604,8 @@ impl App {
             .session
             .model
             .as_ref()
-            .or_else(|| {
-                self.model_settings
-                    .provided_models
-                    .get_config(&self.settings.selected_model)
-            })
-            .and_then(|cfg| self.model_settings.provided_models.get_model(cfg))
+            .or_else(|| self.models.get_config(&self.settings.selected_model))
+            .and_then(|cfg| self.models.get_model(cfg))
     }
 
     /// Compute the model cost from the current session or settings, if available.
@@ -645,7 +623,7 @@ impl App {
     /// The main three-pane layout with optional overlays.
     fn view_body(&self) -> Element<'_, Message> {
         let main = self.view_main_content();
-        if self.model_settings.show_settings_dialog {
+        if self.settings_dialog.open {
             let backdrop = container(
                 iced::widget::Space::new()
                     .width(Length::Fill)
@@ -657,7 +635,7 @@ impl App {
                 background: Some(CRABOT_MODAL_SCRIM.into()),
                 ..container::Style::default()
             });
-            let dialog = crate::views::settings_dialog(&self.model_settings.settings_state)
+            let dialog = crate::views::settings_dialog(&self.settings_dialog)
                 .map(|e| Message::ModelSettings(ModelSettingsEvent::Settings(e)));
             iced::widget::stack![
                 main,
@@ -689,7 +667,7 @@ impl App {
                 &self.prompt,
                 &self.conversation,
                 &self.tools,
-                &self.model_settings,
+                &self.models,
             )
             .map(|event| match event {
                 LeftPaneEvent::ModelConfig(e) => {
