@@ -2,116 +2,92 @@
 
 ## Project Overview
 
-Crabot is a pure-Rust native GUI coding agent. Built on [iced](https://iced.rs) (v0.14, Elm-architecture GUI) wrapping the [genai](https://crates.io/crates/genai) crate (v0.7.0-beta.13) for multi-provider LLM interactions. Provides a chat-style interface for AI-assisted coding with nine built-in tools (read, write, edit, find, search, bash, ask, todo, fetch), user-defined custom tools, and MCP (Model Context Protocol) server tools.
+Crabot is a pure-Rust native GUI coding agent using [iced](https://iced.rs) v0.14 (Elm architecture) and [genai](https://crates.io/crates/genai) v0.7.0-beta.13 for multi-provider LLM. Chat interface with 9 built-in tools (read, write, edit, find, search, bash, ask, todo, fetch), user-defined custom tools, and MCP server tools.
 
 ---
 
-## Architecture & Data Flow
+## Architecture
 
 ### Three-pane Iced GUI
 
 ```
-+------------------------------+---------------------------+-------------------------+
-| LEFT (~280px, scrollable)    | CENTER (fills remaining)  | RIGHT (~260px)          |
-| Model config (tabbed)        | Session header +          | Context window stats    |
-| System prompt sections       | collapsible dialog panels | (tokens, cached, %)     |
-| Session picker               |  → turn bubbles           | Cumulative token usage  |
-| User prompt textarea         |    (User/Assistant/Tool)  | Session cost            |
-| Work mode tabs               |  → search bar             | Modified files list     |
-| Recipe dropdown              |  → ask tool controls      | Todo list               |
-| Tool enable checkboxes       | Status bar + stop button  | Restart button          |
-| (builtin / custom / MCP)     |                           |                         |
-+------------------------------+---------------------------+-------------------------+
++----------------------------+---------------------------+-------------------------+
+| LEFT (~280px, scrollable)  | CENTER (fills remaining)  | RIGHT (~260px)          |
+| Model config tabs          | Session header + dialogs  | Context window stats    |
+| System prompt sections     | Turn bubbles (User/       | Cumulative token usage  |
+| Session picker             |   Assistant/Tool)         | Session cost            |
+| User prompt textarea       | Search bar (Ctrl+F)       | Modified files list     |
+| Work mode tabs & toggle    | Ask tool controls         | Todo list               |
+| Recipe dropdown            | Status bar + stop button  | Restart button          |
+| Tool enable checkboxes     |                           |                         |
++----------------------------+---------------------------+-------------------------+
 ```
 
-All panes live in `src/views/` as separate modules (`left_pane`, `center_pane`, `right_pane`, `model_config`, `system_prompt`, `session_state`, `tool_message`, `tool_list`, `user_prompt`, `search_bar`, `theme`, `styles`, `modal`).
+All panes live in `src/views/` as separate modules. Left pane modules: `left_pane`, `model_config`, `user_prompt`, `session_list`. Center: `center_pane`, `tool_message`, `search_bar`, `modal`. Right: `right_pane`. Shared: `theme`, `styles`, `icons`, `update`, `system_prompt`, `settings/` (5 tabs).
 
 ### Data Flow
 
-```mermaid
-flowchart LR
-    subgraph UI
-        A[App::view] --> B[3-pane layout]
-    end
-    subgraph State
-        F[App::update] -- mutates --> G[App state]
-        H[subscriptions] -- events --> F
-    end
-    subgraph LLM
-        I[Message::SendPrompt] --> J[start_dialog]
-        J -- channel stream --> K[tokio task: send_stream]
-        K -- genai client --> L[LLM API]
-        K -- spawn_blocking/block_in_place --> M[Tool execution]
-        M -- SessionEvent::ToolResult --> F
-        K -- SessionEvent callbacks --> F
-    end
-    subgraph Persist
-        N[Settings::save] -- RON --> O[~/.crabot/settings.ron]
-        P[ModelList::save] -- RON --> Q[~/.crabot/models.ron]
-        R[Session::save] -- JSON --> S[.agent/sessions/{id}.json]
-    end
-    subgraph MCP
-        T[McpList::load] -- RON --> U[~/.crabot/mcp.ron]
-        T -- spawn child / HTTP --> V[MCP servers]
-        V -- rmcp Peer --> W[discovered tools]
-    end
-    F --> N & P & R
-```
+**UI → State:** `App::update` dispatches `Message` variants to domain-specific update functions (`layout::update`, `conversation::update`, `prompt::update`, `tool_state::update`, `settings::update`, `overlay::update`) in `src/app/`, each mutating their state group.
+
+**LLM streaming:** `ConversationEvent::SendPrompt` → `llm::send_stream` (agent loop up to 100 iterations): send request with system prompt + tools + history → stream response chunks via callbacks → execute tool calls → append results → loop. Uses `tokio::select!` for cancellation races.
+
+**Persistence:** RON → `~/.crabot/settings.ron`, `~/.crabot/models.ron`, `~/.crabot/mcp.ron`. Sessions → JSON in `.agent/sessions/id.json`.
+
+**MCP:** Loads `~/.crabot/mcp.ron`, connects via `rmcp` (stdio/HTTP), auto-discovers tools, holds connections in `LazyLock<Mutex<HashMap<String, McpConnection>>>`.
 
 ### Agent Loop (`llm::send_stream`)
 
-```rust
-for _ in 0..100 {
-    // 1. Set rolling cache breakpoint on tail message
-    // 2. Send request with system prompt + tools + history
-    // 3. Race connect against cancellation
-    // 4. Stream response chunks (text + reasoning) via callbacks
-    // 5. If no tool calls → check injected user prompt → done
-    // 6. Signal ToolExecuting phase, yield for UI update
-    // 7. Execute tool calls (ask tool uses mpsc channel; MCP uses block_in_place; builtin/custom use spawn_blocking)
-    // 8. Append results + injected user prompts to history, loop
-}
-```
+1. Set rolling cache breakpoint on tail message
+2. Send request with system prompt + tools + history
+3. Race connect against cancellation
+4. Stream response chunks (text + reasoning) via callbacks
+5. If no tool calls → check injected user prompt → done
+6. Signal `ToolExecuting` phase, yield for UI
+7. Execute tools (ask uses mpsc; MCP uses `block_in_place`; builtin/custom use `spawn_blocking`)
+8. Append results + injected prompts to history, loop
 
-### Key Modules & Their Roles
+### Module Map
 
-| Module          | Path               | Responsibility                                                                                                   |
-| --------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `main.rs`       | `src/main.rs`      | Entry point, `App` struct (~49 fields), ~50 `Message` variants, startup boot, view + update + subscriptions      |
-| `lib.rs`        | `src/lib.rs`       | `HashSetExt` trait — `.set()` for ergonomic toggle in HashSet                                                    |
-| `system.rs`     | `src/system.rs`    | `SystemPrompt` struct (7 toggleable components), prompt concatenation, `tools_summary()` with MCP server prompts |
-| `settings.rs`   | `src/settings.rs`  | All persistable app state, RON serialization at `~/.crabot/settings.ron`                                         |
-| `model.rs`      | `src/model.rs`     | `ModelList` (providers + models), `ModelConfig`, `Provider`, `Model`, `Cost`, `TokenAmount`                      |
-| `chat.rs`       | `src/chat.rs`      | `Turn`, `TurnBody`, `Dialog` — conversation data types with Markdown caching, emoji replacement                  |
-| `session.rs`    | `src/session.rs`   | `Session` — raw genai `ChatMessage` history + derived UI dialogs + usage/cost + modified files + todo extraction |
-| `llm.rs`        | `src/llm.rs`       | Streaming engine, agent loop, `DialogPhase` (Idle→LlmLoading→LlmThinking→ToolExecuting), cache management       |
-| `setup.rs`      | `src/setup.rs`     | `ensure_default_files()` — seeds `~/.crabot/` with bundled assets                                                |
-| `workspace.rs`  | `src/workspace.rs` | Workspace tree scanner, respect `.gitignore` / `.ignore` / hidden files, mtime-sorted layout                     |
-| `user.rs`       | `src/user.rs`      | `UserPrompt` — wraps text in `<work-mode>` tags; `WorkMode` enum dynamically parsed from `workmode.md`           |
-| `fonts.rs`      | `src/fonts.rs`     | System font loading with CJK auto-detection via `fontdb`                                                         |
-| `tools/`        | `src/tools/`       | `Tool` trait + `ToolRegistry` + 9 built-in tools + custom loader + MCP client                                    |
-| `views/`        | `src/views/`       | UI pane components                                                                                               |
-| `widgets/`      | `src/widgets/`     | Custom `TextArea` with undo/redo (100-deep, edit coalescing) + custom `DropDown`                                 |
+| Path | Role |
+|------|------|
+| `src/main.rs` | Entry point, wires `iced::application` with `App::boot`/`update`/`view`/`subscription` |
+| `src/app.rs` | Root `App` struct (6 domain state groups), hierarchical `Message` enum (6 variants), boot + view |
+| `src/app/layout.rs` | Window geometry, cursor, dividers, zoom, keyboard modifiers, scrolling |
+| `src/app/conversation.rs` | Session lifecycle, send/resend, stream orchestration, search, ask tool UI |
+| `src/app/prompt.rs` | System-prompt composition (7 named components), workspace switching, work-mode, recipe dropdown |
+| `src/app/tool_state.rs` | Tool/MCP enable/disable, discovery results, tools summary refresh |
+| `src/app/settings.rs` | Settings dialog lifecycle, save/apply, playground execution |
+| `src/app/overlay.rs` | Update banner, external links, empty-workspace confirmation |
+| `src/app/subscription.rs` | Mouse, keyboard, window close → domain `Message`s |
+| `src/app/session_state.rs` | Streaming lifecycle, placeholder management, auto-scroll, token accumulation |
+| `src/lib.rs` | `HashSetExt::set()` trait for ergonomic toggle |
+| `src/settings.rs` | Persistable state, RON serialization; `prompt_recipes` for per-work-mode templates |
+| `src/model.rs` | `ModelList`, `ModelConfig`, `Provider`, `Model`, `Cost`, `TokenAmount` |
+| `src/model_database.rs` | ~500 models from embedded 1.8 MB JSON; lazy `OnceLock` cache with pricing, context windows, aliases |
+| `src/chat.rs` | `Turn`, `TurnBody`, `Dialog` — conversation types with Markdown caching, emoji replacement |
+| `src/session.rs` | Raw `ChatMessage` history + derived UI dialogs + usage/cost + modified files + todo extraction |
+| `src/llm.rs` | Streaming engine, agent loop, `DialogPhase` (Idle→LlmLoading→LlmThinking→ToolExecuting), cache mgmt |
+| `src/setup.rs` | Seeds `~/.crabot/` with bundled assets on first boot |
+| `src/workspace.rs` | Tree scanner respecting `.gitignore`/`.ignore`/hidden files, mtime-sorted layout |
+| `src/user.rs` | `UserPrompt` wraps text in `<work-mode>` tags; `WorkMode` parsed from `workmode.md` |
+| `src/fonts.rs` | System fonts + CJK auto-detection via `fontdb` + bundled monospace |
+| `src/tools/mod.rs` | `Tool` trait, `ToolRegistry`, strict schema, process helpers, cancel support |
+| `src/tools/{read,write,edit,find,search,bash,ask,todo,fetch}.rs` | 9 built-in tools |
+| `src/tools/custom.rs` | Custom tool loader with TinyTemplate commands, typed params, pipe-based I/O |
+| `src/tools/mcp.rs` | MCP client — server connection, tool discovery, `McpTool` wrapper |
+| `src/views/` | UI pane modules + `settings/` (5 tabs: ai_models, prompt_recipes, custom_tools, mcp_servers, tool_playground) |
+| `src/views/update.rs` | Version-check banner via crates.io polling on startup |
+| `src/views/theme.rs` | Color palette, layout metrics, dialog radii |
+| `src/widgets/` | Custom `TextArea` (undo/redo, 100-deep, edit coalescing) + custom `DropDown` |
+| `assets/` | Bundled: `preamble.md`, `workmode.md`, `rules/`, `models.ron`, `models.json`, `tools.ron`, `mcp.ron`, `images/` |
+| `~/.crabot/` | User config: `settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`, `preamble/`, `rules/` |
+| `.agent/sessions/` | Session JSON (one file per conversation) |
 
 ---
 
-## Key Directories
+## Tool System
 
-| Path                | Purpose                                                                                                                                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/`              | Main source code                                                                                                                                                                                              |
-| `src/tools/`        | Tool implementations: `mod.rs` (trait + registry + cancel support + process helpers + strict schema), `read.rs`, `write.rs`, `edit.rs`, `find.rs`, `search.rs`, `bash.rs`, `ask.rs`, `todo.rs`, `fetch.rs`, `custom.rs`, `mcp.rs` |
-| `src/views/`        | UI pane modules: `left_pane`, `center_pane`, `right_pane`, `model_config`, `system_prompt`, `session_state`, `tool_message`, `tool_list`, `user_prompt`, `search_bar`, `theme`, `styles`, `modal`                          |
-| `src/widgets/`      | Custom `TextArea` widget (`textarea.rs`) + custom `DropDown` widget (`dropdown.rs`)                                                                                                                           |
-| `assets/`           | Bundled defaults: `preamble.md`, `workmode.md`, `rules/rust.md`, `rules/web.md`, `models.ron`, `tools.ron`, `mcp.ron`, `images/`                                                                              |
-| `~/.crabot/`        | User config directory: `settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`, `preamble/`, `rules/`                                                                                                            |
-| `.agent/sessions/`  | Session JSON persistence (one file per conversation)                                                                                                                                                          |
-| `vendor/`           | Empty placeholder for vendored deps                                                                                                                                                                           |
-| `.github/workflows/`| CI: `rust.yml` (build+test on push/PR), `release.yml` (tag-based release)                                                                                                                                     |
-
-### Tool System
-
-The `Tool` trait is defined in `src/tools/mod.rs`:
+### `Tool` trait (`src/tools/mod.rs`)
 
 ```rust
 pub trait Tool: Send + Sync {
@@ -119,182 +95,121 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn instruction(&self) -> &str;
     fn schema(&self) -> Value;
-
-    /// Cancel-aware wrapper: checks cancellation flag before delegating to `execute_inner`.
     fn execute(&self, args: &Value, workspace: &Path, cancel: &AtomicBool) -> Result<String, String> {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled by user".into());
-        }
+        if cancel.load(Ordering::Relaxed) { return Err("Cancelled by user".into()); }
         self.execute_inner(args, workspace, cancel)
     }
-
-    /// Implement this instead of `execute` — the wrapper handles pre-execution cancel check.
     fn execute_inner(&self, args: &Value, workspace: &Path, cancel: &AtomicBool) -> Result<String, String>;
-
     fn tool_declaration(&self, strict: bool) -> GenaiTool { ... }
 }
 ```
 
-Tools are registered in a `ToolRegistry` struct (not global statics) with three categories:
+`ToolRegistry` owns `Vec<ToolRef>` for builtin + MCP, plus `Vec<CustomTool>` for custom. Methods: `builtin_names()`, `custom_names()`, `all_names()`, `enabled_tools()`, `snapshot_todo()`, `clear_todo()`.
 
-| Category | Source                                | Description                                                        |
-| -------- | ------------------------------------- | ------------------------------------------------------------------ |
-| Builtin  | `read.rs`, `write.rs`, `edit.rs`, etc.| 9 file-system + shell + interaction + web tools (always available) |
-| Custom   | `~/.crabot/tools.ron`                 | User-defined CLI tools with TinyTemplate commands + JSON Schema    |
-| MCP      | `~/.crabot/mcp.ron` → rmcp discovery  | Remote tools auto-discovered from MCP servers (stdio or HTTP)      |
+### Tool Categories
 
-The `ToolRegistry` owns `Vec<ToolRef>` collections for builtin and MCP, plus `Vec<CustomTool>` for custom tools, and exposes `builtin_names()`, `custom_names()`, `all_names()`, `enabled_tools()`, `snapshot_todo()`, and `clear_todo()`.
+| Category | Source | Description |
+|----------|--------|-------------|
+| Builtin (9) | `src/tools/{read,write,edit,find,search,bash,ask,todo,fetch}.rs` | File I/O, shell, interaction, web — always available |
+| Custom | `~/.crabot/tools.ron` | User-defined CLI tools with TinyTemplate + JSON Schema params |
+| MCP | `~/.crabot/mcp.ron` → rmcp discovery | Remote tools from MCP servers (stdio or HTTP) |
 
-#### Built-in Tools
+### Built-in Tools
 
-| Tool        | File                   | Description                                                             |
-| ----------- | ---------------------- | ----------------------------------------------------------------------- |
-| ReadTool    | `src/tools/read.rs`    | File read with offset/limit, 64KB cap, smart truncation                 |
-| WriteTool   | `src/tools/write.rs`   | File write with parent dir creation                                     |
-| EditTool    | `src/tools/edit.rs`    | Exact-string replacement via byte-range offsets, overlap detection      |
-| FindTool    | `src/tools/find.rs`    | Glob file finder, respects `.gitignore`, capped at 100 lines            |
-| SearchTool  | `src/tools/search.rs`  | Regex search across files, gitignore-aware                              |
-| BashTool    | `src/tools/bash.rs`    | Shell executor with timeout (default 120s), process-group kill          |
-| AskTool     | `src/tools/ask.rs`     | Interactive user prompt — intercepted by streaming engine, routed to UI |
-| TodoTool    | `src/tools/todo.rs`    | Shared todo list (written by tool, read by right pane)                  |
+| Tool | Description |
+|------|-------------|
+| `read` | File read with offset/limit, 64KB cap, smart truncation |
+| `write` | File write with parent dir creation |
+| `edit` | Exact-string replacement via byte-range offsets, overlap detection |
+| `find` | Glob finder, gitignore-aware, 100-line cap |
+| `search` | Regex search across files, gitignore-aware |
+| `bash` | Shell with timeout (default 120s), process-group kill |
+| `ask` | Interactive prompt — intercepted by engine, routed to UI via mpsc |
+| `todo` | Shared todo list (written by tool, displayed in right pane) |
+| `fetch` | HTTP fetch with Markdown extraction via `dom_smoothie` |
 
-#### Custom Tools
+### Custom Tools
 
-User-defined tools in `~/.crabot/tools.ron` using RON format. Each `CustomTool` has:
-- A `command` string using [TinyTemplate](https://docs.rs/tinytemplate/) syntax for argument substitution and conditionals
-- Typed `parameters` (`String`, `Integer`, `Number`, `Boolean`, `Array`, `Object`, `Union`) with JSON Schema generation
-- An `instruction` string for LLM guidance
+Defined in `~/.crabot/tools.ron`. Each has: `command` (TinyTemplate), typed `parameters` (String/Integer/Number/Boolean/Array/Object/Union), and `instruction`. Spawn via `interprocess` pipes — no reader threads.
 
-Custom tools spawn child processes with unnamed pipes (via `interprocess`) for stdout/stderr capture in non-blocking mode — no reader threads.
+### MCP Tools
 
-#### MCP Tools
+Configured in `~/.crabot/mcp.ron`. Each server: transport (`Stdio("cmd args")` or `Http("url")`), `qualify_tool_names`, optional `env` and `prompt`. Auto-connect on startup via `rmcp`; connections held in `LazyLock<Mutex<HashMap<String, McpConnection>>>` with `DropGuard` cleanup.
 
-MCP (Model Context Protocol) servers are configured in `~/.crabot/mcp.ron`. Each server specifies:
-- A transport: `Stdio("command args")` (spawns child process) or `Http("http://...")` (streamable HTTP)
-- `qualify_tool_names`: whether to prefix tool names with the server name
-- Optional `env` variables for the child process
-- Optional `prompt` text injected into the system prompt when the server is enabled
+### Process Helpers (`src/tools/mod.rs`)
 
-On startup, Crabot connects to each server via `rmcp`, auto-discovers tools, and registers them as `McpTool` implementations. Connections are retained in a `LazyLock<Mutex<HashMap<String, McpConnection>>>` for the lifetime of the process. Each `McpConnection` holds a `RunningService` whose `DropGuard` kills the child process when dropped.
-
-### Process Execution Helpers (`src/tools/mod.rs`)
-
-- **Pipe-based I/O**: Unnamed pipes (`interprocess` crate) capture stdout/stderr in non-blocking mode — no reader threads, avoiding thread leaks from surviving grandchildren
-- **`wait_with_timeout()`**: Polls child process with pipe draining; kills process group on timeout; checks cancellation flag during polling
-- **`kill_process_tree()`**: Unix `kill -9 -pgid` / Windows `taskkill /F /T`
-- **`truncate_output()`**: 100KB cap, keeping 3KB head + tail with truncation notice
-- **`format_command_output()`**: Combines stdout, stderr (with `STDERR:` prefix), and exit code
-- **`resolve_path()` / `resolve_path_partial()`**: Path resolution with Unix-style `/c/...` and workspace-relative handling
+- Pipe I/O via `interprocess` (no reader threads)
+- `wait_with_timeout()`: polls + drains pipes + kills process group on timeout
+- `kill_process_tree()`: Unix `kill -9 -pgid` / Windows `taskkill /F /T`
+- `truncate_output()`: 100KB cap, 3KB head + tail with notice
+- `format_command_output()`: stdout + stderr (prefixed) + exit code
+- `resolve_path()` / `resolve_path_partial()`: handles Unix-style `/c/...` and workspace-relative paths
 
 ---
 
-## Code Conventions & Common Patterns
+## Conventions & Patterns
 
 ### Error Handling
-
-- **No `thiserror` or `anyhow`** — errors propagate via `Result<_, Box<dyn Error>>` or `Result<_, String>`
-- Tool `execute()` returns `Result<String, String>` for ergonomic error display
-- `Settings::load()` returns `Option<Settings>` — graceful fallback on missing/malformed files (actually unwrap_or_default)
-- Startup failures handled with `expect()` in `main()` (early exit on missing essentials)
-- Tool path resolution uses `candidate_path()` — handles Unix-style paths on Windows (`/c/Users/...`), native absolute, and workspace-relative — falls back to original path string
+- `Result<_, Box<dyn Error>>` or `Result<_, String>` — no `thiserror`/`anyhow`
+- Tool `execute()` returns `Result<String, String>`
+- `Settings::load()` → `Option<Settings>` (graceful fallback)
+- Startup failures use `expect()`; path resolution via `candidate_path()`
 
 ### Async Patterns
-
-- **Tokio runtime** (Iced's built-in tokio integration)
-- **Channel-based streaming**: `iced::stream::channel` wraps the streaming task; `SessionEvent` (an enum) pushes `Message::SessionEvent(...)` into the Iced event loop
-- **Tool execution**:
-  - Built-in and custom tools: `tokio::task::spawn_blocking` — keeps UI responsive
-  - MCP tools: `tokio::task::block_in_place` + `handle.block_on` — MCP calls are async (rmcp Peer is `Send + Sync`)
-  - Ask tool: intercepted by `llm::send_stream`, routed via `tokio::sync::mpsc::UnboundedChannel` to UI and back
-- **Callback-as-channel**: `send_stream()` takes a closure returning `BoxFuture<'static, bool>`; returning `false` signals cancellation (checked against `AtomicBool`)
-- **AtomicBool** for cancellation flag (shared between stream task and UI)
-- **Pending user prompt**: `Arc<Mutex<Option<String>>>` shared slot — checked in the agent loop for interrupt-and-resend
-- **Cancellation races**: `tokio::select!` races stream reads / connects against `wait_cancelled()` for prompt stop-button response
+- **Tokio** (Iced's built-in integration)
+- **Channel streaming**: `iced::stream::channel` wraps task; `SessionEvent` → `ConversationEvent::SessionEvent(...)`
+- **Tool execution**: builtin/custom → `spawn_blocking`; MCP → `block_in_place` + `handle.block_on`; ask → mpsc channel
+- **Cancellation**: `AtomicBool` flag + `tokio::select!` races
+- **Pending prompt**: `Arc<Mutex<Option<String>>>` for interrupt-and-resend
 
 ### State Management
+- **6 domain state groups** in `App`: `LayoutState`, `PromptWorkspaceState`, `ToolState`, `ConversationState`, `ModelSettingsState`, `OverlayState`
+- **Hierarchical `Message`** enum (6 variants): `Layout(LayoutEvent)`, `Prompt(PromptEvent)`, `Tools(ToolEvent)`, `Conversation(ConversationEvent)`, `Overlay(OverlayEvent)`, `ModelSettings(ModelSettingsEvent)`
+- **`FocusedTarget`** enum: setting one implicitly clears others
+- **Dual session**: `Session.history` (raw `Vec<ChatMessage>` for API) + `Session.dialogs` (UI `Vec<Dialog>`); `rebuild_dialogs()` syncs them
+- **Placeholder streaming**: empty `Turn::assistant("")` pushed on `LlmThinking`, chunks appended, `handle_stream_done()` finalizes
+- **Work modes**: Plan/Code/Review parsed from `workmode.md`; togglable; per-mode recipe templates
 
-- **Monolithic App struct** in `src/main.rs` — all state in ~49 fields of `App`
-- **Unified `Message` enum** (~50 variants) — every user event, stream event, and internal action
-- **`FocusedTarget` enum**: centralised keyboard focus — setting one target implicitly clears all others (no manual `set_focused(false)`)
-- **`ModelConfigEvent` sub-reducer**: `views::model_config::update()` handles nested model configuration state
-- **Dual session representation**: `Session.history` (raw `Vec<ChatMessage>` for API) + `Session.dialogs` (UI-friendly `Vec<Dialog>`); `rebuild_dialogs()` reconstructs UI format from raw history, tracking modified files
-- **Placeholder-based streaming**: empty `Turn::assistant("")` pushed on `LlmThinking`, chunks appended via `push_str`, `handle_stream_done()` backfills final content and refreshes markdown cache
-- **Work modes**: Plan / Code / Review — dynamically parsed from `assets/workmode.md`; user text wrapped in `<work-mode>...</work-mode>` tags; per-mode prompt recipes in settings
+### Key Patterns
+- **Domain event enums**: each `src/app/` sub-module defines its event type; `From` impls for `.into()` conversion
+- **`ToolRegistry`** owns all tools; shared `TodoList` (`Arc<Mutex<Vec<TodoItem>>>`)
+- **Cancel-aware `Tool::execute`**: default checks `AtomicBool` before `execute_inner`
+- **Strict schema**: `make_strict_schema()` post-processes for models requiring strict tool calling
+- **Triple persistence**: Models from RON (primary), OMP YAML, or PI JSON — cached as RON
+- **Custom widgets**: `TextArea` (undo/redo, 100-deep `VecDeque<Snapshot>`, edit coalescing); `DropDown` (`on_open`, disabled style)
+- **gh-emoji + json-escape**: emoji in chat with code-region awareness; JSON-safe tool output
+- **CJK fonts**: auto-detection via `fontdb`
+- **RFD file dialogs** for native file/workspace selection
+- **Search bar**: Ctrl+F in center pane; case-insensitive across all turns (incl. reasoning); highlighted spans; scroll-to-match
+- **Cache**: Anthropic rolling ephemeral breakpoint at conversation tail; system prompt `Ephemeral1h` TTL
+- **Workspace modal**: in-app confirmation when workspace empty
+- **Prompt Recipes**: per-work-mode templates in Settings → dropdown in left pane
+- **Tool Playground**: interactive testing of any tool with JSON args, no LLM needed
+- **Update notification**: crates.io poll via `reqwest` on startup; banner with release link
 
-### Key Structural Patterns
-
-- **`ToolRegistry`** owns all tools (builtin + custom + MCP) — replaces old `LazyLock<IndexMap>` globals; includes a shared `TodoList` (`Arc<Mutex<Vec<TodoItem>>>`)
-- **`Tool::execute` cancel-aware**: default implementation checks `AtomicBool` before delegating to `execute_inner`; individual tools also honour the flag during long operations
-- **Strict schema enforcement**: `make_strict_schema()` post-processes tool JSON schemas to make all properties required + nullable optionals, for models requiring strict tool calling
-- **Triple persistence format**: Models from RON (primary), OMP YAML (`~/.omp/agent/models.yml`), or PI JSON (`~/.pi/agent/models.json`) — read-once from OMP/PI then cached as RON
-- **Workspace-relative tools**: `candidate_path()` handles `/c/...` (Windows MSYS), native absolute, and workspace-relative paths; `resolve_path()` / `resolve_path_partial()` for canonicalized/non-existent paths
-- **Custom TextArea widget**: wraps `iced::text_editor::Content` with 100-deep undo/redo via `VecDeque<Snapshot>` stacks + cursor snapshotting + edit coalescing (word boundary, time window)
-- **Custom DropDown widget**: iced-aw replacement for session picker with `on_open` callback and disabled style
-- **gh-emoji + json-escape**: emoji rendering in chat with code-region awareness via pulldown-cmark, JSON-safe tool output escaping
-- **CJK font detection**: auto-loads system CJK fonts via `fontdb`
-- **RFD file dialogs**: native system dialogs for file/workspace selection
-- **Workspace modal**: in-app confirmation dialog when workspace is empty (prompts before defaulting to `~/.crabot`)
-- **Search bar**: Ctrl+F toggles in-center-pane search; case-insensitive across all turns (including reasoning); highlighted text with rich_text spans; measured offsets for scroll-to-match
-- **Cache management**: Anthropic-style rolling ephemeral cache breakpoint at conversation tail; system prompt uses `Ephemeral1h` TTL
-
-### Assets & Configuration
-
-- **Bundled via `include_dir!`** — `assets/` compiled into binary, seeded to `~/.crabot/` on first boot
-- **`~/.crabot/settings.ron`** — all persistent app state (RON format): window size/pos, pane widths, model selection, system prompt toggles, font scale, MCP server enables, agent tool enables, prompt recipes
-- **`~/.crabot/models.ron`** — LLM provider configs (fallbacks: `~/.omp/agent/models.yml`, `~/.pi/agent/models.json`)
-- **`~/.crabot/tools.ron`** — custom tool definitions
-- **`~/.crabot/mcp.ron`** — MCP server configurations
-- **`assets/preamble.md`** — system prompt for the coding agent
-- **`assets/workmode.md`** — work mode definitions with `<work-mode>` tags
-- **`assets/rules/`** — domain-specific coding conventions (`rust.md`, `web.md`)
-- **AGENTS.md in workspace** — auto-detected and injectable into system prompt via checkbox
-- **API keys**: env vars only — never stored on disk; resolved from env var name at runtime
+### Assets & Config
+- Bundled via `include_dir!`; seeded to `~/.crabot/` on first boot
+- API keys from env vars only, never stored on disk
+- `AGENTS.md` in workspace: auto-detected, injectable into system prompt
 
 ---
 
-## Important Files
+## Runtime Preferences
 
-| File                    | Why it matters                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------ |
-| `src/main.rs`           | Entry point, App struct, all ~50 Message variants, view/update/startup               |
-| `src/llm.rs`            | Agent loop (100 max iterations), streaming, tool orchestration, cache management     |
-| `src/session.rs`        | Persistence format — raw history + derived dialogs + token accounting + todo extract |
-| `src/tools/mod.rs`      | `Tool` trait, `ToolRegistry`, strict schema, process helpers, cancel support         |
-| `src/tools/mcp.rs`      | MCP client — server connection, tool discovery, `McpTool` wrapper, connection mgmt   |
-| `src/tools/custom.rs`   | Custom tool loader with TinyTemplate commands and typed parameters, pipe-based I/O   |
-| `src/tools/todo.rs`     | TodoTool — shared todo list with `TodoItem` / `TodoStatus` types                     |
-| `src/tools/ask.rs`      | AskTool — intercepted by streaming engine, routed to UI via mpsc channel             |
-| `src/settings.rs`       | All persistable UI state (window, panes, selections, history, recipes)               |
-| `src/model.rs`          | Multi-provider model configuration, `Cost`/`TokenAmount` structs, OMP/PI import      |
-| `assets/models.ron`     | Bundled LLM provider/model defaults (4+ providers, many models)                      |
-| `assets/preamble.md`    | Bootstrap agent system prompt                                                        |
-| `assets/workmode.md`    | Work mode definitions parsed at runtime into `WorkMode` enum                         |
-| `Cargo.toml`            | Dependency manifest — iced 0.14, genai 0.7.0-beta.13, rmcp 2, 45+ crates            |
-| `CHANGELOG.md`          | Version history with Keep a Changelog format                                         |
+| Requirement | Value |
+|-------------|-------|
+| Rust toolchain | Edition 2024, stable |
+| Build | Cargo |
+| Deps | `cargo add` |
+| Format | `cargo fmt` |
+| Lint | `cargo clippy` |
+| Docs | `cargo doc --no-deps --document-private-items` (no `--open`) |
+| OS | Linux, macOS, Windows (CREATE_NO_WINDOW) |
+| Env vars | API keys via environment (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, etc.) |
 
-## Runtime / Tooling Preferences
-
-| Requirement          | Value                                                                          |
-| -------------------- | ------------------------------------------------------------------------------ |
-| **Rust toolchain**   | Edition 2024, stable channel                                                   |
-| **Build system**     | Cargo                                                                          |
-| **No Node/Bun/Deno** | Pure Rust desktop app — no JS runtime needed                                   |
-| **Package manager**  | `cargo add` for deps                                                           |
-| **Formatter**        | `cargo fmt` (standard rustfmt config)                                          |
-| **Linter**           | `cargo clippy`                                                                 |
-| **Documentation**    | `cargo doc --no-deps --document-private-items` (no `--open`)                   |
-| **OS support**       | Linux, macOS, Windows (handles Windows paths, CREATE_NO_WINDOW flag)           |
-| **Env vars**         | API keys via environment variables (e.g. `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`) |
-
-### CI Pipeline
-
-Two GitHub Actions workflows:
-
-1. **`rust.yml`** — on push/PR to `main`: `cargo build --release` + `cargo test --verbose` (ubuntu-latest)
-2. **`release.yml`** — on `v*` tag push: creates GitHub Release with auto-generated notes
-
----
+### CI
+- `rust.yml`: push/PR → `cargo build --release` + `cargo test --verbose` on ubuntu-latest
+- `release.yml`: `v*` tag → GitHub Release
 
 ### .gitignore
-
-Ignores: `/target`, `/tmp`, `/.agent`, `/.reasonix`, `reasonix.toml`, `nul` (Windows sentinel).
+`/target`, `/tmp`, `/.agent`, `/.reasonix`, `reasonix.toml`, `nul`
