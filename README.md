@@ -13,13 +13,27 @@ A smart and powerful coding agent.
 ## Highlights
 
 - [x] No TUI — just a GUI, easy for everyone to use.
-- [ ] Configure through dialogs — no need to write config files by hand.
+- [ ] Muti-tab sessions view.
+- [x] Configure through dialogs — no need to write config files by hand.
 - [x] An explicit context window, with every detail customizable.
 - [x] Native, high-performance built-in tools.
 - [x] Built in pure Rust — single native binary, no runtime dependency, zero GC pauses.
-- [x] Each session is saved as a json file in workspace `.agent` folder.
+- [x] Each session is saved as a json file in workspace `.agent/sessions` folder.
 
 ## Installation
+
+### Download pre-built binaries
+
+Download the latest release from [GitHub Releases](https://github.com/J-F-Liu/crabot/releases/latest).
+
+Choose the archive matching your platform:
+
+- **Linux** (x86_64): `crabot-linux-x86_64.tar.gz`
+- **macOS** (x86_64): `crabot-macos-x86_64.tar.gz`
+- **macOS** (ARM64): `crabot-macos-aarch64.tar.gz`
+- **Windows** (x86_64): `crabot-windows-x86_64.zip`
+
+Extract and place the binary in your `PATH`.
 
 ### From crates.io
 

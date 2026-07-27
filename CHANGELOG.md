@@ -1,3 +1,30 @@
+# Crabot v0.6.0
+
+- **Dark theme** — a new dark color scheme, toggleable with a single button at the top of the right pane. The app now starts in the system's preferred color scheme.
+- **Settings dialog overhaul** — the settings dialog now has a left sidebar with five tab pages: **AI Models**, **Prompt Recipes**, **Custom Tools**, **MCP Servers**, and **Tool Playground**. Ok/Cancel buttons make edits atomic and discardable.
+- **AI Models settings page** — manage model configs entirely in-app. Embedded `models.json` (~500 models) provides context windows, pricing, and aliases. No more loading from external OMP/PI config files.
+- **Tool Playground** — test any tool (built-in, custom, or MCP) with arbitrary JSON arguments directly in the settings dialog. No LLM needed — perfect for debugging tool descriptions and schemas. Todo tool results render in right pane.
+- **Prompt Recipes settings page** — create, edit, and manage prompt recipe templates in-app. Recipes are per-work-mode (Plan/Code/Review) and selectable from a dropdown under user prompt inputbox.
+- **Custom Tools settings page** — define and manage custom CLI tools with TinyTemplate commands and typed JSON Schema parameters, all through the GUI.
+- **MCP Servers settings page** — configure MCP servers (Stdio or HTTP transport), set environment variables, and manage prompts — entirely in-app.
+- **One-click self-update** — Crabot checks GitHub releases and can download and replace its own binary with a single click. Always stay current without leaving the app.
+- **Session-level cost display** — the right pane now shows a cumulative breakdown: total input/output tokens, request count, and cost in your model's configured currency.
+- **Sessions grouped by month** — the session picker dropdown now groups sessions by year-month, and session files are stored in `YYYY-MM` subdirectories for better organization.
+- **Ctrl+E expand/collapse all** — toggle all turn dialogs in the current session with a single shortcut.
+- **Keyboard scrolling shortcuts** — Home, End, PageUp, PageDown, Up, Down, and Space now scroll the conversation view.
+- **Ctrl+Click to open URLs** — URLs in assistant responses can be opened directly in your browser with Ctrl+Click.
+- **Atomic settings with Save/Close** — settings changes are only persisted when you click Save; Close discards all edits.
+- **Session forking on model switch** — changing the model before sending or resending now forks the session, preserving the original conversation.
+- **DeepSeek cross-model resend** — chat history from other models can now be resent to DeepSeek models without compatibility issues.
+- **Better edit tool errors** — edit tool parameter validation now produces clearer, more actionable error messages.
+- **Consistent user agent** — the `fetch` tool and update checker now use a versioned `Crabot vX.X.Z` user agent string.
+- **Major internal refactoring** — the codebase has been restructured to follow iced GUI patterns more closely, with 6 domain-specific state groups and hierarchical message routing. Settings split into 5 dedicated tab modules.
+- **Workspace file list in user prompt** — the workspace tree is now injected into the user prompt rather than the system prompt, improving cache hit rates when the workspace changes.
+- **Model settings dialog** — configure model parameters (temperature, max tokens, thinking mode) through an in-app dialog rather than editing config files.
+- **About tab** — version info, repository link, and credits are now shown in a dedicated About tab within the settings dialog.
+
+**Full Changelog**: [`v0.5.0...v0.6.0`](https://github.com/J-F-Liu/crabot/compare/v0.5.0...v0.6.0)
+
 # Crabot v0.5.0
 
 - **Three new built-in tools** — `fetch` (download web pages and convert to Markdown), `ask` (interactive user prompt for agent confirmation), and `todo` (manage and display task lists). Todo items are rendered in a table in the conversation pane.
