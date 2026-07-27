@@ -237,6 +237,7 @@ pub(crate) struct OverlayState {
     pub(crate) show_restart: bool,
     pub(crate) default_workspace_path: PathBuf,
     pub(crate) update_available: Option<String>,
+    pub(crate) download_state: crate::views::update::UpdateDownloadState,
 }
 
 pub(crate) struct App {
@@ -339,6 +340,9 @@ pub(crate) enum OverlayEvent {
     VersionCheckResult(Option<String>),
     DismissUpdateBanner,
     OpenReleaseNotes,
+    InstallUpdate,
+    UpdateReady(Result<PathBuf, String>),
+    RestartFromUpdate,
     EmptyWorkspaceConfirm(Option<PathBuf>),
 }
 
@@ -522,6 +526,7 @@ impl App {
                 show_restart,
                 default_workspace_path: setup::default_workspace_path(),
                 update_available,
+                download_state: crate::views::update::UpdateDownloadState::Idle,
             },
         };
         let session_task = conversation::refresh_session_list(app.prompt.workspace.1.clone());
@@ -735,7 +740,8 @@ impl App {
     fn view_with_banner<'a>(&'a self, body: Element<'a, Message>) -> Element<'a, Message> {
         if let Some(latest) = &self.overlay.update_available {
             column![
-                crate::views::update::update_banner(latest).map(Message::Overlay),
+                crate::views::update::update_banner(latest, &self.overlay.download_state)
+                    .map(Message::Overlay),
                 body
             ]
             .spacing(0)
