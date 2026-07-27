@@ -66,6 +66,17 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             app.conversation.search.invalidate_offsets();
             app.layout.focused = None;
         }
+        ConversationEvent::ToggleAllDialogsExpand => {
+            if app.conversation.expanded_dialogs.is_empty() {
+                app.conversation
+                    .expanded_dialogs
+                    .extend(0..app.conversation.session.dialogs.len());
+            } else {
+                app.conversation.expanded_dialogs.clear();
+            }
+            app.conversation.search.invalidate_offsets();
+            app.layout.focused = None;
+        }
         ConversationEvent::SessionPickerFocused => {
             app.layout.focused = Some(FocusedTarget::SessionPicker);
         }

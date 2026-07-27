@@ -311,6 +311,7 @@ pub(crate) enum ConversationEvent {
     SessionListLoaded(Vec<SessionEntry>),
     ToggleTurnExpand(usize, usize),
     ToggleDialogExpand(usize),
+    ToggleAllDialogsExpand,
     SessionPickerFocused,
     NavigateSession(bool),
     DefocusSessionPicker,

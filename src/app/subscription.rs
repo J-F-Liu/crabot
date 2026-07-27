@@ -61,6 +61,9 @@ pub(crate) fn subscription(_state: &App) -> Subscription<Message> {
                     keyboard::Key::Character("f") => Some(Message::Conversation(
                         ConversationEvent::SearchEvent(crate::views::SearchEvent::ToggleSearch),
                     )),
+                    keyboard::Key::Character("e") => Some(Message::Conversation(
+                        ConversationEvent::ToggleAllDialogsExpand,
+                    )),
                     keyboard::Key::Character("=") => Some(Message::Layout(LayoutEvent::Zoom(0.05))),
                     keyboard::Key::Character("-") => {
                         Some(Message::Layout(LayoutEvent::Zoom(-0.05)))
