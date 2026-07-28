@@ -51,4 +51,11 @@ pub fn ensure_default_files() {
     {
         let _ = std::fs::write(&mcp_file, file.contents());
     }
+
+    let settings_file = crabot_dir.join("settings.ron");
+    if !settings_file.is_file()
+        && let Some(file) = ASSETS.get_file("settings.ron")
+    {
+        let _ = std::fs::write(&settings_file, file.contents());
+    }
 }
