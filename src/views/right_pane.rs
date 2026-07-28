@@ -8,7 +8,7 @@ use super::styles::{pane_side, primary_button, primary_toggler, sel_primary};
 use super::theme::thin_vertical;
 use crate::RightPaneEvent;
 use crate::app::SessionTab;
-use crabot::model::{Model, TokenAmount};
+use crabot::model::{ModelConfig, TokenAmount};
 use crabot::tools::todo::{TodoItem, TodoStatus};
 
 /// Label-value row with the value right-aligned via a fill spacer.
@@ -67,7 +67,7 @@ fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, RightPaneE
 
 pub(crate) fn right_pane<'a>(
     pane_width: f32,
-    model: Option<&Model>,
+    model: Option<&ModelConfig>,
     tab: &'a SessionTab,
     show_restart: bool,
     dark_mode: bool,
@@ -94,8 +94,8 @@ pub(crate) fn right_pane<'a>(
     if let Some(cw) = context_window.filter(|&cw| cw > 0) {
         let pct = token_amount.window_used(cw);
         col = col
-            .push(token_row("window size:", format!("{cw}")))
-            .push(token_row("Window used:", format!("{:.1}%", pct)));
+            .push(token_row("Window size:", format!("{cw}")))
+            .push(token_row("Fill ratio:", format!("{:.1}%", pct)));
     }
 
     // ── cumulative token usage and cost ───────────────────────────────────────────

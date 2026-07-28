@@ -75,6 +75,8 @@ pub struct ModelConfig {
     pub model_id: String,
     pub thinking: bool,
     pub thinking_level: String,
+    #[serde(default)]
+    pub context_window: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

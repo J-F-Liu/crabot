@@ -11,7 +11,7 @@ use iced::widget::scrollable::Viewport;
 use iced::widget::{column, container, row, text_editor};
 use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
 
-use crabot::model::{self, Model, ModelConfig, ModelList};
+use crabot::model::{self, ModelConfig, ModelList};
 use crabot::tools;
 use crabot::user::WorkMode;
 use crabot::{setup, workspace};
@@ -650,14 +650,13 @@ impl App {
         self.settings.save();
     }
 
-    fn get_current_model(&self) -> Option<&Model> {
+    fn get_current_model(&self) -> Option<&ModelConfig> {
         self.conversation
             .viewing()
             .session
             .model
             .as_ref()
             .or_else(|| self.models.get_config(&self.settings.selected_model))
-            .and_then(|cfg| self.models.get_model(cfg))
     }
 
     /// Look up the currently selected model's config, cloned for ownership.

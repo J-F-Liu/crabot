@@ -5,6 +5,6 @@
 /.codebase-memory
 /.codegraph
 /tests
-ops.txt
+justfile
 reasonix.toml
 nul
