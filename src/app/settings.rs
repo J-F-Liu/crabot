@@ -132,7 +132,8 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             if app.settings_dialog.playground_generation == generation {
                 app.settings_dialog.update(event);
                 if is_todo {
-                    app.tools.cached_todo_items = app.tools.tool_registry.snapshot_todo();
+                    app.conversation.viewing_mut().todo_items =
+                        app.tools.tool_registry.snapshot_todo();
                 }
             }
         }

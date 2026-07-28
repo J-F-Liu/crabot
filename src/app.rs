@@ -3,19 +3,18 @@
 //! This module owns the root [`App`] state, the nested domain [`Message`] enum,
 //! and the boot / update / view / subscription methods that drive the GUI.
 
-use crabot::{model, setup, tools, workspace};
-
-use iced::widget::scrollable::Viewport;
-use iced::widget::{column, container, row, text_editor};
-use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
 use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 
-use crabot::model::{Cost, Model, ModelList};
-use crabot::session::Session;
-use crabot::tools::todo::TodoItem;
+use iced::widget::scrollable::Viewport;
+use iced::widget::{column, container, row, text_editor};
+use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
+
+use crabot::model::{self, Model, ModelConfig, ModelList};
+use crabot::tools;
 use crabot::user::WorkMode;
+use crabot::{setup, workspace};
 use prompt::{FilepathEntry, TOOLS, WORKSPACE_TREE};
 
 use crate::views::{
@@ -31,9 +30,12 @@ mod layout;
 mod overlay;
 pub(crate) mod prompt;
 pub(crate) mod session_state;
+mod session_tab;
 mod settings;
 mod subscription;
 mod tool_state;
+
+pub(crate) use session_tab::SessionTab;
 
 // ── App ───────────────────────────────────────────────────────────
 
@@ -157,13 +159,12 @@ impl PromptWorkspaceState {
     }
 }
 
-/// Tool registry, enabled-tool sets, and todo snapshot.
+/// Tool registry, enabled-tool sets.
 pub(crate) struct ToolState {
     pub(crate) tool_registry: tools::ToolRegistry,
     pub(crate) enabled_tools: HashSet<String>,
     pub(crate) enabled_mcp_servers: HashSet<String>,
     pub(crate) tool_list_state: ToolListState,
-    pub(crate) cached_todo_items: Vec<TodoItem>,
 }
 
 impl ToolState {
@@ -202,22 +203,77 @@ impl ToolState {
     }
 }
 
-/// Session Conversation State.
+/// Session tabbed conversation state.
 pub(crate) struct ConversationState {
-    pub(crate) session: Session,
+    pub(crate) session_tabs: Vec<SessionTab>,
+    /// The *viewing* tab index, tabs list is never empty.
+    pub(crate) viewing: usize,
+    /// Monotonic counter for the next tab's `number`; reset on restart.
+    next_tab_number: usize,
     pub(crate) session_list: Vec<SessionEntry>,
-    pub(crate) session_state: session_state::SessionState,
-    pub(crate) expanded_turns: HashSet<(usize, usize)>,
-    pub(crate) expanded_dialogs: HashSet<usize>,
-    pub(crate) last_usage: genai::chat::Usage,
-    pub(crate) center_pane_title: String,
-    pub(crate) selectable_msgs: HashSet<usize>,
-    pub(crate) search: crate::views::search_bar::SearchState,
 }
 
 impl ConversationState {
+    pub(crate) fn new() -> Self {
+        Self {
+            session_tabs: vec![SessionTab::new(1)],
+            viewing: 0,
+            next_tab_number: 2,
+            session_list: Vec::new(),
+        }
+    }
+
+    /// Immutable reference to the currently-viewed tab.
+    pub(crate) fn viewing(&self) -> &SessionTab {
+        &self.session_tabs[self.viewing]
+    }
+
+    /// Mutable reference to the currently-viewed tab.
+    pub(crate) fn viewing_mut(&mut self) -> &mut SessionTab {
+        &mut self.session_tabs[self.viewing]
+    }
+
+    /// The 1-based number of the viewing tab.
+    pub(crate) fn viewing_tab_number(&self) -> usize {
+        self.viewing().number
+    }
+
+    /// Position (index into `tabs`) of the running tab, if any.
+    pub(crate) fn running_pos(&self) -> Option<usize> {
+        self.session_tabs.iter().position(|t| t.running())
+    }
+
+    /// Position of a tab by its stable number.
+    pub(crate) fn tab_pos(&self, number: usize) -> Option<usize> {
+        self.session_tabs.iter().position(|t| t.number == number)
+    }
+
+    /// Human-readable status for the viewing tab.
     pub(crate) fn status(&self) -> &str {
-        self.session_state.status(self.session.is_empty())
+        self.viewing()
+            .session_state
+            .status(self.viewing().session.is_empty())
+    }
+
+    /// Whether the viewing tab has an active stream.
+    pub(crate) fn viewing_is_streaming(&self) -> bool {
+        self.viewing().running()
+    }
+
+    /// Take the next tab number and advance the counter.
+    pub(crate) fn next_tab_number(&mut self) -> usize {
+        let n = self.next_tab_number;
+        self.next_tab_number += 1;
+        n
+    }
+
+    /// Request all running tabs to stop streaming.
+    pub(crate) fn stop(&mut self) {
+        for tab in &mut self.session_tabs {
+            if tab.running() {
+                tab.session_state.stop();
+            }
+        }
     }
 }
 
@@ -312,12 +368,18 @@ pub(crate) enum ConversationEvent {
     ResendSessionHistory,
     AskInputChanged(String),
     AskAction(session_state::AskAction),
-    SessionEvent(session_state::SessionEvent),
+    /// A session-streaming event tagged with the tab number that owns the stream.
+    SessionEvent(usize, session_state::SessionEvent),
+    /// Switch the viewing tab to the one with the given number.
+    SwitchTab(usize),
+    /// Close the tab with the given number.
+    CloseTab(usize),
     CopySessionTitle,
     AppClosing,
     ToggleSelectableMode(Option<usize>),
     SearchEvent(crate::views::SearchEvent),
-    TurnOffsetsMeasured(u64, Vec<f32>),
+    /// (tab_number, generation, offsets, target_y) — target_y scrolls only if that tab is still viewing.
+    TurnOffsetsMeasured(usize, u64, Vec<f32>, Option<f32>),
 }
 
 /// Events for model configuration and settings dialog.
@@ -421,7 +483,6 @@ impl App {
             enabled_tools,
             enabled_mcp_servers: enabled_mcp_servers.clone(),
             tool_list_state: ToolListState::default(),
-            cached_todo_items: Vec::new(),
         };
         let tools_summary = tools.summary();
         let files_content = text_editor::Content::with_text(&files_tree);
@@ -489,17 +550,7 @@ impl App {
             },
             prompt,
             tools,
-            conversation: ConversationState {
-                session: Session::new(),
-                session_list: Vec::new(),
-                session_state: session_state::SessionState::new(),
-                expanded_turns: HashSet::new(),
-                expanded_dialogs: HashSet::new(),
-                last_usage: genai::chat::Usage::default(),
-                center_pane_title: "New session".into(),
-                selectable_msgs: HashSet::new(),
-                search: crate::views::search_bar::SearchState::default(),
-            },
+            conversation: ConversationState::new(),
             models,
             settings_dialog: crate::views::SettingsState::default(),
             overlay: OverlayState {
@@ -601,6 +652,7 @@ impl App {
 
     fn get_current_model(&self) -> Option<&Model> {
         self.conversation
+            .viewing()
             .session
             .model
             .as_ref()
@@ -608,9 +660,11 @@ impl App {
             .and_then(|cfg| self.models.get_model(cfg))
     }
 
-    /// Compute the model cost from the current session or settings, if available.
-    pub(crate) fn current_model_cost(&self) -> Option<Cost> {
-        self.get_current_model().map(|m| m.cost.clone())
+    /// Look up the currently selected model's config, cloned for ownership.
+    pub(crate) fn selected_model_config(&self) -> Option<ModelConfig> {
+        self.models
+            .get_config(&self.settings.selected_model)
+            .cloned()
     }
 
     // ── View composition ──────────────────────────────────────────
@@ -699,9 +753,8 @@ impl App {
             right_pane(
                 self.settings.right_pane_width,
                 self.get_current_model(),
-                &self.conversation,
+                self.conversation.viewing(),
                 self.overlay.show_restart,
-                &self.tools.cached_todo_items,
                 self.settings.dark_mode,
             )
             .map(|event| match event {

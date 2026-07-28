@@ -16,7 +16,8 @@ use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
 use serde_json::Value;
 
-use crate::app::ConversationState;
+use crate::app::session_state::SessionEvent;
+use crate::app::{ConversationState, SessionTab};
 use crate::llm::DialogPhase;
 use crate::views::search_bar::SearchState;
 use crate::{AskRequest, CenterPaneEvent, ConversationEvent};
@@ -24,8 +25,8 @@ use crate::{AskRequest, CenterPaneEvent, ConversationEvent};
 use super::icons;
 use super::styles::{
     assistant_bubble_style, bordered_bar_style, icon_button_style, pane_center,
-    reasoning_box_style, role_badge_style, sel_default, sel_secondary, tool_bubble_style,
-    user_bubble_style,
+    reasoning_box_style, role_badge_style, sel_default, sel_secondary, session_header_style,
+    tool_bubble_style, user_bubble_style,
 };
 use super::theme::{
     CRABOT_DANGER, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT,
@@ -138,15 +139,19 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
     })
 }
 
-/// Scroll to a turn using a pre-measured offset.
-pub(crate) fn scroll_to_turn_at(y: f32) -> Task<()> {
-    task_widget(scrollable_op::scroll_to(
-        MESSAGE_SCROLL.clone(),
-        scrollable::AbsoluteOffset {
-            x: None,
-            y: Some(y),
-        },
-    ))
+/// Scroll the message view to an absolute y-offset.
+/// Pass `None` to scroll to the top (same as [`scroll_to_start`]).
+pub(crate) fn scroll_to(y: Option<f32>) -> Task<()> {
+    match y {
+        Some(y) => task_widget(scrollable_op::scroll_to(
+            MESSAGE_SCROLL.clone(),
+            scrollable::AbsoluteOffset {
+                x: None,
+                y: Some(y),
+            },
+        )),
+        None => scroll_to_start(),
+    }
 }
 
 // ── dialog styles ─────────────────────────────────────────────────
@@ -550,23 +555,24 @@ pub(crate) fn center_pane<'a>(
     theme: &'a Theme,
     font_scale: f32,
 ) -> Element<'a, CenterPaneEvent> {
-    let title: &str = &conversation.center_pane_title;
-    let dialogs: &[Dialog] = conversation.session.dialogs.as_slice();
-    let expanded_turns: &HashSet<(usize, usize)> = &conversation.expanded_turns;
-    let expanded_dialogs: &HashSet<usize> = &conversation.expanded_dialogs;
+    let tab: &SessionTab = conversation.viewing();
+    let title: &str = &tab.center_pane_title;
+    let dialogs: &[Dialog] = tab.session.dialogs.as_slice();
+    let expanded_turns: &HashSet<(usize, usize)> = &tab.expanded_turns;
+    let expanded_dialogs: &HashSet<usize> = &tab.expanded_dialogs;
     let status: &str = conversation.status();
-    let streaming: DialogPhase = conversation.session_state.phase;
-    let selectable_msgs: &HashSet<usize> = &conversation.selectable_msgs;
-    let pending_user_prompt: Option<&str> = conversation.session_state.pending_prompt.as_deref();
-    let ask_request: Option<&AskRequest> = conversation.session_state.ask_request.as_ref();
-    let ask_input: &str = &conversation.session_state.ask_input;
-    let search_state: &SearchState = &conversation.search;
-    let model_id: Option<&str> = conversation
-        .session
-        .model
+    let streaming: DialogPhase = tab.session_state.phase;
+    let selectable_msgs: &HashSet<usize> = &tab.selectable_msgs;
+    let pending_user_prompt: Option<&str> = tab
+        .session_state
+        .pending_prompt
         .as_ref()
-        .map(|m| m.model_id.as_str());
-    let created_at: &str = &conversation.session.created_at;
+        .map(|p| p.content.as_str());
+    let ask_request: Option<&AskRequest> = tab.session_state.ask_request.as_ref();
+    let ask_input: &str = &tab.session_state.ask_input;
+    let search_state: &SearchState = &tab.search;
+    let model_id: Option<&str> = tab.session.model.as_ref().map(|m| m.model_id.as_str());
+    let created_at: &str = &tab.session.created_at;
     // Ensure turn widget IDs match the current dialog layout so that
     // scroll-to-match measurement can find each turn by its ID.
     let total: usize = dialogs.iter().map(|d| d.turns.len()).sum();
@@ -574,6 +580,12 @@ pub(crate) fn center_pane<'a>(
     let turn_ids = search_state.turn_ids();
     let search_query: &str = &search_state.query;
     let search_results: &[usize] = &search_state.results;
+    // Running-in-background info for the status line.
+    let running_tab = conversation
+        .running_pos()
+        .filter(|&rp| rp != conversation.viewing)
+        .map(|rp| conversation.session_tabs[rp].number);
+    let viewing_number = tab.number;
     // Set up shared context for turn block builders.
     let turn_ctx = TurnView {
         expanded_turns,
@@ -677,6 +689,7 @@ pub(crate) fn center_pane<'a>(
 
     mouse_area(
         container(column![
+            super::session_tabs::session_tabs(conversation),
             session_header(title),
             pending_header(pending_user_prompt),
             if search_state.visible {
@@ -706,7 +719,7 @@ pub(crate) fn center_pane<'a>(
                         .map(CenterPaneEvent::Conversation)
                 })
                 .unwrap_or_else(|| Space::new().into()),
-            status_line(status, streaming, font_scale),
+            status_line(status, streaming, running_tab, viewing_number, font_scale),
         ])
         .width(Fill)
         .height(Fill)
@@ -754,8 +767,8 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
     header_container(
         container(header)
             .width(Fill)
-            .padding([10, 14])
-            .style(bordered_bar_style),
+            .padding([6, 14])
+            .style(session_header_style),
         200.0,
     )
 }
@@ -805,16 +818,26 @@ fn header_container<'a>(
     .into()
 }
 
-/// Displays the pending prompt text with a muted style.
+/// Displays the pending prompt text with a muted, selectable style.
 fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
     let Some(prompt) = prompt else {
         return row![].into();
     };
     header_container(
-        container(text(prompt).size(13.0).color(color_muted()))
-            .width(Fill)
-            .padding([6, 14])
-            .style(bordered_bar_style),
+        container(
+            SelectableText::new(prompt)
+                .size(13.0)
+                .style(|theme: &Theme| {
+                    let p = theme.extended_palette();
+                    SelectionStyle {
+                        color: Some(color_muted()),
+                        selection: p.primary.base.color,
+                    }
+                }),
+        )
+        .width(Fill)
+        .padding([6, 14])
+        .style(bordered_bar_style),
         200.0,
     )
 }
@@ -824,23 +847,45 @@ fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
 fn status_line<'a>(
     status_text: &'a str,
     streaming: DialogPhase,
+    running_tab: Option<usize>,
+    viewing_number: usize,
     font_scale: f32,
 ) -> Element<'a, CenterPaneEvent> {
-    let mut row = row![
-        text(status_text)
-            .size(12.0 * font_scale)
-            .color(color_muted()),
-    ]
-    .align_y(Alignment::Center)
-    .spacing(8);
-    if streaming != DialogPhase::Idle {
+    let mut row = row![].align_y(Alignment::Center).spacing(8);
+
+    if let Some(n) = running_tab {
+        row = row.push(
+            text(format!("Session {n} is running…"))
+                .size(12.0 * font_scale)
+                .color(color_muted()),
+        );
         row = row.push(
             button(text("⏹ Stop").size(11.0 * font_scale))
                 .on_press(CenterPaneEvent::Conversation(
-                    ConversationEvent::SessionEvent(crate::SessionEvent::Stop),
+                    ConversationEvent::SessionEvent(n, SessionEvent::Stop),
                 ))
                 .padding([4, 10])
                 .style(icon_button_style),
+        );
+    } else if streaming != DialogPhase::Idle {
+        row = row.push(
+            text(status_text)
+                .size(12.0 * font_scale)
+                .color(color_muted()),
+        );
+        row = row.push(
+            button(text("⏹ Stop").size(11.0 * font_scale))
+                .on_press(CenterPaneEvent::Conversation(
+                    ConversationEvent::SessionEvent(viewing_number, SessionEvent::Stop),
+                ))
+                .padding([4, 10])
+                .style(icon_button_style),
+        );
+    } else {
+        row = row.push(
+            text(status_text)
+                .size(12.0 * font_scale)
+                .color(color_muted()),
         );
     }
     container(row)

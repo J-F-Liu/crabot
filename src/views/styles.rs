@@ -21,6 +21,20 @@ pub(crate) fn bordered_bar_style(_theme: &Theme) -> container::Style {
 
 // ── pane styles ───────────────────────────────────────────────────
 
+/// Session header bar: thin border with a faint gray background
+/// that subtly sets it apart from the center pane.
+pub(crate) fn session_header_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(color_header_bg().into()),
+        border: Border {
+            color: color_border(),
+            width: 1.0,
+            radius: 0.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 pub(crate) fn pane_side(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(color_panel().into()),
@@ -242,6 +256,74 @@ pub(crate) fn primary_checkbox(_theme: &Theme, status: checkbox::Status) -> chec
             style
         }
     }
+}
+
+/// Session tab button style.
+pub(crate) fn session_tab_style(
+    active: bool,
+    is_running_bg: bool,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme: &Theme, status: button::Status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let bg = if active {
+            color_card()
+        } else if is_running_bg || hovered {
+            color_panel()
+        } else {
+            color_surface()
+        };
+        let fg = if active || hovered {
+            color_text_strong()
+        } else {
+            color_muted()
+        };
+        // Every state keeps the same border and radius so toggling `active` never shifts the tab's layout.
+        let border = iced::Border {
+            color: if active {
+                color_border()
+            } else {
+                Color::TRANSPARENT
+            },
+            width: 1.0,
+            radius: iced::border::Radius {
+                top_left: 4.0,
+                top_right: 4.0,
+                bottom_right: 0.0,
+                bottom_left: 0.0,
+            },
+        };
+        button::Style {
+            background: Some(bg.into()),
+            text_color: fg,
+            border,
+            ..button::Style::default()
+        }
+    }
+}
+
+/// Small square close button inside a session tab — transparent at rest,
+/// rounded highlight with stronger glyph on hover.
+pub(crate) fn tab_close_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let mut style = button::Style {
+        text_color: color_muted(),
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    };
+    match status {
+        button::Status::Hovered => {
+            style.background = Some(color_border().into());
+            style.text_color = color_text_strong();
+        }
+        button::Status::Pressed => {
+            style.background = Some(color_muted().into());
+            style.text_color = color_text_strong();
+        }
+        _ => {}
+    }
+    style
 }
 
 /// Subtle icon-button style — transparent background, dim text.

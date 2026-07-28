@@ -2,79 +2,69 @@ use iced::{Task, widget::text_editor};
 
 use crabot::HashSetExt;
 use crabot::chat::Turn;
-use crabot::model::{Cost, ModelConfig};
+use crabot::model::ModelConfig;
 use crabot::session::Session;
 use crabot::user::UserPrompt;
 use futures::{SinkExt, future::FutureExt};
 use std::sync::atomic::Ordering;
 
 use crate::app::session_state::{self, AskAction, SessionEvent};
-use crate::app::{App, ConversationEvent, ConversationState, FocusedTarget, Message, ToolState};
+use crate::app::session_tab::SessionTab;
+use crate::app::{App, ConversationEvent, ConversationState, FocusedTarget, Message};
 use crate::llm::DialogPhase;
 use crate::views::{self, SCROLL_STEP, scroll_to_end};
-use crate::widgets::textarea::TextArea;
 
 pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
     match event {
         ConversationEvent::NavigateSession(up) => {
-            return navigate_session(&mut app.conversation, &app.layout.focused, up);
+            return navigate_session(app, up);
         }
         ConversationEvent::ResendSessionHistory => return resend_session(app),
-        ConversationEvent::SessionEvent(event) => {
-            let cost = app.current_model_cost();
-            return session_event(
-                &mut app.conversation,
-                &mut app.tools,
-                &mut app.prompt.user_prompt,
-                cost,
-                event,
-            );
+        ConversationEvent::SessionEvent(number, event) => {
+            return session_event(app, number, event);
         }
         ConversationEvent::SearchEvent(event) => {
-            return views::search_bar::update(event, &mut app.conversation)
-                .map(Message::Conversation);
+            return search_event(app, event);
         }
         ConversationEvent::CopySessionTitle => {
-            return iced::clipboard::write(app.conversation.center_pane_title.clone());
+            return iced::clipboard::write(app.conversation.viewing().center_pane_title.clone());
         }
         ConversationEvent::AppClosing => {
-            app.conversation
-                .session_state
-                .cancel_token
-                .store(true, Ordering::Release);
+            app.conversation.stop();
             app.save_settings();
             return iced::exit();
         }
-        ConversationEvent::NewSession => new_session(app),
-        ConversationEvent::LoadSession(entry) => {
-            load_session(&mut app.conversation, &mut app.tools, entry)
-        }
+        ConversationEvent::NewSession => return new_session(app),
+        ConversationEvent::LoadSession(entry) => return load_session(app, entry),
+        ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
+        ConversationEvent::CloseTab(number) => return close_tab(app, number),
         ConversationEvent::AskAction(action) => ask_action(&mut app.conversation, action),
         ConversationEvent::SessionListLoaded(entries) => {
             app.conversation.session_list = entries;
         }
         ConversationEvent::ToggleTurnExpand(index, sub_index) => {
             let key = (index, sub_index);
-            let expanded = app.conversation.expanded_turns.contains(&key);
-            app.conversation.expanded_turns.set(key, !expanded);
-            app.conversation.search.invalidate_offsets();
+            let tab = app.conversation.viewing_mut();
+            let expanded = tab.expanded_turns.contains(&key);
+            tab.expanded_turns.set(key, !expanded);
+            tab.search.invalidate_offsets();
             app.layout.focused = None;
         }
         ConversationEvent::ToggleDialogExpand(index) => {
-            let expanded = app.conversation.expanded_dialogs.contains(&index);
-            app.conversation.expanded_dialogs.set(index, !expanded);
-            app.conversation.search.invalidate_offsets();
+            let tab = app.conversation.viewing_mut();
+            let expanded = tab.expanded_dialogs.contains(&index);
+            tab.expanded_dialogs.set(index, !expanded);
+            tab.search.invalidate_offsets();
             app.layout.focused = None;
         }
         ConversationEvent::ToggleAllDialogsExpand => {
-            if app.conversation.expanded_dialogs.is_empty() {
-                app.conversation
-                    .expanded_dialogs
-                    .extend(0..app.conversation.session.dialogs.len());
+            let tab = app.conversation.viewing_mut();
+            if tab.expanded_dialogs.is_empty() {
+                tab.expanded_dialogs.extend(0..tab.session.dialogs.len());
             } else {
-                app.conversation.expanded_dialogs.clear();
+                tab.expanded_dialogs.clear();
             }
-            app.conversation.search.invalidate_offsets();
+            tab.search.invalidate_offsets();
             app.layout.focused = None;
         }
         ConversationEvent::SessionPickerFocused => {
@@ -84,34 +74,45 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             app.layout.focused = None;
         }
         ConversationEvent::AskInputChanged(input) => {
-            app.conversation.session_state.ask_input = input;
+            app.conversation.viewing_mut().session_state.ask_input = input;
         }
-        ConversationEvent::ToggleSelectableMode(index) => match index {
-            Some(index) => {
-                let selected = app.conversation.selectable_msgs.contains(&index);
-                app.conversation.selectable_msgs.set(index, !selected);
+        ConversationEvent::ToggleSelectableMode(index) => {
+            let tab = app.conversation.viewing_mut();
+            match index {
+                Some(index) => {
+                    let selected = tab.selectable_msgs.contains(&index);
+                    tab.selectable_msgs.set(index, !selected);
+                }
+                None => tab.selectable_msgs.clear(),
             }
-            None => app.conversation.selectable_msgs.clear(),
-        },
-        ConversationEvent::TurnOffsetsMeasured(generation, offsets) => {
-            app.conversation.search.handle_offsets(generation, offsets);
+        }
+        ConversationEvent::TurnOffsetsMeasured(tab_number, generation, offsets, target_y) => {
+            let Some(pos) = app.conversation.tab_pos(tab_number) else {
+                // Tab was closed while measurement was in flight — discard.
+                return Task::none();
+            };
+            let tab = &mut app.conversation.session_tabs[pos];
+            tab.search.handle_offsets(generation, offsets);
+            // Only scroll if the originating tab is still being viewed;
+            // otherwise store the offsets silently so the next switch-to-tab
+            // can use cached values without disrupting the current view.
+            if pos == app.conversation.viewing {
+                return views::scroll_to(target_y).discard();
+            }
         }
     }
     Task::none()
 }
 
-fn new_session(app: &mut App) {
-    app.conversation.session = Session::new();
-    app.conversation.session_state = session_state::SessionState::new();
-    app.conversation.center_pane_title = "New session".into();
-    app.conversation.last_usage = genai::chat::Usage::default();
-    app.conversation.expanded_turns.clear();
-    app.conversation.expanded_dialogs.clear();
-    app.conversation.selectable_msgs.clear();
-    app.conversation.search.reset();
-    app.tools.cached_todo_items.clear();
-    app.tools.tool_registry.clear_todo();
+fn new_session(app: &mut App) -> Task<Message> {
+    let number = app.conversation.next_tab_number();
+    let tab = SessionTab::new(number);
+    app.conversation.session_tabs.push(tab);
+    app.conversation.viewing = app.conversation.session_tabs.len() - 1;
 
+    app.layout.focused = None;
+
+    // Refresh workspace-dependent fields
     let workspace = app.prompt.workspace.1.clone();
     let tree = crabot::workspace::build_files_tree(&workspace);
     app.prompt.files.content = text_editor::Content::with_text(&tree);
@@ -119,56 +120,116 @@ fn new_session(app: &mut App) {
     let (exists, content) = crate::app::prompt::load_agents_md(&workspace);
     app.prompt.agents_md_exists = exists;
     app.prompt.agents_md.1 = content;
+
+    // Fresh tab has no saved scroll offset — scroll to top.
+    views::scroll_to_start().discard()
 }
 
-fn load_session(
-    conversation: &mut ConversationState,
-    tools: &mut ToolState,
-    entry: views::session_list::SessionEntry,
-) {
-    if conversation.session_state.phase != DialogPhase::Idle {
-        return;
+/// Switch the viewing tab to the one with the given number.
+fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
+    let Some(pos) = app.conversation.tab_pos(number) else {
+        return Task::none();
+    };
+    if pos == app.conversation.viewing {
+        return Task::none();
     }
+
+    // Save the outgoing tab's scroll position.
+    // It was already captured by on_scroll, so scroll_offset is current.
+
+    app.conversation.viewing = pos;
+    app.layout.focused = None;
+
+    // Restore or reset the incoming tab's scroll position.
+    let tab = app.conversation.viewing_mut();
+    views::scroll_to(tab.scroll_offset).discard()
+}
+
+/// Close the tab with the given number.
+///
+/// Running tabs cannot be closed (the close button is disabled).
+/// The last remaining tab is replaced with a fresh one.
+fn close_tab(app: &mut App, number: usize) -> Task<Message> {
+    let Some(pos) = app.conversation.tab_pos(number) else {
+        return Task::none();
+    };
+    if app.conversation.session_tabs[pos].running() {
+        return Task::none();
+    }
+    let was_viewing = pos == app.conversation.viewing;
+    app.conversation.session_tabs.remove(pos);
+
+    if app.conversation.session_tabs.is_empty() {
+        let number = app.conversation.next_tab_number();
+        app.conversation.session_tabs.push(SessionTab::new(number));
+        app.conversation.viewing = 0;
+    } else if pos < app.conversation.viewing {
+        app.conversation.viewing -= 1;
+    } else if app.conversation.viewing >= app.conversation.session_tabs.len() {
+        app.conversation.viewing = app.conversation.session_tabs.len().saturating_sub(1);
+    }
+
+    app.layout.focused = None;
+
+    // Restore or reset the newly-viewed tab's scroll position if the closed tab was viewing.
+    if was_viewing {
+        return views::scroll_to(app.conversation.viewing().scroll_offset).discard();
+    }
+    Task::none()
+}
+
+fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task<Message> {
+    // If the session is already open in a tab, just switch to it.
+    if let Some(existing) = app
+        .conversation
+        .session_tabs
+        .iter()
+        .position(|t| t.session.id == entry.id)
+    {
+        if existing != app.conversation.viewing {
+            return switch_tab(app, app.conversation.session_tabs[existing].number);
+        }
+        return Task::none();
+    }
+
+    // Block loading into the viewing tab while it is streaming.
+    if app.conversation.viewing_is_streaming() {
+        return Task::none();
+    }
+
     match Session::load(&entry.path) {
-        Ok(session) => conversation.session = session,
+        Ok(session) => {
+            let number = app.conversation.viewing_tab_number();
+            let tab = app.conversation.viewing_mut();
+            *tab = SessionTab::from_session(number, session);
+            // Scroll to top for a freshly loaded session.
+            return views::scroll_to_start().discard();
+        }
         Err(error) => {
-            conversation.session = Session::new();
-            conversation.session.id = entry.id;
             eprintln!("Failed to load session: {error}");
         }
     }
-    conversation.last_usage = genai::chat::Usage {
-        prompt_tokens: Some(conversation.session.tokens.prompt),
-        ..Default::default()
-    };
-    conversation.center_pane_title = conversation.session.title.clone();
-    conversation.expanded_turns.clear();
-    conversation.expanded_dialogs.clear();
-    conversation.selectable_msgs.clear();
-    conversation.search.reset();
-    tools.cached_todo_items = conversation.session.last_todo_items();
+    Task::none()
 }
 
-fn navigate_session(
-    conversation: &mut ConversationState,
-    focused: &Option<FocusedTarget>,
-    up: bool,
-) -> Task<Message> {
-    if *focused != Some(FocusedTarget::SessionPicker)
-        || conversation.session_state.phase != DialogPhase::Idle
-        || conversation.session_list.is_empty()
-    {
+fn navigate_session(app: &mut App, up: bool) -> Task<Message> {
+    let viewing_is_streaming = app.conversation.viewing_is_streaming();
+    let list_empty = app.conversation.session_list.is_empty();
+    let is_picker_focused = app.layout.focused == Some(FocusedTarget::SessionPicker);
+
+    if !is_picker_focused || viewing_is_streaming || list_empty {
         return views::scroll_by(if up { -SCROLL_STEP } else { SCROLL_STEP }).discard();
     }
 
-    let current = conversation
+    let current = app
+        .conversation
         .session_list
         .iter()
-        .position(|entry| entry.id == conversation.session.id);
+        .position(|entry| entry.id == app.conversation.viewing().session.id);
 
     // Find the next non-header entry, wrapping around the list.
     let next_idx = |idx: usize, up: bool| -> Option<usize> {
-        let len = conversation.session_list.len();
+        let len = app.conversation.session_list.len();
         let step = |i: usize| {
             if up {
                 i.checked_sub(1).unwrap_or(len - 1)
@@ -179,7 +240,7 @@ fn navigate_session(
         let start = step(idx);
         let mut i = start;
         loop {
-            if !conversation.session_list[i].is_header {
+            if !app.conversation.session_list[i].is_header {
                 return Some(i);
             }
             i = step(i);
@@ -191,39 +252,100 @@ fn navigate_session(
 
     let entry = current
         .and_then(|idx| next_idx(idx, up))
-        .map(|i| conversation.session_list[i].clone());
+        .map(|i| app.conversation.session_list[i].clone());
     entry.map_or_else(Task::none, |entry| {
         Task::done(Message::Conversation(ConversationEvent::LoadSession(entry)))
     })
 }
 
+// ── ask tool ───────────────────────────────────────────────────────
+
 fn ask_action(conversation: &mut ConversationState, action: AskAction) {
     let result = match action {
         AskAction::OptionSelected(option) => {
-            conversation.session_state.ask_input = option;
+            conversation.viewing_mut().session_state.ask_input = option;
             return;
         }
-        AskAction::Ok => Ok(conversation.session_state.ask_input.clone()),
+        AskAction::Ok => Ok(conversation.viewing().session_state.ask_input.clone()),
         AskAction::Skip => Ok("No preference. Use your best judgment.".into()),
     };
-    let _ = conversation.session_state.ask_sender.send(result);
-    conversation.session_state.ask_request = None;
+    let _ = conversation
+        .viewing_mut()
+        .session_state
+        .ask_sender
+        .send(result);
+    conversation.viewing_mut().session_state.ask_request = None;
 }
 
-fn session_event(
-    conversation: &mut ConversationState,
-    tools: &mut ToolState,
-    user_prompt: &mut TextArea,
-    model_cost: Option<Cost>,
-    event: SessionEvent,
-) -> Task<Message> {
+// ── streaming events ───────────────────────────────────────────────
+
+/// Route a tagged stream event to the owning tab.
+fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Message> {
+    let Some(pos) = app.conversation.tab_pos(number) else {
+        // Tab was closed while the stream was still running — drop the event.
+        return Task::none();
+    };
+
+    // Auto-switch to a background tab that issues an ask, then keep processing
+    // the event below so the ask request is actually registered on the tab.
+    let switch_task =
+        if pos != app.conversation.viewing && matches!(event, SessionEvent::AskRequest(_)) {
+            switch_tab(app, number)
+        } else {
+            Task::none()
+        };
+    // `switch_tab` only changes `viewing`, never reorders tabs, so `pos` stays valid.
+    let viewing = pos == app.conversation.viewing;
+
+    // Compute cost from the tab's session model BEFORE mutably borrowing the tab.
+    let model_config = app.conversation.session_tabs[pos]
+        .session
+        .model
+        .clone()
+        .or_else(|| app.models.get_config(&app.settings.selected_model).cloned());
+    let cost = model_config
+        .as_ref()
+        .and_then(|cfg| app.models.get_model(cfg))
+        .map(|m| m.cost.clone());
+
+    // Update todo snapshot into the target tab on todo ToolResult.
     if let SessionEvent::ToolResult(ref result) = event
         && result.name == "todo"
     {
-        tools.cached_todo_items = tools.tool_registry.snapshot_todo();
+        app.conversation.session_tabs[pos].todo_items = app.tools.tool_registry.snapshot_todo();
     }
-    session_state::update(event, conversation, model_cost, user_prompt).discard()
+
+    let is_terminal = matches!(
+        event,
+        SessionEvent::Done(_) | SessionEvent::Error(_, _) | SessionEvent::Cancelled(_)
+    );
+
+    let tab = &mut app.conversation.session_tabs[pos];
+    let task = session_state::update(event, tab, cost, viewing);
+
+    // After a stream finishes, auto-dispatch a prompt that was parked on another idle tab.
+    let dispatch_task = if is_terminal && app.conversation.running_pos().is_none() {
+        app.conversation
+            .session_tabs
+            .iter()
+            .position(|t| t.number != number && t.session_state.pending_prompt.is_some())
+            .map(|target| dispatch_pending(app, target))
+            .unwrap_or_else(Task::none)
+    } else {
+        Task::none()
+    };
+
+    switch_task.chain(task.discard()).chain(dispatch_task)
 }
+
+/// Handle search-bar events on the viewing tab.
+fn search_event(app: &mut App, event: crate::views::SearchEvent) -> Task<Message> {
+    let tab_number = app.conversation.viewing_tab_number();
+    let tab = app.conversation.viewing_mut();
+    views::search_bar::update_on(event, tab, tab_number).map(Message::Conversation)
+}
+
+// ── send / resend ──────────────────────────────────────────────────
 
 pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
     let raw = app.prompt.user_prompt.text();
@@ -231,7 +353,7 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
     if content.trim().is_empty() {
         return Task::none();
     }
-    let Some(model) = selected_model_config(app) else {
+    let Some(model) = app.selected_model_config() else {
         return Task::none();
     };
     if app.prompt.workspace.1.as_os_str().is_empty() {
@@ -239,6 +361,32 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
         return Task::none();
     }
 
+    let user_prompt = build_user_prompt(app, &content);
+    app.prompt.files.enabled = false;
+    app.prompt.user_prompt.clear();
+
+    let another_running =
+        app.conversation.running_pos().is_some() && !app.conversation.viewing_is_streaming();
+    let tab_pos = app.conversation.viewing;
+    let tab = app.conversation.viewing_mut();
+
+    // If current tab is running, inject to streaming.
+    if tab.session_state.phase != DialogPhase::Idle {
+        tab.session_state.inject_prompt(user_prompt);
+        return Task::none();
+    }
+
+    // If another tab is running, park as pending.
+    if another_running {
+        tab.session_state.set_pending(user_prompt);
+        return Task::none();
+    }
+
+    launch_dialog(app, tab_pos, &content, &model, user_prompt)
+}
+
+/// Build a `UserPrompt` from `content` using the current prompt settings.
+fn build_user_prompt(app: &App, content: &str) -> UserPrompt {
     let mode = app.prompt.workmode_enabled.then_some(app.prompt.workmode);
     let workspace_tree = if app.prompt.files.enabled {
         let tree = app.prompt.files.content.text();
@@ -246,112 +394,139 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
     } else {
         None
     };
-    let user_prompt = UserPrompt::new(mode, content.clone(), workspace_tree);
-    app.prompt.files.enabled = false;
-    app.prompt.user_prompt.clear();
+    UserPrompt::new(mode, content.to_owned(), workspace_tree)
+}
 
-    if app.conversation.session_state.phase != DialogPhase::Idle {
-        if let Ok(mut pending) = app.conversation.session_state.pending_user_prompt.lock() {
-            *pending = Some(user_prompt.content.clone());
-        }
-        app.conversation.session_state.pending_prompt = Some(content);
+/// Set up a new dialog from `content` on the given tab and start streaming.
+fn launch_dialog(
+    app: &mut App,
+    tab_pos: usize,
+    content: &str,
+    model: &ModelConfig,
+    user_prompt: UserPrompt,
+) -> Task<Message> {
+    let tab = &mut app.conversation.session_tabs[tab_pos];
+    tab.center_pane_title = content.to_owned();
+    let dialog_index = tab.session.dialogs.len();
+    tab.expanded_dialogs.clear();
+    tab.expanded_dialogs.insert(dialog_index);
+    tab.session.add_dialog(Session::derive_title(content));
+    tab.session
+        .push_turn(Turn::user(user_prompt.content.clone()));
+    // `tab` borrow ends here (NLL); start_dialog takes a fresh &mut App.
+    start_dialog(app, tab_pos, model, Some(user_prompt))
+}
+
+/// Auto-dispatch a prompt parked on an idle tab while another tab streamed.
+fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
+    // Validate guards BEFORE taking the parked prompt so it isn't lost on failure.
+    let Some(model) = app.selected_model_config() else {
+        return Task::none();
+    };
+    if app.prompt.workspace.1.as_os_str().is_empty() {
+        app.overlay.show_workspace_dialog = true;
         return Task::none();
     }
-
-    app.conversation.center_pane_title = content.clone();
-    let dialog_index = app.conversation.session.dialogs.len();
-    app.conversation.expanded_dialogs.clear();
-    app.conversation.expanded_dialogs.insert(dialog_index);
-    app.conversation
-        .session
-        .add_dialog(Session::derive_title(&content));
-    app.conversation
-        .session
-        .push_turn(Turn::user(user_prompt.content.clone()));
-    start_dialog(app, &model, Some(user_prompt))
+    let Some(user_prompt) = app.conversation.session_tabs[tab_pos]
+        .session_state
+        .pending_prompt
+        .take()
+    else {
+        return Task::none();
+    };
+    // `start_dialog` clears the stale `pending_user_prompt` shared-lock copy
+    // so the new stream won't re-inject it as an interrupt.
+    app.prompt.files.enabled = false;
+    let content = user_prompt.content.clone();
+    launch_dialog(app, tab_pos, &content, &model, user_prompt)
 }
 
 fn resend_session(app: &mut App) -> Task<Message> {
-    if app.conversation.session_state.phase != DialogPhase::Idle
-        || app.conversation.center_pane_title == "New session"
-    {
+    let viewing_is_streaming = app.conversation.viewing_is_streaming();
+    let is_new = app.conversation.viewing().center_pane_title == "New session";
+
+    if viewing_is_streaming || is_new || app.conversation.running_pos().is_some() {
         return Task::none();
     }
-    let Some(model) = selected_model_config(app) else {
+    let Some(model) = app.selected_model_config() else {
         return Task::none();
     };
-    app.conversation.expanded_dialogs.clear();
-    if let Some(index) = app.conversation.session.dialogs.len().checked_sub(1) {
-        app.conversation.expanded_dialogs.insert(index);
+    let tab_pos = app.conversation.viewing;
+    let tab = app.conversation.viewing_mut();
+    tab.expanded_dialogs.clear();
+    if let Some(index) = tab.session.dialogs.len().checked_sub(1) {
+        tab.expanded_dialogs.insert(index);
     }
-    start_dialog(app, &model, None)
-}
-
-/// Look up the currently selected model's config, cloned for ownership.
-fn selected_model_config(app: &App) -> Option<ModelConfig> {
-    app.models.get_config(&app.settings.selected_model).cloned()
+    // `tab` borrow ends here (NLL); start_dialog takes a fresh &mut App.
+    start_dialog(app, tab_pos, &model, None)
 }
 
 // ── Stream orchestration ──────────────────────────────────────────
 
-/// Prepare and launch an LLM dialog stream for the current session.
+/// Prepare and launch an LLM dialog stream for the given tab.
 pub(crate) fn start_dialog(
     app: &mut App,
+    tab_pos: usize,
     model_config: &ModelConfig,
     user_prompt: Option<UserPrompt>,
 ) -> Task<Message> {
     let Some(model) = app.models.get_model_info(model_config) else {
         return Task::none();
     };
+    let is_viewing = tab_pos == app.conversation.viewing;
     // When continuing with a different model, fork the session.
-    let conversation = &mut app.conversation;
-    let model_changed = conversation
-        .session
-        .model
-        .as_ref()
-        .is_some_and(|m| m.model_id != model_config.model_id);
-    let session_forked = if model_changed && conversation.session.history.len() > 1 {
-        conversation.session = conversation.session.fork();
-        if model_config.model_id.starts_with("deepseek") {
-            conversation.session.fix_history();
-        }
-        true
-    } else {
-        false
-    };
-    conversation.session.model = Some(model_config.clone());
-    conversation.session.workspace = app.prompt.workspace.1.clone();
-    conversation.session.save().ok();
-
-    // Add current session to the dropdown list so it appears immediately.
-    if (conversation.session.is_fresh() || session_forked)
-        && let Some(path) = conversation.session.save_path()
-    {
-        let year_month = crabot::session::year_month_from_id(&conversation.session.id);
-        let entry = crate::views::session_list::SessionEntry {
-            id: conversation.session.id.clone(),
-            title: conversation.session.title.clone(),
-            path,
-            year_month,
-            is_header: false,
+    let (tab_number, session_list_entry) = {
+        let tab = &mut app.conversation.session_tabs[tab_pos];
+        let tab_number = tab.number;
+        let model_changed = tab
+            .session
+            .model
+            .as_ref()
+            .is_some_and(|m| m.model_id != model_config.model_id);
+        let session_forked = if model_changed && tab.session.history.len() > 1 {
+            tab.session = tab.session.fork();
+            if model_config.model_id.starts_with("deepseek") {
+                tab.session.fix_history();
+            }
+            true
+        } else {
+            false
         };
-        conversation.session_list.insert(0, entry);
+        tab.session.model = Some(model_config.clone());
+        tab.session.workspace = app.prompt.workspace.1.clone();
+        tab.session.save().ok();
+
+        let entry = if (tab.session.is_fresh() || session_forked)
+            && let Some(path) = tab.session.save_path()
+        {
+            let year_month = crabot::session::year_month_from_id(&tab.session.id);
+            Some(crate::views::session_list::SessionEntry {
+                id: tab.session.id.clone(),
+                title: tab.session.title.clone(),
+                path,
+                year_month,
+                is_header: false,
+            })
+        } else {
+            None
+        };
+        (tab_number, entry)
+    };
+
+    // Add to session list now that the tab borrow is released.
+    if let Some(entry) = session_list_entry {
+        app.conversation.session_list.insert(0, entry);
     }
 
-    // Clear any stale pending prompt from a previous stream.
-    if let Ok(mut pending) = conversation.session_state.pending_user_prompt.lock() {
-        *pending = None;
-    }
-    conversation.session_state.pending_prompt = None;
-    conversation.session_state.start_index = conversation.session.total_turns();
-    conversation
-        .session_state
-        .auto_scroll
-        .store(true, Ordering::Relaxed);
+    // Re-borrow for the remaining setup.
+    let tab = &mut app.conversation.session_tabs[tab_pos];
+    tab.session_state.clear_pending();
+    tab.session_state.start_index = tab.session.total_turns();
+    tab.session_state.auto_scroll.store(true, Ordering::Relaxed);
 
     // Create a fresh mpsc channel for this stream's ask-tool responses.
     let (ask_tx, ask_rx) = tokio::sync::mpsc::unbounded_channel();
-    conversation.session_state.ask_sender = ask_tx;
+    tab.session_state.ask_sender = ask_tx;
 
     let config = crate::llm::SendConfig {
         model,
@@ -362,23 +537,26 @@ pub(crate) fn start_dialog(
             .tools
             .tool_registry
             .enabled_tools(&app.tools.enabled_tools, &app.tools.enabled_mcp_servers),
-        pending_user_prompt: conversation.session_state.pending_user_prompt.clone(),
+        injected_prompt: tab.session_state.injected_prompt.clone(),
         ask_receiver: ask_rx,
         user_agent: crabot::app_title().to_string(),
-        cancel_token: conversation.session_state.cancel_token.clone(),
+        cancel_token: tab.session_state.cancel_token.clone(),
     };
 
-    let history = conversation.session.history.clone();
+    let history = tab.session.history.clone();
 
-    conversation.session_state.phase = DialogPhase::LlmLoading;
-    conversation
-        .session_state
+    tab.session_state.phase = DialogPhase::LlmLoading;
+    tab.session_state
         .cancel_token
         .store(false, Ordering::Relaxed);
-    let cancel_token = conversation.session_state.cancel_token.clone();
+    let cancel_token = tab.session_state.cancel_token.clone();
 
     Task::batch([
-        scroll_to_end().discard(),
+        if is_viewing {
+            scroll_to_end().discard()
+        } else {
+            Task::none()
+        },
         Task::stream(iced::stream::channel(128, async move |sender| {
             let cancel = cancel_token.clone();
             let mut callback = {
@@ -387,7 +565,9 @@ pub(crate) fn start_dialog(
                     let mut sender = sender.clone();
                     async move {
                         let ok = sender
-                            .send(Message::Conversation(ConversationEvent::SessionEvent(msg)))
+                            .send(Message::Conversation(ConversationEvent::SessionEvent(
+                                tab_number, msg,
+                            )))
                             .await
                             .is_ok();
                         if cancel.load(Ordering::Relaxed) {

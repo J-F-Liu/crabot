@@ -7,7 +7,7 @@ use iced_selection::Text as SelectableText;
 use super::styles::{pane_side, primary_button, primary_toggler, sel_primary};
 use super::theme::thin_vertical;
 use crate::RightPaneEvent;
-use crate::app::ConversationState;
+use crate::app::SessionTab;
 use crabot::model::{Model, TokenAmount};
 use crabot::tools::todo::{TodoItem, TodoStatus};
 
@@ -68,13 +68,13 @@ fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, RightPaneE
 pub(crate) fn right_pane<'a>(
     pane_width: f32,
     model: Option<&Model>,
-    conversation: &'a ConversationState,
+    tab: &'a SessionTab,
     show_restart: bool,
-    todo_items: &'a [TodoItem],
     dark_mode: bool,
 ) -> Element<'a, RightPaneEvent> {
-    let usage = &conversation.last_usage;
-    let session = &conversation.session;
+    let usage = &tab.last_usage;
+    let session = &tab.session;
+    let todo_items: &[TodoItem] = &tab.todo_items;
     let context_window = model.map(|m| m.context_window);
     let mut col = column![].spacing(8);
     let token_amount = TokenAmount::from_genai(usage);

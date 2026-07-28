@@ -15,7 +15,9 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
         LayoutEvent::WindowResized(size) => {
             if size.width > 0.0 && size.height > 0.0 {
                 app.layout.window_size = size;
-                app.conversation.search.invalidate_offsets();
+                for tab in &mut app.conversation.session_tabs {
+                    tab.search.invalidate_offsets();
+                }
             }
         }
         LayoutEvent::WindowMoved(pos) => app.layout.window_pos = pos,
@@ -23,7 +25,9 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
         LayoutEvent::CtrlHeld(held) => app.layout.ctrl_held = held,
         LayoutEvent::SessionViewScrolled(viewport) => {
             app.layout.scroll_viewport_height = viewport.bounds().height;
-            session_state::handle_scroll(&app.conversation.session_state, viewport);
+            let tab = app.conversation.viewing_mut();
+            tab.scroll_offset = Some(viewport.absolute_offset().y);
+            session_state::handle_scroll(&tab.session_state, viewport);
         }
         LayoutEvent::ScrollPageDown => {
             return views::scroll_page_down(app.layout.scroll_viewport_height).discard();
@@ -41,7 +45,9 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
         LayoutEvent::EscapePressed => escape(app),
         LayoutEvent::Zoom(delta) => {
             app.settings.font_scale = (app.settings.font_scale + delta).clamp(0.5, 2.0);
-            app.conversation.search.invalidate_offsets();
+            for tab in &mut app.conversation.session_tabs {
+                tab.search.invalidate_offsets();
+            }
         }
         LayoutEvent::ToggleTheme(dark) => {
             app.settings.dark_mode = dark;
@@ -139,9 +145,9 @@ fn escape(app: &mut App) {
             app.settings.auto_check_updates = app.settings_dialog.auto_check_updates;
             app.settings_dialog.open = false;
         }
-    } else if app.conversation.search.visible {
-        app.conversation.search.visible = false;
+    } else if app.conversation.viewing().search.visible {
+        app.conversation.viewing_mut().search.visible = false;
     } else {
-        app.conversation.selectable_msgs.clear();
+        app.conversation.viewing_mut().selectable_msgs.clear();
     }
 }

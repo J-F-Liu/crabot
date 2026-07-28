@@ -65,7 +65,7 @@ pub struct SendConfig {
     pub user_prompt: Option<UserPrompt>,
     pub tools: Vec<ToolRef>,
     /// Shared slot for a user prompt injected during streaming (tool execution / thinking).
-    pub pending_user_prompt: Arc<Mutex<Option<String>>>,
+    pub injected_prompt: Arc<Mutex<Option<String>>>,
     /// Receiver for the builtin ask tool's user response.
     pub ask_receiver: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     pub user_agent: String,
@@ -92,7 +92,7 @@ pub async fn send_stream(
         system_prompt,
         user_prompt,
         tools,
-        pending_user_prompt,
+        injected_prompt,
         mut ask_receiver,
         user_agent,
         cancel_token,
@@ -269,7 +269,7 @@ pub async fn send_stream(
         if tool_calls.is_empty() {
             // Check for a user prompt sent during LlmLoading / LlmThinking.
             let result = inject_user_prompt(
-                &pending_user_prompt,
+                &injected_prompt,
                 &mut chat_req,
                 &mut genai_messages,
                 on_event,
@@ -369,7 +369,7 @@ pub async fn send_stream(
 
         // Inject any user prompt sent during tool execution.
         let result = inject_user_prompt(
-            &pending_user_prompt,
+            &injected_prompt,
             &mut chat_req,
             &mut genai_messages,
             on_event,

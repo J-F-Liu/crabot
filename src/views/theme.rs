@@ -25,6 +25,8 @@ pub(crate) const CRABOT_TOOL_BG: Color = Color::from_rgb8(0xFB, 0xFB, 0xF8);
 pub(crate) const CRABOT_TOOL_ACCENT: Color = Color::from_rgb8(0xD9, 0xA5, 0x58);
 pub(crate) const CRABOT_TOOL_CONTENT_BG: Color = Color::from_rgb8(0xFF, 0xF8, 0xF2);
 pub(crate) const CRABOT_TOOL_CONTENT_BORDER: Color = Color::from_rgb8(0xF4, 0xF0, 0xEC);
+/// Faint gray background for the session header bar.
+pub(crate) const CRABOT_HEADER_BG: Color = Color::from_rgb8(0xF5, 0xF5, 0xF5);
 pub(crate) const CRABOT_SUCCESS: Color = Color::from_rgb8(0x2E, 0xB6, 0x7F);
 pub(crate) const CRABOT_DANGER: Color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
 
@@ -43,6 +45,8 @@ pub(crate) const DARK_TOOL_BG: Color = Color::from_rgb8(0x28, 0x25, 0x20);
 pub(crate) const DARK_TOOL_CONTENT_BG: Color = Color::from_rgb8(0x2B, 0x27, 0x21);
 pub(crate) const DARK_TOOL_CONTENT_BORDER: Color = Color::from_rgb8(0x3D, 0x38, 0x2E);
 pub(crate) const DARK_DIALOG_BG: Color = Color::from_rgb8(0x23, 0x27, 0x30);
+/// Faint gray background for the session header bar (dark mode).
+pub(crate) const DARK_HEADER_BG: Color = Color::from_rgb8(0x24, 0x28, 0x2F);
 
 // ── dialog / modal constants ──────────────────────────────────────
 
@@ -202,5 +206,13 @@ pub(crate) fn color_dialog_bg() -> Color {
         DARK_DIALOG_BG
     } else {
         CRABOT_DIALOG_BG
+    }
+}
+/// Session header bar background (faint gray).
+pub(crate) fn color_header_bg() -> Color {
+    if is_dark() {
+        DARK_HEADER_BG
+    } else {
+        CRABOT_HEADER_BG
     }
 }

@@ -6,6 +6,7 @@ pub mod model_config;
 pub mod right_pane;
 pub mod search_bar;
 pub mod session_list;
+pub mod session_tabs;
 pub mod settings;
 pub mod styles;
 pub mod system_prompt;
@@ -23,7 +24,7 @@ pub(crate) use styles::{
 // Re-export the pane constructors and helpers used by `App::view` / `App::update`.
 pub(crate) use center_pane::{
     ASK_INPUT, SCROLL_STEP, SEARCH_INPUT, center_pane, measure_turn_offsets, scroll_by,
-    scroll_page_down, scroll_page_up, scroll_to_end, scroll_to_start, scroll_to_turn_at,
+    scroll_page_down, scroll_page_up, scroll_to, scroll_to_end, scroll_to_start,
 };
 pub(crate) use left_pane::left_pane;
 pub(crate) use modal::workspace_modal;

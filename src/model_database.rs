@@ -138,7 +138,7 @@ fn parse_models(raw: RawDatabase) -> HashMap<String, Model> {
         // Primary ID first — first-wins among duplicates.
         models.entry(m.id).or_insert_with(|| model.clone());
         // Defer aliases until after all primaries are registered.
-        for alias in m.alias_id.into_iter().chain(m.alias.into_iter()) {
+        for alias in m.alias_id.into_iter().chain(m.alias) {
             pending_aliases.push((alias, model.clone()));
         }
     }

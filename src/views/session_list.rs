@@ -77,11 +77,8 @@ pub(crate) fn session_view<'a>(
     list = if streaming != DialogPhase::Idle {
         list.style(crate::views::disabled_dropdown_style)
     } else {
-        list
+        list.on_open(ConversationEvent::SessionPickerFocused)
     };
-    if streaming == DialogPhase::Idle {
-        list = list.on_open(ConversationEvent::SessionPickerFocused);
-    }
 
     column![
         row![
@@ -91,11 +88,7 @@ pub(crate) fn session_view<'a>(
             }),
             container(list),
             button(text("New").size(13).align_x(Alignment::Center))
-                .on_press_maybe(if streaming != DialogPhase::Idle {
-                    None
-                } else {
-                    Some(ConversationEvent::NewSession)
-                })
+                .on_press(ConversationEvent::NewSession)
                 .style(crate::views::primary_button),
         ]
         .align_y(Alignment::Center)

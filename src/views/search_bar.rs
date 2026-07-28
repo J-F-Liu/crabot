@@ -10,12 +10,13 @@ use super::styles::{bordered_bar_style, icon_button_style};
 use super::theme::color_muted;
 
 use crate::ConversationEvent;
-use crate::app::ConversationState;
-use crate::views::{SEARCH_INPUT, measure_turn_offsets, scroll_to_turn_at};
+use crate::app::SessionTab;
+use crate::views::{SEARCH_INPUT, measure_turn_offsets, scroll_to};
 use crabot::chat::TurnBody;
 use crabot::session::Session;
 
 /// UI state and widget bookkeeping for center-pane search.
+#[derive(Debug)]
 pub(crate) struct SearchState {
     /// Whether the search bar is visible (toggled via Ctrl+F).
     pub(crate) visible: bool,
@@ -51,15 +52,6 @@ impl Default for SearchState {
 }
 
 impl SearchState {
-    /// Reset all search-related state to its initial (hidden, empty) state.
-    pub(crate) fn reset(&mut self) {
-        self.visible = false;
-        self.query.clear();
-        self.results.clear();
-        self.current = 0;
-        self.invalidate_offsets();
-    }
-
     /// Clear cached layout measurements after content/layout changes.
     pub(crate) fn invalidate_offsets(&mut self) {
         self.turn_offsets.clear();
@@ -94,7 +86,7 @@ impl SearchState {
         self.turn_offsets
             .get(target)
             .copied()
-            .map(|y| scroll_to_turn_at(y).discard())
+            .map(|y| scroll_to(Some(y)).discard())
     }
 
     /// Store measured offsets if they are from the latest measurement task.
@@ -118,8 +110,12 @@ impl SearchState {
     }
 
     /// Measure all turn offsets, cache them, and scroll to `target`.
+    ///
+    /// `tab_number` tags the async result so the handler can discard it
+    /// if the user has already switched to a different tab.
     pub(crate) fn measure_and_scroll(
         &mut self,
+        tab_number: usize,
         total: usize,
         target: usize,
     ) -> Task<ConversationEvent> {
@@ -129,10 +125,9 @@ impl SearchState {
         let turn_ids = self.turn_ids.borrow().clone();
         measure_turn_offsets(turn_ids).then(move |offsets| {
             let y = offsets.get(target).copied();
-            Task::batch([
-                Task::done(ConversationEvent::TurnOffsetsMeasured(generation, offsets)),
-                y.map_or(Task::none(), |y| scroll_to_turn_at(y).discard()),
-            ])
+            Task::done(ConversationEvent::TurnOffsetsMeasured(
+                tab_number, generation, offsets, y,
+            ))
         })
     }
 }
@@ -146,15 +141,16 @@ pub(crate) enum SearchEvent {
     Navigate(i32),
 }
 
-/// Handle a search event, mutating search state and dialog/turn expansion as needed.
-pub(crate) fn update(
+/// Handle a search event, mutating the target tab's search/dialog/turn state.
+pub(crate) fn update_on(
     event: SearchEvent,
-    conversation: &mut ConversationState,
+    tab: &mut SessionTab,
+    tab_number: usize,
 ) -> Task<ConversationEvent> {
-    let state = &mut conversation.search;
-    let session = &conversation.session;
-    let expanded_dialogs = &mut conversation.expanded_dialogs;
-    let expanded_turns = &mut conversation.expanded_turns;
+    let state = &mut tab.search;
+    let session = &tab.session;
+    let expanded_dialogs = &mut tab.expanded_dialogs;
+    let expanded_turns = &mut tab.expanded_turns;
     match event {
         SearchEvent::ToggleSearch => {
             state.visible = !state.visible;
@@ -170,7 +166,7 @@ pub(crate) fn update(
                 let q = state.query.clone();
                 expand_result(session, expanded_dialogs, expanded_turns, target, &q);
                 let total = session.total_turns();
-                return state.measure_and_scroll(total, target);
+                return state.measure_and_scroll(tab_number, total, target);
             }
         }
         SearchEvent::Navigate(delta) => {
@@ -181,7 +177,7 @@ pub(crate) fn update(
                     return task;
                 }
                 let total = session.total_turns();
-                return state.measure_and_scroll(total, target);
+                return state.measure_and_scroll(tab_number, total, target);
             }
         }
     }

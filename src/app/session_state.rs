@@ -7,18 +7,19 @@ use iced::Task;
 use iced::widget::scrollable::Viewport;
 use tokio::sync::mpsc;
 
-use crate::app::ConversationState;
+use crate::app::SessionTab;
 use crate::llm::DialogPhase;
 use crate::model::Cost;
 use crate::model::TokenAmount;
 use crate::views::ASK_INPUT;
 use crate::views::scroll_to_end;
-use crate::widgets::textarea::TextArea;
 use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use crabot::session::Session;
+use crabot::user::UserPrompt;
 use genai::chat::{ChatMessage, ChatRole};
 
 /// Streaming session state bundled together for the LLM interaction lifecycle.
+#[derive(Debug)]
 pub(crate) struct SessionState {
     /// Current phase of the LLM interaction.
     pub(crate) phase: DialogPhase,
@@ -26,10 +27,11 @@ pub(crate) struct SessionState {
     pub(crate) start_index: usize,
     /// Cancellation token to stop an in-progress stream early.
     pub(crate) cancel_token: Arc<AtomicBool>,
-    /// Shared slot for a user prompt injected during streaming.
-    pub(crate) pending_user_prompt: Arc<Mutex<Option<String>>>,
-    /// UI-side mirror of `pending_user_prompt`, updated alongside it.
-    pub(crate) pending_prompt: Option<String>,
+    /// Shared slot for a raw user prompt injected during streaming.
+    pub(crate) injected_prompt: Arc<Mutex<Option<String>>>,
+    /// Parked full `UserPrompt` (work mode, workspace tree) to be dispatched
+    /// later when this tab is no longer blocked by another tab's stream.
+    pub(crate) pending_prompt: Option<UserPrompt>,
     /// Active ask-tool request shown in the tool turn.
     pub(crate) ask_request: Option<AskRequest>,
     pub(crate) ask_input: String,
@@ -50,7 +52,7 @@ impl SessionState {
             phase: DialogPhase::Idle,
             start_index: 0,
             cancel_token: Arc::new(AtomicBool::new(false)),
-            pending_user_prompt: Arc::new(Mutex::new(None)),
+            injected_prompt: Arc::new(Mutex::new(None)),
             pending_prompt: None,
             ask_request: None,
             ask_input: String::new(),
@@ -58,6 +60,35 @@ impl SessionState {
             auto_scroll: Arc::new(AtomicBool::new(true)),
             scroll_throttle: Cell::new(Instant::now()),
         }
+    }
+
+    /// Signal this session to stop streaming.
+    pub(crate) fn stop(&self) {
+        self.cancel_token.store(true, Ordering::Release);
+    }
+
+    /// Store the raw content of a user prompt into the shared lock for
+    /// interrupt injection into the ongoing stream on this tab.
+    pub(crate) fn inject_prompt(&mut self, prompt: UserPrompt) {
+        if let Ok(mut pending) = self.injected_prompt.lock() {
+            *pending = Some(prompt.content.clone());
+        }
+        // for display on UI
+        self.pending_prompt = Some(prompt);
+    }
+
+    /// Park the full user prompt so it can be dispatched later when this
+    /// tab is no longer blocked by another tab's stream.
+    pub(crate) fn set_pending(&mut self, prompt: UserPrompt) {
+        self.pending_prompt = Some(prompt);
+    }
+
+    /// Clear the pending prompt (both the shared lock and the stored prompt).
+    pub(crate) fn clear_pending(&mut self) {
+        if let Ok(mut pending) = self.injected_prompt.lock() {
+            *pending = None;
+        }
+        self.pending_prompt = None;
     }
 
     /// Human-readable status label for the current streaming phase.
@@ -113,34 +144,37 @@ pub(crate) enum SessionEvent {
     Stop,
 }
 
-/// Handle a streaming event, mutating session, streaming state,
-/// and related app state as needed.
+/// Handle a streaming event for a specific tab.
 pub(crate) fn update(
     event: SessionEvent,
-    conversation: &mut ConversationState,
+    tab: &mut SessionTab,
     model_cost: Option<Cost>,
-    user_prompt: &mut TextArea,
+    viewing: bool,
 ) -> Task<()> {
-    let ConversationState {
+    let SessionTab {
         session_state,
         session,
         search,
         last_usage,
         ..
-    } = conversation;
+    } = tab;
     let state: &mut SessionState = session_state;
 
     match event {
         SessionEvent::ToolCalls(tcs) => {
             session.push_turn(Turn::from_tool_results(vec![]));
             session.push_turn(Turn::from_tool_calls(tcs));
-            return maybe_scroll_to_end(&state.auto_scroll);
+            return if viewing {
+                maybe_scroll_to_end(&state.auto_scroll)
+            } else {
+                Task::none()
+            };
         }
         SessionEvent::AskRequest(request) => {
             let no_options = request.options.is_empty();
             state.ask_request = Some(request);
             state.ask_input.clear();
-            if no_options {
+            if no_options && viewing {
                 return iced::widget::operation::focus(ASK_INPUT.clone());
             }
         }
@@ -150,7 +184,11 @@ pub(crate) fn update(
             {
                 tc.content.push_str(&chunk);
             }
-            return maybe_scroll_to_end_throttled(&state.auto_scroll, &state.scroll_throttle);
+            return if viewing {
+                maybe_scroll_to_end_throttled(&state.auto_scroll, &state.scroll_throttle)
+            } else {
+                Task::none()
+            };
         }
         SessionEvent::Reasoning(chunk) => {
             if let Some(last) = session.last_turn_mut()
@@ -160,7 +198,11 @@ pub(crate) fn update(
                     .get_or_insert_with(String::new)
                     .push_str(&chunk);
             }
-            return maybe_scroll_to_end_throttled(&state.auto_scroll, &state.scroll_throttle);
+            return if viewing {
+                maybe_scroll_to_end_throttled(&state.auto_scroll, &state.scroll_throttle)
+            } else {
+                Task::none()
+            };
         }
         SessionEvent::ToolResult(tr) => {
             // Clear the ask UI when the ask tool completes (covers both
@@ -176,12 +218,20 @@ pub(crate) fn update(
             if let Some(dialog) = session.dialogs.last_mut() {
                 dialog.push_tool_result(tr);
             }
-            return maybe_scroll_to_end(&state.auto_scroll);
+            return if viewing {
+                maybe_scroll_to_end(&state.auto_scroll)
+            } else {
+                Task::none()
+            };
         }
         SessionEvent::UserPrompt(content) => {
             session.push_turn(Turn::user(content));
             state.pending_prompt = None;
-            return maybe_scroll_to_end(&state.auto_scroll);
+            return if viewing {
+                maybe_scroll_to_end(&state.auto_scroll)
+            } else {
+                Task::none()
+            };
         }
         SessionEvent::TokenUsage(usage) => {
             let u = usage.unwrap_or_default();
@@ -199,30 +249,42 @@ pub(crate) fn update(
             state.ask_request = None;
             handle_stream_done(state, session, genai_messages);
             search.invalidate_offsets();
-            return maybe_scroll_to_end(&state.auto_scroll);
+            return if viewing {
+                maybe_scroll_to_end(&state.auto_scroll)
+            } else {
+                Task::none()
+            };
         }
         SessionEvent::Error(err, genai_messages) => {
             state.ask_request = None;
             handle_stream_error(state, session, err, genai_messages);
             search.invalidate_offsets();
-            return maybe_scroll_to_end(&state.auto_scroll);
+            return if viewing {
+                maybe_scroll_to_end(&state.auto_scroll)
+            } else {
+                Task::none()
+            };
         }
         SessionEvent::Cancelled(genai_messages) => {
             state.ask_request = None;
             state.phase = DialogPhase::Idle;
-            if let Ok(mut pending) = state.pending_user_prompt.lock()
+            if let Ok(mut pending) = state.injected_prompt.lock()
                 && let Some(prompt) = pending.take()
             {
-                user_prompt.set_text(&prompt);
+                let msg = format!(
+                    "⚠️ Stream cancelled — the following prompt was **not executed**:\n\n> {}",
+                    prompt
+                );
+                session.push_turn(Turn::assistant(msg, None));
             }
             state.pending_prompt = None;
             session.history.extend(genai_messages);
-            // Refresh the markdown cache so partial content renders as markdown.
             if let Some(last) = session.last_turn_mut()
                 && let TurnBody::Text(tc) = &mut last.body
             {
                 tc.refresh_md_cache();
             }
+            search.invalidate_offsets();
             let _ = session.save();
         }
         SessionEvent::PhaseChange(phase) => {
@@ -235,7 +297,7 @@ pub(crate) fn update(
             state.phase = phase;
         }
         SessionEvent::Stop => {
-            state.cancel_token.store(true, Ordering::Release);
+            state.stop();
         }
     }
     Task::none()

@@ -43,6 +43,7 @@ impl WorkMode {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct UserPrompt {
     pub mode: Option<WorkMode>,
     pub workspace_tree: Option<String>,

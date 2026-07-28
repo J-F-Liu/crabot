@@ -55,9 +55,9 @@ pub(crate) fn left_pane<'a>(
             .unwrap_or(&[])
     };
     let recipe_dropdown_expanded: bool = prompt.recipe_dropdown_expanded;
-    let streaming: DialogPhase = conversation.session_state.phase;
+    let streaming: DialogPhase = conversation.viewing().session_state.phase;
     let session_options: &[SessionEntry] = &conversation.session_list;
-    let current_session_id: &str = &conversation.session.id;
+    let current_session_id: &str = &conversation.viewing().session.id;
     let enabled_mcp_servers: &HashSet<String> = &tools.enabled_mcp_servers;
     container(
         column![
