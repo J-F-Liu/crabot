@@ -1,5 +1,7 @@
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use iced::Task;
 use iced::widget::scrollable::Viewport;
@@ -36,6 +38,8 @@ pub(crate) struct SessionState {
     pub(crate) ask_sender: mpsc::UnboundedSender<Result<String, String>>,
     /// Whether to auto-scroll the message view to the bottom during streaming.
     pub(crate) auto_scroll: Arc<AtomicBool>,
+    /// Timestamp of the last auto-scroll snap, throttled to avoid jitter.
+    pub(crate) scroll_throttle: Cell<Instant>,
 }
 
 impl SessionState {
@@ -52,6 +56,7 @@ impl SessionState {
             ask_input: String::new(),
             ask_sender: ask_tx,
             auto_scroll: Arc::new(AtomicBool::new(true)),
+            scroll_throttle: Cell::new(Instant::now()),
         }
     }
 
@@ -145,8 +150,7 @@ pub(crate) fn update(
             {
                 tc.content.push_str(&chunk);
             }
-            search.invalidate_offsets();
-            return maybe_scroll_to_end(&state.auto_scroll);
+            return maybe_scroll_to_end_throttled(&state.auto_scroll, &state.scroll_throttle);
         }
         SessionEvent::Reasoning(chunk) => {
             if let Some(last) = session.last_turn_mut()
@@ -156,8 +160,7 @@ pub(crate) fn update(
                     .get_or_insert_with(String::new)
                     .push_str(&chunk);
             }
-            search.invalidate_offsets();
-            return maybe_scroll_to_end(&state.auto_scroll);
+            return maybe_scroll_to_end_throttled(&state.auto_scroll, &state.scroll_throttle);
         }
         SessionEvent::ToolResult(tr) => {
             // Clear the ask UI when the ask tool completes (covers both
@@ -225,6 +228,9 @@ pub(crate) fn update(
         SessionEvent::PhaseChange(phase) => {
             if phase == DialogPhase::LlmThinking {
                 session.push_turn(Turn::assistant(String::new(), None));
+                search.invalidate_offsets();
+                // Back-date so the first content chunk scrolls immediately.
+                state.scroll_throttle.set(Instant::now() - SCROLL_THROTTLE);
             }
             state.phase = phase;
         }
@@ -247,12 +253,28 @@ pub(crate) fn handle_scroll(state: &SessionState, viewport: Viewport) {
 
 // ── private helpers ───────────────────────────────────────────────
 
+/// Minimum interval between auto-scroll snaps during streaming.
+const SCROLL_THROTTLE: Duration = Duration::from_millis(500);
+
 fn maybe_scroll_to_end(auto_scroll: &AtomicBool) -> Task<()> {
     if auto_scroll.load(Ordering::Relaxed) {
         scroll_to_end()
     } else {
         Task::none()
     }
+}
+
+/// Throttled variant for scroll to end, preventing jitter from rapid-fire updates.
+fn maybe_scroll_to_end_throttled(auto_scroll: &AtomicBool, last: &Cell<Instant>) -> Task<()> {
+    if !auto_scroll.load(Ordering::Relaxed) {
+        return Task::none();
+    }
+    let now = Instant::now();
+    if now.duration_since(last.get()) < SCROLL_THROTTLE {
+        return Task::none();
+    }
+    last.set(now);
+    scroll_to_end()
 }
 
 /// Backfill streaming placeholders with captured content from genai,
