@@ -214,9 +214,9 @@ pub(crate) struct ConversationState {
 }
 
 impl ConversationState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(selected_model: String) -> Self {
         Self {
-            session_tabs: vec![SessionTab::new(1)],
+            session_tabs: vec![SessionTab::new(1, selected_model)],
             viewing: 0,
             next_tab_number: 2,
             session_list: Vec::new(),
@@ -534,6 +534,7 @@ impl App {
             recipe_dropdown_expanded: false,
         };
 
+        let initial_selected_model = saved.selected_model.clone();
         let app = Self {
             settings: saved,
             layout: LayoutState {
@@ -550,7 +551,7 @@ impl App {
             },
             prompt,
             tools,
-            conversation: ConversationState::new(),
+            conversation: ConversationState::new(initial_selected_model),
             models,
             settings_dialog: crate::views::SettingsState::default(),
             overlay: OverlayState {
@@ -664,6 +665,18 @@ impl App {
         self.models
             .get_config(&self.settings.selected_model)
             .cloned()
+    }
+
+    /// Find the model label matching the given config, falling back to the currently selected model.
+    pub(crate) fn find_model_label(&self, model_config: &ModelConfig) -> String {
+        self.models
+            .models
+            .iter()
+            .find(|(_, cfg)| {
+                cfg.provider_id == model_config.provider_id && cfg.model_id == model_config.model_id
+            })
+            .map(|(label, _)| label.clone())
+            .unwrap_or_else(|| self.settings.selected_model.clone())
     }
 
     // ── View composition ──────────────────────────────────────────

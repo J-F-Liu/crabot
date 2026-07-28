@@ -106,7 +106,8 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
 
 fn new_session(app: &mut App) -> Task<Message> {
     let number = app.conversation.next_tab_number();
-    let tab = SessionTab::new(number);
+    let selected_model = app.settings.selected_model.clone();
+    let tab = SessionTab::new(number, selected_model);
     app.conversation.session_tabs.push(tab);
     app.conversation.viewing = app.conversation.session_tabs.len() - 1;
 
@@ -134,14 +135,18 @@ fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
         return Task::none();
     }
 
-    // Save the outgoing tab's scroll position.
-    // It was already captured by on_scroll, so scroll_offset is current.
+    // Save the outgoing tab's selected model.
+    app.conversation.viewing_mut().selected_model = app.settings.selected_model.clone();
 
+    // Switch tab
     app.conversation.viewing = pos;
     app.layout.focused = None;
 
-    // Restore or reset the incoming tab's scroll position.
+    // Restore the incoming tab's selected model.
     let tab = app.conversation.viewing_mut();
+    app.settings.selected_model = tab.selected_model.clone();
+
+    // Restore or reset the incoming tab's scroll position.
     views::scroll_to(tab.scroll_offset).discard()
 }
 
@@ -161,7 +166,10 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
 
     if app.conversation.session_tabs.is_empty() {
         let number = app.conversation.next_tab_number();
-        app.conversation.session_tabs.push(SessionTab::new(number));
+        let selected_model = app.settings.selected_model.clone();
+        app.conversation
+            .session_tabs
+            .push(SessionTab::new(number, selected_model));
         app.conversation.viewing = 0;
     } else if pos < app.conversation.viewing {
         app.conversation.viewing -= 1;
@@ -173,7 +181,9 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
 
     // Restore or reset the newly-viewed tab's scroll position if the closed tab was viewing.
     if was_viewing {
-        return views::scroll_to(app.conversation.viewing().scroll_offset).discard();
+        let tab = app.conversation.viewing_mut();
+        app.settings.selected_model = tab.selected_model.clone();
+        return views::scroll_to(tab.scroll_offset).discard();
     }
     Task::none()
 }
@@ -200,8 +210,16 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
     match Session::load(&entry.path) {
         Ok(session) => {
             let number = app.conversation.viewing_tab_number();
+            // If the loaded session has a stored model, find the matching model name
+            let selected_model = if let Some(ref model_config) = session.model {
+                app.find_model_label(model_config)
+            } else {
+                app.settings.selected_model.clone()
+            };
+            // Restore the selected model in settings
+            app.settings.selected_model = selected_model.clone();
             let tab = app.conversation.viewing_mut();
-            *tab = SessionTab::from_session(number, session);
+            *tab = SessionTab::from_session(number, session, selected_model);
             // Scroll to top for a freshly loaded session.
             return views::scroll_to_start().discard();
         }

@@ -33,11 +33,13 @@ pub(crate) struct SessionTab {
     pub(crate) todo_items: Vec<TodoItem>,
     /// Saved scroll position (absolute y-offset) to restore when switching back to this tab.
     pub(crate) scroll_offset: Option<f32>,
+    /// The model selected for this tab (restored when switching back to this tab).
+    pub(crate) selected_model: String,
 }
 
 impl SessionTab {
     /// Create a fresh (unsaved, empty) tab with the given number.
-    pub(crate) fn new(number: usize) -> Self {
+    pub(crate) fn new(number: usize, selected_model: String) -> Self {
         let session = Session::new();
         Self {
             number,
@@ -51,11 +53,12 @@ impl SessionTab {
             search: SearchState::default(),
             todo_items: Vec::new(),
             scroll_offset: None,
+            selected_model,
         }
     }
 
     /// Build a tab from a previously-saved session loaded from disk.
-    pub(crate) fn from_session(number: usize, session: Session) -> Self {
+    pub(crate) fn from_session(number: usize, session: Session, selected_model: String) -> Self {
         let prompt_tokens = session.tokens.prompt;
         let title = session.title.clone();
         let todo_items = session.last_todo_items();
@@ -74,6 +77,7 @@ impl SessionTab {
             search: SearchState::default(),
             todo_items,
             scroll_offset: None,
+            selected_model,
         }
     }
 
