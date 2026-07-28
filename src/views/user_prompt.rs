@@ -7,9 +7,6 @@ use iced::{
 
 use crate::views::theme::{color_border, color_dialog_bg, color_surface, color_text_strong};
 use iced_aw::{
-    DropDown,
-    core::offset::Offset,
-    drop_down,
     style::{status::Status, tab_bar::Style as TabBarStyle},
     widget::tab_bar::{TabBar, TabLabel},
 };
@@ -17,6 +14,7 @@ use iced_aw::{
 use super::system_prompt::expandable_header;
 use crate::WORKSPACE_TREE;
 use crate::app::ExpandableEditor;
+use crate::widgets::popup_menu::PopupMenu;
 use crate::widgets::textarea::TextArea;
 use crate::{FocusedTarget, PromptEvent};
 use crabot::user::WorkMode;
@@ -79,11 +77,10 @@ pub(crate) fn user_prompt_view<'a>(
     .style(menu_container_style);
 
     let recipe_dropdown: Element<'_, PromptEvent> =
-        DropDown::new(underlay, overlay, recipe_dropdown_expanded)
+        PopupMenu::new(underlay, overlay, recipe_dropdown_expanded)
             .width(Length::Fixed(360.0))
             .height(Length::Fixed(180.0))
-            .alignment(drop_down::Alignment::BottomEnd)
-            .offset(Offset { x: -78.0, y: 27.0 })
+            .gap(2.0)
             .on_dismiss(PromptEvent::DismissRecipeDropdown)
             .into();
 
