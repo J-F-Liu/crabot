@@ -4,7 +4,6 @@
 //! and the boot / update / view / subscription methods that drive the GUI.
 
 use std::collections::HashSet;
-use std::env;
 use std::path::PathBuf;
 
 use iced::widget::scrollable::Viewport;
@@ -297,7 +296,6 @@ impl ConversationState {
 /// Overlays: empty-workspace confirmation, restart button, update banner.
 pub(crate) struct OverlayState {
     pub(crate) show_workspace_dialog: bool,
-    pub(crate) show_restart: bool,
     pub(crate) default_workspace_path: PathBuf,
     pub(crate) update_available: Option<String>,
     pub(crate) download_state: crate::views::update::UpdateDownloadState,
@@ -505,11 +503,6 @@ impl App {
         let files_content = text_editor::Content::with_text(&files_tree);
         let tools_content = text_editor::Content::with_text(&tools_summary);
 
-        let show_restart = !workspace_path.as_os_str().is_empty()
-            && env::current_exe()
-                .ok()
-                .is_some_and(|exe| exe.starts_with(&workspace_path));
-
         let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         let update_available = saved
@@ -573,7 +566,6 @@ impl App {
             settings_dialog: crate::views::SettingsState::default(),
             overlay: OverlayState {
                 show_workspace_dialog: false,
-                show_restart,
                 default_workspace_path: setup::default_workspace_path(),
                 update_available,
                 download_state: crate::views::update::UpdateDownloadState::Idle,
@@ -627,10 +619,18 @@ impl App {
                 ModelSettingsEvent::Settings(e) => settings::handle_event(self, e),
             },
             Message::RestartApp => {
+                self.conversation.stop();
                 self.save_settings();
-                let _ = std::process::Command::new("cargo")
-                    .args(["run", "--release"])
-                    .spawn();
+                let workspace_path = &self.prompt.workspace.1;
+                if let Ok(exe) = std::env::current_exe() {
+                    if !workspace_path.as_os_str().is_empty() && exe.starts_with(workspace_path) {
+                        let _ = std::process::Command::new("cargo")
+                            .args(["run", "--release"])
+                            .spawn();
+                    } else {
+                        let _ = std::process::Command::new(&exe).spawn();
+                    }
+                }
                 iced::exit()
             }
         }
@@ -783,7 +783,6 @@ impl App {
                 self.settings.right_pane_width,
                 self.get_current_model(),
                 self.conversation.viewing(),
-                self.overlay.show_restart,
                 self.settings.dark_mode,
             )
             .map(|event| match event {

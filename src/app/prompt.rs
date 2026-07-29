@@ -177,9 +177,6 @@ pub(crate) fn set_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
     app.prompt.files.content = text_editor::Content::with_text(&tree);
     app.prompt.agents_md_exists = exists;
     app.prompt.agents_md = (enabled, content);
-    app.overlay.show_restart = std::env::current_exe()
-        .ok()
-        .is_some_and(|exe| exe.starts_with(&path));
     app.prompt.workspace.1 = path.clone();
     app.prompt.workspace_options =
         crate::views::build_workspace_options(&app.settings.recent_workspaces);

@@ -11,28 +11,27 @@ use crate::app::SessionTab;
 use crabot::model::{ModelConfig, TokenAmount};
 use crabot::tools::todo::{TodoItem, TodoStatus};
 
+const MONO: Font = Font {
+    family: font::Family::Monospace,
+    ..Font::DEFAULT
+};
+const BOLD: Font = Font {
+    weight: font::Weight::Bold,
+    ..Font::DEFAULT
+};
+
 /// Label-value row with the value right-aligned via a fill spacer.
 fn token_row<'a>(label: &'a str, value: String) -> Element<'a, RightPaneEvent> {
-    let mono = Font {
-        family: font::Family::Monospace,
-        ..Font::DEFAULT
-    };
     iced::widget::row![
         text(label).size(16),
         Space::new().width(Length::Fill),
-        text(value).size(16).font(mono),
+        text(value).size(16).font(MONO),
     ]
     .into()
 }
 
 fn section_header<'a>(title: &'a str) -> Element<'a, RightPaneEvent> {
-    text(title)
-        .size(14)
-        .font(Font {
-            weight: font::Weight::Bold,
-            ..Font::DEFAULT
-        })
-        .into()
+    text(title).size(14).font(BOLD).into()
 }
 
 /// Build the todo-list section, returning `None` when the list is empty.
@@ -69,7 +68,6 @@ pub(crate) fn right_pane<'a>(
     pane_width: f32,
     model: Option<&ModelConfig>,
     tab: &'a SessionTab,
-    show_restart: bool,
     dark_mode: bool,
 ) -> Element<'a, RightPaneEvent> {
     let usage = &tab.last_usage;
@@ -80,58 +78,54 @@ pub(crate) fn right_pane<'a>(
         .map(|items| items.clone())
         .unwrap_or_default();
     let context_window = model.map(|m| m.context_window);
-    let mut col = column![].spacing(8);
     let token_amount = TokenAmount::from_genai(usage);
+    let mut items: Vec<Element<'_, RightPaneEvent>> = Vec::new();
 
-    col = col
-        .push(rule::horizontal(1))
-        .push(section_header("Context window"))
-        .push(token_row(
-            "Prompt tokens:",
-            format!("{}", token_amount.prompt),
-        ))
-        .push(token_row(
-            "Cached tokens:",
-            format!("{}", token_amount.cache_read + token_amount.cache_write),
-        ));
-
+    // ── context window ──
+    items.push(rule::horizontal(1).into());
+    items.push(section_header("Context window"));
+    items.push(token_row(
+        "Prompt tokens:",
+        format!("{}", token_amount.prompt),
+    ));
+    items.push(token_row(
+        "Cached tokens:",
+        format!("{}", token_amount.cache_read + token_amount.cache_write),
+    ));
     if let Some(cw) = context_window.filter(|&cw| cw > 0) {
         let pct = token_amount.window_used(cw);
-        col = col
-            .push(token_row("Window size:", format!("{cw}")))
-            .push(token_row("Fill ratio:", format!("{:.1}%", pct)));
+        items.push(token_row("Window size:", format!("{cw}")));
+        items.push(token_row("Fill ratio:", format!("{:.1}%", pct)));
     }
 
-    // ── cumulative token usage and cost ───────────────────────────────────────────
-    col = col
-        .push(rule::horizontal(1))
-        .push(section_header("Token Usage"))
-        .push(token_row(
-            "Input tokens:",
-            format!("{}", session.tokens.input),
-        ))
-        .push(token_row(
-            "Output tokens:",
-            format!("{}", session.tokens.output),
-        ))
-        .push(token_row(
-            "Cache read:",
-            format!("{}", session.tokens.cache_read),
-        ));
+    // ── cumulative token usage and cost ──
+    items.push(rule::horizontal(1).into());
+    items.push(section_header("Token Usage"));
+    items.push(token_row(
+        "Input tokens:",
+        format!("{}", session.tokens.input),
+    ));
+    items.push(token_row(
+        "Output tokens:",
+        format!("{}", session.tokens.output),
+    ));
+    items.push(token_row(
+        "Cache read:",
+        format!("{}", session.tokens.cache_read),
+    ));
     if session.tokens.cache_write > 0 {
-        col = col.push(token_row(
+        items.push(token_row(
             "Cache write:",
             format!("{}", session.tokens.cache_write),
         ));
     }
-    col = col
-        .push(token_row("Session cost:", session.formatted_cost()))
-        .push(rule::horizontal(1))
-        .push(token_row("Num Requests:", session.requests.to_string()));
+    items.push(token_row("Session cost:", session.formatted_cost()));
+    items.push(rule::horizontal(1).into());
+    items.push(token_row("Num Requests:", session.requests.to_string()));
 
     // ── todo items ──
     if let Some(section) = todo_section(&todo_items) {
-        col = col.push(section);
+        items.push(section);
     }
 
     // ── modified files ──
@@ -145,12 +139,12 @@ pub(crate) fn right_pane<'a>(
                     .into()
             })
             .collect();
-        let files_col = column(files).spacing(2);
-        col = col
-            .push(rule::horizontal(1))
-            .push(section_header("Modified Files"))
-            .push(files_col);
+        items.push(rule::horizontal(1).into());
+        items.push(section_header("Modified Files"));
+        items.push(column(files).spacing(2).into());
     }
+
+    let col = column(items).spacing(8);
 
     let theme_toggle = row![
         text("Dark theme").size(14),
@@ -163,20 +157,15 @@ pub(crate) fn right_pane<'a>(
     .align_y(Alignment::Center)
     .padding(padding::top(12).right(16).left(16));
 
-    let mut footer = column![].spacing(0);
-    if show_restart {
-        footer = footer.push(
-            container(
-                button(text("Restart").size(14))
-                    .on_press(RightPaneEvent::Restart)
-                    .style(primary_button)
-                    .width(Length::Shrink),
-            )
-            .width(Fill)
-            .align_x(alignment::Horizontal::Center)
-            .padding(padding::bottom(12)),
-        );
-    }
+    let footer = container(
+        button(text("Restart").size(14))
+            .on_press(RightPaneEvent::Restart)
+            .style(primary_button)
+            .width(Length::Shrink),
+    )
+    .width(Fill)
+    .align_x(alignment::Horizontal::Center)
+    .padding(padding::bottom(12));
 
     let body: Element<'_, RightPaneEvent> =
         scrollable(container(col.padding(padding::all(20).left(16).top(8))))
@@ -184,7 +173,7 @@ pub(crate) fn right_pane<'a>(
             .height(Fill)
             .into();
 
-    container(column![theme_toggle, body, footer,])
+    container(column![theme_toggle, body, footer])
         .width(Length::Fixed(pane_width))
         .height(Fill)
         .style(pane_side)
