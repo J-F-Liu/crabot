@@ -378,11 +378,10 @@ impl Session {
 
     /// Fix history created by other models when resend to deepseek.
     pub fn fix_history(&mut self) {
-        // Ensure every Assistant message with Text part also has a ReasoningContent part
+        // Ensure every Assistant message with tool calls also has a ReasoningContent part
         for message in &mut self.history {
             if message.role == ChatRole::Assistant
-                && message.content.parts().len() > 1
-                && message.content.contains_text()
+                && message.content.contains_tool_call()
                 && !message.content.contains_reasoning_content()
             {
                 message

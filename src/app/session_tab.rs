@@ -4,7 +4,7 @@ use genai::chat::Usage;
 
 use crate::app::session_state::SessionState;
 use crate::llm::DialogPhase;
-use crate::tools::todo::TodoItem;
+use crate::tools::todo::{self, TodoList};
 use crate::views::search_bar::SearchState;
 use crabot::session::Session;
 
@@ -29,8 +29,8 @@ pub(crate) struct SessionTab {
     pub(crate) selectable_msgs: HashSet<usize>,
     /// Per-tab search state (query, results, offsets, widget ids).
     pub(crate) search: SearchState,
-    /// Snapshot of the last successful `todo` tool call for right-pane display.
-    pub(crate) todo_items: Vec<TodoItem>,
+    /// Shared per-tab todo list — the `todo` tool writes to it during this tab's running.
+    pub(crate) todo_items: TodoList,
     /// Saved scroll position (absolute y-offset) to restore when switching back to this tab.
     pub(crate) scroll_offset: Option<f32>,
     /// The model selected for this tab (restored when switching back to this tab).
@@ -51,7 +51,7 @@ impl SessionTab {
             expanded_dialogs: HashSet::new(),
             selectable_msgs: HashSet::new(),
             search: SearchState::default(),
-            todo_items: Vec::new(),
+            todo_items: TodoList::default(),
             scroll_offset: None,
             selected_model,
         }
@@ -61,7 +61,7 @@ impl SessionTab {
     pub(crate) fn from_session(number: usize, session: Session, selected_model: String) -> Self {
         let prompt_tokens = session.tokens.prompt;
         let title = session.title.clone();
-        let todo_items = session.last_todo_items();
+        let todo_items = todo::create_todo_list(session.last_todo_items());
         Self {
             number,
             session,

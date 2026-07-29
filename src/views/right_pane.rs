@@ -36,11 +36,11 @@ fn section_header<'a>(title: &'a str) -> Element<'a, RightPaneEvent> {
 }
 
 /// Build the todo-list section, returning `None` when the list is empty.
-fn todo_section<'a>(todo_items: &'a [TodoItem]) -> Option<Element<'a, RightPaneEvent>> {
+fn todo_section(todo_items: &[TodoItem]) -> Option<Element<'static, RightPaneEvent>> {
     if todo_items.is_empty() {
         return None;
     }
-    let rows: Vec<Element<'_, RightPaneEvent>> = todo_items
+    let rows: Vec<Element<'static, RightPaneEvent>> = todo_items
         .iter()
         .map(|item| {
             let indent = item.depth as u16 * 16;
@@ -74,7 +74,11 @@ pub(crate) fn right_pane<'a>(
 ) -> Element<'a, RightPaneEvent> {
     let usage = &tab.last_usage;
     let session = &tab.session;
-    let todo_items: &[TodoItem] = &tab.todo_items;
+    let todo_items: Vec<TodoItem> = tab
+        .todo_items
+        .lock()
+        .map(|items| items.clone())
+        .unwrap_or_default();
     let context_window = model.map(|m| m.context_window);
     let mut col = column![].spacing(8);
     let token_amount = TokenAmount::from_genai(usage);
@@ -126,7 +130,7 @@ pub(crate) fn right_pane<'a>(
         .push(token_row("Num Requests:", session.requests.to_string()));
 
     // ── todo items ──
-    if let Some(section) = todo_section(todo_items) {
+    if let Some(section) = todo_section(&todo_items) {
         col = col.push(section);
     }
 

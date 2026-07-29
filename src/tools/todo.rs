@@ -8,6 +8,11 @@ use super::Tool;
 /// Shared todo list — the tool writes to it; the UI reads from it.
 pub type TodoList = Arc<Mutex<Vec<TodoItem>>>;
 
+/// Create a shared todo list pre-populated with the given items.
+pub fn create_todo_list(items: Vec<TodoItem>) -> TodoList {
+    Arc::new(Mutex::new(items))
+}
+
 #[derive(Debug)]
 pub struct TodoTool {
     pub items: TodoList,

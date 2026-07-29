@@ -580,11 +580,12 @@ pub(crate) fn center_pane<'a>(
     let turn_ids = search_state.turn_ids();
     let search_query: &str = &search_state.query;
     let search_results: &[usize] = &search_state.results;
-    // Running-in-background info for the status line.
-    let running_tab = conversation
-        .running_pos()
+    // Running-in-background tab numbers for the status line.
+    let running_tabs: Vec<usize> = conversation
+        .running_positions()
         .filter(|&rp| rp != conversation.viewing)
-        .map(|rp| conversation.session_tabs[rp].number);
+        .map(|rp| conversation.session_tabs[rp].number)
+        .collect();
     let viewing_number = tab.number;
     // Set up shared context for turn block builders.
     let turn_ctx = TurnView {
@@ -719,7 +720,7 @@ pub(crate) fn center_pane<'a>(
                         .map(CenterPaneEvent::Conversation)
                 })
                 .unwrap_or_else(|| Space::new().into()),
-            status_line(status, streaming, running_tab, viewing_number, font_scale),
+            status_line(status, streaming, &running_tabs, viewing_number, font_scale),
         ])
         .width(Fill)
         .height(Fill)
@@ -846,28 +847,15 @@ fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
 
 fn status_line<'a>(
     status_text: &'a str,
-    streaming: DialogPhase,
-    running_tab: Option<usize>,
+    phase: DialogPhase,
+    running_tabs: &[usize],
     viewing_number: usize,
     font_scale: f32,
 ) -> Element<'a, CenterPaneEvent> {
     let mut row = row![].align_y(Alignment::Center).spacing(8);
 
-    if let Some(n) = running_tab {
-        row = row.push(
-            text(format!("Session {n} is running…"))
-                .size(12.0 * font_scale)
-                .color(color_muted()),
-        );
-        row = row.push(
-            button(text("⏹ Stop").size(11.0 * font_scale))
-                .on_press(CenterPaneEvent::Conversation(
-                    ConversationEvent::SessionEvent(n, SessionEvent::Stop),
-                ))
-                .padding([4, 10])
-                .style(icon_button_style),
-        );
-    } else if streaming != DialogPhase::Idle {
+    // Viewing tab status and stop button.
+    if phase != DialogPhase::Idle {
         row = row.push(
             text(status_text)
                 .size(12.0 * font_scale)
@@ -888,6 +876,18 @@ fn status_line<'a>(
                 .color(color_muted()),
         );
     }
+
+    // Background running sessions indicator with per-tab stop buttons.
+    if !running_tabs.is_empty() {
+        let label = if running_tabs.len() == 1 {
+            format!("Session {} running…", running_tabs[0])
+        } else {
+            let nums: Vec<String> = running_tabs.iter().map(|n| n.to_string()).collect();
+            format!("Sessions {} running…", nums.join(", "))
+        };
+        row = row.push(text(label).size(12.0 * font_scale).color(color_muted()));
+    }
+
     container(row)
         .width(Fill)
         .align_x(alignment::Horizontal::Center)

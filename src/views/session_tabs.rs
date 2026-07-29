@@ -24,7 +24,6 @@ pub(crate) fn session_tabs<'a>(
     conversation: &'a ConversationState,
 ) -> Element<'a, CenterPaneEvent> {
     let viewing_number = conversation.viewing_tab_number();
-    let running_pos = conversation.running_pos();
 
     let tabs: Vec<Element<'_, CenterPaneEvent>> = conversation
         .session_tabs
@@ -32,7 +31,7 @@ pub(crate) fn session_tabs<'a>(
         .map(|tab| {
             let active = tab.number == viewing_number;
             let running = tab.running();
-            let is_running_bg = running && running_pos.is_some_and(|rp| rp != conversation.viewing);
+            let is_running_bg = running && !active;
 
             let mut row_content = row![].spacing(6).align_y(Alignment::Center);
 

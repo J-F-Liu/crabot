@@ -13,8 +13,8 @@ mod write;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use genai::chat::Tool as GenaiTool;
@@ -198,7 +198,7 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new registry pre-populated with the nine built-in tools.
     pub fn new() -> Self {
-        let todo_items: todo::TodoList = Arc::new(Mutex::new(Vec::new()));
+        let todo_items: todo::TodoList = todo::create_todo_list(Vec::new());
         let builtin: Vec<ToolRef> = vec![
             Arc::new(read::ReadTool),
             Arc::new(write::WriteTool),

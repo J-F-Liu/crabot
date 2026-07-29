@@ -77,20 +77,6 @@ impl SessionState {
         self.pending_prompt = Some(prompt);
     }
 
-    /// Park the full user prompt so it can be dispatched later when this
-    /// tab is no longer blocked by another tab's stream.
-    pub(crate) fn set_pending(&mut self, prompt: UserPrompt) {
-        self.pending_prompt = Some(prompt);
-    }
-
-    /// Clear the pending prompt (both the shared lock and the stored prompt).
-    pub(crate) fn clear_pending(&mut self) {
-        if let Ok(mut pending) = self.injected_prompt.lock() {
-            *pending = None;
-        }
-        self.pending_prompt = None;
-    }
-
     /// Human-readable status label for the current streaming phase.
     pub(crate) fn status(&self, session_empty: bool) -> &str {
         match self.phase {
@@ -268,16 +254,7 @@ pub(crate) fn update(
         SessionEvent::Cancelled(genai_messages) => {
             state.ask_request = None;
             state.phase = DialogPhase::Idle;
-            if let Ok(mut pending) = state.injected_prompt.lock()
-                && let Some(prompt) = pending.take()
-            {
-                let msg = format!(
-                    "⚠️ Stream cancelled — the following prompt was **not executed**:\n\n> {}",
-                    prompt
-                );
-                session.push_turn(Turn::assistant(msg, None));
-            }
-            state.pending_prompt = None;
+            clear_pending_with_notice(state, session);
             session.history.extend(genai_messages);
             if let Some(last) = session.last_turn_mut()
                 && let TurnBody::Text(tc) = &mut last.body
@@ -314,6 +291,20 @@ pub(crate) fn handle_scroll(state: &SessionState, viewport: Viewport) {
 }
 
 // ── private helpers ───────────────────────────────────────────────
+
+/// Clear and report injected prompt after a stream ended without consuming it.
+fn clear_pending_with_notice(state: &mut SessionState, session: &mut Session) {
+    if let Ok(mut pending) = state.injected_prompt.lock()
+        && let Some(prompt) = pending.take()
+    {
+        let msg = format!(
+            "⚠️ Stream ended — the following prompt was **not executed**:\n\n> {}",
+            prompt
+        );
+        session.push_turn(Turn::assistant(msg, None));
+    }
+    state.pending_prompt = None;
+}
 
 /// Minimum interval between auto-scroll snaps during streaming.
 const SCROLL_THROTTLE: Duration = Duration::from_millis(500);
@@ -411,4 +402,5 @@ fn handle_stream_error(
     } else {
         session.push_turn(Turn::assistant(error_msg, None));
     }
+    clear_pending_with_notice(state, session);
 }

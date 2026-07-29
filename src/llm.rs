@@ -150,7 +150,7 @@ pub async fn send_stream(
         genai_messages: &mut Vec<ChatMessage>,
         on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
     ) -> Option<bool> {
-        let prompt = pending.lock().unwrap().take()?;
+        let prompt = pending.lock().unwrap_or_else(|e| e.into_inner()).take()?;
         let user_msg = ChatMessage::user(prompt.clone());
         chat_req.messages.push(user_msg.clone());
         genai_messages.push(user_msg);

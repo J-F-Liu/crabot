@@ -13,7 +13,7 @@ use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
 
 use crabot::model::{self, ModelConfig, ModelList};
 use crabot::tools;
-use crabot::user::WorkMode;
+use crabot::user::{UserPrompt, WorkMode};
 use crabot::{setup, workspace};
 use prompt::{FilepathEntry, TOOLS, WORKSPACE_TREE};
 
@@ -211,6 +211,8 @@ pub(crate) struct ConversationState {
     /// Monotonic counter for the next tab's `number`; reset on restart.
     next_tab_number: usize,
     pub(crate) session_list: Vec<SessionEntry>,
+    /// Queue of tab numbers whose ask-tool requests arrived while the viewing tab already had an unanswered ask.
+    pub(crate) pending_ask_queue: std::collections::VecDeque<usize>,
 }
 
 impl ConversationState {
@@ -220,6 +222,7 @@ impl ConversationState {
             viewing: 0,
             next_tab_number: 2,
             session_list: Vec::new(),
+            pending_ask_queue: std::collections::VecDeque::new(),
         }
     }
 
@@ -238,9 +241,12 @@ impl ConversationState {
         self.viewing().number
     }
 
-    /// Position (index into `tabs`) of the running tab, if any.
-    pub(crate) fn running_pos(&self) -> Option<usize> {
-        self.session_tabs.iter().position(|t| t.running())
+    /// Positions (indices into `tabs`) of all currently-running tabs.
+    pub(crate) fn running_positions(&self) -> impl Iterator<Item = usize> + '_ {
+        self.session_tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| t.running().then_some(i))
     }
 
     /// Position of a tab by its stable number.
@@ -267,8 +273,19 @@ impl ConversationState {
         n
     }
 
+    /// Take and clear the pending prompt, returns `None` if there was no pending prompt.
+    pub(crate) fn take_pending_prompt(&mut self, tab_pos: usize) -> Option<UserPrompt> {
+        let state = &mut self.session_tabs[tab_pos].session_state;
+        let prompt = state.pending_prompt.take()?;
+        if let Ok(mut pending) = state.injected_prompt.lock() {
+            *pending = None;
+        }
+        Some(prompt)
+    }
+
     /// Request all running tabs to stop streaming.
     pub(crate) fn stop(&mut self) {
+        self.pending_ask_queue.clear();
         for tab in &mut self.session_tabs {
             if tab.running() {
                 tab.session_state.stop();

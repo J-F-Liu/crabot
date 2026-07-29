@@ -62,6 +62,10 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
                 let model = app.models.ensure_valid_name(&app.settings.selected_model);
                 app.settings.selected_model = model;
             }
+            // Validate every tab's selected_model against the updated model list.
+            for tab in &mut app.conversation.session_tabs {
+                tab.selected_model = app.models.ensure_valid_name(&tab.selected_model);
+            }
         }
         SettingsEvent::SavePromptRecipes => {
             app.settings_dialog.update(event);
@@ -134,8 +138,10 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             if app.settings_dialog.playground_generation == generation {
                 app.settings_dialog.update(event);
                 if is_todo {
-                    app.conversation.viewing_mut().todo_items =
-                        app.tools.tool_registry.snapshot_todo();
+                    let snapshot = app.tools.tool_registry.snapshot_todo();
+                    if let Ok(mut items) = app.conversation.viewing_mut().todo_items.lock() {
+                        *items = snapshot;
+                    }
                 }
             }
         }

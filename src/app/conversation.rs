@@ -1,4 +1,7 @@
-use iced::{Task, widget::text_editor};
+use iced::{
+    Task,
+    widget::{self, text_editor},
+};
 
 use crabot::HashSetExt;
 use crabot::chat::Turn;
@@ -10,9 +13,9 @@ use std::sync::atomic::Ordering;
 
 use crate::app::session_state::{self, AskAction, SessionEvent};
 use crate::app::session_tab::SessionTab;
-use crate::app::{App, ConversationEvent, ConversationState, FocusedTarget, Message};
+use crate::app::{App, ConversationEvent, FocusedTarget, Message};
 use crate::llm::DialogPhase;
-use crate::views::{self, SCROLL_STEP, scroll_to_end};
+use crate::views::{self, ASK_INPUT, SCROLL_STEP, scroll_to_end};
 
 pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
     match event {
@@ -38,7 +41,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::LoadSession(entry) => return load_session(app, entry),
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
         ConversationEvent::CloseTab(number) => return close_tab(app, number),
-        ConversationEvent::AskAction(action) => ask_action(&mut app.conversation, action),
+        ConversationEvent::AskAction(action) => return ask_action(app, action),
         ConversationEvent::SessionListLoaded(entries) => {
             app.conversation.session_list = entries;
         }
@@ -138,13 +141,19 @@ fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
     // Switch tab
     app.conversation.viewing = pos;
     app.layout.focused = None;
+    // Remove from pending-ask queue — the user is now viewing this tab.
+    app.conversation.pending_ask_queue.retain(|&n| n != number);
 
     // Restore the incoming tab's selected model.
     let tab = app.conversation.viewing_mut();
     app.settings.selected_model = tab.selected_model.clone();
 
     // Restore or reset the incoming tab's scroll position.
-    views::scroll_to(tab.scroll_offset).discard()
+    let scroll_task = views::scroll_to(tab.scroll_offset).discard();
+
+    // Focus the ask input so the user can answer the ask tool immediately.
+    let focus_task = widget::operation::focus(ASK_INPUT.clone());
+    Task::batch([scroll_task, focus_task])
 }
 
 /// Close the tab with the given number.
@@ -160,6 +169,8 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
     }
     let was_viewing = pos == app.conversation.viewing;
     app.conversation.session_tabs.remove(pos);
+    // Clean up the pending-ask queue — the tab is gone.
+    app.conversation.pending_ask_queue.retain(|&n| n != number);
 
     if app.conversation.session_tabs.is_empty() {
         let number = app.conversation.next_tab_number();
@@ -275,24 +286,48 @@ fn navigate_session(app: &mut App, up: bool) -> Task<Message> {
 
 // ── ask tool ───────────────────────────────────────────────────────
 
-fn ask_action(conversation: &mut ConversationState, action: AskAction) {
+fn ask_action(app: &mut App, action: AskAction) -> Task<Message> {
     let result = match action {
         AskAction::OptionSelected(option) => {
-            conversation.viewing_mut().session_state.ask_input = option;
-            return;
+            app.conversation.viewing_mut().session_state.ask_input = option;
+            return Task::none();
         }
-        AskAction::Ok => Ok(conversation.viewing().session_state.ask_input.clone()),
+        AskAction::Ok => Ok(app.conversation.viewing().session_state.ask_input.clone()),
         AskAction::Skip => Ok("No preference. Use your best judgment.".into()),
     };
-    let _ = conversation
+    let _ = app
+        .conversation
         .viewing_mut()
         .session_state
         .ask_sender
         .send(result);
-    conversation.viewing_mut().session_state.ask_request = None;
+    app.conversation.viewing_mut().session_state.ask_request = None;
+
+    // After answered, switch to the next pending tab that issued an ask.
+    process_pending_ask_queue(app)
 }
 
 // ── streaming events ───────────────────────────────────────────────
+
+/// Pop the next pending ask from the queue and switch to that tab.
+fn process_pending_ask_queue(app: &mut App) -> Task<Message> {
+    while let Some(number) = app.conversation.pending_ask_queue.pop_front() {
+        // Skip tabs that have already been closed or whose ask was resolved by other means (e.g. timeout).
+        if let Some(pos) = app.conversation.tab_pos(number)
+            && app.conversation.session_tabs[pos]
+                .session_state
+                .ask_request
+                .is_some()
+        {
+            if pos == app.conversation.viewing {
+                // Already viewing — request is visible, nothing to do.
+                break;
+            }
+            return switch_tab(app, number);
+        }
+    }
+    Task::none()
+}
 
 /// Route a tagged stream event to the owning tab.
 fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Message> {
@@ -301,11 +336,22 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
         return Task::none();
     };
 
-    // Auto-switch to a background tab that issues an ask, then keep processing
-    // the event below so the ask request is actually registered on the tab.
     let switch_task =
         if pos != app.conversation.viewing && matches!(event, SessionEvent::AskRequest(_)) {
-            switch_tab(app, number)
+            if app
+                .conversation
+                .viewing()
+                .session_state
+                .ask_request
+                .is_some()
+            {
+                // queue it instead so the user answers current before the next
+                app.conversation.pending_ask_queue.push_back(number);
+                Task::none()
+            } else {
+                // auto-switch to a background tab that issues an ask
+                switch_tab(app, number)
+            }
         } else {
             Task::none()
         };
@@ -323,34 +369,50 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
         .and_then(|cfg| app.models.get_model(cfg))
         .map(|m| m.cost.clone());
 
-    // Update todo snapshot into the target tab on todo ToolResult.
-    if let SessionEvent::ToolResult(ref result) = event
-        && result.name == "todo"
-    {
-        app.conversation.session_tabs[pos].todo_items = app.tools.tool_registry.snapshot_todo();
-    }
+    let finished = matches!(event, SessionEvent::Done(_));
 
-    let is_terminal = matches!(
-        event,
-        SessionEvent::Done(_) | SessionEvent::Error(_, _) | SessionEvent::Cancelled(_)
-    );
+    // Remember whether this tab had an active ask so we can detect a clear.
+    let had_ask = app.conversation.session_tabs[pos]
+        .session_state
+        .ask_request
+        .is_some();
 
     let tab = &mut app.conversation.session_tabs[pos];
-    let task = session_state::update(event, tab, cost, viewing);
+    let update_task = session_state::update(event, tab, cost, viewing);
 
-    // After a stream finishes, auto-dispatch a prompt that was parked on another idle tab.
-    let dispatch_task = if is_terminal && app.conversation.running_pos().is_none() {
-        app.conversation
-            .session_tabs
-            .iter()
-            .position(|t| t.number != number && t.session_state.pending_prompt.is_some())
-            .map(|target| dispatch_pending(app, target))
-            .unwrap_or_else(Task::none)
+    // If this tab's ask was just resolved (user answer, timeout, Done, …),
+    // remove it from the queue and, when the viewing tab has no active ask,
+    // process remaining pending asks.
+    let ask_cleared = had_ask
+        && app.conversation.session_tabs[pos]
+            .session_state
+            .ask_request
+            .is_none();
+    let mut queue_task = Task::none();
+    if ask_cleared {
+        app.conversation.pending_ask_queue.retain(|&n| n != number);
+        if app
+            .conversation
+            .viewing()
+            .session_state
+            .ask_request
+            .is_none()
+        {
+            queue_task = process_pending_ask_queue(app);
+        }
+    }
+
+    // Auto-dispatch a prompt that was injected too late for the just-ended stream.
+    let dispatch_task = if finished {
+        dispatch_pending(app, pos)
     } else {
         Task::none()
     };
 
-    switch_task.chain(task.discard()).chain(dispatch_task)
+    switch_task
+        .chain(update_task.discard())
+        .chain(dispatch_task)
+        .chain(queue_task)
 }
 
 /// Handle search-bar events on the viewing tab.
@@ -380,20 +442,12 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
     app.prompt.files.enabled = false;
     app.prompt.user_prompt.clear();
 
-    let another_running =
-        app.conversation.running_pos().is_some() && !app.conversation.viewing_is_streaming();
     let tab_pos = app.conversation.viewing;
     let tab = app.conversation.viewing_mut();
 
     // If current tab is running, inject to streaming.
     if tab.session_state.phase != DialogPhase::Idle {
         tab.session_state.inject_prompt(user_prompt);
-        return Task::none();
-    }
-
-    // If another tab is running, park as pending.
-    if another_running {
-        tab.session_state.set_pending(user_prompt);
         return Task::none();
     }
 
@@ -432,7 +486,7 @@ fn launch_dialog(
     start_dialog(app, tab_pos, model, Some(user_prompt))
 }
 
-/// Auto-dispatch a prompt parked on an idle tab while another tab streamed.
+/// Auto-dispatch a prompt that was injected too late for the just-ended stream.
 fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
     // Use the tab's own model (session model takes precedence over the saved label).
     let tab = &app.conversation.session_tabs[tab_pos];
@@ -449,15 +503,9 @@ fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
         app.overlay.show_workspace_dialog = true;
         return Task::none();
     }
-    let Some(user_prompt) = app.conversation.session_tabs[tab_pos]
-        .session_state
-        .pending_prompt
-        .take()
-    else {
+    let Some(user_prompt) = app.conversation.take_pending_prompt(tab_pos) else {
         return Task::none();
     };
-    // `start_dialog` clears the stale `pending_user_prompt` shared-lock copy
-    // so the new stream won't re-inject it as an interrupt.
     app.prompt.files.enabled = false;
     launch_dialog(app, tab_pos, &model, user_prompt)
 }
@@ -466,7 +514,7 @@ fn resend_session(app: &mut App) -> Task<Message> {
     let viewing_is_streaming = app.conversation.viewing_is_streaming();
     let is_new = app.conversation.viewing().center_pane_title == "New session";
 
-    if viewing_is_streaming || is_new || app.conversation.running_pos().is_some() {
+    if viewing_is_streaming || is_new {
         return Task::none();
     }
     let Some(model) = app.selected_model_config() else {
@@ -541,7 +589,6 @@ pub(crate) fn start_dialog(
 
     // Re-borrow for the remaining setup.
     let tab = &mut app.conversation.session_tabs[tab_pos];
-    tab.session_state.clear_pending();
     tab.session_state.start_index = tab.session.total_turns();
     tab.session_state.auto_scroll.store(true, Ordering::Relaxed);
 
@@ -549,15 +596,20 @@ pub(crate) fn start_dialog(
     let (ask_tx, ask_rx) = tokio::sync::mpsc::unbounded_channel();
     tab.session_state.ask_sender = ask_tx;
 
+    let mut tools = app
+        .tools
+        .tool_registry
+        .enabled_tools(&app.tools.enabled_tools, &app.tools.enabled_mcp_servers);
+    // Bind the todo tool to this tab's own list so parallel sessions don't clobber each other's todos.
+    if let Some(pos) = tools.iter().position(|t| t.name() == "todo") {
+        tools[pos] = std::sync::Arc::new(crate::tools::todo::TodoTool::new(tab.todo_items.clone()));
+    }
     let config = crate::llm::SendConfig {
         model,
         workspace: app.prompt.workspace.1.clone(),
         system_prompt: app.prompt.get_prompt(),
         user_prompt,
-        tools: app
-            .tools
-            .tool_registry
-            .enabled_tools(&app.tools.enabled_tools, &app.tools.enabled_mcp_servers),
+        tools,
         injected_prompt: tab.session_state.injected_prompt.clone(),
         ask_receiver: ask_rx,
         user_agent: crabot::app_title().to_string(),
