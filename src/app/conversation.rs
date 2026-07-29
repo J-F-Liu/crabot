@@ -478,8 +478,10 @@ fn launch_dialog(
     let dialog_index = tab.session.dialogs.len();
     tab.expanded_dialogs.clear();
     tab.expanded_dialogs.insert(dialog_index);
-    tab.session
-        .add_dialog(Session::derive_title(&user_prompt.content));
+    tab.session.add_dialog(
+        Session::derive_title(&user_prompt.content),
+        user_prompt.mode,
+    );
     tab.session
         .push_turn(Turn::user(user_prompt.content.clone()));
     // `tab` borrow ends here (NLL); start_dialog takes a fresh &mut App.

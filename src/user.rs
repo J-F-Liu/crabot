@@ -30,7 +30,7 @@ impl WorkMode {
         &MODES
     }
 
-    /// The default mode (the one whose lowercase name is `"code"`, or the first mode).
+    /// The default mode (the one named `"Code"`, or the first mode).
     pub fn default_mode() -> WorkMode {
         WorkMode::all()
             .iter()
@@ -40,6 +40,17 @@ impl WorkMode {
             .unwrap_or(WorkMode {
                 name: ArrayString::from("Code").unwrap(),
             })
+    }
+}
+
+impl From<&str> for WorkMode {
+    /// Look up a work mode by name (case-insensitive).
+    fn from(name: &str) -> Self {
+        WorkMode::all()
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
+            .copied()
+            .unwrap_or_else(WorkMode::default_mode)
     }
 }
 
@@ -64,9 +75,10 @@ impl UserPrompt {
         let mut parts: Vec<ContentPart> = Vec::with_capacity(3);
 
         if let Some(mode) = self.mode {
-            let mut lower = mode.name;
-            lower.make_ascii_lowercase();
-            parts.push(ContentPart::Text(format!("work-mode: {}", lower)));
+            parts.push(ContentPart::Text(format!(
+                "work-mode: {}",
+                mode.name.to_ascii_lowercase()
+            )));
         }
 
         if let Some(tree) = &self.workspace_tree

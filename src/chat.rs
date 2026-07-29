@@ -2,22 +2,20 @@ use std::sync::LazyLock;
 
 use genai::chat::ChatRole;
 use gh_emoji::Replacer;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::user::WorkMode;
 
 // ── TextContent ──────────────────────────────────────────────────────
 
 /// Plain-text message content (User or Assistant role).
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default)]
 pub struct TextContent {
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     /// Cached parsed Markdown for the text content.
-    #[serde(skip)]
     pub content_md: Option<Box<iced::widget::markdown::Content>>,
     /// Cached parsed Markdown for the reasoning text (if any).
-    #[serde(skip)]
     pub reasoning_md: Option<Box<iced::widget::markdown::Content>>,
 }
 
@@ -62,10 +60,9 @@ impl TextContent {
 // ── ToolResult ───────────────────────────────────────────────────────
 
 /// Paired tool call and its execution result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ToolResult {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     /// Tool call arguments as provided by the LLM.
     pub args: Value,
@@ -90,10 +87,9 @@ impl ToolResult {
 // ── ToolCall ─────────────────────────────────────────────────────────
 
 /// A pending tool call that hasn't produced a result yet.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ToolCall {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     pub args: serde_json::Value,
 }
@@ -101,7 +97,7 @@ pub struct ToolCall {
 // ── TurnBody ────────────────────────────────────────────────────────
 
 /// Body of a single turn in the conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum TurnBody {
     /// Plain-text message (User or Assistant role).
     Text(TextContent),
@@ -114,7 +110,7 @@ pub enum TurnBody {
 // ── Turn ────────────────────────────────────────────────────────────
 
 /// A single turn in the conversation history, formatted for UI display.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Turn {
     pub role: ChatRole,
     pub body: TurnBody,
@@ -124,10 +120,12 @@ pub struct Turn {
 // ── Dialog ──────────────────────────────────────────────────────────
 
 /// A named conversation — a sequence of turns grouped under a title.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Dialog {
     pub title: String,
     pub turns: Vec<Turn>,
+    /// Work mode under which this dialog was launched.
+    pub mode: Option<WorkMode>,
 }
 
 impl Dialog {
@@ -180,16 +178,6 @@ impl Turn {
             role: ChatRole::Tool,
             body: TurnBody::Temp(calls),
             timestamp: String::new(),
-        }
-    }
-}
-
-impl Clone for Turn {
-    fn clone(&self) -> Self {
-        Self {
-            role: self.role.clone(),
-            body: self.body.clone(),
-            timestamp: self.timestamp.clone(),
         }
     }
 }

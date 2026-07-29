@@ -196,6 +196,25 @@ fn search_current_style(_theme: &Theme) -> container::Style {
     }
 }
 
+/// Small work-mode badge pill shown in dialog headers.
+fn work_mode_badge(name: String, font_scale: f32) -> Element<'static, CenterPaneEvent> {
+    container(text(name).size(11.0 * font_scale).font(Font {
+        weight: font::Weight::Semibold,
+        ..Font::DEFAULT
+    }))
+    .padding([2, 8])
+    .style(|_theme: &Theme| container::Style {
+        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.12).into()),
+        border: Border {
+            radius: 8.0.into(),
+            ..Default::default()
+        },
+        text_color: Some(CRABOT_PRIMARY),
+        ..container::Style::default()
+    })
+    .into()
+}
+
 /// Small turn-count pill.
 fn turn_count_badge(count: usize, font_scale: f32) -> Element<'static, CenterPaneEvent> {
     container(
@@ -611,18 +630,28 @@ pub(crate) fn center_pane<'a>(
             let turn_count = dialog.turns.len();
 
             // ── clickable header ──────────────────────────────────
-            let title_row = row![
+            let mut row_elements: Vec<Element<'_, CenterPaneEvent>> = vec![
                 text(indicator)
                     .size(10.0 * font_scale)
-                    .color(CRABOT_PRIMARY),
-                text(title).size(13.0 * font_scale).font(Font {
-                    weight: font::Weight::Bold,
-                    ..Font::DEFAULT
-                }),
-            ]
-            .width(Length::Fill)
-            .spacing(8)
-            .align_y(Alignment::Center);
+                    .color(CRABOT_PRIMARY)
+                    .into(),
+            ];
+            if let Some(mode) = dialog.mode {
+                row_elements.push(work_mode_badge(mode.name.to_string(), font_scale));
+            }
+            row_elements.push(
+                text(title)
+                    .size(13.0 * font_scale)
+                    .font(Font {
+                        weight: font::Weight::Bold,
+                        ..Font::DEFAULT
+                    })
+                    .into(),
+            );
+            let title_row = iced::widget::Row::with_children(row_elements)
+                .width(Length::Fill)
+                .spacing(8)
+                .align_y(Alignment::Center);
 
             let header = mouse_area(
                 container(

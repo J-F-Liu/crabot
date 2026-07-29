@@ -10,6 +10,7 @@ use chrono::Datelike;
 use crate::chat::{Dialog, ToolResult, Turn};
 use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
+use crate::user::WorkMode;
 
 /// A conversation session, persisted to `.agent/sessions/`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,14 +89,15 @@ impl Session {
 
     // ── Dialog / turn helpers ────────────────────────────────────────
 
-    /// Add a new empty dialog with the given title.
-    pub fn add_dialog(&mut self, title: String) {
+    /// Add a new empty dialog with the given title and optional work mode.
+    pub fn add_dialog(&mut self, title: String, mode: Option<WorkMode>) {
         if self.title.is_empty() {
             self.title = title.clone();
         }
         self.dialogs.push(Dialog {
             title,
             turns: Vec::new(),
+            mode,
         });
     }
 
@@ -111,6 +113,7 @@ impl Session {
             self.dialogs.push(Dialog {
                 title: String::new(),
                 turns: vec![turn],
+                mode: None,
             });
         }
     }
@@ -236,6 +239,7 @@ impl Session {
                 None => dialogs.push(Dialog {
                     title: String::new(),
                     turns: vec![turn],
+                    mode: None,
                 }),
             }
         }
@@ -246,17 +250,21 @@ impl Session {
             match msg.role {
                 ChatRole::System => {}
                 ChatRole::User => {
-                    let text = msg
-                        .content
-                        .parts()
-                        .last()
+                    let parts = msg.content.parts();
+                    // Extract work mode from the first part if present (e.g. "work-mode: code").
+                    let mode = parts
+                        .first()
                         .and_then(|p| p.as_text())
-                        .unwrap_or_default();
+                        .and_then(|t| t.strip_prefix("work-mode: "))
+                        .filter(|s| !s.is_empty())
+                        .map(WorkMode::from);
+                    let text = parts.last().and_then(|p| p.as_text()).unwrap_or_default();
                     let title = Self::derive_title(text);
                     let turn = Turn::user(text);
                     dialogs.push(Dialog {
                         title,
                         turns: vec![turn],
+                        mode,
                     });
                 }
                 ChatRole::Assistant => {
