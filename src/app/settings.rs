@@ -40,6 +40,8 @@ pub(crate) fn handle_model_config(app: &mut App, event: model_config::Event) -> 
     if model_config::update(event, &mut app.models, &mut app.settings.selected_model) {
         app.models.save();
     }
+    // Keep the current viewing tab's selected_model in sync with settings.
+    app.conversation.viewing_mut().selected_model = app.settings.selected_model.clone();
     Task::none()
 }
 

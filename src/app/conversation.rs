@@ -135,9 +135,6 @@ fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
         return Task::none();
     }
 
-    // Save the outgoing tab's selected model.
-    app.conversation.viewing_mut().selected_model = app.settings.selected_model.clone();
-
     // Switch tab
     app.conversation.viewing = pos;
     app.layout.focused = None;
@@ -379,7 +376,7 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
         return Task::none();
     }
 
-    let user_prompt = build_user_prompt(app, &content);
+    let user_prompt = build_user_prompt(app, content);
     app.prompt.files.enabled = false;
     app.prompt.user_prompt.clear();
 
@@ -400,11 +397,11 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
         return Task::none();
     }
 
-    launch_dialog(app, tab_pos, &content, &model, user_prompt)
+    launch_dialog(app, tab_pos, &model, user_prompt)
 }
 
 /// Build a `UserPrompt` from `content` using the current prompt settings.
-fn build_user_prompt(app: &App, content: &str) -> UserPrompt {
+fn build_user_prompt(app: &App, content: String) -> UserPrompt {
     let mode = app.prompt.workmode_enabled.then_some(app.prompt.workmode);
     let workspace_tree = if app.prompt.files.enabled {
         let tree = app.prompt.files.content.text();
@@ -412,23 +409,23 @@ fn build_user_prompt(app: &App, content: &str) -> UserPrompt {
     } else {
         None
     };
-    UserPrompt::new(mode, content.to_owned(), workspace_tree)
+    UserPrompt::new(mode, content, workspace_tree)
 }
 
 /// Set up a new dialog from `content` on the given tab and start streaming.
 fn launch_dialog(
     app: &mut App,
     tab_pos: usize,
-    content: &str,
     model: &ModelConfig,
     user_prompt: UserPrompt,
 ) -> Task<Message> {
     let tab = &mut app.conversation.session_tabs[tab_pos];
-    tab.center_pane_title = content.to_owned();
+    tab.center_pane_title = user_prompt.content.clone();
     let dialog_index = tab.session.dialogs.len();
     tab.expanded_dialogs.clear();
     tab.expanded_dialogs.insert(dialog_index);
-    tab.session.add_dialog(Session::derive_title(content));
+    tab.session
+        .add_dialog(Session::derive_title(&user_prompt.content));
     tab.session
         .push_turn(Turn::user(user_prompt.content.clone()));
     // `tab` borrow ends here (NLL); start_dialog takes a fresh &mut App.
@@ -437,8 +434,15 @@ fn launch_dialog(
 
 /// Auto-dispatch a prompt parked on an idle tab while another tab streamed.
 fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
+    // Use the tab's own model (session model takes precedence over the saved label).
+    let tab = &app.conversation.session_tabs[tab_pos];
+    let model = tab
+        .session
+        .model
+        .clone()
+        .or_else(|| app.models.get_config(&tab.selected_model).cloned());
     // Validate guards BEFORE taking the parked prompt so it isn't lost on failure.
-    let Some(model) = app.selected_model_config() else {
+    let Some(model) = model else {
         return Task::none();
     };
     if app.prompt.workspace.1.as_os_str().is_empty() {
@@ -455,8 +459,7 @@ fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
     // `start_dialog` clears the stale `pending_user_prompt` shared-lock copy
     // so the new stream won't re-inject it as an interrupt.
     app.prompt.files.enabled = false;
-    let content = user_prompt.content.clone();
-    launch_dialog(app, tab_pos, &content, &model, user_prompt)
+    launch_dialog(app, tab_pos, &model, user_prompt)
 }
 
 fn resend_session(app: &mut App) -> Task<Message> {
