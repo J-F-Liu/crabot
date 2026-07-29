@@ -8,7 +8,7 @@ use super::{Tool, arg_path, make_workspace_relative, normalize_newlines, resolve
 
 /// A single edit operation with flexible field-name aliases for cross‑model
 /// compatibility (e.g. `old_text` / `old` / `search`).
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EditParam {
     #[serde(alias = "old")]
@@ -22,6 +22,23 @@ pub struct EditParam {
     #[serde(alias = "new_string")]
     #[serde(alias = "replace")]
     pub new_text: String,
+}
+
+/// All accepted JSON keys for an edit object (canonical names + aliases).
+fn is_known_edit_key(key: &str) -> bool {
+    matches!(
+        key,
+        "old_text"
+            | "old"
+            | "old_str"
+            | "old_string"
+            | "search"
+            | "new_text"
+            | "new"
+            | "new_str"
+            | "new_string"
+            | "replace"
+    )
 }
 
 pub struct EditTool;
@@ -146,6 +163,21 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     let mut located: Vec<LocatedEdit> = Vec::with_capacity(edits.len());
     for (i, edit_value) in edits.iter().enumerate() {
         let idx = i + 1; // 1‑based for human‑readable messages
+        // Validate JSON keys before deserialising to report unexpected fields with a clear message.
+        let mut edit_errors: Vec<String> = Vec::new();
+        if let Some(obj) = edit_value.as_object() {
+            for key in obj.keys() {
+                if !is_known_edit_key(key) {
+                    edit_errors.push(format!(
+                        "Edit {idx}: unexpected field '{key}', accepted fields are: old_text, new_text"
+                    ));
+                }
+            }
+        }
+        if !edit_errors.is_empty() {
+            errors.extend(edit_errors);
+            continue;
+        }
         let edit: EditParam = match serde_json::from_value(edit_value.clone()) {
             Ok(e) => e,
             Err(e) => {
@@ -229,4 +261,31 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     std::fs::write(&file_path, &result)
         .map_err(|e| format!("Failed to write {display_path}: {e}"))?;
     Ok(format!("Applied {} edits in {display_path}", located.len(),))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn deserialize_edit_params_with_unknown_fields() {
+        // Valid: known fields only.
+        let v = json!({"old_text": "foo", "new_text": "bar"});
+        assert!(serde_json::from_value::<EditParam>(v).is_ok());
+
+        // Valid: aliases work.
+        let v = json!({"old": "foo", "new": "bar"});
+        assert!(serde_json::from_value::<EditParam>(v).is_ok());
+
+        // deny_unknown_fields: an unknown field is rejected at the JSON level
+        // with a user-friendly message that lists accepted keys.
+        let v = json!({"old_text": "foo", "new_text": "bar", "bogus": 1});
+        let err = serde_json::from_value::<EditParam>(v).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field"),
+            "expected 'unknown field' error, got: {msg}"
+        );
+    }
 }
