@@ -40,6 +40,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::NewSession => return new_session(app),
         ConversationEvent::LoadSession(entry) => return load_session(app, entry),
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
+        ConversationEvent::SwitchTabByDigit(digit) => return switch_tab_by_digit(app, digit),
         ConversationEvent::CloseTab(number) => return close_tab(app, number),
         ConversationEvent::AskAction(action) => return ask_action(app, action),
         ConversationEvent::SessionListLoaded(entries) => {
@@ -154,6 +155,20 @@ fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
     // Focus the ask input so the user can answer the ask tool immediately.
     let focus_task = widget::operation::focus(ASK_INPUT.clone());
     Task::batch([scroll_task, focus_task])
+}
+
+/// Switch to the tab at the given 1-based position; digit 0 means the last tab.
+fn switch_tab_by_digit(app: &mut App, digit: usize) -> Task<Message> {
+    let tabs = &app.conversation.session_tabs;
+    let number = if digit == 0 {
+        tabs.last().map(|t| t.number)
+    } else {
+        tabs.get(digit - 1).map(|t| t.number)
+    };
+    match number {
+        Some(n) => switch_tab(app, n),
+        None => Task::none(),
+    }
 }
 
 /// Close the tab with the given number.

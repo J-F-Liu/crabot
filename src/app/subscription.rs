@@ -68,6 +68,15 @@ pub(crate) fn subscription(_state: &App) -> Subscription<Message> {
                     keyboard::Key::Character("-") => {
                         Some(Message::Layout(LayoutEvent::Zoom(-0.05)))
                     }
+                    keyboard::Key::Character(
+                        digit @ ("0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"),
+                    ) => {
+                        // Ctrl+1–9 → Nth tab; Ctrl+0 → last tab (common convention).
+                        let digit = (digit.as_bytes()[0] - b'0') as usize;
+                        Some(Message::Conversation(ConversationEvent::SwitchTabByDigit(
+                            digit,
+                        )))
+                    }
                     _ => None,
                 }
             }

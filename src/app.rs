@@ -387,6 +387,8 @@ pub(crate) enum ConversationEvent {
     SessionEvent(usize, session_state::SessionEvent),
     /// Switch the viewing tab to the one with the given number.
     SwitchTab(usize),
+    /// Switch to the Nth tab (1-based position); 0 means the last tab.
+    SwitchTabByDigit(usize),
     /// Close the tab with the given number.
     CloseTab(usize),
     CopySessionTitle,
