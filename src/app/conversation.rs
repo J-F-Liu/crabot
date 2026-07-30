@@ -732,7 +732,7 @@ pub(crate) fn start_dialog(
     let config = crate::llm::SendConfig {
         model,
         workspace: app.prompt.workspace.1.clone(),
-        system_prompt: app.prompt.get_prompt(),
+        system_prompt: app.prompt.get_system_prompt(),
         user_prompt,
         tools,
         injected_prompt: tab.session_state.injected_prompt.clone(),

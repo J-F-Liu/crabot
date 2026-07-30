@@ -1,4 +1,4 @@
-## Requirements for Working with Rust Projects
+# Requirements for Working with Rust Projects
 - Use `cargo add` to add dependencies or enable features rather than editing `Cargo.toml` directly.
 - Use `cargo doc --no-deps --document-private-items` to inspect APIs if usage is unclear. Never pass the `--open` flag.
 - Before completing your task, whenever you modify Rust code:

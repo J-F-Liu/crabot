@@ -63,10 +63,10 @@ pub trait Tool: Send + Sync {
         if strict {
             make_strict_schema(&mut schema);
         }
-        GenaiTool::new(self.name())
+        let tool = GenaiTool::new(self.name())
             .with_description(self.description())
-            .with_schema(schema)
-            .with_strict(strict)
+            .with_schema(schema);
+        if strict { tool.with_strict(true) } else { tool }
     }
 }
 

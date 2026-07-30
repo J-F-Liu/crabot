@@ -1,4 +1,4 @@
-## Requirements for Working with Web Projects
+# Requirements for Working with Web Projects
 - Use the project's package manager (`npm`, `yarn`, `pnpm`, or `bun`) to add dependencies. Prefer the one already in use (check `lock` files). Never edit `package.json` by hand for dependency changes.
 - Run `npx tsc --noEmit` (TypeScript) or the project's type checker to validate types when unsure about APIs or interfaces.
 - Before completing your task, whenever you modify web code:

@@ -112,8 +112,8 @@ impl PromptWorkspaceState {
         }
     }
 
-    /// Concatenate all enabled components, returning the full prompt string.
-    pub(crate) fn get_prompt(&self) -> String {
+    /// Concatenate all enabled components, returning the full system prompt string.
+    pub(crate) fn get_system_prompt(&self) -> String {
         let mut prompt = String::new();
         if let (true, content) = &self.preamble
             && !content.is_empty()
@@ -126,6 +126,7 @@ impl PromptWorkspaceState {
             && let Some(contents) = file.contents_utf8()
         {
             prompt.push_str(contents);
+            prompt.push('\n');
         }
         if let (true, content) = &self.rules
             && !content.is_empty()
