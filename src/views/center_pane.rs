@@ -719,7 +719,7 @@ pub(crate) fn center_pane<'a>(
 
     mouse_area(
         container(column![
-            super::session_tabs::session_tabs(conversation, conversation.tab_bar_viewport),
+            super::session_tabs::session_tabs(conversation),
             session_header(title),
             pending_header(pending_user_prompt),
             if search_state.visible {

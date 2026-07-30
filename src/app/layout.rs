@@ -1,7 +1,7 @@
 use iced::{Point, Task};
 
 use crate::app::session_state;
-use crate::app::{App, FocusedTarget, LayoutEvent, Message, ModelSettingsEvent};
+use crate::app::{App, FocusedTarget, LayoutEvent, Message, ModelSettingsEvent, TabBarScrollState};
 use crate::views;
 use crate::views::theme::{HANDLE, MIN_W};
 use crate::widgets::textarea;
@@ -30,8 +30,7 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
             session_state::handle_scroll(&tab.session_state, viewport);
         }
         LayoutEvent::TabBarScrolled(viewport) => {
-            app.conversation.tab_bar_scroll_x = viewport.absolute_offset().x;
-            app.conversation.tab_bar_viewport = Some(viewport);
+            app.conversation.tab_bar_scroll = TabBarScrollState::from_viewport(&viewport);
         }
         LayoutEvent::ScrollPageDown => {
             return views::scroll_page_down(app.layout.scroll_viewport_height).discard();
@@ -128,6 +127,7 @@ fn left_pressed(app: &mut App) -> Task<Message> {
 fn left_released(app: &mut App) {
     app.layout.left_divider.dragging = false;
     app.layout.right_divider.dragging = false;
+    app.conversation.tab_bar_held_direction = None;
     if app.settings_dialog.is_label_dragging() {
         app.settings_dialog
             .update(views::SettingsEvent::LabelDragEnd);

@@ -13,9 +13,24 @@ use std::sync::atomic::Ordering;
 
 use crate::app::session_state::{self, AskAction, SessionEvent};
 use crate::app::session_tab::SessionTab;
-use crate::app::{App, ConversationEvent, FocusedTarget, Message};
+use crate::app::{App, ConversationEvent, FocusedTarget, Message, TabBarScrollState};
 use crate::llm::DialogPhase;
+use crate::views::session_tabs::TAB_SCROLL_STEP;
 use crate::views::{self, ASK_INPUT, SCROLL_STEP, scroll_to_end};
+
+/// Direction of tab-bar for scroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabBarDirection {
+    Left,
+    Right,
+}
+
+/// Scroll the tab bar by `delta` pixels, clamping to valid range.
+fn scroll_tab_bar(s: &mut TabBarScrollState, delta: f32) -> Task<Message> {
+    let new_x = (s.offset + delta).clamp(0.0, s.max_offset());
+    s.offset = new_x;
+    crate::views::session_tabs::scroll_tab_bar_to(new_x).discard()
+}
 
 pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
     match event {
@@ -104,21 +119,37 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
                 return views::scroll_to(target_y).discard();
             }
         }
-        ConversationEvent::TabBarScrollLeft => {
-            let step = crate::views::session_tabs::TAB_SCROLL_STEP;
-            let new_x = (app.conversation.tab_bar_scroll_x - step).max(0.0);
-            app.conversation.tab_bar_scroll_x = new_x;
-            return crate::views::session_tabs::scroll_tab_bar_to(new_x).discard();
+        ConversationEvent::TabBarScrollLeftHold => {
+            app.conversation.tab_bar_held_direction = Some(TabBarDirection::Left);
+            return scroll_tab_bar(&mut app.conversation.tab_bar_scroll, -TAB_SCROLL_STEP);
         }
-        ConversationEvent::TabBarScrollRight => {
-            let step = crate::views::session_tabs::TAB_SCROLL_STEP;
-            // Clamp to the content width when the viewport is available.
-            let max_x = app.conversation.tab_bar_viewport.map_or(f32::MAX, |vp| {
-                (vp.content_bounds().width - vp.bounds().width).max(0.0)
-            });
-            let new_x = (app.conversation.tab_bar_scroll_x + step).min(max_x);
-            app.conversation.tab_bar_scroll_x = new_x;
-            return crate::views::session_tabs::scroll_tab_bar_to(new_x).discard();
+        ConversationEvent::TabBarScrollRightHold => {
+            app.conversation.tab_bar_held_direction = Some(TabBarDirection::Right);
+            return scroll_tab_bar(&mut app.conversation.tab_bar_scroll, TAB_SCROLL_STEP);
+        }
+        ConversationEvent::TabBarScrollTick => {
+            let dir = match app.conversation.tab_bar_held_direction {
+                Some(d) => d,
+                None => return Task::none(),
+            };
+            let can_scroll = match dir {
+                TabBarDirection::Left => app.conversation.tab_bar_scroll.can_scroll_left(),
+                TabBarDirection::Right => app.conversation.tab_bar_scroll.can_scroll_right(),
+            };
+            if !can_scroll {
+                return Task::none();
+            }
+            let delta = match dir {
+                TabBarDirection::Left => -TAB_SCROLL_STEP,
+                TabBarDirection::Right => TAB_SCROLL_STEP,
+            };
+            return scroll_tab_bar(&mut app.conversation.tab_bar_scroll, delta);
+        }
+        ConversationEvent::TabBarArrowEnter(dir) => {
+            app.conversation.tab_bar_hovered_direction = Some(dir);
+        }
+        ConversationEvent::TabBarArrowExit => {
+            app.conversation.tab_bar_hovered_direction = None;
         }
     }
     Task::none()

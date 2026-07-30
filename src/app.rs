@@ -24,7 +24,7 @@ use crate::views::{
 };
 use crate::widgets::textarea::{self, TextArea};
 
-mod conversation;
+pub(crate) mod conversation;
 mod layout;
 mod overlay;
 pub(crate) mod prompt;
@@ -202,6 +202,52 @@ impl ToolState {
     }
 }
 
+/// Compact scroll state for the tab-bar scrollable.
+///
+/// The `Viewport` type has private fields, so we track the three values we need
+/// separately.  The struct is updated both by `on_scroll` (user scroll / layout)
+/// and eagerly when arrow buttons are clicked, keeping arrow visibility and
+/// scroll-target clamping in sync.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TabBarScrollState {
+    /// Current absolute horizontal scroll offset.
+    pub offset: f32,
+    /// Width of the viewport (visible area).
+    pub viewport_w: f32,
+    /// Total width of the scrollable content.
+    pub content_w: f32,
+}
+
+impl TabBarScrollState {
+    pub fn from_viewport(vp: &Viewport) -> Self {
+        Self {
+            offset: vp.absolute_offset().x,
+            viewport_w: vp.bounds().width,
+            content_w: vp.content_bounds().width,
+        }
+    }
+
+    /// Whether the content overflows the viewport horizontally.
+    pub fn has_overflow(&self) -> bool {
+        self.content_w > self.viewport_w
+    }
+
+    /// Maximum possible horizontal scroll offset.
+    pub fn max_offset(&self) -> f32 {
+        (self.content_w - self.viewport_w).max(0.0)
+    }
+
+    /// Whether there is room to scroll further left.
+    pub fn can_scroll_left(&self) -> bool {
+        self.offset > 1.0
+    }
+
+    /// Whether there is room to scroll further right.
+    pub fn can_scroll_right(&self) -> bool {
+        self.offset < self.max_offset() - 1.0
+    }
+}
+
 /// Session tabbed conversation state.
 pub(crate) struct ConversationState {
     pub(crate) session_tabs: Vec<SessionTab>,
@@ -212,11 +258,12 @@ pub(crate) struct ConversationState {
     pub(crate) session_list: Vec<SessionEntry>,
     /// Queue of tab numbers whose ask-tool requests arrived while the viewing tab already had an unanswered ask.
     pub(crate) pending_ask_queue: std::collections::VecDeque<usize>,
-    /// Latest viewport of the tab bar scrollable — used to decide arrow visibility.
-    pub(crate) tab_bar_viewport: Option<Viewport>,
-    /// Manually-tracked horizontal scroll offset so that programmatic scrolls
-    /// (which don't fire `on_scroll`) still know where they are.
-    pub(crate) tab_bar_scroll_x: f32,
+    /// Current scroll state of the tab bar: offset, viewport width, content width.
+    pub(crate) tab_bar_scroll: TabBarScrollState,
+    /// Direction being held for tab-bar scroll auto-repeat, if any.
+    pub(crate) tab_bar_held_direction: Option<conversation::TabBarDirection>,
+    /// Which arrow is currently hovered, for visual feedback.
+    pub(crate) tab_bar_hovered_direction: Option<conversation::TabBarDirection>,
 }
 
 impl ConversationState {
@@ -227,8 +274,9 @@ impl ConversationState {
             next_tab_number: 2,
             session_list: Vec::new(),
             pending_ask_queue: std::collections::VecDeque::new(),
-            tab_bar_viewport: None,
-            tab_bar_scroll_x: 0.0,
+            tab_bar_scroll: TabBarScrollState::default(),
+            tab_bar_held_direction: None,
+            tab_bar_hovered_direction: None,
         }
     }
 
@@ -405,10 +453,16 @@ pub(crate) enum ConversationEvent {
     SearchEvent(crate::views::SearchEvent),
     /// (tab_number, generation, offsets, target_y) — target_y scrolls only if that tab is still viewing.
     TurnOffsetsMeasured(usize, u64, Vec<f32>, Option<f32>),
-    /// Scroll the tab bar left (toward start).
-    TabBarScrollLeft,
-    /// Scroll the tab bar right (toward end).
-    TabBarScrollRight,
+    /// Mouse pressed on left scroll arrow — starts press-and-hold auto-repeat.
+    TabBarScrollLeftHold,
+    /// Mouse pressed on right scroll arrow — starts press-and-hold auto-repeat.
+    TabBarScrollRightHold,
+    /// Timer tick for auto-repeat scrolling while an arrow is held.
+    TabBarScrollTick,
+    /// Cursor entered a tab-bar arrow.
+    TabBarArrowEnter(conversation::TabBarDirection),
+    /// Cursor left a tab-bar arrow.
+    TabBarArrowExit,
 }
 
 /// Events for model configuration and settings dialog.
