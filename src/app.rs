@@ -212,6 +212,11 @@ pub(crate) struct ConversationState {
     pub(crate) session_list: Vec<SessionEntry>,
     /// Queue of tab numbers whose ask-tool requests arrived while the viewing tab already had an unanswered ask.
     pub(crate) pending_ask_queue: std::collections::VecDeque<usize>,
+    /// Latest viewport of the tab bar scrollable — used to decide arrow visibility.
+    pub(crate) tab_bar_viewport: Option<Viewport>,
+    /// Manually-tracked horizontal scroll offset so that programmatic scrolls
+    /// (which don't fire `on_scroll`) still know where they are.
+    pub(crate) tab_bar_scroll_x: f32,
 }
 
 impl ConversationState {
@@ -222,6 +227,8 @@ impl ConversationState {
             next_tab_number: 2,
             session_list: Vec::new(),
             pending_ask_queue: std::collections::VecDeque::new(),
+            tab_bar_viewport: None,
+            tab_bar_scroll_x: 0.0,
         }
     }
 
@@ -328,6 +335,7 @@ pub(crate) enum LayoutEvent {
     ShiftHeld(bool),
     CtrlHeld(bool),
     SessionViewScrolled(Viewport),
+    TabBarScrolled(Viewport),
     ScrollPageDown,
     ScrollPageUp,
     ScrollToHome,
@@ -397,6 +405,10 @@ pub(crate) enum ConversationEvent {
     SearchEvent(crate::views::SearchEvent),
     /// (tab_number, generation, offsets, target_y) — target_y scrolls only if that tab is still viewing.
     TurnOffsetsMeasured(usize, u64, Vec<f32>, Option<f32>),
+    /// Scroll the tab bar left (toward start).
+    TabBarScrollLeft,
+    /// Scroll the tab bar right (toward end).
+    TabBarScrollRight,
 }
 
 /// Events for model configuration and settings dialog.
@@ -435,6 +447,8 @@ pub(crate) enum CenterPaneEvent {
     Conversation(ConversationEvent),
     SessionViewScrolled(Viewport),
     LinkClicked(String),
+    /// Tab bar scrollable viewport changed.
+    TabBarScrolled(Viewport),
 }
 
 /// Events emitted by the right pane (conversation stats + theme toggle + restart).
@@ -778,6 +792,9 @@ impl App {
                         let _ = open::that_detached(&url);
                     }
                     Message::Conversation(ConversationEvent::DefocusSessionPicker)
+                }
+                CenterPaneEvent::TabBarScrolled(vp) => {
+                    Message::Layout(LayoutEvent::TabBarScrolled(vp))
                 }
             }),
             divider(&self.layout.right_divider),

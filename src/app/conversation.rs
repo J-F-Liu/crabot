@@ -104,6 +104,22 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
                 return views::scroll_to(target_y).discard();
             }
         }
+        ConversationEvent::TabBarScrollLeft => {
+            let step = crate::views::session_tabs::TAB_SCROLL_STEP;
+            let new_x = (app.conversation.tab_bar_scroll_x - step).max(0.0);
+            app.conversation.tab_bar_scroll_x = new_x;
+            return crate::views::session_tabs::scroll_tab_bar_to(new_x).discard();
+        }
+        ConversationEvent::TabBarScrollRight => {
+            let step = crate::views::session_tabs::TAB_SCROLL_STEP;
+            // Clamp to the content width when the viewport is available.
+            let max_x = app.conversation.tab_bar_viewport.map_or(f32::MAX, |vp| {
+                (vp.content_bounds().width - vp.bounds().width).max(0.0)
+            });
+            let new_x = (app.conversation.tab_bar_scroll_x + step).min(max_x);
+            app.conversation.tab_bar_scroll_x = new_x;
+            return crate::views::session_tabs::scroll_tab_bar_to(new_x).discard();
+        }
     }
     Task::none()
 }

@@ -29,6 +29,10 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
             tab.scroll_offset = Some(viewport.absolute_offset().y);
             session_state::handle_scroll(&tab.session_state, viewport);
         }
+        LayoutEvent::TabBarScrolled(viewport) => {
+            app.conversation.tab_bar_scroll_x = viewport.absolute_offset().x;
+            app.conversation.tab_bar_viewport = Some(viewport);
+        }
         LayoutEvent::ScrollPageDown => {
             return views::scroll_page_down(app.layout.scroll_viewport_height).discard();
         }
