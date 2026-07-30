@@ -28,6 +28,7 @@
         "bash": true,
         "ask": true,
         "todo": true,
+        "renew": true,
         "fetch": true,
         "crate_source": true,
         "web_search_exa": true,

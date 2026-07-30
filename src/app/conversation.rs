@@ -9,6 +9,7 @@ use crabot::model::ModelConfig;
 use crabot::session::Session;
 use crabot::user::UserPrompt;
 use futures::{SinkExt, future::FutureExt};
+use genai::chat::ChatRole;
 use std::sync::atomic::Ordering;
 
 use crate::app::session_state::{self, AskAction, SessionEvent};
@@ -52,7 +53,9 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             app.save_settings();
             return iced::exit();
         }
-        ConversationEvent::NewSession => return new_session(app),
+        ConversationEvent::NewSession => {
+            return new_session(app, app.settings.selected_model.clone());
+        }
         ConversationEvent::LoadSession(entry) => return load_session(app, entry),
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
         ConversationEvent::SwitchTabByDigit(digit) => return switch_tab_by_digit(app, digit),
@@ -155,9 +158,8 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
     Task::none()
 }
 
-fn new_session(app: &mut App) -> Task<Message> {
+fn new_session(app: &mut App, selected_model: String) -> Task<Message> {
     let number = app.conversation.next_tab_number();
-    let selected_model = app.settings.selected_model.clone();
     let tab = SessionTab::new(number, selected_model);
     app.conversation.session_tabs.push(tab);
     app.conversation.viewing = app.conversation.session_tabs.len() - 1;
@@ -371,6 +373,50 @@ fn ask_action(app: &mut App, action: AskAction) -> Task<Message> {
 
 // ── streaming events ───────────────────────────────────────────────
 
+/// Handle a renew-tool request: create a new session tab and launch the
+/// continuation prompt on it, using the same model and work mode as the
+/// originating session.
+fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
+    // Look up the model config and work mode from the originating tab's session.
+    let (model, work_mode, workspace_tree, selected_model) = {
+        let Some(pos) = app.conversation.tab_pos(number) else {
+            return Task::none();
+        };
+        let tab = &app.conversation.session_tabs[pos];
+        let selected_model = tab.selected_model.clone();
+        let model = match tab
+            .session
+            .model
+            .clone()
+            .or_else(|| app.models.get_config(&tab.selected_model).cloned())
+        {
+            Some(m) => m,
+            None => return Task::none(),
+        };
+        let work_mode = tab.session.dialogs.last().and_then(|d| d.mode);
+        // If the original session was started with a workspace tree, rebuild it
+        // so the new session has an up-to-date view of the workspace.
+        let workspace_tree = tab
+            .session
+            .history
+            .first()
+            .filter(|m| m.role == ChatRole::User)
+            .and_then(|m| {
+                m.content.parts().iter().find_map(|p| {
+                    p.as_text()
+                        .filter(|t| t.starts_with("Working directory layout"))
+                        .map(|_| crabot::workspace::build_files_tree(&app.prompt.workspace.1))
+                })
+            });
+        (model, work_mode, workspace_tree, selected_model)
+    };
+    let new_task = new_session(app, selected_model);
+    let tab_pos = app.conversation.viewing;
+    let user_prompt = UserPrompt::new(work_mode, prompt, workspace_tree);
+    let launch_task = launch_dialog(app, tab_pos, &model, user_prompt);
+    new_task.chain(launch_task)
+}
+
 /// Pop the next pending ask from the queue and switch to that tab.
 fn process_pending_ask_queue(app: &mut App) -> Task<Message> {
     while let Some(number) = app.conversation.pending_ask_queue.pop_front() {
@@ -393,6 +439,11 @@ fn process_pending_ask_queue(app: &mut App) -> Task<Message> {
 
 /// Route a tagged stream event to the owning tab.
 fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Message> {
+    // Handle RenewRequest before the normal flow — it creates a new session.
+    if let SessionEvent::RenewRequest(ref prompt) = event {
+        return handle_renew(app, number, prompt.clone());
+    }
+
     let Some(pos) = app.conversation.tab_pos(number) else {
         // Tab was closed while the stream was still running — drop the event.
         return Task::none();
@@ -420,16 +471,18 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
     // `switch_tab` only changes `viewing`, never reorders tabs, so `pos` stays valid.
     let viewing = pos == app.conversation.viewing;
 
-    // Compute cost from the tab's session model BEFORE mutably borrowing the tab.
+    // Compute cost and context window from the tab's session model BEFORE mutably borrowing the tab.
+    let tab_model_label = app.conversation.session_tabs[pos].selected_model.clone();
     let model_config = app.conversation.session_tabs[pos]
         .session
         .model
         .clone()
-        .or_else(|| app.models.get_config(&app.settings.selected_model).cloned());
+        .or_else(|| app.models.get_config(&tab_model_label).cloned());
     let cost = model_config
         .as_ref()
         .and_then(|cfg| app.models.get_model(cfg))
         .map(|m| m.cost.clone());
+    let context_window = model_config.as_ref().map(|cfg| cfg.context_window);
 
     let finished = matches!(event, SessionEvent::Done(_));
 
@@ -440,7 +493,15 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
         .is_some();
 
     let tab = &mut app.conversation.session_tabs[pos];
-    let update_task = session_state::update(event, tab, cost, viewing);
+    let fill_ratio_threshold = app.settings.fill_ratio_threshold;
+    let update_task = session_state::update(
+        event,
+        tab,
+        cost,
+        context_window,
+        fill_ratio_threshold,
+        viewing,
+    );
 
     // If this tab's ask was just resolved (user answer, timeout, Done, …),
     // remove it from the queue and, when the viewing tab has no active ask,

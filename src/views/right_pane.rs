@@ -8,7 +8,7 @@ use super::styles::{pane_side, primary_button, primary_toggler, sel_primary};
 use super::theme::thin_vertical;
 use crate::RightPaneEvent;
 use crate::app::SessionTab;
-use crabot::model::{ModelConfig, TokenAmount};
+use crabot::model::ModelConfig;
 use crabot::tools::todo::{TodoItem, TodoStatus};
 
 const MONO: Font = Font {
@@ -70,7 +70,7 @@ pub(crate) fn right_pane<'a>(
     tab: &'a SessionTab,
     dark_mode: bool,
 ) -> Element<'a, RightPaneEvent> {
-    let usage = &tab.last_usage;
+    let token_amount = &tab.latest_tokens;
     let session = &tab.session;
     let todo_items: Vec<TodoItem> = tab
         .todo_items
@@ -78,7 +78,6 @@ pub(crate) fn right_pane<'a>(
         .map(|items| items.clone())
         .unwrap_or_default();
     let context_window = model.map(|m| m.context_window);
-    let token_amount = TokenAmount::from_genai(usage);
     let mut items: Vec<Element<'_, RightPaneEvent>> = Vec::new();
 
     // ── context window ──
@@ -93,9 +92,9 @@ pub(crate) fn right_pane<'a>(
         format!("{}", token_amount.cache_read + token_amount.cache_write),
     ));
     if let Some(cw) = context_window.filter(|&cw| cw > 0) {
-        let pct = token_amount.window_used(cw);
+        let cfr = token_amount.context_fill_ratio(cw);
         items.push(token_row("Window size:", format!("{cw}")));
-        items.push(token_row("Fill ratio:", format!("{:.1}%", pct)));
+        items.push(token_row("Fill ratio:", format!("{:.1}%", cfr)));
     }
 
     // ── cumulative token usage and cost ──

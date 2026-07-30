@@ -35,6 +35,9 @@ pub struct Settings {
     pub agent_tools: IndexMap<String, bool>,
     /// Prompt recipes: work-mode name (lowercase) → list of prompt templates.
     pub prompt_recipes: IndexMap<String, Vec<String>>,
+    /// Context-window fill ratio threshold (percentage) at which the
+    /// LLM is reminded to consider renewing the session.
+    pub fill_ratio_threshold: f32,
     /// Whether to automatically check for new versions on startup.
     pub auto_check_updates: bool,
     /// Latest version found in the last check, if newer than current.
@@ -65,6 +68,7 @@ impl Default for Settings {
             mcp_servers: IndexMap::new(),
             agent_tools: IndexMap::new(),
             prompt_recipes: IndexMap::new(),
+            fill_ratio_threshold: 15.0,
             auto_check_updates: true,
             last_update_version: None,
             dark_mode: false,

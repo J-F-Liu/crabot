@@ -18,6 +18,9 @@ use crabot::session::Session;
 use crabot::user::UserPrompt;
 use genai::chat::{ChatMessage, ChatRole};
 
+/// Minimum context-window size (tokens) for which the auto-injected renew hint is eligible.
+const MIN_CW_FOR_RENEW_HINT: u32 = 1_000_000;
+
 /// Streaming session state bundled together for the LLM interaction lifecycle.
 #[derive(Debug)]
 pub(crate) struct SessionState {
@@ -42,6 +45,8 @@ pub(crate) struct SessionState {
     pub(crate) auto_scroll: Arc<AtomicBool>,
     /// Timestamp of the last auto-scroll snap, throttled to avoid jitter.
     pub(crate) scroll_throttle: Cell<Instant>,
+    /// Cooldown counter for renew hints — only inject every N ToolExecuting phases.
+    pub(crate) renew_hint_cooldown: Cell<u32>,
 }
 
 impl SessionState {
@@ -59,6 +64,7 @@ impl SessionState {
             ask_sender: ask_tx,
             auto_scroll: Arc::new(AtomicBool::new(true)),
             scroll_throttle: Cell::new(Instant::now()),
+            renew_hint_cooldown: Cell::new(0),
         }
     }
 
@@ -117,6 +123,8 @@ pub(crate) enum AskAction {
 pub(crate) enum SessionEvent {
     ToolCalls(Vec<ToolCall>),
     AskRequest(AskRequest),
+    /// Prompt string for creating a new session to continue the task.
+    RenewRequest(String),
     Content(String),
     Reasoning(String),
     ToolResult(ToolResult),
@@ -135,13 +143,16 @@ pub(crate) fn update(
     event: SessionEvent,
     tab: &mut SessionTab,
     model_cost: Option<Cost>,
+    context_window: Option<u32>,
+    fill_ratio_threshold: f32,
     viewing: bool,
 ) -> Task<()> {
     let SessionTab {
         session_state,
         session,
         search,
-        last_usage,
+        latest_tokens,
+        expanded_dialogs,
         ..
     } = tab;
     let state: &mut SessionState = session_state;
@@ -211,6 +222,11 @@ pub(crate) fn update(
             };
         }
         SessionEvent::UserPrompt(content) => {
+            // Take the mode from the pending prompt before clearing it.
+            let mode = state.pending_prompt.as_ref().and_then(|p| p.mode);
+            // User message always create a new dialog.
+            session.add_dialog(Session::derive_title(&content), mode);
+            expanded_dialogs.insert(session.dialogs.len() - 1);
             session.push_turn(Turn::user(content));
             state.pending_prompt = None;
             return if viewing {
@@ -223,7 +239,7 @@ pub(crate) fn update(
             let u = usage.unwrap_or_default();
             let tokens = TokenAmount::from_genai(&u);
             session.accumulate_tokens(&tokens, model_cost);
-            *last_usage = u;
+            *latest_tokens = tokens;
             // Refresh the markdown cache after all chunks are collected.
             if let Some(last) = session.last_turn_mut()
                 && let TurnBody::Text(tc) = &mut last.body
@@ -270,12 +286,35 @@ pub(crate) fn update(
                 search.invalidate_offsets();
                 // Back-date so the first content chunk scrolls immediately.
                 state.scroll_throttle.set(Instant::now() - SCROLL_THROTTLE);
+            } else if phase == DialogPhase::ToolExecuting {
+                // ToolExecuting means LLM conversation still not finished.
+                // When context fill ratio exceeds the threshold, suggest the LLM renew.
+                // Only inject if no prompt is already pending to avoid overwriting an existing one.
+                let cooldown = state.renew_hint_cooldown.get();
+                if cooldown > 0 {
+                    state.renew_hint_cooldown.set(cooldown - 1);
+                } else if state.pending_prompt.is_none()
+                    && let Some(cw) = context_window
+                    && cw >= MIN_CW_FOR_RENEW_HINT
+                    && latest_tokens.context_fill_ratio(cw) >= fill_ratio_threshold
+                {
+                    let prompt = UserPrompt::new(
+                    session.dialogs.last().and_then(|d| d.mode),
+                        "Context fill ratio is near its limit, consider calling the renew tool to continue current task."
+                            .into(),
+                    None,
+                );
+                    state.inject_prompt(prompt);
+                    state.renew_hint_cooldown.set(5);
+                }
             }
             state.phase = phase;
         }
         SessionEvent::Stop => {
             state.stop();
         }
+        // RenewRequest is intercepted in conversation.rs before reaching here.
+        SessionEvent::RenewRequest(_) => unreachable!("handled in conversation::session_event"),
     }
     Task::none()
 }

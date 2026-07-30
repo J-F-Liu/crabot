@@ -210,7 +210,7 @@ impl TokenAmount {
     }
     /// Percentage of `context_window` used by the estimated next-turn
     /// context size: last prompt plus the response just generated.
-    pub fn window_used(&self, context_window_size: u32) -> f32 {
+    pub fn context_fill_ratio(&self, context_window_size: u32) -> f32 {
         (self.prompt + self.output) as f32 * 100.0 / context_window_size as f32
     }
     /// Accumulate `incoming` into `self` in place.

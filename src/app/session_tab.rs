@@ -1,9 +1,8 @@
 use std::collections::HashSet;
 
-use genai::chat::Usage;
-
 use crate::app::session_state::SessionState;
 use crate::llm::DialogPhase;
+use crate::model::TokenAmount;
 use crate::tools::todo::{self, TodoList};
 use crate::views::search_bar::SearchState;
 use crabot::session::Session;
@@ -20,7 +19,7 @@ pub(crate) struct SessionTab {
     /// Heading displayed in the center-pane header.
     pub(crate) center_pane_title: String,
     /// Token usage for the most recent request in this tab.
-    pub(crate) last_usage: Usage,
+    pub(crate) latest_tokens: TokenAmount,
     /// Expanded (turn, sub-item) keys for tool-call details.
     pub(crate) expanded_turns: HashSet<(usize, usize)>,
     /// Expanded dialog indices.
@@ -46,7 +45,7 @@ impl SessionTab {
             session,
             session_state: SessionState::new(),
             center_pane_title: "New session".into(),
-            last_usage: genai::chat::Usage::default(),
+            latest_tokens: TokenAmount::default(),
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
             selectable_msgs: HashSet::new(),
@@ -67,8 +66,8 @@ impl SessionTab {
             session,
             session_state: SessionState::new(),
             center_pane_title: title,
-            last_usage: Usage {
-                prompt_tokens: Some(prompt_tokens),
+            latest_tokens: TokenAmount {
+                prompt: prompt_tokens,
                 ..Default::default()
             },
             expanded_turns: HashSet::new(),

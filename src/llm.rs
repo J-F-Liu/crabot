@@ -312,6 +312,7 @@ pub async fn send_stream(
         // Unknown tools are reported back to the LLM as an error result
         // rather than aborting the loop, giving the model a chance to recover.
         let mut tool_responses: Vec<ToolResponse> = Vec::with_capacity(tool_calls.len());
+        let mut renew_executed = false;
         for tc in tool_calls {
             // Resolve the tool on this thread so we don't have to clone the
             // name into the blocking closure. Unknown tools short-circuit to
@@ -324,6 +325,22 @@ pub async fn send_stream(
                             on_event(SessionEvent::Cancelled(genai_messages)).await;
                             return;
                         }
+                    }
+                }
+                Some(_) if tc.fn_name == "renew" && !renew_executed => {
+                    let prompt = tc
+                        .fn_arguments
+                        .get("prompt")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if prompt.is_empty() {
+                        Err("Renew called with an empty prompt — no new session created.".into())
+                    } else if !on_event(SessionEvent::RenewRequest(prompt)).await {
+                        Err("Renew event channel closed.".into())
+                    } else {
+                        renew_executed = true;
+                        Ok("New session created with the provided prompt.".into())
                     }
                 }
                 Some(tool) => {
@@ -360,6 +377,12 @@ pub async fn send_stream(
         // Append tool responses to the request and genai history.
         chat_req = chat_req.append_message(tool_responses.clone());
         genai_messages.push(ChatMessage::from(tool_responses));
+
+        // When renew was called, stop the current session — no more requests.
+        if renew_executed {
+            on_event(SessionEvent::Done(genai_messages)).await;
+            return;
+        }
 
         // Check cancellation after executing tool calls to keep tool results match in history.
         if cancel_token.load(std::sync::atomic::Ordering::Acquire) {

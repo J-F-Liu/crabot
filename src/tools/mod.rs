@@ -6,6 +6,7 @@ mod fetch;
 mod find;
 pub mod mcp;
 mod read;
+mod renew;
 mod search;
 pub mod todo;
 mod write;
@@ -208,6 +209,7 @@ impl ToolRegistry {
             Arc::new(bash::BashTool),
             Arc::new(ask::AskTool),
             Arc::new(todo::TodoTool::new(Arc::clone(&todo_items))),
+            Arc::new(renew::RenewTool),
             Arc::new(fetch::FetchTool),
         ];
         Self {
