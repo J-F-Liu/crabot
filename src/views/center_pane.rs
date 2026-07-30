@@ -430,6 +430,12 @@ fn tool_turn_block<'a>(
     wrap_bubble(column(elements).spacing(8).width(Fill), tool_bubble_style)
 }
 
+/// Check whether the parsed markdown contains only a single paragraph (i.e., it's plain text
+/// with no headings, lists, code blocks, etc.).
+fn is_plain_text(md: &markdown::Content) -> bool {
+    md.items().len() == 1 && matches!(md.items().first(), Some(markdown::Item::Paragraph(_)))
+}
+
 /// Render parsed markdown as a double-click-to-select element with
 /// transparent inline-code styling (shared by content and reasoning bodies).
 fn markdown_element<'a>(
@@ -519,6 +525,7 @@ fn text_turn_block<'a>(
                     highlighted_text(reasoning, ctx.search_query, 13.0 * ctx.font_scale)
                 } else if !ctx.selectable_msgs.contains(&i)
                     && let Some(md) = &tc.reasoning_md
+                    && !is_plain_text(md)
                 {
                     markdown_element(md, i, 13.0, ctx)
                 } else {
@@ -548,6 +555,7 @@ fn text_turn_block<'a>(
         ));
     } else if !ctx.selectable_msgs.contains(&i)
         && let Some(md) = &tc.content_md
+        && !is_plain_text(md)
     {
         content_col = content_col.push(markdown_element(md, i, 14.0, ctx));
     } else {
