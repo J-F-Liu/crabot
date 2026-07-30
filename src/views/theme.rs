@@ -29,6 +29,7 @@ pub(crate) const CRABOT_TOOL_CONTENT_BORDER: Color = Color::from_rgb8(0xF4, 0xF0
 pub(crate) const CRABOT_HEADER_BG: Color = Color::from_rgb8(0xF5, 0xF5, 0xF5);
 pub(crate) const CRABOT_SUCCESS: Color = Color::from_rgb8(0x2E, 0xB6, 0x7F);
 pub(crate) const CRABOT_DANGER: Color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
+pub(crate) const CRABOT_YELLOW: Color = Color::from_rgb8(0xF0, 0xCC, 0x00);
 
 // ── dark theme colors ─────────────────────────────────────────
 

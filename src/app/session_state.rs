@@ -7,7 +7,7 @@ use iced::Task;
 use iced::widget::scrollable::Viewport;
 use tokio::sync::mpsc;
 
-use crate::app::SessionTab;
+use crate::app::{SessionEndStatus, SessionTab};
 use crate::llm::DialogPhase;
 use crate::model::Cost;
 use crate::model::TokenAmount;
@@ -86,9 +86,9 @@ impl SessionState {
     /// Human-readable status label for the current streaming phase.
     pub(crate) fn status(&self, session_empty: bool) -> &str {
         match self.phase {
-            DialogPhase::LlmLoading => "🔗 Loading LLM…",
+            DialogPhase::LlmLoading => "⏳ Loading LLM…",
             DialogPhase::LlmThinking => "💭 LLM thinking…",
-            DialogPhase::ToolExecuting => "🔧 Tool executing…",
+            DialogPhase::ToolExecuting => "🛠️ Tool executing…",
             DialogPhase::Idle => {
                 if session_empty {
                     "Send user prompt to start dialog with LLM"
@@ -153,6 +153,7 @@ pub(crate) fn update(
         search,
         latest_tokens,
         expanded_dialogs,
+        end_status,
         ..
     } = tab;
     let state: &mut SessionState = session_state;
@@ -249,6 +250,7 @@ pub(crate) fn update(
         }
         SessionEvent::Done(genai_messages) => {
             state.ask_request = None;
+            *end_status = Some(SessionEndStatus::Done);
             handle_stream_done(state, session, genai_messages);
             search.invalidate_offsets();
             return if viewing {
@@ -259,6 +261,7 @@ pub(crate) fn update(
         }
         SessionEvent::Error(err, genai_messages) => {
             state.ask_request = None;
+            *end_status = Some(SessionEndStatus::Error);
             handle_stream_error(state, session, err, genai_messages);
             search.invalidate_offsets();
             return if viewing {
@@ -269,6 +272,7 @@ pub(crate) fn update(
         }
         SessionEvent::Cancelled(genai_messages) => {
             state.ask_request = None;
+            *end_status = Some(SessionEndStatus::Cancelled);
             state.phase = DialogPhase::Idle;
             clear_pending_with_notice(state, session);
             session.history.extend(genai_messages);
@@ -299,11 +303,11 @@ pub(crate) fn update(
                     && latest_tokens.context_fill_ratio(cw) >= fill_ratio_threshold
                 {
                     let prompt = UserPrompt::new(
-                    session.dialogs.last().and_then(|d| d.mode),
+                        session.dialogs.last().and_then(|d| d.mode),
                         "Context fill ratio is near its limit, consider calling the renew tool to continue current task."
                             .into(),
-                    None,
-                );
+                        None,
+                    );
                     state.inject_prompt(prompt);
                     state.renew_hint_cooldown.set(5);
                 }

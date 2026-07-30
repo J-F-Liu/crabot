@@ -8,7 +8,7 @@ use iced::{
 use super::icons::{CHEVRON_LEFT, CHEVRON_RIGHT, CLOSE};
 use super::styles::{bordered_bar_style, session_tab_style, tab_close_button_style, tooltip_style};
 use super::theme;
-use crate::app::{ConversationState, conversation::TabBarDirection};
+use crate::app::{ConversationState, SessionEndStatus, conversation::TabBarDirection};
 use crate::{CenterPaneEvent, ConversationEvent};
 
 /// Height of the tab bar, in logical pixels.
@@ -51,11 +51,16 @@ pub(crate) fn session_tabs<'a>(
 
             let mut row_content = row![].spacing(6).align_y(Alignment::Center);
 
-            // Running dot (only for the running tab), horizontally centered in a fixed
-            // cell so the label stays put when the dot appears or disappears.
+            // Status indicator: ○ during streaming, colored ● after a terminal event.
             if running {
                 row_content = row_content.push(
-                    container(text("●").size(9.0).color(theme::CRABOT_PRIMARY))
+                    container(text("○").size(9.0).color(theme::CRABOT_PRIMARY))
+                        .width(Length::Fixed(10.0))
+                        .center_x(Length::Fixed(10.0)),
+                );
+            } else if let Some(color) = tab.end_status.map(end_status_color) {
+                row_content = row_content.push(
+                    container(text("●").size(9.0).color(color))
                         .width(Length::Fixed(10.0))
                         .center_x(Length::Fixed(10.0)),
                 );
@@ -249,4 +254,13 @@ fn arrow_button<'a>(
             ..container::Style::default()
         })
         .into()
+}
+
+/// Map a session-end status to a dot color for the tab indicator.
+fn end_status_color(status: SessionEndStatus) -> Color {
+    match status {
+        SessionEndStatus::Done => theme::CRABOT_SUCCESS,
+        SessionEndStatus::Error => theme::CRABOT_DANGER,
+        SessionEndStatus::Cancelled => theme::CRABOT_YELLOW,
+    }
 }

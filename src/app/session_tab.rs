@@ -7,6 +7,14 @@ use crate::tools::todo::{self, TodoList};
 use crate::views::search_bar::SearchState;
 use crabot::session::Session;
 
+/// Final state after the session stream finishes — None while running or fresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionEndStatus {
+    Done,
+    Error,
+    Cancelled,
+}
+
 /// A single session tab, owning the in-memory session and all UI state.
 #[derive(Debug)]
 pub(crate) struct SessionTab {
@@ -34,6 +42,8 @@ pub(crate) struct SessionTab {
     pub(crate) scroll_offset: Option<f32>,
     /// The model selected for this tab (restored when switching back to this tab).
     pub(crate) selected_model: String,
+    /// End status indicator — set when a stream finishes, cleared when a new dialog starts.
+    pub(crate) end_status: Option<SessionEndStatus>,
 }
 
 impl SessionTab {
@@ -53,6 +63,7 @@ impl SessionTab {
             todo_items: TodoList::default(),
             scroll_offset: None,
             selected_model,
+            end_status: None,
         }
     }
 
@@ -77,6 +88,7 @@ impl SessionTab {
             todo_items,
             scroll_offset: None,
             selected_model,
+            end_status: None,
         }
     }
 

@@ -34,7 +34,7 @@ mod settings;
 mod subscription;
 mod tool_state;
 
-pub(crate) use session_tab::SessionTab;
+pub(crate) use session_tab::{SessionEndStatus, SessionTab};
 
 // ── App ───────────────────────────────────────────────────────────
 

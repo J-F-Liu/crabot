@@ -744,6 +744,7 @@ pub(crate) fn start_dialog(
     let history = tab.session.history.clone();
 
     tab.session_state.phase = DialogPhase::LlmLoading;
+    tab.end_status = None;
     tab.session_state
         .cancel_token
         .store(false, Ordering::Relaxed);
