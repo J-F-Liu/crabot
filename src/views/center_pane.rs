@@ -775,7 +775,7 @@ pub(crate) fn center_pane<'a>(
 /// plus copy-to-clipboard and resend action icons on the far right.
 fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
     let header = row![
-        container(
+        header_container(
             SelectableText::new(prompt)
                 .size(14.0)
                 .style(|theme: &Theme| {
@@ -785,9 +785,8 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
                         selection: p.primary.base.color,
                     }
                 }),
-        )
-        .width(Length::Fill)
-        .clip(true),
+            200.0,
+        ),
         icons::icon_action(
             icons::COPY,
             "Copy session title",
@@ -802,13 +801,11 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
     .spacing(6)
     .align_y(Alignment::Center);
 
-    header_container(
-        container(header)
-            .width(Fill)
-            .padding([6, 14])
-            .style(session_header_style),
-        200.0,
-    )
+    container(header)
+        .width(Fill)
+        .padding([6, 14])
+        .style(session_header_style)
+        .into()
 }
 
 /// Displays the model ID and creation time for the current session.
@@ -841,8 +838,8 @@ fn session_info<'a>(
     .into()
 }
 
-/// Wraps content in a bordered container that scrolls vertically
-/// when its natural height exceeds `max_h`.
+/// Wraps content in a scrollable container that fills available width
+/// and scrolls vertically when its natural height exceeds `max_h`.
 fn header_container<'a>(
     content: impl Into<Element<'a, CenterPaneEvent>>,
     max_h: f32,
@@ -850,8 +847,10 @@ fn header_container<'a>(
     container(
         scrollable(content)
             .direction(thin_vertical())
+            .width(Fill)
             .height(Length::Shrink),
     )
+    .width(Length::Fill)
     .max_height(max_h)
     .into()
 }

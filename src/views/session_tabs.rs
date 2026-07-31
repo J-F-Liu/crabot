@@ -1,14 +1,14 @@
-use iced::widget::scrollable::{AbsoluteOffset, Direction};
+use iced::widget::scrollable::{AbsoluteOffset, Direction, Scrollbar};
 use iced::widget::{Id, operation};
 use iced::{
     Alignment, Color, Element, Font, Length, Padding, Task, font, mouse,
-    widget::{button, container, mouse_area, row, scrollable, svg, text, tooltip},
+    widget::{Space, button, container, mouse_area, row, scrollable, svg, text, tooltip},
 };
 
 use super::icons::{CHEVRON_LEFT, CHEVRON_RIGHT, CLOSE};
 use super::styles::{bordered_bar_style, session_tab_style, tab_close_button_style, tooltip_style};
 use super::theme;
-use crate::app::{ConversationState, SessionEndStatus, conversation::TabBarDirection};
+use crate::app::{ConversationState, SessionEndStatus, SessionTab, conversation::TabBarDirection};
 use crate::{CenterPaneEvent, ConversationEvent};
 
 /// Height of the tab bar, in logical pixels.
@@ -36,224 +36,169 @@ pub(crate) fn scroll_tab_bar_to(target_x: f32) -> Task<()> {
 }
 
 /// Build the session tab bar displayed at the top of the center pane.
-pub(crate) fn session_tabs<'a>(
-    conversation: &'a ConversationState,
-) -> Element<'a, CenterPaneEvent> {
+pub(crate) fn session_tabs(conversation: &ConversationState) -> Element<'_, CenterPaneEvent> {
     let viewing_number = conversation.viewing_tab_number();
-
-    let tabs: Vec<Element<'_, CenterPaneEvent>> = conversation
+    let tabs = conversation
         .session_tabs
         .iter()
-        .map(|tab| {
-            let active = tab.number == viewing_number;
-            let running = tab.running();
-            let is_running_bg = running && !active;
+        .map(|tab| tab_button(tab, tab.number == viewing_number));
 
-            let mut row_content = row![].spacing(6).align_y(Alignment::Center);
-
-            // Status indicator: ○ during streaming, colored ● after a terminal event.
-            if running {
-                row_content = row_content.push(
-                    container(text("○").size(9.0).color(theme::CRABOT_PRIMARY))
-                        .width(Length::Fixed(10.0))
-                        .center_x(Length::Fixed(10.0)),
-                );
-            } else if let Some(color) = tab.end_status.map(end_status_color) {
-                row_content = row_content.push(
-                    container(text("●").size(9.0).color(color))
-                        .width(Length::Fixed(10.0))
-                        .center_x(Length::Fixed(10.0)),
-                );
-            }
-
-            // Tab label.
-            let label = format!("Session {}", tab.number);
-            let label_text = text(label).size(12.0).font(Font {
-                weight: if active {
-                    font::Weight::Bold
-                } else {
-                    font::Weight::Normal
-                },
-                ..Font::DEFAULT
-            });
-
-            // Tooltip with session info.
-            let tip = if tab.session.title.is_empty() {
-                tab.session.id.clone()
-            } else {
-                tab.session.title.clone()
-            };
-            let label_with_tip = tooltip(
-                container(label_text).padding(0),
-                text(tip).size(11).color(Color::WHITE),
-                tooltip::Position::Bottom,
-            )
-            .gap(4)
-            .style(tooltip_style);
-
-            row_content = row_content.push(label_with_tip);
-
-            // Close button — disabled while this tab is running.
-            let close_icon = svg(svg::Handle::from_memory(CLOSE))
-                .width(CLOSE_SIZE)
-                .height(CLOSE_SIZE)
-                .style(|_theme, status| svg::Style {
-                    color: Some(match status {
-                        svg::Status::Hovered => theme::color_text_strong(),
-                        svg::Status::Idle => theme::color_muted(),
-                    }),
-                });
-            let close_glyph = container(close_icon)
-                .width(Length::Fixed(CLOSE_SIZE))
-                .height(Length::Fixed(CLOSE_SIZE))
-                .center_x(Length::Fixed(CLOSE_SIZE))
-                .center_y(Length::Fixed(CLOSE_SIZE));
-            let close_btn = button(close_glyph)
-                .on_press_maybe(if running {
-                    None
-                } else {
-                    Some(CenterPaneEvent::Conversation(ConversationEvent::CloseTab(
-                        tab.number,
-                    )))
-                })
-                .padding(0)
-                .style(tab_close_button_style);
-
-            row_content = row_content.push(close_btn);
-
-            let tab_widget = button(container(row_content).center_y(Length::Fill))
-                .on_press(CenterPaneEvent::Conversation(ConversationEvent::SwitchTab(
-                    tab.number,
-                )))
-                .padding(Padding::from([4, 8]).top(6))
-                .height(Length::Fixed(TAB_HEIGHT))
-                .style(session_tab_style(active, is_running_bg));
-
-            tab_widget.into()
-        })
-        .collect();
-
-    let bar_content = row(tabs).spacing(4).align_y(Alignment::Center);
-
-    // Arrow visibility: the TabBarScrollState is updated eagerly on arrow clicks
-    // and also from `on_scroll` events, so it is always consistent.
-    let scroll = conversation.tab_bar_scroll;
-    let overflow = scroll.has_overflow();
-    let show_left = overflow && scroll.can_scroll_left();
-    let show_right = overflow && scroll.can_scroll_right();
-    let held_left = conversation.tab_bar_held_direction == Some(TabBarDirection::Left);
-    let held_right = conversation.tab_bar_held_direction == Some(TabBarDirection::Right);
-    let hovered_left = conversation.tab_bar_hovered_direction == Some(TabBarDirection::Left);
-    let hovered_right = conversation.tab_bar_hovered_direction == Some(TabBarDirection::Right);
-
-    let left_arrow = arrow_button(
-        CHEVRON_LEFT,
-        show_left,
-        held_left,
-        hovered_left,
-        TabBarDirection::Left,
-    );
-    let right_arrow = arrow_button(
-        CHEVRON_RIGHT,
-        show_right,
-        held_right,
-        hovered_right,
-        TabBarDirection::Right,
-    );
+    let bar = scrollable(row(tabs).spacing(4).align_y(Alignment::Center))
+        .direction(Direction::Horizontal(
+            Scrollbar::new().width(0).scroller_width(0),
+        ))
+        .width(Length::Fill)
+        .height(Length::Shrink)
+        .id(TAB_BAR_ID.clone())
+        .on_scroll(CenterPaneEvent::TabBarScrolled);
 
     container(
         row![
-            left_arrow,
-            scrollable(bar_content)
-                .direction(Direction::Horizontal(
-                    iced::widget::scrollable::Scrollbar::new()
-                        .width(0)
-                        .scroller_width(0),
-                ))
-                .width(Length::Fill)
-                .height(Length::Shrink)
-                .id(TAB_BAR_ID.clone())
-                .on_scroll(CenterPaneEvent::TabBarScrolled),
-            right_arrow,
+            arrow_button(CHEVRON_LEFT, TabBarDirection::Left, conversation),
+            bar,
+            arrow_button(CHEVRON_RIGHT, TabBarDirection::Right, conversation),
         ]
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
     .height(Length::Fixed(BAR_HEIGHT))
-    .padding(Padding {
-        top: BAR_VPAD,
-        right: 0.0,
-        bottom: 0.0,
-        left: 4.0,
-    })
+    .padding(Padding::new(0.0).top(BAR_VPAD).left(4.0))
     .style(bordered_bar_style)
     .into()
 }
 
-/// A small chevron arrow button. When `visible` is false, collapses to zero width
-/// so it doesn't affect the row layout.
+/// Build a single session tab: status dot, label with tooltip, close button.
+fn tab_button<'a>(tab: &'a SessionTab, active: bool) -> Element<'a, CenterPaneEvent> {
+    let number = tab.number;
+    let running = tab.running();
+
+    // Status indicator: ○ while streaming, colored ● after a terminal event.
+    let status = if running {
+        Some(("○", theme::CRABOT_PRIMARY))
+    } else {
+        tab.end_status.map(|s| ("●", end_status_color(s)))
+    };
+
+    let mut content = row![].spacing(4).align_y(Alignment::Center);
+    if let Some((glyph, color)) = status {
+        content = content.push(
+            container(text(glyph).size(9.0).color(color)).padding(Padding::new(0.0).bottom(4.0)),
+        );
+    }
+
+    let label = text(format!("Session {}", number)).size(12.0).font(Font {
+        weight: if active {
+            font::Weight::Bold
+        } else {
+            font::Weight::Normal
+        },
+        ..Font::DEFAULT
+    });
+
+    // Tooltip with session info — title, falling back to the session id.
+    let tip = if tab.session.title.is_empty() {
+        &tab.session.id
+    } else {
+        &tab.session.title
+    };
+    content = content.push(
+        tooltip(
+            label,
+            text(tip).size(11).color(Color::WHITE),
+            tooltip::Position::Bottom,
+        )
+        .gap(4)
+        .style(tooltip_style),
+    );
+
+    // Close button — disabled while this tab is running.
+    let close = button(tinted_icon(CLOSE, CLOSE_SIZE))
+        .on_press_maybe(
+            (!running).then(|| CenterPaneEvent::Conversation(ConversationEvent::CloseTab(number))),
+        )
+        .padding(0)
+        .style(tab_close_button_style);
+    content = content.push(close);
+
+    button(container(content).center_y(Length::Fill))
+        .on_press(CenterPaneEvent::Conversation(ConversationEvent::SwitchTab(
+            number,
+        )))
+        .padding(Padding::from([4, 8]).top(6))
+        .height(Length::Fixed(TAB_HEIGHT))
+        .style(session_tab_style(active, running && !active))
+        .into()
+}
+
+/// A small chevron arrow button for scrolling the tab bar. When the bar cannot
+/// scroll further in `direction`, collapses to zero width so it doesn't affect
+/// the row layout.
 ///
 /// Uses a [`mouse_area`] so `on_press` fires on mouse-down, enabling press-and-hold
 /// auto-repeat.  Hover feedback is driven by enter/exit events rather than a
-/// [`button`](iced::widget::button) widget so that the area stays interactive even
-/// after the cursor is dragged outside.
+/// [`button`] widget so that the area stays interactive even after the cursor is
+/// dragged outside.
 fn arrow_button<'a>(
     icon_data: &'static [u8],
-    visible: bool,
-    held: bool,
-    hovered: bool,
     direction: TabBarDirection,
+    conversation: &'a ConversationState,
 ) -> Element<'a, CenterPaneEvent> {
-    if !visible {
-        return container(row![])
-            .width(Length::Fixed(0.0))
+    let scroll = &conversation.tab_bar_scroll;
+    let can_scroll = match direction {
+        TabBarDirection::Left => scroll.can_scroll_left(),
+        TabBarDirection::Right => scroll.can_scroll_right(),
+    };
+    // The TabBarScrollState is updated eagerly on arrow clicks and also from
+    // `on_scroll` events, so it is always consistent.
+    if !scroll.has_overflow() || !can_scroll {
+        return Space::new()
+            .width(0.0)
             .height(Length::Fixed(TAB_HEIGHT))
             .into();
     }
 
-    let on_press = CenterPaneEvent::Conversation(match direction {
-        TabBarDirection::Left => ConversationEvent::TabBarScrollLeftHold,
-        TabBarDirection::Right => ConversationEvent::TabBarScrollRightHold,
-    });
-    let on_enter = CenterPaneEvent::Conversation(ConversationEvent::TabBarArrowEnter(direction));
-    let on_exit = CenterPaneEvent::Conversation(ConversationEvent::TabBarArrowExit);
-
-    let icon = svg(svg::Handle::from_memory(icon_data))
-        .width(14.0)
-        .height(14.0)
-        .style(|_theme, status| svg::Style {
-            color: Some(match status {
-                svg::Status::Hovered => theme::color_text_strong(),
-                svg::Status::Idle => theme::color_muted(),
-            }),
-        });
+    let held = conversation.tab_bar_held_direction == Some(direction);
+    let hovered = conversation.tab_bar_hovered_direction == Some(direction);
+    let event = |e: ConversationEvent| CenterPaneEvent::Conversation(e);
 
     let area = mouse_area(
-        container(icon)
+        container(tinted_icon(icon_data, 14.0))
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Alignment::Center)
             .align_y(Alignment::Center),
     )
-    .on_press(on_press)
-    .on_enter(on_enter)
-    .on_exit(on_exit)
+    .on_press(event(match direction {
+        TabBarDirection::Left => ConversationEvent::TabBarScrollLeftHold,
+        TabBarDirection::Right => ConversationEvent::TabBarScrollRightHold,
+    }))
+    .on_enter(event(ConversationEvent::TabBarArrowEnter(direction)))
+    .on_exit(event(ConversationEvent::TabBarArrowExit))
     .interaction(mouse::Interaction::Pointer);
 
     container(area)
-        .width(Length::Fixed(22.0))
+        .width(22.0)
         .height(Length::Fixed(TAB_HEIGHT))
         .align_y(Alignment::Center)
         .style(move |theme: &iced::Theme| container::Style {
-            background: if held || hovered {
-                let p = theme.extended_palette();
-                Some(p.secondary.weak.color.into())
-            } else {
-                None
-            },
+            background: (held || hovered)
+                .then(|| theme.extended_palette().secondary.weak.color.into()),
             ..container::Style::default()
         })
         .into()
+}
+
+/// An inline SVG icon tinted muted, brightening on hover.
+fn tinted_icon<'a>(data: &'static [u8], size: f32) -> svg::Svg<'a> {
+    svg(svg::Handle::from_memory(data))
+        .width(size)
+        .height(size)
+        .style(|_theme, status| svg::Style {
+            color: Some(match status {
+                svg::Status::Hovered => theme::color_text_strong(),
+                svg::Status::Idle => theme::color_muted(),
+            }),
+        })
 }
 
 /// Map a session-end status to a dot color for the tab indicator.
