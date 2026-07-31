@@ -44,12 +44,14 @@
             "fix build error",
             "fix these issues",
             "Refactor the staged changes, remove redundant code, rewrite code to be short and clear when possible.",
+            "Summarize the implementation plan and call renew to proceed."
         ],
         "review": [
             "Review the staged changes for bugs, correctness issues, maintainability concerns, and possible improvements.",
             "Summarize user-facing benefit or feature introduced by the staged changes in a single sentence as commit message",
         ],
     },
+    fill_ratio_threshold: 25.0,
     auto_check_updates: true,
     last_update_version: None,
     dark_mode: false,

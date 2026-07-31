@@ -19,7 +19,7 @@ impl Tool for RenewTool {
     }
 
     fn instruction(&self) -> &str {
-        "When user says that context fill ratio is near its limit and the current task cannot be completed soon, call the renew tool. Its prompt should be concise, use the original goal as the title, summarize the work completed and key decisions, and clearly describe the remaining work so the new session can continue without losing context."
+        "When user says that context fill ratio is near its limit and the current task cannot be completed soon, call the renew tool. If a todo list exists and is outdated, call todo to update items status along with the renew call."
     }
 
     fn schema(&self) -> Value {

@@ -68,7 +68,7 @@ impl Default for Settings {
             mcp_servers: IndexMap::new(),
             agent_tools: IndexMap::new(),
             prompt_recipes: IndexMap::new(),
-            fill_ratio_threshold: 15.0,
+            fill_ratio_threshold: 25.0,
             auto_check_updates: true,
             last_update_version: None,
             dark_mode: false,
