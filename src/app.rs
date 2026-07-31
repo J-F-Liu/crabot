@@ -448,6 +448,8 @@ pub(crate) enum ConversationEvent {
     SwitchTabByDigit(usize),
     /// Close the tab with the given number.
     CloseTab(usize),
+    /// Close the currently-viewed tab (Ctrl+W).
+    CloseCurrentTab,
     CopySessionTitle,
     AppClosing,
     ToggleSelectableMode(Option<usize>),

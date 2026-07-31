@@ -3,9 +3,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
-use chrono::Datelike;
+use chrono::{Datelike, TimeZone};
 
 use crate::chat::{Dialog, ToolResult, Turn};
 use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
@@ -47,11 +47,32 @@ impl Default for Session {
     }
 }
 
+/// Global session-ID generator state — Unix seconds (UTC epoch).
+static LAST_ID_TIME: Mutex<i64> = Mutex::new(0);
+
+/// Generate a unique session ID.  `now` is shared with `created_at`.
+fn generate_session_id(now: chrono::DateTime<chrono::Local>) -> String {
+    let mut last = LAST_ID_TIME.lock().unwrap();
+    let candidate = now.timestamp();
+
+    if candidate > *last {
+        *last = candidate;
+    } else {
+        *last += 1;
+    }
+
+    let dt = chrono::Local
+        .timestamp_opt(*last, 0)
+        .single()
+        .expect("timestamp must be in range");
+    dt.naive_local().format("%Y%m%d-%H%M%S").to_string()
+}
+
 impl Session {
     /// Create a new session.
     pub fn new() -> Self {
         let now = chrono::Local::now();
-        let id = now.format("%Y%m%d-%H%M%S").to_string();
+        let id = generate_session_id(now);
         let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
         Session {
             id,
@@ -70,21 +91,21 @@ impl Session {
         }
     }
 
-    pub fn is_fresh(&self) -> bool {
-        self.dialogs.len() == 1 && self.dialogs[0].turns.len() == 1
-    }
-
     /// Create a copy of this session with a fresh id and timestamps.
     pub fn fork(&self) -> Self {
         let mut session = self.clone();
         let now = chrono::Local::now();
-        session.id = now.format("%Y%m%d-%H%M%S").to_string();
+        session.id = generate_session_id(now);
         session.created_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
         session.updated_at = session.created_at.clone();
         // Fresh accumulators — the fork starts its own usage/cost accounting.
         session.tokens = TokenAmount::default();
         session.cost = 0.0;
         session
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        self.dialogs.len() == 1 && self.dialogs[0].turns.len() == 1
     }
 
     // ── Dialog / turn helpers ────────────────────────────────────────

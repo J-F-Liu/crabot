@@ -60,6 +60,10 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
         ConversationEvent::SwitchTabByDigit(digit) => return switch_tab_by_digit(app, digit),
         ConversationEvent::CloseTab(number) => return close_tab(app, number),
+        ConversationEvent::CloseCurrentTab => {
+            let number = app.conversation.viewing_tab_number();
+            return close_tab(app, number);
+        }
         ConversationEvent::AskAction(action) => return ask_action(app, action),
         ConversationEvent::SessionListLoaded(entries) => {
             app.conversation.session_list = entries;

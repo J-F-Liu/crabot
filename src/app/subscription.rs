@@ -78,6 +78,12 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
                         digit,
                     )))
                 }
+                keyboard::Key::Character("n") => {
+                    Some(Message::Conversation(ConversationEvent::NewSession))
+                }
+                keyboard::Key::Character("w") => {
+                    Some(Message::Conversation(ConversationEvent::CloseCurrentTab))
+                }
                 _ => None,
             }
         }
