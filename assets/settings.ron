@@ -28,6 +28,7 @@
         "bash": true,
         "ask": true,
         "todo": true,
+        "task": true,
         "renew": true,
         "fetch": true,
         "crate_source": true,

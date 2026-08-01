@@ -8,8 +8,11 @@ pub mod mcp;
 mod read;
 mod renew;
 mod search;
+mod task;
 pub mod todo;
 mod write;
+
+pub use task::TASK_MODES;
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -197,7 +200,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Create a new registry pre-populated with the nine built-in tools.
+    /// Create a new registry pre-populated with the eleven built-in tools.
     pub fn new() -> Self {
         let todo_items: todo::TodoList = todo::create_todo_list(Vec::new());
         let builtin: Vec<ToolRef> = vec![
@@ -209,6 +212,7 @@ impl ToolRegistry {
             Arc::new(bash::BashTool),
             Arc::new(ask::AskTool),
             Arc::new(todo::TodoTool::new(Arc::clone(&todo_items))),
+            Arc::new(task::TaskTool),
             Arc::new(renew::RenewTool),
             Arc::new(fetch::FetchTool),
         ];

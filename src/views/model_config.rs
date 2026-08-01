@@ -214,7 +214,7 @@ pub(crate) fn update(
         Event::SelectModelConfig(name) => {
             if name != *selected_model {
                 *selected_model = name;
-                return false; // selected_model is saved in settings.ron, don't trigger models.ron save
+                return false; // just switching the active config — not a models.ron change
             }
         }
         Event::SelectProvider(id) => {

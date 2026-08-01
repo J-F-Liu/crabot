@@ -40,7 +40,10 @@ pub(crate) struct SessionState {
     pub(crate) ask_input: String,
     /// Sender for the builtin ask tool — the UI calls `send()` to deliver
     /// the user's response to the streaming task's receiver.
-    pub(crate) ask_sender: mpsc::UnboundedSender<Result<String, String>>,
+    pub(crate) ask_sender: Option<mpsc::UnboundedSender<Result<String, String>>>,
+    /// Sender for the builtin task tool — the UI calls `send()` to deliver
+    /// a finished sub-agent session's final report to the waiting stream.
+    pub(crate) task_sender: Option<mpsc::UnboundedSender<Result<String, String>>>,
     /// Whether to auto-scroll the message view to the bottom during streaming.
     pub(crate) auto_scroll: Arc<AtomicBool>,
     /// Timestamp of the last auto-scroll snap, throttled to avoid jitter.
@@ -52,7 +55,6 @@ pub(crate) struct SessionState {
 impl SessionState {
     /// Create a fresh session state.
     pub(crate) fn new() -> Self {
-        let (ask_tx, _ask_rx) = mpsc::unbounded_channel();
         Self {
             phase: DialogPhase::Idle,
             start_index: 0,
@@ -61,7 +63,8 @@ impl SessionState {
             pending_prompt: None,
             ask_request: None,
             ask_input: String::new(),
-            ask_sender: ask_tx,
+            ask_sender: None,
+            task_sender: None,
             auto_scroll: Arc::new(AtomicBool::new(true)),
             scroll_throttle: Cell::new(Instant::now()),
             renew_hint_cooldown: Cell::new(0),
@@ -118,6 +121,18 @@ pub(crate) enum AskAction {
     OptionSelected(String),
 }
 
+/// Request emitted by the builtin task tool to spawn a sub-agent session.
+#[derive(Debug, Clone)]
+pub(crate) struct TaskRequest {
+    /// Short tab title; falls back to a prompt-derived title when absent.
+    pub title: Option<String>,
+    pub prompt: String,
+    /// Execution mode — selects the sub-agent's preamble (`{mode}.md`).
+    pub mode: Option<String>,
+    /// Difficulty tier — selects the sub-agent's configured model.
+    pub difficulty: Option<String>,
+}
+
 /// Events emitted from the streaming runtime channel.
 #[derive(Debug, Clone)]
 pub(crate) enum SessionEvent {
@@ -125,6 +140,8 @@ pub(crate) enum SessionEvent {
     AskRequest(AskRequest),
     /// Prompt string for creating a new session to continue the task.
     RenewRequest(String),
+    /// Spawn a sub-agent session; its final report answers the tool call.
+    TaskRequest(TaskRequest),
     Content(String),
     Reasoning(String),
     ToolResult(ToolResult),
@@ -154,6 +171,7 @@ pub(crate) fn update(
         latest_tokens,
         expanded_dialogs,
         end_status,
+        task_path,
         ..
     } = tab;
     let state: &mut SessionState = session_state;
@@ -294,10 +312,12 @@ pub(crate) fn update(
                 // ToolExecuting means LLM conversation still not finished.
                 // When context fill ratio exceeds the threshold, suggest the LLM renew.
                 // Only inject if no prompt is already pending to avoid overwriting an existing one.
+                // Sub-agent sessions have the renew tool stripped, so skip the hint there.
                 let cooldown = state.renew_hint_cooldown.get();
                 if cooldown > 0 {
                     state.renew_hint_cooldown.set(cooldown - 1);
-                } else if state.pending_prompt.is_none()
+                } else if task_path.is_none()
+                    && state.pending_prompt.is_none()
                     && let Some(cw) = context_window
                     && cw >= MIN_CW_FOR_RENEW_HINT
                     && latest_tokens.context_fill_ratio(cw) >= fill_ratio_threshold
@@ -317,8 +337,10 @@ pub(crate) fn update(
         SessionEvent::Stop => {
             state.stop();
         }
-        // RenewRequest is intercepted in conversation.rs before reaching here.
-        SessionEvent::RenewRequest(_) => unreachable!("handled in conversation::session_event"),
+        // RenewRequest / TaskRequest are intercepted in conversation.rs before reaching here.
+        SessionEvent::RenewRequest(_) | SessionEvent::TaskRequest(_) => {
+            unreachable!("handled in conversation::session_event")
+        }
     }
     Task::none()
 }

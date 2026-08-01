@@ -86,7 +86,7 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool) -> Element<'a, CenterPaneEv
         );
     }
 
-    let label = text(format!("Session {}", number)).size(12.0).font(Font {
+    let label = text(tab.tab_label()).size(12.0).font(Font {
         weight: if active {
             font::Weight::Bold
         } else {

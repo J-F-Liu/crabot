@@ -198,7 +198,7 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
             Some(s) => s,
             None => {
                 errors.push(format!(
-                    "Edit {idx}: string not found in {display_path}: '{old_text}'",
+                    "Edit {idx}: string of old_text not found in {display_path}",
                 ));
                 continue;
             }

@@ -22,11 +22,18 @@ pub fn ensure_default_files() {
     let crabot_dir = default_workspace_path();
     let _ = std::fs::create_dir_all(&crabot_dir);
 
+    // Seed any missing bundled preamble files (`crabot.md` plus the task-tool
+    // mode preambles) — never overwrite user edits.
     let preamble_dir = crabot_dir.join("preamble");
-    if !preamble_dir.is_dir() {
-        let _ = std::fs::create_dir(&preamble_dir);
-        if let Some(file) = ASSETS.get_file("preamble.md") {
-            let _ = std::fs::write(preamble_dir.join("crabot.md"), file.contents());
+    let _ = std::fs::create_dir_all(&preamble_dir);
+    if let Some(dir) = ASSETS.get_dir("preamble") {
+        for file in dir.files() {
+            if let Some(name) = file.path().file_name() {
+                let dest = preamble_dir.join(name);
+                if !dest.is_file() {
+                    let _ = std::fs::write(&dest, file.contents());
+                }
+            }
         }
     }
 

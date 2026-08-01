@@ -114,10 +114,15 @@ impl PromptWorkspaceState {
 
     /// Concatenate all enabled components, returning the full system prompt string.
     pub(crate) fn get_system_prompt(&self) -> String {
+        self.compose_system_prompt(self.preamble.0.then_some(self.preamble.1.as_str()))
+    }
+
+    /// Like [`get_system_prompt`](Self::get_system_prompt), but with a
+    /// caller-provided preamble section replacing the configured one
+    /// (`None` omits the preamble component entirely).
+    pub(crate) fn compose_system_prompt(&self, preamble: Option<&str>) -> String {
         let mut prompt = String::new();
-        if let (true, content) = &self.preamble
-            && !content.is_empty()
-        {
+        if let Some(content) = preamble.filter(|c| !c.is_empty()) {
             prompt.push_str(content);
             prompt.push('\n');
         }
@@ -436,6 +441,14 @@ pub(crate) enum ConversationEvent {
     LoadSession(SessionEntry),
     /// A finished workspace session-list scan, tagged with the workspace it scanned.
     SessionListLoaded(PathBuf, Vec<SessionEntry>),
+    /// A finished off-thread workspace scan (files tree + AGENTS.md).
+    WorkspaceContentReady(Box<prompt::WorkspaceScan>),
+    /// A prepared task-tool spawn whose blocking workspace scan finished — the
+    /// sub-agent session can now be launched.
+    TaskSpawnReady(Box<conversation::SuccessorSpawn>),
+    /// A prepared renew spawn whose blocking workspace scan finished — the
+    /// continuation session can now be launched.
+    RenewSpawnReady(Box<conversation::SuccessorSpawn>),
     ToggleTurnExpand(usize, usize),
     ToggleDialogExpand(usize),
     ToggleAllDialogsExpand,
@@ -723,6 +736,7 @@ impl App {
 
     /// Sync derived fields back into `settings` and persist to disk.
     pub(crate) fn save_settings(&mut self) {
+        self.settings.selected_model = self.conversation.viewing().selected_model.clone();
         self.settings.window_size = (
             self.layout.window_size.width,
             self.layout.window_size.height,
@@ -752,17 +766,20 @@ impl App {
             .session
             .model
             .as_ref()
-            .or_else(|| self.models.get_config(&self.settings.selected_model))
+            .or_else(|| {
+                self.models
+                    .get_config(&self.conversation.viewing().selected_model)
+            })
     }
 
     /// Look up the currently selected model's config, cloned for ownership.
     pub(crate) fn selected_model_config(&self) -> Option<ModelConfig> {
         self.models
-            .get_config(&self.settings.selected_model)
+            .get_config(&self.conversation.viewing().selected_model)
             .cloned()
     }
 
-    /// Find the model label matching the given config, falling back to the currently selected model.
+    /// Find the model label matching the given config, falling back to the viewing tab's label.
     pub(crate) fn find_model_label(&self, model_config: &ModelConfig) -> String {
         self.models
             .models
@@ -771,7 +788,7 @@ impl App {
                 cfg.provider_id == model_config.provider_id && cfg.model_id == model_config.model_id
             })
             .map(|(label, _)| label.clone())
-            .unwrap_or_else(|| self.settings.selected_model.clone())
+            .unwrap_or_else(|| self.conversation.viewing().selected_model.clone())
     }
 
     // ── View composition ──────────────────────────────────────────

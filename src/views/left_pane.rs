@@ -32,7 +32,7 @@ pub(crate) fn left_pane<'a>(
     models: &'a crabot::model::ModelList,
 ) -> Element<'a, LeftPaneEvent> {
     let left_w: f32 = settings.left_pane_width;
-    let selected_model: &String = &settings.selected_model;
+    let selected_model: &String = &conversation.viewing().selected_model;
     let agents_md_exists: bool = prompt.agents_md_exists;
     let tool_list_state: &ToolListState = &tools.tool_list_state;
     let selected_preamble: &str = &settings.selected_preamble;

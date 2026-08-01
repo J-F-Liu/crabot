@@ -44,6 +44,10 @@ pub(crate) struct SessionTab {
     pub(crate) selected_model: String,
     /// End status indicator — set when a stream finishes, cleared when a new dialog starts.
     pub(crate) end_status: Option<SessionEndStatus>,
+    /// Hierarchical label path, e.g. `Some([1, 2])` → "Session 1-2" (task
+    /// subtask of tab 1); `None` → plain "Session N" for user-created tabs.
+    /// Stored as a full path so the label survives the parent tab closing.
+    pub(crate) task_path: Option<Vec<usize>>,
 }
 
 impl SessionTab {
@@ -64,6 +68,7 @@ impl SessionTab {
             scroll_offset: None,
             selected_model,
             end_status: None,
+            task_path: None,
         }
     }
 
@@ -89,11 +94,35 @@ impl SessionTab {
             scroll_offset: None,
             selected_model,
             end_status: None,
+            task_path: None,
         }
     }
 
     /// Whether this tab has an active LLM stream.
     pub(crate) fn running(&self) -> bool {
         self.session_state.phase != DialogPhase::Idle
+    }
+
+    /// "Session 1-2-3" for task subtasks, "Session N" for user-created tabs.
+    pub(crate) fn tab_label(&self) -> String {
+        match &self.task_path {
+            Some(path) => format!(
+                "Session {}",
+                path.iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join("-")
+            ),
+            None => format!("Session {}", self.number),
+        }
+    }
+
+    /// Direct parent tab number when this tab was spawned by the task tool —
+    /// this tab's final report is delivered to the parent's waiting stream.
+    /// Derived from [`Self::task_path`]: the second-to-last element.
+    pub(crate) fn task_parent(&self) -> Option<usize> {
+        self.task_path
+            .as_ref()
+            .and_then(|p| p.iter().nth_back(1).copied())
     }
 }

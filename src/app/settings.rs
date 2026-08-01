@@ -37,11 +37,10 @@ pub(crate) fn open_settings(app: &mut App) -> Task<Message> {
 
 /// Handle model-config events that don't open settings (selection changes).
 pub(crate) fn handle_model_config(app: &mut App, event: model_config::Event) -> Task<Message> {
-    if model_config::update(event, &mut app.models, &mut app.settings.selected_model) {
+    let tab = app.conversation.viewing_mut();
+    if model_config::update(event, &mut app.models, &mut tab.selected_model) {
         app.models.save();
     }
-    // Keep the current viewing tab's selected_model in sync with settings.
-    app.conversation.viewing_mut().selected_model = app.settings.selected_model.clone();
     Task::none()
 }
 

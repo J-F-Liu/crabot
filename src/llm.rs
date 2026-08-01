@@ -9,7 +9,7 @@ use genai::chat::{
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
-use crate::app::session_state::{AskRequest, SessionEvent};
+use crate::app::session_state::{AskRequest, SessionEvent, TaskRequest};
 use crate::tools::{self, ToolRef};
 use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult};
 use crabot::model::ModelInfo;
@@ -68,6 +68,8 @@ pub struct SendConfig {
     pub injected_prompt: Arc<Mutex<Option<String>>>,
     /// Receiver for the builtin ask tool's user response.
     pub ask_receiver: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    /// Receiver for the builtin task tool's sub-agent report.
+    pub task_receiver: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     pub user_agent: String,
     /// When set to `true`, in-progress tool execution is cancelled.
     pub cancel_token: Arc<AtomicBool>,
@@ -94,6 +96,7 @@ pub async fn send_stream(
         tools,
         injected_prompt,
         mut ask_receiver,
+        mut task_receiver,
         user_agent,
         cancel_token,
     } = config;
@@ -318,8 +321,15 @@ pub async fn send_stream(
             // name into the blocking closure. Unknown tools short-circuit to
             // an error result without spawning a task.
             let result = match tools.iter().find(|t| t.name() == tc.fn_name).cloned() {
-                Some(_) if tc.fn_name == "ask" => {
-                    match handle_ask_tool(&tc, &mut ask_receiver, &cancel_token, on_event).await {
+                Some(_) if matches!(tc.fn_name.as_str(), "ask" | "task") => {
+                    // Interactive tools: ask/task are intercepted here and routed
+                    // to the UI, which answers through its mpsc channel.
+                    let handled = if tc.fn_name == "ask" {
+                        handle_ask_tool(&tc, &mut ask_receiver, &cancel_token, on_event).await
+                    } else {
+                        handle_task_tool(&tc, &mut task_receiver, &cancel_token, on_event).await
+                    };
+                    match handled {
                         Some(result) => result,
                         None => {
                             on_event(SessionEvent::Cancelled(genai_messages)).await;
@@ -465,11 +475,90 @@ fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Client {
         .build()
 }
 
-/// Handle a builtin ask-tool call: parse arguments, emit the question to
-/// the UI, then wait for user response, cancellation, or timeout (120 s).
+/// Drain stale results, emit `event` to the UI, then wait for the interactive
+/// result or cancellation — optionally bounded by `timeout` (whose message is
+/// returned to the caller as an `Ok` result).
 ///
 /// Returns `None` when the event channel is closed (caller should emit
 /// `Cancelled` and stop the agent loop).
+async fn wait_for_result(
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+    cancel_token: &AtomicBool,
+    event: SessionEvent,
+    timeout: Option<(std::time::Duration, &'static str)>,
+) -> Option<Result<String, String>> {
+    // Drain any stale result left over from a previous wait (e.g. a response
+    // that arrived after its stream had already been cancelled).
+    while receiver.try_recv().is_ok() {}
+    if !on_event(event).await {
+        return None;
+    }
+    Some(if let Some((duration, message)) = timeout {
+        tokio::select! {
+            result = receiver.recv() => match result {
+                Some(result) => result,
+                None => Err("Response channel closed.".into()),
+            },
+            _ = tokio::time::sleep(duration) => Ok(message.into()),
+            _ = wait_cancelled(cancel_token) => Err("Cancelled by user.".into()),
+        }
+    } else {
+        tokio::select! {
+            result = receiver.recv() => match result {
+                Some(result) => result,
+                None => Err("Response channel closed.".into()),
+            },
+            _ = wait_cancelled(cancel_token) => Err("Cancelled by user.".into()),
+        }
+    })
+}
+
+/// Handle a builtin task-tool call: parse arguments, emit the request to the
+/// UI (which spawns a sub-agent session tab), then wait for the sub-agent's
+/// final report or cancellation. There is no timeout — subtasks may run for
+/// many minutes; the Stop button remains the escape hatch.
+async fn handle_task_tool(
+    tc: &ToolCall,
+    task_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    cancel_token: &AtomicBool,
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+) -> Option<Result<String, String>> {
+    let prompt = tc
+        .fn_arguments
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if prompt.trim().is_empty() {
+        return Some(Err(
+            "Task called with an empty prompt — no subtask spawned.".into(),
+        ));
+    }
+    let arg = |key: &str| {
+        tc.fn_arguments
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    let request = TaskRequest {
+        title: arg("title"),
+        prompt,
+        mode: arg("mode"),
+        difficulty: arg("difficulty"),
+    };
+    wait_for_result(
+        task_receiver,
+        on_event,
+        cancel_token,
+        SessionEvent::TaskRequest(request),
+        None,
+    )
+    .await
+}
+
+/// Handle a builtin ask-tool call: parse arguments, emit the question to
+/// the UI, then wait for user response, cancellation, or timeout (120 s).
 async fn handle_ask_tool(
     tc: &ToolCall,
     ask_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
@@ -493,28 +582,15 @@ async fn handle_ask_tool(
         })
         .unwrap_or_default();
 
-    // Drain any stale messages left over from a previous ask (e.g. the user
-    // answered after the previous timeout had already fired).
-    while ask_receiver.try_recv().is_ok() {}
-
-    if !on_event(SessionEvent::AskRequest(AskRequest { question, options })).await {
-        return None;
-    }
-
-    // Await the user's response with a 120 s timeout and cancellation
-    // support.  `select!` races the mpsc receiver against a deadline and a
-    // cancel-token poller so that the user's answer, the timeout, or the
-    // Stop button can each break the wait promptly — no busy-polling.
-    Some(tokio::select! {
-        answer = ask_receiver.recv() => match answer {
-            Some(answer) => answer,
-            None => Err("Ask response channel closed.".into()),
-        },
-        _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
-            Ok("User did not respond before the timeout.".into())
-        }
-        _ = wait_cancelled(cancel_token) => {
-            Err("Cancelled by user.".into())
-        }
-    })
+    wait_for_result(
+        ask_receiver,
+        on_event,
+        cancel_token,
+        SessionEvent::AskRequest(AskRequest { question, options }),
+        Some((
+            std::time::Duration::from_secs(120),
+            "User did not respond before the timeout.",
+        )),
+    )
+    .await
 }

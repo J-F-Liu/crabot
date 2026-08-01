@@ -8,6 +8,8 @@ use std::path::PathBuf;
 pub struct ModelList {
     pub providers: IndexMap<String, Provider>,
     pub models: IndexMap<String, ModelConfig>,
+    #[serde(default)]
+    pub task_models: TaskModels,
 }
 
 impl ModelList {
@@ -77,6 +79,44 @@ pub struct ModelConfig {
     pub thinking_level: String,
     #[serde(default)]
     pub context_window: u32,
+}
+
+impl ModelConfig {
+    /// Whether the config selects no provider/model — used to signal
+    /// "inherit the parent session's model" in `TaskModels`.
+    pub fn is_empty(&self) -> bool {
+        self.provider_id.is_empty() || self.model_id.is_empty()
+    }
+}
+
+/// Model configurations used by the `task` tool to pick a sub-agent model per
+/// difficulty tier. An empty config means "inherit the parent session's model".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TaskModels {
+    pub easy: ModelConfig,
+    pub medium: ModelConfig,
+    pub hard: ModelConfig,
+}
+
+impl TaskModels {
+    /// The configured model for a difficulty tier; unknown tiers fall back to
+    /// `medium`. An empty config means "inherit the parent session's model".
+    pub fn get_config(&self, tier: &str) -> &ModelConfig {
+        match tier {
+            "easy" => &self.easy,
+            "hard" => &self.hard,
+            _ => &self.medium,
+        }
+    }
+
+    /// Set the model config for a difficulty tier.
+    pub fn set_config(&mut self, tier: &str, config: ModelConfig) {
+        match tier {
+            "easy" => self.easy = config,
+            "hard" => self.hard = config,
+            _ => self.medium = config,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

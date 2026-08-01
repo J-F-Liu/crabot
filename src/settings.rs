@@ -13,6 +13,7 @@ pub struct Settings {
     pub right_pane_width: f32,
     pub window_size: (f32, f32),
     pub window_pos: (f32, f32),
+    /// Model label used to seed the first session tab at startup.
     pub selected_model: String,
     pub selected_preamble: String,
     pub selected_rules: String,

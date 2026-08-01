@@ -4,16 +4,17 @@ use crabot::HashSetExt;
 use crabot::chat::Turn;
 use crabot::model::ModelConfig;
 use crabot::session::Session;
-use crabot::user::UserPrompt;
+use crabot::user::{UserPrompt, WorkMode};
 use futures::{SinkExt, future::FutureExt};
 use genai::chat::ChatRole;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use crate::app::session_state::{self, AskAction, SessionEvent};
+use crate::app::session_state::{self, AskAction, SessionEvent, TaskRequest};
 use crate::app::session_tab::SessionTab;
 use crate::app::{App, ConversationEvent, FocusedTarget, Message, TabBarScrollState};
 use crate::llm::DialogPhase;
+use crate::tools::TASK_MODES;
 use crate::views::session_tabs::TAB_SCROLL_STEP;
 use crate::views::{self, ASK_INPUT, SCROLL_STEP, scroll_to_end};
 
@@ -52,7 +53,8 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             return iced::exit();
         }
         ConversationEvent::NewSession => {
-            return new_session(app, app.settings.selected_model.clone());
+            let selected_model = app.conversation.viewing().selected_model.clone();
+            return new_session(app, selected_model);
         }
         ConversationEvent::LoadSession(entry) => return load_session(app, entry),
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
@@ -71,6 +73,21 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
                 .session_list_cache
                 .insert(workspace, entries);
         }
+        ConversationEvent::WorkspaceContentReady(scan) => {
+            // Only apply if the workspace hasn't changed while the scan was in flight.
+            if scan.workspace == app.prompt.workspace.1 {
+                app.prompt.files.content =
+                    widget::text_editor::Content::with_text(&scan.files_tree);
+                app.prompt.agents_md_exists = scan.agents_md_exists;
+                app.prompt.agents_md.1 = scan.agents_md_content;
+                if let Some(preferred) = scan.agents_md_preferred {
+                    app.prompt.agents_md.0 = preferred && scan.agents_md_exists;
+                }
+            }
+            return Task::none();
+        }
+        ConversationEvent::TaskSpawnReady(spawn) => return continue_task_spawn(app, *spawn),
+        ConversationEvent::RenewSpawnReady(spawn) => return continue_renew_spawn(app, *spawn),
         ConversationEvent::ToggleTurnExpand(index, sub_index) => {
             let key = (index, sub_index);
             let tab = app.conversation.viewing_mut();
@@ -173,11 +190,11 @@ fn new_session(app: &mut App, selected_model: String) -> Task<Message> {
 
     app.layout.focused = None;
 
-    // Refresh workspace-dependent fields.
-    crate::app::prompt::refresh_workspace_content(app);
+    // Refresh workspace-dependent fields (files tree + AGENTS.md land async).
+    let content_task = crate::app::prompt::refresh_workspace_content(app);
 
     // Fresh tab has no saved scroll offset — scroll to top.
-    views::scroll_to_start().discard()
+    views::scroll_to_start().discard().chain(content_task)
 }
 
 /// Synchronise the left-pane workspace fields to match the session's workspace.
@@ -195,15 +212,10 @@ fn sync_prompt_workspace(app: &mut App, workspace: PathBuf) -> Task<Message> {
 
 /// Restore app state to match the newly-viewed tab.
 fn restore_viewing_tab(app: &mut App) -> Task<Message> {
-    let (selected_model, session_workspace, scroll_offset) = {
+    let (session_workspace, scroll_offset) = {
         let tab = app.conversation.viewing();
-        (
-            tab.selected_model.clone(),
-            tab.session.workspace.clone(),
-            tab.scroll_offset,
-        )
+        (tab.session.workspace.clone(), tab.scroll_offset)
     };
-    app.settings.selected_model = selected_model;
     let workspace_task = sync_prompt_workspace(app, session_workspace);
     views::scroll_to(scroll_offset)
         .discard()
@@ -258,16 +270,16 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
         return Task::none();
     }
     let was_viewing = pos == app.conversation.viewing;
+    let removed_model = app.conversation.session_tabs[pos].selected_model.clone();
     app.conversation.session_tabs.remove(pos);
     // Clean up the pending-ask queue — the tab is gone.
     app.conversation.pending_ask_queue.retain(|&n| n != number);
 
     if app.conversation.session_tabs.is_empty() {
         let number = app.conversation.next_tab_number();
-        let selected_model = app.settings.selected_model.clone();
         app.conversation
             .session_tabs
-            .push(SessionTab::new(number, selected_model));
+            .push(SessionTab::new(number, removed_model));
         app.conversation.viewing = 0;
     } else if pos < app.conversation.viewing {
         app.conversation.viewing -= 1;
@@ -306,14 +318,13 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
     match Session::load(&entry.path) {
         Ok(session) => {
             let number = app.conversation.viewing_tab_number();
-            // If the loaded session has a stored model, find the matching model name
+            // If the loaded session has a stored model, find the matching model name;
+            // otherwise keep the viewing tab's current selection.
             let selected_model = if let Some(ref model_config) = session.model {
                 app.find_model_label(model_config)
             } else {
-                app.settings.selected_model.clone()
+                app.conversation.viewing().selected_model.clone()
             };
-            // Restore the selected model in settings
-            app.settings.selected_model = selected_model.clone();
             let tab = app.conversation.viewing_mut();
             *tab = SessionTab::from_session(number, session, selected_model);
             // Scroll to top for a freshly loaded session.
@@ -388,7 +399,8 @@ fn ask_action(app: &mut App, action: AskAction) -> Task<Message> {
         .viewing_mut()
         .session_state
         .ask_sender
-        .send(result);
+        .as_ref()
+        .map(|sender| sender.send(result));
     app.conversation.viewing_mut().session_state.ask_request = None;
 
     // After answered, switch to the next pending tab that issued an ask.
@@ -397,48 +409,315 @@ fn ask_action(app: &mut App, action: AskAction) -> Task<Message> {
 
 // ── streaming events ───────────────────────────────────────────────
 
+/// The tab's effective model config: the session's model, or tab's selected model label.
+fn tab_model_config(app: &App, tab: &SessionTab) -> Option<ModelConfig> {
+    tab.session
+        .model
+        .clone()
+        .or_else(|| app.models.get_config(&tab.selected_model).cloned())
+}
+
+/// The workspace a tab's session actually runs in: the session's stored
+/// workspace, falling back to the current prompt workspace.
+fn tab_workspace(app: &App, tab: &SessionTab) -> PathBuf {
+    let ws = &tab.session.workspace;
+    if ws.as_os_str().is_empty() || !ws.is_dir() {
+        app.prompt.workspace.1.clone()
+    } else {
+        ws.clone()
+    }
+}
+
+/// Whether the session started with a workspace layout — a successor session
+/// should then receive a freshly rebuilt tree. Cheap: no filesystem access.
+fn session_started_with_tree(tab: &SessionTab) -> bool {
+    tab.session.history.first().is_some_and(|m| {
+        m.role == ChatRole::User
+            && m.content.parts().iter().any(|p| {
+                p.as_text()
+                    .is_some_and(|t| t.starts_with("Working directory layout"))
+            })
+    })
+}
+
+/// Point the prompt workspace at `workspace` before spawning a successor
+/// session (renew/task). The new tab becomes the viewing tab, so without
+/// this a task fired from a background tab would run in the viewing tab's
+/// workspace instead of the origin session's.
+fn sync_spawn_workspace(app: &mut App, workspace: &Path) -> Task<Message> {
+    if workspace.as_os_str().is_empty() || workspace == app.prompt.workspace.1 {
+        Task::none()
+    } else {
+        crate::app::prompt::sync_workspace(app, workspace.to_path_buf())
+    }
+}
+
+/// Send the task-tool result to the parent tab's waiting stream (if still open).
+fn deliver_task_report(app: &mut App, parent_number: usize, result: Result<String, String>) {
+    if let Some(pos) = app.conversation.tab_pos(parent_number)
+        && let Some(sender) = app.conversation.session_tabs[pos]
+            .session_state
+            .task_sender
+            .as_ref()
+    {
+        let _ = sender.send(result);
+    }
+}
+
+/// Which tool triggered this successor spawn — each carries its own payload.
+#[derive(Debug, Clone)]
+pub(crate) enum SpawnKind {
+    Renew {
+        mode: Option<WorkMode>,
+    },
+    Task {
+        preamble: Option<String>,
+        title: Option<String>,
+    },
+}
+
+/// Prepared successor-session spawn (renew/task tool) whose blocking workspace
+/// scan has completed off the UI thread; the continuation message completes the spawn.
+#[derive(Debug, Clone)]
+pub(crate) struct SuccessorSpawn {
+    /// Origin/parent tab number.
+    pub(crate) number: usize,
+    pub(crate) selected_model: String,
+    pub(crate) model: ModelConfig,
+    pub(crate) workspace: PathBuf,
+    /// Rebuilt "Working directory layout" tree (None when the origin session
+    /// didn't start with one).
+    pub(crate) workspace_tree: Option<String>,
+    /// Which tool triggered the spawn and its mode-specific data.
+    pub(crate) kind: SpawnKind,
+    /// Prompt to launch in the new session.
+    pub(crate) prompt: String,
+}
+
 /// Handle a renew-tool request: create a new session tab and launch the
 /// continuation prompt on it, using the same model and work mode as the
-/// originating session.
+/// originating session. The workspace tree is rebuilt off the UI thread; the
+/// spawn itself happens in [`continue_renew_spawn`] once the scan lands.
 fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
-    // Look up the model config and work mode from the originating tab's session.
-    let (model, work_mode, workspace_tree, selected_model) = {
+    let (model, work_mode, workspace, need_tree, selected_model) = {
         let Some(pos) = app.conversation.tab_pos(number) else {
             return Task::none();
         };
         let tab = &app.conversation.session_tabs[pos];
-        let selected_model = tab.selected_model.clone();
-        let model = match tab
-            .session
-            .model
-            .clone()
-            .or_else(|| app.models.get_config(&tab.selected_model).cloned())
-        {
-            Some(m) => m,
-            None => return Task::none(),
+        let Some(model) = tab_model_config(app, tab) else {
+            return Task::none();
         };
-        let work_mode = tab.session.dialogs.last().and_then(|d| d.mode);
-        // If the original session was started with a workspace tree, rebuild it
-        // so the new session has an up-to-date view of the workspace.
-        let workspace_tree = tab
-            .session
-            .history
-            .first()
-            .filter(|m| m.role == ChatRole::User)
-            .and_then(|m| {
-                m.content.parts().iter().find_map(|p| {
-                    p.as_text()
-                        .filter(|t| t.starts_with("Working directory layout"))
-                        .map(|_| crabot::workspace::build_files_tree(&app.prompt.workspace.1))
-                })
-            });
-        (model, work_mode, workspace_tree, selected_model)
+        (
+            model,
+            tab.session.dialogs.last().and_then(|d| d.mode),
+            tab_workspace(app, tab),
+            session_started_with_tree(tab),
+            tab.selected_model.clone(),
+        )
     };
-    let new_task = new_session(app, selected_model);
+    let ws = workspace.clone();
+    Task::perform(
+        async move {
+            if need_tree {
+                tokio::task::spawn_blocking(move || crabot::workspace::build_files_tree(&ws))
+                    .await
+                    .ok()
+            } else {
+                None
+            }
+        },
+        move |workspace_tree| {
+            Message::Conversation(ConversationEvent::RenewSpawnReady(Box::new(
+                SuccessorSpawn {
+                    number,
+                    selected_model,
+                    model,
+                    workspace,
+                    workspace_tree,
+                    kind: SpawnKind::Renew { mode: work_mode },
+                    prompt,
+                },
+            )))
+        },
+    )
+}
+
+/// Complete a renew spawn once its workspace scan has landed off-thread.
+fn continue_renew_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
+    let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
+    let new_task = new_session(app, spawn.selected_model);
     let tab_pos = app.conversation.viewing;
-    let user_prompt = UserPrompt::new(work_mode, prompt, workspace_tree);
-    let launch_task = launch_dialog(app, tab_pos, &model, user_prompt);
-    new_task.chain(launch_task)
+    let mode = match &spawn.kind {
+        SpawnKind::Renew { mode } => *mode,
+        SpawnKind::Task { .. } => None,
+    };
+    let user_prompt = UserPrompt::new(mode, spawn.prompt, spawn.workspace_tree);
+    let launch_task = launch_dialog(app, tab_pos, &spawn.model, user_prompt, None);
+    workspace_task.chain(new_task).chain(launch_task)
+}
+
+// ── task tool (sub-agent) ─────────────────────────────────────────
+
+/// Handle a task-tool request: create a new session tab running the subtask
+/// with a mode-specific preamble and a difficulty-selected model, then deliver
+/// the sub-agent's final report back to the parent session on completion.
+///
+/// The workspace tree and mode preamble are read off the UI thread; the spawn
+/// itself happens in [`continue_task_spawn`] once the scan lands.
+fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Task<Message> {
+    let Some(pos) = app.conversation.tab_pos(number) else {
+        return Task::none();
+    };
+    // Resolve the parent tab's context (cheap — no filesystem access).
+    let (parent_selected, parent_model, workspace, need_tree) = {
+        let parent = &app.conversation.session_tabs[pos];
+        (
+            parent.selected_model.clone(),
+            tab_model_config(app, parent),
+            tab_workspace(app, parent),
+            session_started_with_tree(parent),
+        )
+    };
+
+    // Difficulty → configured subtask model (fallback: the parent's model).
+    let difficulty = request.difficulty.as_deref().unwrap_or("medium");
+    let configured = app.models.task_models.get_config(difficulty);
+    let (selected_model, model) = if configured.is_empty() {
+        // Empty config means "inherit the parent session's model".
+        match parent_model {
+            Some(cfg) => (parent_selected, cfg),
+            None => {
+                deliver_task_report(
+                    app,
+                    number,
+                    Err("No model available for the subtask.".into()),
+                );
+                return Task::none();
+            }
+        }
+    } else {
+        (app.find_model_label(configured), configured.clone())
+    };
+    // Guard against a stale config whose provider/model no longer resolves —
+    // start_dialog would silently no-op and the parent would wait forever.
+    if app.models.get_model_info(&model).is_none() {
+        deliver_task_report(
+            app,
+            number,
+            Err(format!(
+                "Subtask model is no longer resolvable: '{}' (provider '{}' / model '{}').",
+                selected_model, model.provider_id, model.model_id
+            )),
+        );
+        return Task::none();
+    }
+
+    // The sub-agent inherits the parent's workspace — sync it before the new
+    // tab becomes viewing so the system prompt, tools, and session record all
+    // use the origin workspace even when the task fires from a background tab.
+    // The workspace tree and mode preamble are scanned off the UI thread.
+    let ws = workspace.clone();
+    let mode = request.mode.clone();
+    let prompt = request.prompt.clone();
+    let title = request.title.clone();
+    Task::perform(
+        async move {
+            let tree = if need_tree {
+                tokio::task::spawn_blocking(move || crabot::workspace::build_files_tree(&ws))
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            let preamble = tokio::task::spawn_blocking(move || task_mode_preamble(mode.as_deref()))
+                .await
+                .ok()
+                .flatten();
+            (tree, preamble)
+        },
+        move |(workspace_tree, preamble)| {
+            Message::Conversation(ConversationEvent::TaskSpawnReady(Box::new(
+                SuccessorSpawn {
+                    number,
+                    selected_model,
+                    model,
+                    workspace,
+                    workspace_tree,
+                    kind: SpawnKind::Task { preamble, title },
+                    prompt,
+                },
+            )))
+        },
+    )
+}
+
+/// Complete a task-tool spawn once its workspace scan and preamble read finish.
+fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
+    // The parent tab may have been closed while the scan was in flight.
+    if app.conversation.tab_pos(spawn.number).is_none() {
+        return Task::none();
+    }
+    let (preamble, title) = match &spawn.kind {
+        SpawnKind::Task { preamble, title } => (preamble.clone(), title.clone()),
+        SpawnKind::Renew { .. } => (None, None),
+    };
+    let system_prompt = preamble
+        .as_deref()
+        .map(|preamble| app.prompt.compose_system_prompt(Some(preamble)));
+    let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
+    let tab_model_label = app.find_model_label(&spawn.model);
+    let parent_path = app
+        .conversation
+        .tab_pos(spawn.number)
+        .and_then(|p| app.conversation.session_tabs[p].task_path.clone());
+    let new_task = new_session(app, spawn.selected_model);
+    let tab_pos = app.conversation.viewing;
+    {
+        let tab = &mut app.conversation.session_tabs[tab_pos];
+        let mut task_path = parent_path.unwrap_or_else(|| vec![spawn.number]);
+        task_path.push(tab.number);
+        tab.task_path = Some(task_path);
+        tab.selected_model = tab_model_label.clone();
+    }
+    let user_prompt = UserPrompt::new(None, spawn.prompt, spawn.workspace_tree);
+    let launch_task = launch_dialog(app, tab_pos, &spawn.model, user_prompt, system_prompt);
+    // Prefer the tool-provided title for the tab heading when available.
+    if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
+        let tab = &mut app.conversation.session_tabs[tab_pos];
+        tab.center_pane_title = title.clone();
+        tab.session.title = title;
+    }
+    workspace_task.chain(new_task).chain(launch_task)
+}
+
+/// Load the mode-specific sub-agent preamble (`~/.crabot/preamble/{mode}.md`).
+/// Only the modes from the task schema are recognized; anything else
+/// (including path-traversal attempts) falls back to the default prompt.
+fn task_mode_preamble(mode: Option<&str>) -> Option<String> {
+    let mode = mode?.to_ascii_lowercase();
+    if !TASK_MODES.contains(&mode.as_str()) {
+        return None;
+    }
+    let path = crabot::setup::default_workspace_path()
+        .join("preamble")
+        .join(format!("{mode}.md"));
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// Extract the last non-empty assistant text from a finished session — the
+/// sub-agent's final report returned to the parent as the task tool result.
+fn final_assistant_text(session: &Session) -> Option<String> {
+    session
+        .history
+        .iter()
+        .rev()
+        .filter(|m| m.role == ChatRole::Assistant)
+        .find_map(|m| {
+            let text = m.content.joined_texts().unwrap_or_default();
+            (!text.trim().is_empty()).then_some(text)
+        })
 }
 
 /// Pop the next pending ask from the queue and switch to that tab.
@@ -466,6 +745,10 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
     // Handle RenewRequest before the normal flow — it creates a new session.
     if let SessionEvent::RenewRequest(ref prompt) = event {
         return handle_renew(app, number, prompt.clone());
+    }
+    // Handle TaskRequest before the normal flow — it spawns a sub-agent session.
+    if let SessionEvent::TaskRequest(ref request) = event {
+        return handle_task_request(app, number, request.clone());
     }
 
     let Some(pos) = app.conversation.tab_pos(number) else {
@@ -496,12 +779,7 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
     let viewing = pos == app.conversation.viewing;
 
     // Compute cost and context window from the tab's session model BEFORE mutably borrowing the tab.
-    let tab_model_label = app.conversation.session_tabs[pos].selected_model.clone();
-    let model_config = app.conversation.session_tabs[pos]
-        .session
-        .model
-        .clone()
-        .or_else(|| app.models.get_config(&tab_model_label).cloned());
+    let model_config = tab_model_config(app, &app.conversation.session_tabs[pos]);
     let cost = model_config
         .as_ref()
         .and_then(|cfg| app.models.get_model(cfg))
@@ -509,6 +787,11 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
     let context_window = model_config.as_ref().map(|cfg| cfg.context_window);
 
     let finished = matches!(event, SessionEvent::Done(_));
+    let is_cancelled = matches!(event, SessionEvent::Cancelled(_));
+    let task_error = match &event {
+        SessionEvent::Error(err, _) => Some(err.clone()),
+        _ => None,
+    };
 
     // Remember whether this tab had an active ask so we can detect a clear.
     let had_ask = app.conversation.session_tabs[pos]
@@ -556,6 +839,25 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
         Task::none()
     };
 
+    // If this tab is a task-tool subtask that just terminated, deliver its
+    // final report to the parent session's waiting task tool.
+    if let Some(parent) = app.conversation.session_tabs[pos].task_parent()
+        && (finished || is_cancelled || task_error.is_some())
+    {
+        let result = if let Some(err) = task_error {
+            Err(format!("Subtask failed: {err}"))
+        } else if is_cancelled {
+            Err("Subtask was cancelled.".into())
+        } else {
+            Ok(
+                final_assistant_text(&app.conversation.session_tabs[pos].session).unwrap_or_else(
+                    || "Subtask completed without a final text response.".to_string(),
+                ),
+            )
+        };
+        deliver_task_report(app, parent, result);
+    }
+
     switch_task
         .chain(update_task.discard())
         .chain(dispatch_task)
@@ -598,7 +900,7 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
         return Task::none();
     }
 
-    launch_dialog(app, tab_pos, &model, user_prompt)
+    launch_dialog(app, tab_pos, &model, user_prompt, None)
 }
 
 /// Build a `UserPrompt` from `content` using the current prompt settings.
@@ -614,11 +916,14 @@ fn build_user_prompt(app: &App, content: String) -> UserPrompt {
 }
 
 /// Set up a new dialog from `content` on the given tab and start streaming.
+/// `system_prompt_override` replaces the configured system prompt (used by the
+/// task tool to inject a mode-specific sub-agent preamble).
 fn launch_dialog(
     app: &mut App,
     tab_pos: usize,
     model: &ModelConfig,
     user_prompt: UserPrompt,
+    system_prompt_override: Option<String>,
 ) -> Task<Message> {
     let tab = &mut app.conversation.session_tabs[tab_pos];
     tab.center_pane_title = user_prompt.content.clone();
@@ -632,7 +937,13 @@ fn launch_dialog(
     tab.session
         .push_turn(Turn::user(user_prompt.content.clone()));
     // `tab` borrow ends here (NLL); start_dialog takes a fresh &mut App.
-    start_dialog(app, tab_pos, model, Some(user_prompt))
+    start_dialog(
+        app,
+        tab_pos,
+        model,
+        Some(user_prompt),
+        system_prompt_override,
+    )
 }
 
 /// Auto-dispatch a prompt that was injected too late for the just-ended stream.
@@ -656,7 +967,7 @@ fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
         return Task::none();
     };
     app.prompt.files.enabled = false;
-    launch_dialog(app, tab_pos, &model, user_prompt)
+    launch_dialog(app, tab_pos, &model, user_prompt, None)
 }
 
 fn resend_session(app: &mut App) -> Task<Message> {
@@ -676,17 +987,20 @@ fn resend_session(app: &mut App) -> Task<Message> {
         tab.expanded_dialogs.insert(index);
     }
     // `tab` borrow ends here (NLL); start_dialog takes a fresh &mut App.
-    start_dialog(app, tab_pos, &model, None)
+    start_dialog(app, tab_pos, &model, None, None)
 }
 
 // ── Stream orchestration ──────────────────────────────────────────
 
 /// Prepare and launch an LLM dialog stream for the given tab.
+/// `system_prompt_override` replaces the configured system prompt when set
+/// (used by the task tool to inject a mode-specific sub-agent preamble).
 pub(crate) fn start_dialog(
     app: &mut App,
     tab_pos: usize,
     model_config: &ModelConfig,
     user_prompt: Option<UserPrompt>,
+    system_prompt_override: Option<String>,
 ) -> Task<Message> {
     let Some(model) = app.models.get_model_info(model_config) else {
         return Task::none();
@@ -746,9 +1060,12 @@ pub(crate) fn start_dialog(
     tab.session_state.start_index = tab.session.total_turns();
     tab.session_state.auto_scroll.store(true, Ordering::Relaxed);
 
-    // Create a fresh mpsc channel for this stream's ask-tool responses.
+    // Create a fresh mpsc channel for this stream's ask-tool responses,
+    // and one for task-tool (sub-agent) reports.
     let (ask_tx, ask_rx) = tokio::sync::mpsc::unbounded_channel();
-    tab.session_state.ask_sender = ask_tx;
+    tab.session_state.ask_sender = Some(ask_tx);
+    let (task_tx, task_rx) = tokio::sync::mpsc::unbounded_channel();
+    tab.session_state.task_sender = Some(task_tx);
 
     let mut tools = app
         .tools
@@ -758,14 +1075,19 @@ pub(crate) fn start_dialog(
     if let Some(pos) = tools.iter().position(|t| t.name() == "todo") {
         tools[pos] = std::sync::Arc::new(crate::tools::todo::TodoTool::new(tab.todo_items.clone()));
     }
+    // Sub-agent sessions spawned by the task tool cannot call renew.
+    if tab.task_path.is_some() {
+        tools.retain(|t| t.name() != "renew");
+    }
     let config = crate::llm::SendConfig {
         model,
         workspace: app.prompt.workspace.1.clone(),
-        system_prompt: app.prompt.get_system_prompt(),
+        system_prompt: system_prompt_override.unwrap_or_else(|| app.prompt.get_system_prompt()),
         user_prompt,
         tools,
         injected_prompt: tab.session_state.injected_prompt.clone(),
         ask_receiver: ask_rx,
+        task_receiver: task_rx,
         user_agent: crabot::app_title().to_string(),
         cancel_token: tab.session_state.cancel_token.clone(),
     };
