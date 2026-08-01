@@ -72,17 +72,17 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool) -> Element<'a, CenterPaneEv
     let number = tab.number;
     let running = tab.running();
 
-    // Status indicator: ○ while streaming, colored ● after a terminal event.
+    // Status indicator: ○ while streaming (raised slightly), colored ● after a terminal event.
     let status = if running {
-        Some(("○", theme::CRABOT_PRIMARY))
+        Some(("○", theme::CRABOT_PRIMARY, 2.0))
     } else {
-        tab.end_status.map(|s| ("●", end_status_color(s)))
+        tab.end_status.map(|s| ("●", end_status_color(s), 0.0))
     };
 
     let mut content = row![].spacing(4).align_y(Alignment::Center);
-    if let Some((glyph, color)) = status {
+    if let Some((glyph, color, raise)) = status {
         content = content.push(
-            container(text(glyph).size(9.0).color(color)).padding(Padding::new(0.0).bottom(4.0)),
+            container(text(glyph).size(9.0).color(color)).padding(Padding::new(0.0).bottom(raise)),
         );
     }
 

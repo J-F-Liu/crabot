@@ -1,7 +1,4 @@
-use iced::{
-    Task,
-    widget::{self, text_editor},
-};
+use iced::{Task, widget};
 
 use crabot::HashSetExt;
 use crabot::chat::Turn;
@@ -10,6 +7,7 @@ use crabot::session::Session;
 use crabot::user::UserPrompt;
 use futures::{SinkExt, future::FutureExt};
 use genai::chat::ChatRole;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 use crate::app::session_state::{self, AskAction, SessionEvent};
@@ -65,8 +63,13 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             return close_tab(app, number);
         }
         ConversationEvent::AskAction(action) => return ask_action(app, action),
-        ConversationEvent::SessionListLoaded(entries) => {
-            app.conversation.session_list = entries;
+        ConversationEvent::SessionListLoaded(workspace, entries) => {
+            if workspace == app.prompt.workspace.1 {
+                app.conversation.session_list = entries.clone();
+            }
+            app.conversation
+                .session_list_cache
+                .insert(workspace, entries);
         }
         ConversationEvent::ToggleTurnExpand(index, sub_index) => {
             let key = (index, sub_index);
@@ -170,17 +173,41 @@ fn new_session(app: &mut App, selected_model: String) -> Task<Message> {
 
     app.layout.focused = None;
 
-    // Refresh workspace-dependent fields
-    let workspace = app.prompt.workspace.1.clone();
-    let tree = crabot::workspace::build_files_tree(&workspace);
-    app.prompt.files.content = text_editor::Content::with_text(&tree);
-    app.prompt.files.enabled = true;
-    let (exists, content) = crate::app::prompt::load_agents_md(&workspace);
-    app.prompt.agents_md_exists = exists;
-    app.prompt.agents_md.1 = content;
+    // Refresh workspace-dependent fields.
+    crate::app::prompt::refresh_workspace_content(app);
 
     // Fresh tab has no saved scroll offset — scroll to top.
     views::scroll_to_start().discard()
+}
+
+/// Synchronise the left-pane workspace fields to match the session's workspace.
+fn sync_prompt_workspace(app: &mut App, workspace: PathBuf) -> Task<Message> {
+    // Skip fresh tabs (empty workspace) and tabs already in sync.
+    if workspace.as_os_str().is_empty()
+        || !workspace.is_dir()
+        || workspace == app.prompt.workspace.1
+    {
+        return Task::none();
+    }
+    // Recents are left untouched for this tab-switch driven sync.
+    crate::app::prompt::apply_workspace(app, workspace, false)
+}
+
+/// Restore app state to match the newly-viewed tab.
+fn restore_viewing_tab(app: &mut App) -> Task<Message> {
+    let (selected_model, session_workspace, scroll_offset) = {
+        let tab = app.conversation.viewing();
+        (
+            tab.selected_model.clone(),
+            tab.session.workspace.clone(),
+            tab.scroll_offset,
+        )
+    };
+    app.settings.selected_model = selected_model;
+    let workspace_task = sync_prompt_workspace(app, session_workspace);
+    views::scroll_to(scroll_offset)
+        .discard()
+        .chain(workspace_task)
 }
 
 /// Switch the viewing tab to the one with the given number.
@@ -198,16 +225,11 @@ fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
     // Remove from pending-ask queue — the user is now viewing this tab.
     app.conversation.pending_ask_queue.retain(|&n| n != number);
 
-    // Restore the incoming tab's selected model.
-    let tab = app.conversation.viewing_mut();
-    app.settings.selected_model = tab.selected_model.clone();
-
-    // Restore or reset the incoming tab's scroll position.
-    let scroll_task = views::scroll_to(tab.scroll_offset).discard();
+    let restore_task = restore_viewing_tab(app);
 
     // Focus the ask input so the user can answer the ask tool immediately.
     let focus_task = widget::operation::focus(ASK_INPUT.clone());
-    Task::batch([scroll_task, focus_task])
+    restore_task.chain(focus_task)
 }
 
 /// Switch to the tab at the given 1-based position; digit 0 means the last tab.
@@ -255,11 +277,9 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
 
     app.layout.focused = None;
 
-    // Restore or reset the newly-viewed tab's scroll position if the closed tab was viewing.
+    // Restore the newly-viewed tab's state if the closed tab was viewing.
     if was_viewing {
-        let tab = app.conversation.viewing_mut();
-        app.settings.selected_model = tab.selected_model.clone();
-        return views::scroll_to(tab.scroll_offset).discard();
+        return restore_viewing_tab(app);
     }
     Task::none()
 }
@@ -713,6 +733,11 @@ pub(crate) fn start_dialog(
 
     // Add to session list now that the tab borrow is released.
     if let Some(entry) = session_list_entry {
+        app.conversation
+            .session_list_cache
+            .entry(app.prompt.workspace.1.clone())
+            .or_default()
+            .insert(0, entry.clone());
         app.conversation.session_list.insert(0, entry);
     }
 
@@ -788,18 +813,20 @@ pub(crate) fn start_dialog(
 }
 
 /// Refresh the session list dropdown entries from disk.
-pub(crate) fn refresh_session_list(workspace: std::path::PathBuf) -> Task<Message> {
+pub(crate) fn refresh_session_list(workspace: PathBuf) -> Task<Message> {
     Task::perform(
         async move {
-            tokio::task::spawn_blocking(move || {
-                crate::views::session_list::list_entries(&workspace)
+            let path = workspace.clone();
+            let entries = tokio::task::spawn_blocking(move || {
+                crate::views::session_list::list_entries(&path)
             })
             .await
             .unwrap_or(Ok(Vec::new()))
+            .unwrap_or_default();
+            (workspace, entries)
         },
-        |result| match result {
-            Ok(entries) => Message::Conversation(ConversationEvent::SessionListLoaded(entries)),
-            Err(_) => Message::Conversation(ConversationEvent::SessionListLoaded(Vec::new())),
+        |(workspace, entries)| {
+            Message::Conversation(ConversationEvent::SessionListLoaded(workspace, entries))
         },
     )
 }

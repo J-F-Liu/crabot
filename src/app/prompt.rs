@@ -1,6 +1,6 @@
 use iced::{Task, widget::text_editor};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crabot::workspace;
 
@@ -147,9 +147,14 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
 
 // ── Workspace & prompt-file helpers ───────────────────────────────
 
-/// Bump `path` to top of recents, persist it as current workspace,
-/// restore its agents_md_enabled preference, rebuild the files tree, and refresh the session list.
-pub(crate) fn set_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
+/// Apply `path` as the current workspace: save the outgoing workspace's
+/// AGENTS.md preference, restore the incoming one, rebuild the files tree and
+/// AGENTS.md content, refresh picker options and the session list.
+///
+/// When `bump_recents` is set, `path` is also moved to the front of the
+/// recents list (explicit user selection).  Otherwise recents are left
+/// untouched (e.g. tab-switch driven sync).
+pub(crate) fn apply_workspace(app: &mut App, path: PathBuf, bump_recents: bool) -> Task<Message> {
     // Save current workspace preference before switching.
     let cur = &app.prompt.workspace.1;
     if !cur.as_os_str().is_empty() {
@@ -157,30 +162,58 @@ pub(crate) fn set_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
         app.settings.set_recent_workspace_enabled(cur, enabled);
     }
 
-    // Move the new workspace to the front of recents.
-    let (exists, content) = load_agents_md(&path);
-    let enabled = app
+    // Restore the incoming workspace's AGENTS.md preference (default: enabled).
+    let preferred = app
         .settings
         .recent_workspaces
         .iter()
         .find_map(|(p, e)| (p == &path).then_some(*e))
-        .unwrap_or(true)
-        && exists;
-    app.settings.recent_workspaces.retain(|(p, _)| p != &path);
-    app.settings
-        .recent_workspaces
-        .insert(0, (path.clone(), enabled));
-    app.settings.recent_workspaces.truncate(10);
+        .unwrap_or(true);
+    let enabled = set_workspace_content(app, &path) && preferred;
+    app.prompt.agents_md.0 = enabled;
 
-    // Apply workspace.
-    let tree = workspace::build_files_tree(&path);
-    app.prompt.files.content = text_editor::Content::with_text(&tree);
-    app.prompt.agents_md_exists = exists;
-    app.prompt.agents_md = (enabled, content);
+    if bump_recents {
+        app.settings.recent_workspaces.retain(|(p, _)| p != &path);
+        app.settings
+            .recent_workspaces
+            .insert(0, (path.clone(), enabled));
+        app.settings.recent_workspaces.truncate(10);
+    }
+
     app.prompt.workspace.1 = path.clone();
     app.prompt.workspace_options =
         crate::views::build_workspace_options(&app.settings.recent_workspaces);
-    crate::app::conversation::refresh_session_list(path)
+    if !bump_recents && let Some(entries) = app.conversation.session_list_cache.get(&path) {
+        // Tab-switch sync: reuse the cached list without re-scanning.
+        app.conversation.session_list = entries.clone();
+        Task::none()
+    } else {
+        // Explicit workspace selection or cache miss always re-scans.
+        crate::app::conversation::refresh_session_list(path)
+    }
+}
+
+/// Rebuild the files tree and reload AGENTS.md for `path` into the prompt
+/// fields, returning whether AGENTS.md exists.
+fn set_workspace_content(app: &mut App, path: &Path) -> bool {
+    let tree = workspace::build_files_tree(path);
+    app.prompt.files.content = text_editor::Content::with_text(&tree);
+    let (exists, content) = load_agents_md(path);
+    app.prompt.agents_md_exists = exists;
+    app.prompt.agents_md.1 = content;
+    exists
+}
+
+/// Reload the files tree and AGENTS.md content when a fresh session tab is created.
+pub(crate) fn refresh_workspace_content(app: &mut App) {
+    let workspace = app.prompt.workspace.1.clone();
+    set_workspace_content(app, &workspace);
+    app.prompt.files.enabled = true;
+}
+
+/// Apply `path` as the workspace on explicit user selection, bumping it to the top of recents.
+pub(crate) fn set_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
+    apply_workspace(app, path, true)
 }
 
 /// Read a prompt file (preamble or rules) from disk and return a task
@@ -199,7 +232,7 @@ pub(crate) fn select_prompt_file(
 }
 
 /// Read `AGENTS.md` from the workspace root, returning (exists, content).
-pub(crate) fn load_agents_md(workspace: &std::path::Path) -> (bool, String) {
+pub(crate) fn load_agents_md(workspace: &Path) -> (bool, String) {
     if !workspace.as_os_str().is_empty() {
         let path = workspace.join("AGENTS.md");
         if path.is_file() {

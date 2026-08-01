@@ -12,7 +12,8 @@ use crate::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE};
 use super::theme::thin_vertical;
 use crate::app::ExpandableEditor;
 
-use std::path::PathBuf;
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 
 // ── internal helper ──────────────────────────────────────────────────
 
@@ -94,6 +95,21 @@ pub(crate) fn workspace_field_view<'a>(
 ) -> Element<'a, PromptEvent> {
     let checked = field.0;
     let name = WORKSPACE;
+
+    // Picker options come from recents (capped at 10); the active workspace may
+    // have fallen off the list, so prepend it to keep the picker in sync.
+    let options: Cow<'a, [FilepathEntry]> =
+        if field.1.as_os_str().is_empty() || options.iter().any(|e| e.path == field.1) {
+            Cow::Borrowed(options)
+        } else {
+            let mut entries = vec![FilepathEntry {
+                display: workspace_display(&field.1),
+                path: field.1.clone(),
+            }];
+            entries.extend_from_slice(options);
+            Cow::Owned(entries)
+        };
+
     let selected = if field.1.as_os_str().is_empty() {
         None
     } else {
@@ -146,21 +162,22 @@ pub fn load_prompt_options(subdir: &str, selected: &str) -> (Vec<FilepathEntry>,
     (options, content)
 }
 
+/// Display label for a workspace path: the folder name, or "unknown".
+fn workspace_display(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 pub fn build_workspace_options(recent: &[(PathBuf, bool)]) -> Vec<FilepathEntry> {
     use std::collections::HashMap;
 
     let mut entries: Vec<FilepathEntry> = recent
         .iter()
-        .map(|(path, _)| {
-            let display = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            FilepathEntry {
-                display,
-                path: path.clone(),
-            }
+        .map(|(path, _)| FilepathEntry {
+            display: workspace_display(path),
+            path: path.clone(),
         })
         .collect();
 

@@ -3,7 +3,7 @@
 //! This module owns the root [`App`] state, the nested domain [`Message`] enum,
 //! and the boot / update / view / subscription methods that drive the GUI.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use iced::widget::scrollable::Viewport;
@@ -257,6 +257,9 @@ pub(crate) struct ConversationState {
     /// Monotonic counter for the next tab's `number`; reset on restart.
     next_tab_number: usize,
     pub(crate) session_list: Vec<SessionEntry>,
+    /// Per-workspace cached session lists, keyed by workspace path.
+    /// Refreshed on explicit workspace switch; reused on tab-switch workspace sync.
+    pub(crate) session_list_cache: HashMap<PathBuf, Vec<SessionEntry>>,
     /// Queue of tab numbers whose ask-tool requests arrived while the viewing tab already had an unanswered ask.
     pub(crate) pending_ask_queue: std::collections::VecDeque<usize>,
     /// Current scroll state of the tab bar: offset, viewport width, content width.
@@ -274,6 +277,7 @@ impl ConversationState {
             viewing: 0,
             next_tab_number: 2,
             session_list: Vec::new(),
+            session_list_cache: HashMap::new(),
             pending_ask_queue: std::collections::VecDeque::new(),
             tab_bar_scroll: TabBarScrollState::default(),
             tab_bar_held_direction: None,
@@ -430,7 +434,8 @@ pub(crate) enum ToolEvent {
 pub(crate) enum ConversationEvent {
     NewSession,
     LoadSession(SessionEntry),
-    SessionListLoaded(Vec<SessionEntry>),
+    /// A finished workspace session-list scan, tagged with the workspace it scanned.
+    SessionListLoaded(PathBuf, Vec<SessionEntry>),
     ToggleTurnExpand(usize, usize),
     ToggleDialogExpand(usize),
     ToggleAllDialogsExpand,
