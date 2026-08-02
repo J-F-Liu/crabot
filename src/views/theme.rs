@@ -49,7 +49,14 @@ pub(crate) const DARK_DIALOG_BG: Color = Color::from_rgb8(0x23, 0x27, 0x30);
 /// Faint gray background for the session header bar (dark mode).
 pub(crate) const DARK_HEADER_BG: Color = Color::from_rgb8(0x24, 0x28, 0x2F);
 
-// ── dialog / modal constants ──────────────────────────────────────
+/// Diff-row background for deletions (light pink).
+const DIFF_BG_DEL_LIGHT: Color = Color::from_rgb8(0xFF, 0xF0, 0xF0);
+/// Diff-row background for additions (light green).
+const DIFF_BG_ADD_LIGHT: Color = Color::from_rgb8(0xF0, 0xFA, 0xF4);
+/// Diff-row background for deletions (muted dark red).
+const DIFF_BG_DEL_DARK: Color = Color::from_rgb8(0x3D, 0x20, 0x25);
+/// Diff-row background for additions (muted dark green).
+const DIFF_BG_ADD_DARK: Color = Color::from_rgb8(0x1E, 0x2D, 0x25);
 
 pub(crate) const CRABOT_DIALOG_BG: Color = Color::WHITE;
 pub(crate) const CRABOT_DIALOG_RADIUS: f32 = 10.0;
@@ -215,5 +222,21 @@ pub(crate) fn color_header_bg() -> Color {
         DARK_HEADER_BG
     } else {
         CRABOT_HEADER_BG
+    }
+}
+/// Diff-row background for deletions.
+pub(crate) fn color_diff_bg_del() -> Color {
+    if is_dark() {
+        DIFF_BG_DEL_DARK
+    } else {
+        DIFF_BG_DEL_LIGHT
+    }
+}
+/// Diff-row background for additions.
+pub(crate) fn color_diff_bg_add() -> Color {
+    if is_dark() {
+        DIFF_BG_ADD_DARK
+    } else {
+        DIFF_BG_ADD_LIGHT
     }
 }

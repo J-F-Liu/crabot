@@ -9,8 +9,8 @@ use super::ASK_INPUT;
 use super::styles::{primary_button, secondary_button};
 use super::styles::{sel_default, sel_primary, sel_secondary};
 use super::theme::{
-    CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT, color_muted, color_text,
-    color_tool_content_bg, color_tool_content_border,
+    CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT, color_diff_bg_add, color_diff_bg_del,
+    color_muted, color_text, color_tool_content_bg, color_tool_content_border,
 };
 use crate::tools::edit::EditParam;
 use crate::tools::todo::{TodoItem, TodoStatus};
@@ -296,10 +296,6 @@ fn bold_font() -> Font {
     }
 }
 
-/// Background colours for diff-style rows.
-const DIFF_BG_DEL: Color = Color::from_rgb8(0xFF, 0xF0, 0xF0);
-const DIFF_BG_ADD: Color = Color::from_rgb8(0xF0, 0xFA, 0xF4);
-
 /// A labelled, colour-coded row used inside the edits table.
 ///
 /// `marker` is the leading glyph (e.g. "−", "+", "⚠"), coloured with
@@ -413,7 +409,7 @@ fn edits_table<'a, M: Clone + 'static>(
                         CRABOT_DANGER,
                         old_text,
                         sel_secondary,
-                        DIFF_BG_DEL,
+                        color_diff_bg_del(),
                         font_scale,
                         search_query,
                     ),
@@ -422,7 +418,7 @@ fn edits_table<'a, M: Clone + 'static>(
                         CRABOT_SUCCESS,
                         new_text,
                         sel_primary,
-                        DIFF_BG_ADD,
+                        color_diff_bg_add(),
                         font_scale,
                         search_query,
                     ),
@@ -434,7 +430,7 @@ fn edits_table<'a, M: Clone + 'static>(
                         CRABOT_DANGER,
                         edit.to_string(),
                         sel_secondary,
-                        DIFF_BG_DEL,
+                        color_diff_bg_del(),
                         font_scale,
                         search_query,
                     ),
@@ -719,7 +715,7 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
             if is_ok {
                 color_tool_content_bg()
             } else {
-                DIFF_BG_DEL
+                color_diff_bg_del()
             }
             .into(),
         ),

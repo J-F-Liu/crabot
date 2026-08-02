@@ -111,8 +111,8 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool) -> Element<'a, CenterPaneEv
         .style(tooltip_style),
     );
 
-    // Close button — disabled while this tab is running.
-    let close = button(tinted_icon(CLOSE, CLOSE_SIZE))
+    // Close button — disabled while this tab is running; the glyph also stays muted on hover.
+    let close = button(tinted_icon(CLOSE, CLOSE_SIZE, !running))
         .on_press_maybe(
             (!running).then(|| CenterPaneEvent::Conversation(ConversationEvent::CloseTab(number))),
         )
@@ -162,7 +162,7 @@ fn arrow_button<'a>(
     let event = |e: ConversationEvent| CenterPaneEvent::Conversation(e);
 
     let area = mouse_area(
-        container(tinted_icon(icon_data, 14.0))
+        container(tinted_icon(icon_data, 14.0, true))
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Alignment::Center)
@@ -188,15 +188,15 @@ fn arrow_button<'a>(
         .into()
 }
 
-/// An inline SVG icon tinted muted, brightening on hover.
-fn tinted_icon<'a>(data: &'static [u8], size: f32) -> svg::Svg<'a> {
+/// An inline SVG icon tinted muted, brightening on hover if interactive.
+fn tinted_icon<'a>(data: &'static [u8], size: f32, interactive: bool) -> svg::Svg<'a> {
     svg(svg::Handle::from_memory(data))
         .width(size)
         .height(size)
-        .style(|_theme, status| svg::Style {
+        .style(move |_theme, status| svg::Style {
             color: Some(match status {
-                svg::Status::Hovered => theme::color_text_strong(),
-                svg::Status::Idle => theme::color_muted(),
+                svg::Status::Hovered if interactive => theme::color_text_strong(),
+                _ => theme::color_muted(),
             }),
         })
 }
