@@ -591,7 +591,7 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
 
     // Difficulty → configured subtask model (fallback: the parent's model).
     let difficulty = request.difficulty.as_deref().unwrap_or("medium");
-    let configured = app.models.task_models.get_config(difficulty);
+    let configured = app.settings.task_models.get_config(difficulty);
     let (selected_model, model) = if configured.is_empty() {
         // Empty config means "inherit the parent session's model".
         match parent_model {

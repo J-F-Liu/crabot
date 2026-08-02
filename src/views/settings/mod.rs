@@ -4,7 +4,7 @@ use super::theme::{
     color_muted, color_surface, color_text_strong,
 };
 use crate::widgets::textarea::TextArea;
-use crabot::model::{Model, ModelConfig, ModelList, Provider};
+use crabot::model::{Model, ModelConfig, ModelList, Provider, TaskModels};
 use crabot::model_database::ModelDatabase;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolList, ToolParameter};
 use crabot::tools::mcp::{McpList, McpServer, McpTransport};
@@ -20,6 +20,7 @@ use std::sync::atomic::AtomicBool;
 
 pub mod about;
 pub mod ai_models;
+pub mod builtin_tools;
 pub mod custom_tools;
 pub mod mcp_servers;
 pub mod prompt_recipes;
@@ -36,6 +37,7 @@ pub(crate) const NEW_PROVIDER_NAME_INPUT_ID: &str = "settings-new-provider-name-
 pub(crate) enum SettingsTab {
     AiModels,
     PromptRecipes,
+    BuiltinTools,
     CustomTools,
     McpServers,
     ToolPlayground,
@@ -47,6 +49,7 @@ impl SettingsTab {
         match self {
             SettingsTab::AiModels => "AI Models",
             SettingsTab::PromptRecipes => "Prompt Recipes",
+            SettingsTab::BuiltinTools => "Builtin Tools",
             SettingsTab::CustomTools => "Custom Tools",
             SettingsTab::McpServers => "MCP Servers",
             SettingsTab::ToolPlayground => "Tool Playground",
@@ -123,6 +126,19 @@ pub(crate) enum SettingsEvent {
     EditRecipe(String, usize, String),
     /// Persist working recipes to disk.
     SavePromptRecipes,
+    // ── Builtin Tools actions ─────────────────────────────
+    /// Edit the max agent-loop iterations field (raw text).
+    EditMaxIterations(String),
+    /// Edit one built-in tool limit field (raw text).
+    EditToolLimit(builtin_tools::ToolLimitField, String),
+    /// Pick a provider for a task sub-agent difficulty tier.
+    TaskModelSelectProvider(&'static str, String),
+    /// Pick a model for a task sub-agent difficulty tier.
+    TaskModelSelectModel(&'static str, String),
+    /// Toggle "inherit the parent session's model" for a tier.
+    TaskModelInherit(&'static str, bool),
+    /// Persist max iterations, tool limits, and task models to disk.
+    SaveBuiltinTools,
     // Custom tool actions
     /// Expand/collapse the tool card at the given index.
     ToggleTool(usize),
@@ -238,6 +254,12 @@ pub(crate) struct SettingsState {
     pub(crate) working_prompt_recipes: indexmap::IndexMap<String, Vec<String>>,
     /// Index of the work-mode recipe card currently expanded, if any.
     pub(super) expanded_recipe_mode: Option<usize>,
+    /// Working copy of max agent-loop iterations (raw text) — parsed on Save.
+    pub(crate) working_max_iterations: String,
+    /// Working copies of built-in tool limits (raw text) — parsed on Save.
+    pub(crate) working_tool_limits: builtin_tools::ToolLimitStrings,
+    /// Working copy of sub-agent task models — saved on Save (Builtin Tools tab).
+    pub(crate) working_task_models: TaskModels,
     /// Working copy of custom tools edited within the dialog — saved on Save.
     pub(crate) working_tools: ToolList,
     /// Index of the custom-tool card currently expanded, if any.
@@ -304,6 +326,9 @@ impl Default for SettingsState {
             working_models: ModelList::default(),
             working_prompt_recipes: indexmap::IndexMap::new(),
             expanded_recipe_mode: None,
+            working_max_iterations: String::new(),
+            working_tool_limits: builtin_tools::ToolLimitStrings::default(),
+            working_task_models: TaskModels::default(),
             working_tools: ToolList::default(),
             expanded_tool: None,
             tool_desc_area: TextArea::new(),
@@ -730,6 +755,77 @@ impl SettingsState {
                     .retain(|_, recipes| !recipes.is_empty());
                 self.save_feedback = Some(SettingsTab::PromptRecipes);
             }
+            // ── Builtin Tools actions ─────────────────────────
+            SettingsEvent::EditMaxIterations(v) => self.working_max_iterations = v,
+            SettingsEvent::EditToolLimit(field, v) => {
+                *self.working_tool_limits.get_mut(field) = v;
+            }
+            SettingsEvent::TaskModelSelectProvider(tier, id) => {
+                let defaults = self.working_models.providers.get(&id).and_then(|p| {
+                    p.models.first().map(|m| {
+                        (
+                            m.id.clone(),
+                            m.thinking,
+                            m.thinking_levels.first().cloned().unwrap_or_default(),
+                            m.context_window,
+                        )
+                    })
+                });
+                if let Some((model_id, thinking, thinking_level, context_window)) = defaults {
+                    let mut cfg = self.working_task_models.get_config(tier).clone();
+                    cfg.provider_id = id;
+                    cfg.model_id = model_id;
+                    cfg.thinking = thinking;
+                    cfg.thinking_level = thinking_level;
+                    cfg.context_window = context_window;
+                    self.working_task_models.set_config(tier, cfg);
+                }
+            }
+            SettingsEvent::TaskModelSelectModel(tier, id) => {
+                let cfg = self.working_task_models.get_config(tier).clone();
+                let defaults = self
+                    .working_models
+                    .providers
+                    .get(&cfg.provider_id)
+                    .and_then(|p| {
+                        p.models.iter().find(|m| m.id == id).map(|m| {
+                            (
+                                m.thinking,
+                                m.thinking_levels.first().cloned().unwrap_or_default(),
+                                m.context_window,
+                            )
+                        })
+                    });
+                if let Some((thinking, thinking_level, context_window)) = defaults {
+                    let mut cfg = cfg;
+                    cfg.model_id = id;
+                    cfg.thinking = thinking;
+                    cfg.thinking_level = thinking_level;
+                    cfg.context_window = context_window;
+                    self.working_task_models.set_config(tier, cfg);
+                }
+            }
+            SettingsEvent::TaskModelInherit(tier, inherit) => {
+                if inherit {
+                    self.working_task_models
+                        .set_config(tier, crabot::model::ModelConfig::default());
+                } else if self.working_task_models.get_config(tier).is_empty() {
+                    // Pre-fill with the first provider/model so the pickers
+                    // have a concrete starting point.
+                    if let Some(provider_id) = self.working_models.providers.keys().next().cloned()
+                    {
+                        self.update(SettingsEvent::TaskModelSelectProvider(tier, provider_id));
+                    }
+                }
+            }
+            SettingsEvent::SaveBuiltinTools => {
+                // Normalize fields to their parsed values, fall back to the defaults.
+                let max_iters = self.parsed_max_iterations();
+                self.working_max_iterations = max_iters.to_string();
+                let limits = self.parsed_tool_limits();
+                self.working_tool_limits = builtin_tools::ToolLimitStrings::from_limits(&limits);
+                self.save_feedback = Some(SettingsTab::BuiltinTools);
+            }
             // ── Custom tool actions ────────────────────────────────
             SettingsEvent::ToggleTool(index) => {
                 self.flush_tool_text_areas();
@@ -1140,6 +1236,33 @@ impl SettingsState {
         self.expanded_recipe_mode = None;
     }
 
+    /// Load builtin-tool settings into the dialog's working copies (on dialog open).
+    pub(crate) fn load_builtin_tools(
+        &mut self,
+        max_iterations: usize,
+        limits: crabot::tools::ToolLimits,
+        task_models: TaskModels,
+    ) {
+        self.working_max_iterations = max_iterations.to_string();
+        self.working_tool_limits = builtin_tools::ToolLimitStrings::from_limits(&limits);
+        self.working_task_models = task_models;
+    }
+
+    /// Parsed max agent-loop iterations, falling back to the current default.
+    pub(crate) fn parsed_max_iterations(&self) -> usize {
+        self.working_max_iterations
+            .trim()
+            .parse()
+            .ok()
+            .filter(|&v: &usize| v > 0)
+            .unwrap_or(100)
+    }
+
+    /// Parsed tool limits, falling back per-field to the defaults.
+    pub(crate) fn parsed_tool_limits(&self) -> crabot::tools::ToolLimits {
+        self.working_tool_limits.to_limits()
+    }
+
     /// Whether the new-label capsule input is currently active.
     pub(crate) fn is_adding_label(&self) -> bool {
         self.adding_label
@@ -1211,6 +1334,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
     let tabs = [
         SettingsTab::AiModels,
         SettingsTab::PromptRecipes,
+        SettingsTab::BuiltinTools,
         SettingsTab::CustomTools,
         SettingsTab::McpServers,
         SettingsTab::ToolPlayground,
@@ -1241,6 +1365,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
     let tab_content: Element<'a, SettingsEvent> = match state.selected_tab {
         SettingsTab::AiModels => ai_models::ai_models_page(state),
         SettingsTab::PromptRecipes => prompt_recipes::prompt_recipes_page(state),
+        SettingsTab::BuiltinTools => builtin_tools::builtin_tools_page(state),
         SettingsTab::CustomTools => custom_tools::custom_tools_page(state),
         SettingsTab::McpServers => mcp_servers::mcp_servers_page(state),
         SettingsTab::ToolPlayground => tool_playground::playground_page(state),

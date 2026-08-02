@@ -8,8 +8,6 @@ use std::path::PathBuf;
 pub struct ModelList {
     pub providers: IndexMap<String, Provider>,
     pub models: IndexMap<String, ModelConfig>,
-    #[serde(default)]
-    pub task_models: TaskModels,
 }
 
 impl ModelList {

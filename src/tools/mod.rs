@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -580,8 +580,9 @@ pub struct ToolLimits {
     pub mcp_call_timeout_ms: u64,
 }
 
-impl Default for ToolLimits {
-    fn default() -> Self {
+impl ToolLimits {
+    /// Built-in default limits.
+    pub const fn new() -> Self {
         Self {
             command_timeout_ms: 120_000,     // 2 minutes
             max_command_timeout_ms: 600_000, // 10 minutes
@@ -599,17 +600,28 @@ impl Default for ToolLimits {
     }
 }
 
-/// Process-wide tool limits, set once at startup from settings.
-static TOOL_LIMITS: OnceLock<ToolLimits> = OnceLock::new();
-
-/// Apply tool limits from settings. Called once at startup; later calls are ignored.
-pub fn init_tool_limits(limits: ToolLimits) {
-    let _ = TOOL_LIMITS.set(limits);
+impl Default for ToolLimits {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-/// The current effective tool limits (defaults until initialized).
+/// Process-wide tool limits, applied from settings at startup and replaceable
+/// at runtime (e.g. from the settings dialog).  `RwLock::read()` is
+/// near-zero-cost on the uncontended fast-path, so the hot read path in tool
+/// executions stays cheap while writes remain rare.
+static TOOL_LIMITS: RwLock<ToolLimits> = RwLock::new(ToolLimits::new());
+
+/// Apply tool limits from settings. Later calls replace the current value.
+pub fn init_tool_limits(limits: ToolLimits) {
+    if let Ok(mut guard) = TOOL_LIMITS.write() {
+        *guard = limits;
+    }
+}
+
+/// The current effective tool limits (defaults until first `init` call).
 pub fn tool_limits() -> ToolLimits {
-    *TOOL_LIMITS.get().unwrap_or(&ToolLimits::default())
+    TOOL_LIMITS.read().map(|g| *g).unwrap_or_default()
 }
 
 /// Truncate output that exceeds the configured maximum, keeping head and tail.

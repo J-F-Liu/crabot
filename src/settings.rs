@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::model::TaskModels;
 use crate::tools::{ToolLimits, ToolRegistry};
 
 /// All persistable app-level state.
@@ -43,6 +44,8 @@ pub struct Settings {
     pub max_iterations: usize,
     /// Configurable limits for the built-in tools (timeouts, output caps, …).
     pub tool_limits: ToolLimits,
+    /// Sub-agent model per difficulty tier used by the `task` tool.
+    pub task_models: TaskModels,
     /// Whether to automatically check for new versions on startup.
     pub auto_check_updates: bool,
     /// Latest version found in the last check, if newer than current.
@@ -76,6 +79,7 @@ impl Default for Settings {
             fill_ratio_threshold: 25.0,
             max_iterations: 100,
             tool_limits: ToolLimits::default(),
+            task_models: TaskModels::default(),
             auto_check_updates: true,
             last_update_version: None,
             dark_mode: false,
