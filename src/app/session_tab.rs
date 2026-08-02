@@ -42,6 +42,8 @@ pub(crate) struct SessionTab {
     pub(crate) scroll_offset: Option<f32>,
     /// The model selected for this tab (restored when switching back to this tab).
     pub(crate) selected_model: String,
+    /// The preamble file selected for this tab (restored when switching back to this tab).
+    pub(crate) selected_preamble: String,
     /// End status indicator — set when a stream finishes, cleared when a new dialog starts.
     pub(crate) end_status: Option<SessionEndStatus>,
     /// Hierarchical label path, e.g. `Some([1, 2])` → "Session 1-2" (task
@@ -52,7 +54,7 @@ pub(crate) struct SessionTab {
 
 impl SessionTab {
     /// Create a fresh (unsaved, empty) tab with the given number.
-    pub(crate) fn new(number: usize, selected_model: String) -> Self {
+    pub(crate) fn new(number: usize, selected_model: String, selected_preamble: String) -> Self {
         let session = Session::new();
         Self {
             number,
@@ -67,13 +69,19 @@ impl SessionTab {
             todo_items: TodoList::default(),
             scroll_offset: None,
             selected_model,
+            selected_preamble,
             end_status: None,
             task_path: None,
         }
     }
 
     /// Build a tab from a previously-saved session loaded from disk.
-    pub(crate) fn from_session(number: usize, session: Session, selected_model: String) -> Self {
+    pub(crate) fn from_session(
+        number: usize,
+        session: Session,
+        selected_model: String,
+        selected_preamble: String,
+    ) -> Self {
         let prompt_tokens = session.tokens.prompt;
         let title = session.title.clone();
         let todo_items = todo::create_todo_list(session.last_todo_items());
@@ -93,6 +101,7 @@ impl SessionTab {
             todo_items,
             scroll_offset: None,
             selected_model,
+            selected_preamble,
             end_status: None,
             task_path: None,
         }

@@ -35,4 +35,4 @@ pub(crate) use settings::{
 };
 pub(crate) use styles::DividerState;
 pub(crate) use styles::divider;
-pub(crate) use system_prompt::{build_workspace_options, load_prompt_options};
+pub(crate) use system_prompt::{build_md_file_options, build_workspace_options};

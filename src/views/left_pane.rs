@@ -33,9 +33,9 @@ pub(crate) fn left_pane<'a>(
 ) -> Element<'a, LeftPaneEvent> {
     let left_w: f32 = settings.left_pane_width;
     let selected_model: &String = &conversation.viewing().selected_model;
+    let selected_preamble: &str = &conversation.viewing().selected_preamble;
     let agents_md_exists: bool = prompt.agents_md_exists;
     let tool_list_state: &ToolListState = &tools.tool_list_state;
-    let selected_preamble: &str = &settings.selected_preamble;
     let preamble_options: &[FilepathEntry] = &prompt.preamble_options;
     let selected_rules: &str = &settings.selected_rules;
     let rules_options: &[FilepathEntry] = &prompt.rules_options;
@@ -68,7 +68,7 @@ pub(crate) fn left_pane<'a>(
                     label("System Prompt", 140.0),
                     file_picker_field_view(
                         crate::PREAMBLE,
-                        &prompt.preamble,
+                        prompt.preamble_enabled,
                         preamble_options,
                         selected_preamble,
                         PromptEvent::SelectPreamble,
@@ -76,7 +76,7 @@ pub(crate) fn left_pane<'a>(
                     .map(LeftPaneEvent::Prompt),
                     file_picker_field_view(
                         crate::RULES,
-                        &prompt.rules,
+                        prompt.rules_enabled,
                         rules_options,
                         selected_rules,
                         PromptEvent::SelectRules,
@@ -91,8 +91,13 @@ pub(crate) fn left_pane<'a>(
                         column![].into()
                     },
                     date_field_view(&prompt.date).map(LeftPaneEvent::Prompt),
-                    session_view(streaming, session_options, current_session_id)
-                        .map(LeftPaneEvent::Conversation),
+                    session_view(
+                        streaming,
+                        session_options,
+                        current_session_id,
+                        conversation.session_list_loading,
+                    )
+                    .map(LeftPaneEvent::Conversation),
                     label("User Prompt", 140.0),
                     user_prompt_view(
                         user_prompt,

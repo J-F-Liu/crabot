@@ -58,6 +58,7 @@ pub(crate) fn session_view<'a>(
     streaming: DialogPhase,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
+    loading: bool,
 ) -> Element<'a, ConversationEvent> {
     let selected = session_options.iter().find(|e| e.id == current_session_id);
 
@@ -66,27 +67,38 @@ pub(crate) fn session_view<'a>(
         ..Font::DEFAULT
     };
 
-    let mut list = DropDown::new(session_options, selected, ConversationEvent::LoadSession)
+    let picker: Element<'a, ConversationEvent> = if loading {
+        container(
+            text("Loading…")
+                .size(13)
+                .color(crate::views::theme::color_muted()),
+        )
         .width(Fill)
-        .menu_width(600.0)
-        .text_size(14.0)
-        .item_is_header(|i| session_options.get(i).is_some_and(|e| e.is_header))
-        .header_font(header_font)
-        .item_indent(16.0);
-
-    list = if streaming != DialogPhase::Idle {
-        list.style(crate::views::disabled_dropdown_style)
+        .align_x(Alignment::Start)
+        .padding([5, 8])
+        .into()
     } else {
-        list.on_open(ConversationEvent::SessionPickerFocused)
+        let mut list = DropDown::new(session_options, selected, ConversationEvent::LoadSession)
+            .width(Fill)
+            .menu_width(600.0)
+            .text_size(14.0)
+            .item_is_header(|i| session_options.get(i).is_some_and(|e| e.is_header))
+            .header_font(header_font)
+            .item_indent(16.0);
+
+        list = if streaming != DialogPhase::Idle {
+            list.style(crate::views::disabled_dropdown_style)
+        } else {
+            list.on_open(ConversationEvent::SessionPickerFocused)
+        };
+
+        container(list).into()
     };
 
     column![
         row![
-            text("Session").size(14).font(Font {
-                weight: font::Weight::Bold,
-                ..Font::DEFAULT
-            }),
-            container(list),
+            text("Session").size(14).font(header_font),
+            picker,
             button(text("New").size(13).align_x(Alignment::Center))
                 .on_press(ConversationEvent::NewSession)
                 .style(crate::views::primary_button),

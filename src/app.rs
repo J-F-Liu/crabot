@@ -76,8 +76,8 @@ pub(crate) struct ExpandableEditor {
 
 /// System prompt, workspace, prompt-file options, and user-prompt editor.
 pub(crate) struct PromptWorkspaceState {
-    pub(crate) preamble: (bool, String),
-    pub(crate) rules: (bool, String),
+    pub(crate) preamble_enabled: bool,
+    pub(crate) rules_enabled: bool,
     pub(crate) workspace: (bool, PathBuf),
     pub(crate) agents_md: (bool, String),
     pub(crate) date: (bool, String),
@@ -96,8 +96,6 @@ pub(crate) struct PromptWorkspaceState {
 impl PromptWorkspaceState {
     pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut (bool, String)> {
         match name {
-            prompt::PREAMBLE => Some(&mut self.preamble),
-            prompt::RULES => Some(&mut self.rules),
             prompt::AGENTS_MD => Some(&mut self.agents_md),
             prompt::DATE => Some(&mut self.date),
             _ => None,
@@ -112,36 +110,52 @@ impl PromptWorkspaceState {
         }
     }
 
-    /// Concatenate all enabled components, returning the full system prompt string.
-    pub(crate) fn get_system_prompt(&self) -> String {
-        self.compose_system_prompt(self.preamble.0.then_some(self.preamble.1.as_str()))
+    /// Concatenate all enabled components, returning the full system prompt.
+    /// Preamble and rules file contents are read from disk on every call.
+    pub(crate) fn get_system_prompt(
+        &self,
+        selected_preamble: &str,
+        selected_rules: &str,
+    ) -> String {
+        let preamble = self
+            .preamble_enabled
+            .then(|| prompt::load_prompt_file(&self.preamble_options, selected_preamble));
+        self.compose_system_prompt(preamble.as_deref(), selected_rules)
     }
 
     /// Like [`get_system_prompt`](Self::get_system_prompt), but with a
     /// caller-provided preamble section replacing the configured one
     /// (`None` omits the preamble component entirely).
-    pub(crate) fn compose_system_prompt(&self, preamble: Option<&str>) -> String {
+    pub(crate) fn compose_system_prompt(
+        &self,
+        preamble: Option<&str>,
+        selected_rules: &str,
+    ) -> String {
+        fn section(prompt: &mut String, content: &str) {
+            if !content.is_empty() {
+                prompt.push_str(content);
+                prompt.push('\n');
+            }
+        }
         let mut prompt = String::new();
-        if let Some(content) = preamble.filter(|c| !c.is_empty()) {
-            prompt.push_str(content);
-            prompt.push('\n');
+        if let Some(content) = preamble {
+            section(&mut prompt, content);
         }
         if self.workmode_enabled
-            && let Some(file) = crabot::setup::ASSETS.get_file("workmode.md")
-            && let Some(contents) = file.contents_utf8()
+            && let Some(contents) = crabot::setup::ASSETS
+                .get_file("workmode.md")
+                .and_then(|file| file.contents_utf8())
         {
-            prompt.push_str(contents);
-            prompt.push('\n');
+            section(&mut prompt, contents);
         }
-        if let (true, content) = &self.rules
-            && !content.is_empty()
-        {
-            prompt.push_str(content);
-            prompt.push('\n');
+        if self.rules_enabled {
+            section(
+                &mut prompt,
+                &prompt::load_prompt_file(&self.rules_options, selected_rules),
+            );
         }
-        if self.tools.enabled && !self.tools.content.text().is_empty() {
-            prompt.push_str(&self.tools.content.text());
-            prompt.push('\n');
+        if self.tools.enabled {
+            section(&mut prompt, &self.tools.content.text());
         }
         if let (true, workspace) = &self.workspace
             && workspace.is_dir()
@@ -149,11 +163,8 @@ impl PromptWorkspaceState {
             let path = crabot::tools::convert_path_to_unix_style(workspace);
             prompt.push_str(&format!("Current Workspace: {}\n", path));
         }
-        if let (true, agents_md) = &self.agents_md
-            && !agents_md.is_empty()
-        {
-            prompt.push_str(agents_md);
-            prompt.push('\n');
+        if self.agents_md.0 {
+            section(&mut prompt, &self.agents_md.1);
         }
         if let (true, date) = &self.date
             && !date.is_empty()
@@ -262,6 +273,9 @@ pub(crate) struct ConversationState {
     /// Monotonic counter for the next tab's `number`; reset on restart.
     next_tab_number: usize,
     pub(crate) session_list: Vec<SessionEntry>,
+    /// True while a workspace's session list is being re-scanned off-thread
+    /// after a workspace switch; the picker shows a loading placeholder meanwhile.
+    pub(crate) session_list_loading: bool,
     /// Per-workspace cached session lists, keyed by workspace path.
     /// Refreshed on explicit workspace switch; reused on tab-switch workspace sync.
     pub(crate) session_list_cache: HashMap<PathBuf, Vec<SessionEntry>>,
@@ -276,12 +290,13 @@ pub(crate) struct ConversationState {
 }
 
 impl ConversationState {
-    pub(crate) fn new(selected_model: String) -> Self {
+    pub(crate) fn new(selected_model: String, selected_preamble: String) -> Self {
         Self {
-            session_tabs: vec![SessionTab::new(1, selected_model)],
+            session_tabs: vec![SessionTab::new(1, selected_model, selected_preamble)],
             viewing: 0,
             next_tab_number: 2,
             session_list: Vec::new(),
+            session_list_loading: false,
             session_list_cache: HashMap::new(),
             pending_ask_queue: std::collections::VecDeque::new(),
             tab_bar_scroll: TabBarScrollState::default(),
@@ -415,9 +430,7 @@ pub(crate) enum PromptEvent {
     SelectWorkspace(FilepathEntry),
     WorkspaceDialogResult(Option<PathBuf>),
     SelectPreamble(FilepathEntry),
-    PreambleFileResult(Result<String, String>),
     SelectRules(FilepathEntry),
-    RulesFileResult(Result<String, String>),
     SelectWorkMode(WorkMode),
     ToggleWorkMode(bool),
     ToggleRecipeDropdown,
@@ -569,11 +582,8 @@ impl App {
             .filter(|name| saved.agent_tools.get(name).copied().unwrap_or(true))
             .collect();
 
-        let (preamble_options, preamble_content) =
-            crate::views::load_prompt_options("preamble", &saved.selected_preamble);
-
-        let (rules_options, rules_content) =
-            crate::views::load_prompt_options("rules", &saved.selected_rules);
+        let preamble_options = crate::views::build_md_file_options("preamble");
+        let rules_options = crate::views::build_md_file_options("rules");
 
         let workspace_path = saved.workspace.clone();
         let files_tree = workspace::build_files_tree(&workspace_path);
@@ -609,9 +619,16 @@ impl App {
         let dark_mode = saved.dark_mode;
         set_dark_mode(dark_mode);
 
+        let initial_selected_model = saved.selected_model.clone();
+        let initial_selected_preamble = if preamble_options.iter().any(|e| e.display == "crabot") {
+            "crabot".to_string()
+        } else {
+            saved.selected_preamble.clone()
+        };
+
         let prompt = PromptWorkspaceState {
-            preamble: (saved.preamble_enabled, preamble_content),
-            rules: (saved.rules_enabled, rules_content),
+            preamble_enabled: saved.preamble_enabled,
+            rules_enabled: saved.rules_enabled,
             workspace: (saved.workspace_enabled, workspace_path),
             agents_md: (saved.agents_md_enabled, agents_md_content),
             date: (saved.date_enabled, date_str),
@@ -635,7 +652,6 @@ impl App {
             recipe_dropdown_expanded: false,
         };
 
-        let initial_selected_model = saved.selected_model.clone();
         let app = Self {
             settings: saved,
             layout: LayoutState {
@@ -652,7 +668,7 @@ impl App {
             },
             prompt,
             tools,
-            conversation: ConversationState::new(initial_selected_model),
+            conversation: ConversationState::new(initial_selected_model, initial_selected_preamble),
             models,
             settings_dialog: crate::views::SettingsState::default(),
             overlay: OverlayState {
@@ -737,6 +753,7 @@ impl App {
     /// Sync derived fields back into `settings` and persist to disk.
     pub(crate) fn save_settings(&mut self) {
         self.settings.selected_model = self.conversation.viewing().selected_model.clone();
+        self.settings.selected_preamble = self.conversation.viewing().selected_preamble.clone();
         self.settings.window_size = (
             self.layout.window_size.width,
             self.layout.window_size.height,
@@ -745,8 +762,8 @@ impl App {
             self.layout.window_pos.x.max(0.0),
             self.layout.window_pos.y.max(0.0),
         );
-        self.settings.preamble_enabled = self.prompt.preamble.0;
-        self.settings.rules_enabled = self.prompt.rules.0;
+        self.settings.preamble_enabled = self.prompt.preamble_enabled;
+        self.settings.rules_enabled = self.prompt.rules_enabled;
         self.settings.workspace_enabled = self.prompt.workspace.0;
         self.settings.agents_md_enabled = self.prompt.agents_md.0;
         self.settings.date_enabled = self.prompt.date.0;

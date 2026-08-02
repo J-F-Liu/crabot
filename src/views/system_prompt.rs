@@ -40,12 +40,11 @@ pub(crate) fn expandable_header<'a>(
 
 pub(crate) fn file_picker_field_view<'a>(
     name: &'static str,
-    field: &'a (bool, String),
+    checked: bool,
     options: &'a [FilepathEntry],
     selected_display: &'a str,
     on_select: fn(FilepathEntry) -> PromptEvent,
 ) -> Element<'a, PromptEvent> {
-    let checked = field.0;
     let selected = if selected_display.is_empty() {
         None
     } else {
@@ -129,6 +128,8 @@ pub(crate) fn workspace_field_view<'a>(
     .into()
 }
 
+/// Build picker options for a prompt file directory (preamble / rules).
+/// Each entry's display name is the file stem (extension omitted).
 pub fn build_md_file_options(subdir: &str) -> Vec<FilepathEntry> {
     let dir = home::home_dir()
         .unwrap_or_default()
@@ -149,17 +150,6 @@ pub fn build_md_file_options(subdir: &str) -> Vec<FilepathEntry> {
         }
     }
     entries
-}
-
-/// Load options and content for a prompt file picker (preamble / rules).
-pub fn load_prompt_options(subdir: &str, selected: &str) -> (Vec<FilepathEntry>, String) {
-    let options = build_md_file_options(subdir);
-    let content = options
-        .iter()
-        .find(|e| e.display == selected)
-        .map(|e| std::fs::read_to_string(&e.path).unwrap_or_default())
-        .unwrap_or_default();
-    (options, content)
 }
 
 /// Display label for a workspace path: the folder name, or "unknown".

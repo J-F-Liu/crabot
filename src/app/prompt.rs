@@ -34,17 +34,22 @@ use crate::app::{App, ConversationEvent, FocusedTarget, Message, PromptEvent};
 
 pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
     match event {
-        PromptEvent::ToggleEnabled(name, enabled) => {
-            if name == WORKSPACE {
-                app.prompt.workspace.0 = enabled;
-            } else if name == WORKSPACE_TREE {
-                app.prompt.files.enabled = enabled;
-            } else if name == TOOLS {
-                app.prompt.tools.enabled = enabled;
-            } else if let Some(field) = app.prompt.get_mut(name) {
-                field.0 = enabled;
+        PromptEvent::ToggleEnabled(name, enabled) => match name {
+            WORKSPACE => app.prompt.workspace.0 = enabled,
+            WORKSPACE_TREE => app.prompt.files.enabled = enabled,
+            TOOLS => app.prompt.tools.enabled = enabled,
+            PREAMBLE => {
+                app.prompt.preamble_enabled = enabled;
             }
-        }
+            RULES => {
+                app.prompt.rules_enabled = enabled;
+            }
+            _ => {
+                if let Some(field) = app.prompt.get_mut(name) {
+                    field.0 = enabled;
+                }
+            }
+        },
         PromptEvent::ToggleExpanded(name) => {
             if name == WORKSPACE_TREE {
                 app.prompt.files.expanded = !app.prompt.files.expanded;
@@ -100,23 +105,11 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         }
         PromptEvent::WorkspaceDialogResult(None) => {}
         PromptEvent::SelectPreamble(entry) => {
-            return select_prompt_file(entry, &mut app.settings.selected_preamble, |result| {
-                Message::Prompt(PromptEvent::PreambleFileResult(result))
-            });
+            app.conversation.viewing_mut().selected_preamble = entry.display.clone();
         }
-        PromptEvent::PreambleFileResult(Ok(content)) => {
-            app.prompt.preamble.1 = content;
-        }
-        PromptEvent::PreambleFileResult(Err(_)) => {}
         PromptEvent::SelectRules(entry) => {
-            return select_prompt_file(entry, &mut app.settings.selected_rules, |result| {
-                Message::Prompt(PromptEvent::RulesFileResult(result))
-            });
+            app.settings.selected_rules = entry.display;
         }
-        PromptEvent::RulesFileResult(Ok(content)) => {
-            app.prompt.rules.1 = content;
-        }
-        PromptEvent::RulesFileResult(Err(_)) => {}
         PromptEvent::SelectWorkMode(mode) => {
             app.prompt.workmode = mode;
         }
@@ -180,9 +173,12 @@ pub(crate) fn apply_workspace(app: &mut App, path: PathBuf, bump_recents: bool) 
         if !bump_recents && let Some(entries) = app.conversation.session_list_cache.get(&path) {
             // Tab-switch sync: reuse the cached list without re-scanning.
             app.conversation.session_list = entries.clone();
+            app.conversation.session_list_loading = false;
             Task::none()
         } else {
             // Explicit workspace selection or cache miss always re-scans.
+            app.conversation.session_list.clear();
+            app.conversation.session_list_loading = true;
             crate::app::conversation::refresh_session_list(path)
         };
     scan_task.chain(list_task)
@@ -265,21 +261,6 @@ pub(crate) fn set_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
     apply_workspace(app, path, true)
 }
 
-/// Read a prompt file (preamble or rules) from disk and return a task
-/// that produces the appropriate `FileResult` message.
-pub(crate) fn select_prompt_file(
-    entry: FilepathEntry,
-    selected: &mut String,
-    on_load: fn(Result<String, String>) -> Message,
-) -> Task<Message> {
-    let FilepathEntry { display, path } = entry;
-    *selected = display;
-    Task::perform(
-        async move { std::fs::read_to_string(&path).map_err(|e| e.to_string()) },
-        on_load,
-    )
-}
-
 /// Read `AGENTS.md` from the workspace root, returning (exists, content).
 pub(crate) fn load_agents_md(workspace: &Path) -> (bool, String) {
     if !workspace.as_os_str().is_empty() {
@@ -290,4 +271,20 @@ pub(crate) fn load_agents_md(workspace: &Path) -> (bool, String) {
         }
     }
     (false, String::new())
+}
+
+/// Read a prompt file from disk by looking up the display name in the options.
+/// Missing files or empty selections yield an empty string.
+pub(crate) fn load_prompt_file(options: &[FilepathEntry], selected: &str) -> String {
+    options
+        .iter()
+        .find(|e| e.display == selected)
+        .and_then(|e| {
+            std::fs::read_to_string(&e.path)
+                .inspect_err(|err| {
+                    eprintln!("Failed to read prompt file {}: {err}", e.path.display());
+                })
+                .ok()
+        })
+        .unwrap_or_default()
 }

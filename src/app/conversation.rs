@@ -54,7 +54,8 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         }
         ConversationEvent::NewSession => {
             let selected_model = app.conversation.viewing().selected_model.clone();
-            return new_session(app, selected_model);
+            let selected_preamble = app.conversation.viewing().selected_preamble.clone();
+            return new_session(app, selected_model, selected_preamble);
         }
         ConversationEvent::LoadSession(entry) => return load_session(app, entry),
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
@@ -68,6 +69,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::SessionListLoaded(workspace, entries) => {
             if workspace == app.prompt.workspace.1 {
                 app.conversation.session_list = entries.clone();
+                app.conversation.session_list_loading = false;
             }
             app.conversation
                 .session_list_cache
@@ -182,9 +184,9 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
     Task::none()
 }
 
-fn new_session(app: &mut App, selected_model: String) -> Task<Message> {
+fn new_session(app: &mut App, selected_model: String, selected_preamble: String) -> Task<Message> {
     let number = app.conversation.next_tab_number();
-    let tab = SessionTab::new(number, selected_model);
+    let tab = SessionTab::new(number, selected_model, selected_preamble);
     app.conversation.session_tabs.push(tab);
     app.conversation.viewing = app.conversation.session_tabs.len() - 1;
 
@@ -271,15 +273,18 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
     }
     let was_viewing = pos == app.conversation.viewing;
     let removed_model = app.conversation.session_tabs[pos].selected_model.clone();
+    let removed_preamble = app.conversation.session_tabs[pos].selected_preamble.clone();
     app.conversation.session_tabs.remove(pos);
     // Clean up the pending-ask queue — the tab is gone.
     app.conversation.pending_ask_queue.retain(|&n| n != number);
 
     if app.conversation.session_tabs.is_empty() {
         let number = app.conversation.next_tab_number();
-        app.conversation
-            .session_tabs
-            .push(SessionTab::new(number, removed_model));
+        app.conversation.session_tabs.push(SessionTab::new(
+            number,
+            removed_model,
+            removed_preamble,
+        ));
         app.conversation.viewing = 0;
     } else if pos < app.conversation.viewing {
         app.conversation.viewing -= 1;
@@ -325,8 +330,9 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
             } else {
                 app.conversation.viewing().selected_model.clone()
             };
+            let selected_preamble = app.conversation.viewing().selected_preamble.clone();
             let tab = app.conversation.viewing_mut();
-            *tab = SessionTab::from_session(number, session, selected_model);
+            *tab = SessionTab::from_session(number, session, selected_model, selected_preamble);
             // Scroll to top for a freshly loaded session.
             return views::scroll_to_start().discard();
         }
@@ -483,6 +489,7 @@ pub(crate) struct SuccessorSpawn {
     /// Origin/parent tab number.
     pub(crate) number: usize,
     pub(crate) selected_model: String,
+    pub(crate) selected_preamble: String,
     pub(crate) model: ModelConfig,
     pub(crate) workspace: PathBuf,
     /// Rebuilt "Working directory layout" tree (None when the origin session
@@ -499,7 +506,7 @@ pub(crate) struct SuccessorSpawn {
 /// originating session. The workspace tree is rebuilt off the UI thread; the
 /// spawn itself happens in [`continue_renew_spawn`] once the scan lands.
 fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
-    let (model, work_mode, workspace, need_tree, selected_model) = {
+    let (model, work_mode, workspace, need_tree, selected_model, selected_preamble) = {
         let Some(pos) = app.conversation.tab_pos(number) else {
             return Task::none();
         };
@@ -513,6 +520,7 @@ fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
             tab_workspace(app, tab),
             session_started_with_tree(tab),
             tab.selected_model.clone(),
+            tab.selected_preamble.clone(),
         )
     };
     let ws = workspace.clone();
@@ -531,6 +539,7 @@ fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
                 SuccessorSpawn {
                     number,
                     selected_model,
+                    selected_preamble,
                     model,
                     workspace,
                     workspace_tree,
@@ -545,7 +554,7 @@ fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
 /// Complete a renew spawn once its workspace scan has landed off-thread.
 fn continue_renew_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
-    let new_task = new_session(app, spawn.selected_model);
+    let new_task = new_session(app, spawn.selected_model, spawn.selected_preamble);
     let tab_pos = app.conversation.viewing;
     let mode = match &spawn.kind {
         SpawnKind::Renew { mode } => *mode,
@@ -569,10 +578,11 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
         return Task::none();
     };
     // Resolve the parent tab's context (cheap — no filesystem access).
-    let (parent_selected, parent_model, workspace, need_tree) = {
+    let (parent_selected, parent_selected_preamble, parent_model, workspace, need_tree) = {
         let parent = &app.conversation.session_tabs[pos];
         (
             parent.selected_model.clone(),
+            parent.selected_preamble.clone(),
             tab_model_config(app, parent),
             tab_workspace(app, parent),
             session_started_with_tree(parent),
@@ -629,17 +639,25 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
             } else {
                 None
             };
-            let preamble = tokio::task::spawn_blocking(move || task_mode_preamble(mode.as_deref()))
-                .await
-                .ok()
-                .flatten();
-            (tree, preamble)
+            // Load the mode preamble and its picker name; only record the mode
+            // name when the file actually provided a preamble.
+            let (preamble, preamble_name) = tokio::task::spawn_blocking(move || {
+                let name = mode.as_deref().map(str::to_ascii_lowercase);
+                let content = task_mode_preamble(name.as_deref());
+                let name_used = content.as_ref().and(name.as_deref()).map(str::to_string);
+                (content, name_used)
+            })
+            .await
+            .ok()
+            .unwrap_or((None, None));
+            (tree, preamble, preamble_name)
         },
-        move |(workspace_tree, preamble)| {
+        move |(workspace_tree, preamble, preamble_name)| {
             Message::Conversation(ConversationEvent::TaskSpawnReady(Box::new(
                 SuccessorSpawn {
                     number,
                     selected_model,
+                    selected_preamble: preamble_name.unwrap_or(parent_selected_preamble),
                     model,
                     workspace,
                     workspace_tree,
@@ -661,16 +679,17 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
         SpawnKind::Task { preamble, title } => (preamble.clone(), title.clone()),
         SpawnKind::Renew { .. } => (None, None),
     };
-    let system_prompt = preamble
-        .as_deref()
-        .map(|preamble| app.prompt.compose_system_prompt(Some(preamble)));
+    let system_prompt = preamble.as_deref().map(|preamble| {
+        app.prompt
+            .compose_system_prompt(Some(preamble), &app.settings.selected_rules)
+    });
     let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
     let tab_model_label = app.find_model_label(&spawn.model);
     let parent_path = app
         .conversation
         .tab_pos(spawn.number)
         .and_then(|p| app.conversation.session_tabs[p].task_path.clone());
-    let new_task = new_session(app, spawn.selected_model);
+    let new_task = new_session(app, spawn.selected_model, spawn.selected_preamble);
     let tab_pos = app.conversation.viewing;
     {
         let tab = &mut app.conversation.session_tabs[tab_pos];
@@ -1055,6 +1074,17 @@ pub(crate) fn start_dialog(
         app.conversation.session_list.insert(0, entry);
     }
 
+    // Compute the system prompt before re-borrowing the tab (needs `&app`).
+    // The task tool passes an override (mode preamble); otherwise assemble
+    // from the configured components, reading preamble/rules from disk.
+    let system_prompt = match system_prompt_override {
+        Some(override_prompt) => override_prompt,
+        None => app.prompt.get_system_prompt(
+            &app.conversation.session_tabs[tab_pos].selected_preamble,
+            &app.settings.selected_rules,
+        ),
+    };
+
     // Re-borrow for the remaining setup.
     let tab = &mut app.conversation.session_tabs[tab_pos];
     tab.session_state.start_index = tab.session.total_turns();
@@ -1082,7 +1112,7 @@ pub(crate) fn start_dialog(
     let config = crate::llm::SendConfig {
         model,
         workspace: app.prompt.workspace.1.clone(),
-        system_prompt: system_prompt_override.unwrap_or_else(|| app.prompt.get_system_prompt()),
+        system_prompt,
         user_prompt,
         tools,
         injected_prompt: tab.session_state.injected_prompt.clone(),
