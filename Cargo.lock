@@ -953,6 +953,7 @@ dependencies = [
  "include_dir",
  "indexmap 2.14.0",
  "interprocess",
+ "memchr",
  "open",
  "pulldown-cmark",
  "regex",

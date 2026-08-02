@@ -70,6 +70,7 @@ semver = "1.0"
 zip = "8.6.0"
 flate2 = "1.1.9"
 tar = "0.4.46"
+memchr = "2"
 
 [build-dependencies]
 winresource = "0.1.31"
