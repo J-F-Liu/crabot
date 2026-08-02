@@ -84,6 +84,31 @@ impl ToolResult {
     }
 }
 
+// ── Error envelope ───────────────────────────────────────────────────
+
+/// Error-prefix marker for tool results, so the reload path can tell success from failure.
+pub const ERROR_ENVELOPE: &str = "Error: ";
+
+/// Wrap in [`ERROR_ENVELOPE`], skipping if already present (case-insensitive).
+pub fn envelope_error(e: &str) -> String {
+    if is_enveloped_error(e) {
+        e.to_string()
+    } else {
+        format!("{ERROR_ENVELOPE}{e}")
+    }
+}
+
+/// True if `s` starts with [`ERROR_ENVELOPE`] (case-insensitive, space after colon required).
+pub fn is_enveloped_error(s: &str) -> bool {
+    s.get(..ERROR_ENVELOPE.len())
+        .is_some_and(|p| p.eq_ignore_ascii_case(ERROR_ENVELOPE))
+}
+
+/// Remove [`ERROR_ENVELOPE`] from `s`; non-enveloped strings are returned unchanged.
+pub fn strip_error_envelope(s: &str) -> &str {
+    s.strip_prefix(ERROR_ENVELOPE).unwrap_or(s)
+}
+
 // ── ToolCall ─────────────────────────────────────────────────────────
 
 /// A pending tool call that hasn't produced a result yet.

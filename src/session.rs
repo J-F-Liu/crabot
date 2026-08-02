@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock};
 
 use chrono::{Datelike, TimeZone};
 
-use crate::chat::{Dialog, ToolResult, Turn};
+use crate::chat::{Dialog, ToolResult, Turn, is_enveloped_error, strip_error_envelope};
 use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
 use crate::user::WorkMode;
@@ -300,12 +300,18 @@ impl Session {
                     // a single Turn, matching the live-stream grouping behaviour.
                     let mut trs: Vec<ToolResult> = Vec::new();
                     for tc in msg.content.tool_calls() {
-                        let result = results.remove(&tc.call_id).unwrap_or_default();
+                        let content = results.remove(&tc.call_id).unwrap_or_default();
+                        // Strip the "Error: " envelope, so reloaded display matches the live-stream behaviour.
+                        let result = if is_enveloped_error(&content) {
+                            Err(strip_error_envelope(&content).to_string())
+                        } else {
+                            Ok(content)
+                        };
                         let tr = ToolResult {
                             name: tc.fn_name.clone(),
                             call_id: Some(tc.call_id.clone()),
                             args: tc.fn_arguments.clone(),
-                            result: Ok(result),
+                            result,
                             timestamp: String::new(),
                         };
                         // Track files modified by write / edit tools.

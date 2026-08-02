@@ -11,7 +11,7 @@ use genai::{Client, ModelIden, ServiceTarget};
 
 use crate::app::session_state::{AskRequest, SessionEvent, TaskRequest};
 use crate::tools::{self, ToolRef};
-use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult};
+use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult, envelope_error};
 use crabot::model::ModelInfo;
 use crabot::user::UserPrompt;
 
@@ -371,7 +371,12 @@ pub async fn send_stream(
             };
 
             // Flatten for genai's ToolResponse (genai expects plain String).
-            let result_flat = result.clone().unwrap_or_else(|e| e);
+            // Errors get a uniform "Error: " envelope so both the LLM and the
+            // session reload path can distinguish success from failure.
+            let result_flat = match result.clone() {
+                Ok(s) => s,
+                Err(e) => envelope_error(&e),
+            };
             tool_responses.push(ToolResponse::from_tool_call(&tc, result_flat));
 
             let tr = ChatToolResult {
