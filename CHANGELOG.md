@@ -1,3 +1,25 @@
+# Crabot v0.7.0
+
+- **Multi-tab session management** — run several sessions in parallel, each in its own tab. Create, close, and switch tabs freely; every session keeps its own conversation, model, and workspace.
+- **Built-in `task` tool** — delegate self-contained subtasks to a new isolated agent session that works autonomously in its own tab. Pick a mode (Explore / Plan / Code / Review / Test) and a difficulty tier (Easy / Medium / Hard) that selects the configured sub-agent model; the final report comes back as the tool result. Sub-agents can even spawn further nested subtasks.
+- **Built-in `renew` tool** — when the context window is nearly full, hand off to a fresh session seeded with a condensed summary of the remaining work, so long-running tasks continue seamlessly.
+- **Per-session model memory** — each session tab remembers its selected model and restores it when switching tabs or loading a session.
+- **Persisted context window** — the context window size from the model configuration is now persisted and displayed per session.
+- **Session status indicators** — the session tab bar and headers show live status (streaming, thinking, tool executing, idle) with clearer session headers.
+- **Tab keyboard shortcuts** — Ctrl+1–9 jump to the Nth conversation tab (Ctrl+0 to the last), Ctrl+N opens a new session tab, and Ctrl+W closes the current one. Duplicate session IDs are prevented.
+- **Tab bar scroll arrows** — when many tabs overflow, press-and-hold arrows scroll the session tab bar.
+- **Work-mode badges** — each dialog header now displays its work mode as a badge.
+- **Always-visible Restart button** — the Restart button is always shown and now relaunches Crabot correctly.
+- **Selectable plain-text responses** — plain-text LLM replies skip Markdown rendering, so the text can be directly selected and copied.
+- **Builtin Tools settings page** — a new settings tab for the agent loop: max iterations, 12 user-configurable tool limits (command/output caps, line/byte budgets, fetch/MCP timeouts), and per-tier sub-agent models for the `task` tool.
+- **Error envelope for tool failures** — failed tool executions are wrapped in a consistent `Error:` envelope, so error states survive session save/load.
+- **Edit tool precision** — duplicate/overlap edit failures now report line numbers instead of byte offsets, and parameter validation errors are clearer.
+- **Per-tab preamble & workspace** — the left pane shows the active session tab's selected preamble, and the workspace tree syncs to the active session when switching tabs.
+- **Per-mode preambles** — the default preamble is split into per-work-mode files (`coding`, `explore`, `planning`, `review`, `testing`, `crabot`) to back the new task-tool modes.
+- **Documentation refresh** — README and AGENTS.md updated to reflect the new architecture and features.
+
+**Full Changelog**: [`v0.6.1...v0.7.0`](https://github.com/J-F-Liu/crabot/compare/v0.6.1...v0.7.0)
+
 # Crabot v0.6.0
 
 - **Dark theme** — a new dark color scheme, toggleable with a single button at the top of the right pane. The app now starts in the system's preferred color scheme.
