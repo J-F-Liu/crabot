@@ -567,6 +567,8 @@ impl App {
         let models = model::load_models();
         saved.selected_model = models.ensure_valid_name(&saved.selected_model);
 
+        tools::init_tool_limits(saved.tool_limits);
+
         let custom_tool_list = tools::custom::ToolList::load();
         let mcp_list = tools::mcp::McpList::load();
 

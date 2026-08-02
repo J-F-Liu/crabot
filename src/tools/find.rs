@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, resolve_path};
+use super::{Tool, arg_str, resolve_path, tool_limits};
 
 pub struct FindTool;
 
@@ -48,7 +48,7 @@ impl Tool for FindTool {
 }
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
-    const MAX_LINES: usize = 100;
+    let max_lines = tool_limits().find_max_lines;
 
     let pattern_str = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
     let search_path = arg_str(args, "path")
@@ -89,14 +89,14 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     } else {
         results.sort();
         let total = results.len();
-        if total > MAX_LINES {
-            let skipped = total - MAX_LINES;
-            results.truncate(MAX_LINES);
+        if total > max_lines {
+            let skipped = total - max_lines;
+            results.truncate(max_lines);
             let mut output = results.join("\n");
             let _ = std::fmt::Write::write_fmt(
                 &mut output,
                 format_args!(
-                    "\n\n... [{skipped} lines truncated ({total} total, shows first {MAX_LINES})] ..."
+                    "\n\n... [{skipped} lines truncated ({total} total, shows first {max_lines})] ..."
                 ),
             );
             return Ok(output);

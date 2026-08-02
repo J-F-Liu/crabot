@@ -28,9 +28,6 @@ pub enum DialogPhase {
     ToolExecuting,
 }
 
-/// Max agent loop iterations to prevent infinite tool-calling cycles.
-const MAX_ITERATIONS: usize = 100;
-
 /// Move the rolling ephemeral cache breakpoint to the tail message.
 /// Only touches `CacheControl::Ephemeral`; leaves other TTLs (e.g. `Ephemeral1h`) intact.
 fn mark_cache_tail(messages: &mut [ChatMessage]) {
@@ -73,6 +70,8 @@ pub struct SendConfig {
     pub user_agent: String,
     /// When set to `true`, in-progress tool execution is cancelled.
     pub cancel_token: Arc<AtomicBool>,
+    /// Max agent-loop iterations (tool-calling rounds) before giving up.
+    pub max_iterations: usize,
 }
 
 /// Stream an LLM interaction with tool-execution loop.
@@ -99,6 +98,7 @@ pub async fn send_stream(
         mut task_receiver,
         user_agent,
         cancel_token,
+        max_iterations,
     } = config;
 
     let client = build_client(&model.base_url, &model.api_key, &model.api_type);
@@ -165,7 +165,7 @@ pub async fn send_stream(
         Some(true)
     }
 
-    for _ in 0..MAX_ITERATIONS {
+    for _ in 0..max_iterations {
         // Signal that we're connecting to the LLM.
         on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await;
 
@@ -422,7 +422,7 @@ pub async fn send_stream(
         on_event(SessionEvent::Done(genai_messages)).await;
     } else {
         on_event(SessionEvent::Error(
-            format!("Exceeded maximum tool-calling iterations ({MAX_ITERATIONS})"),
+            format!("Exceeded maximum tool-calling iterations ({max_iterations})"),
             genai_messages,
         ))
         .await;

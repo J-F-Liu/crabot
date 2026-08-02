@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{COMMAND_TIMEOUT_SECONDS, MAX_COMMAND_TIMEOUT_MS, Tool, arg_str, wait_with_timeout};
+use super::{Tool, arg_str, tool_limits, wait_with_timeout};
 
 pub struct BashTool;
 
@@ -22,6 +22,9 @@ impl Tool for BashTool {
     }
 
     fn schema(&self) -> Value {
+        let limits = tool_limits();
+        let default_desc = fmt_timeout(limits.command_timeout_ms);
+        let max_desc = fmt_timeout(limits.max_command_timeout_ms);
         json!({
             "type": "object",
             "properties": {
@@ -31,9 +34,9 @@ impl Tool for BashTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in milliseconds for the command. Defaults to 120000 (2 minutes) if not provided. Values below 1000 are clamped up; maximum is 600000 (10 minutes).",
+                    "description": format!("Timeout in milliseconds for the command. Defaults to {} ({default_desc}) if not provided. Values below 1000 are clamped up; maximum is {} ({max_desc}).", limits.command_timeout_ms, limits.max_command_timeout_ms),
                     "minimum": 1000,
-                    "maximum": MAX_COMMAND_TIMEOUT_MS
+                    "maximum": limits.max_command_timeout_ms
                 }
             },
             "required": ["command"]
@@ -56,9 +59,10 @@ pub(super) fn execute(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
+    let limits = tool_limits();
     let timeout_ms = super::arg_u64(args, "timeout")
-        .map(|v| v.clamp(1000, MAX_COMMAND_TIMEOUT_MS))
-        .unwrap_or(COMMAND_TIMEOUT_SECONDS * 1000);
+        .map(|v| v.clamp(1000, limits.max_command_timeout_ms))
+        .unwrap_or(limits.command_timeout_ms);
     let timeout = Duration::from_millis(timeout_ms);
 
     // Create unnamed pipe pairs for stdout and stderr.
@@ -100,4 +104,14 @@ pub(super) fn execute(
     )?;
 
     Ok(super::format_command_output(&output))
+}
+
+/// Render a timeout in milliseconds as a human-readable duration, e.g.
+/// `120000` → `"2 minutes"`, `90000` → `"90s"`.
+fn fmt_timeout(ms: u64) -> String {
+    if ms.is_multiple_of(60_000) {
+        format!("{} minutes", ms / 60_000)
+    } else {
+        format!("{}s", ms / 1000)
+    }
 }

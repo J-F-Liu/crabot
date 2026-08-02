@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolLimits, ToolRegistry};
 
 /// All persistable app-level state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +39,10 @@ pub struct Settings {
     /// Context-window fill ratio threshold (percentage) at which the
     /// LLM is reminded to consider renewing the session.
     pub fill_ratio_threshold: f32,
+    /// Max agent-loop iterations (tool-calling rounds) before giving up.
+    pub max_iterations: usize,
+    /// Configurable limits for the built-in tools (timeouts, output caps, …).
+    pub tool_limits: ToolLimits,
     /// Whether to automatically check for new versions on startup.
     pub auto_check_updates: bool,
     /// Latest version found in the last check, if newer than current.
@@ -70,6 +74,8 @@ impl Default for Settings {
             agent_tools: IndexMap::new(),
             prompt_recipes: IndexMap::new(),
             fill_ratio_threshold: 25.0,
+            max_iterations: 100,
+            tool_limits: ToolLimits::default(),
             auto_check_updates: true,
             last_update_version: None,
             dark_mode: false,

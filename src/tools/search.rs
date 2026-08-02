@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, resolve_path};
+use super::{Tool, arg_str, resolve_path, tool_limits};
 
 pub struct SearchTool;
 
@@ -52,7 +52,7 @@ pub(super) fn execute_search(
     workspace: &Path,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    const MAX_LINES: usize = 500;
+    let max_lines = tool_limits().search_max_lines;
 
     let pattern = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
     let search_path = arg_str(args, "path")
@@ -75,7 +75,7 @@ pub(super) fn execute_search(
         for (i, line) in content.lines().enumerate() {
             if re.is_match(line) {
                 found = true;
-                if out_lines < MAX_LINES {
+                if out_lines < max_lines {
                     let _ = std::fmt::Write::write_fmt(
                         &mut out,
                         format_args!("{}:{}:{}\n", path_string, i + 1, line),
@@ -92,7 +92,7 @@ pub(super) fn execute_search(
             .standard_filters(true)
             .build();
         for entry in walker {
-            if out_lines >= MAX_LINES {
+            if out_lines >= max_lines {
                 truncated = true;
                 break;
             }
@@ -115,7 +115,7 @@ pub(super) fn execute_search(
             for (i, line) in content.lines().enumerate() {
                 if re.is_match(line) {
                     found = true;
-                    if out_lines < MAX_LINES {
+                    if out_lines < max_lines {
                         let _ = std::fmt::Write::write_fmt(
                             &mut out,
                             format_args!("{}:{}:{}\n", path_string, i + 1, line),
@@ -144,7 +144,7 @@ pub(super) fn execute_search(
         let _ = std::fmt::Write::write_fmt(
             &mut out,
             format_args!(
-                "\n... [output truncated at {MAX_LINES} lines; more matches exist but were omitted] ...\n"
+                "\n... [output truncated at {max_lines} lines; more matches exist but were omitted] ...\n"
             ),
         );
         Ok(super::truncate_output(out))

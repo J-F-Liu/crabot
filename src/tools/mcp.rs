@@ -21,17 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use shell_words::split;
 
-use super::Tool;
-
-/// Timeout for establishing an MCP connection (process spawn + JSON-RPC
-/// initialize handshake). `npx`-based servers may need to download packages on
-/// first run, so this is deliberately generous.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Timeout for a single MCP tool invocation. Long-running tools (web fetch,
-/// browser automation, …) can take a while, but the call is still bounded so a
-/// hung server can't block an agent turn forever.
-const CALL_TIMEOUT: Duration = Duration::from_secs(300);
+use super::{Tool, tool_limits};
 
 // ── Configuration types ──────────────────────────────────────────────
 
@@ -214,15 +204,16 @@ impl Tool for McpTool {
 
         let result: Result<rmcp::model::CallToolResult, String> =
             tokio::task::block_in_place(move || {
+                let call_timeout = Duration::from_millis(tool_limits().mcp_call_timeout_ms);
+                let call_secs = call_timeout.as_secs();
                 handle.block_on(async move {
                     tokio::select! {
-                        result = tokio::time::timeout(CALL_TIMEOUT, peer.call_tool(params)) => {
+                        result = tokio::time::timeout(call_timeout, peer.call_tool(params)) => {
                             match result {
                                 Ok(Ok(result)) => Ok(result),
                                 Ok(Err(e)) => Err(e.to_string()),
                                 Err(_) => Err(format!(
-                                    "Tool '{name}' timed out after {}s",
-                                    CALL_TIMEOUT.as_secs()
+                                    "Tool '{name}' timed out after {call_secs}s",
                                 )),
                             }
                         }
@@ -486,7 +477,9 @@ async fn connect_http(
 pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
     let server_name = server.name.clone();
     let qualify = server.qualify_tool_names;
-    let connect_result = tokio::time::timeout(CONNECT_TIMEOUT, server.connect()).await;
+    let connect_timeout = Duration::from_millis(tool_limits().mcp_connect_timeout_ms);
+    let connect_secs = connect_timeout.as_secs();
+    let connect_result = tokio::time::timeout(connect_timeout, server.connect()).await;
     let conn = match connect_result {
         Ok(Ok(conn)) => conn,
         Ok(Err(e)) => {
@@ -494,15 +487,12 @@ pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
             return (server_name, vec![]);
         }
         Err(_) => {
-            eprintln!(
-                "Timed out connecting to MCP server '{server_name}' after {}s",
-                CONNECT_TIMEOUT.as_secs()
-            );
+            eprintln!("Timed out connecting to MCP server '{server_name}' after {connect_secs}s",);
             return (server_name, vec![]);
         }
     };
 
-    let list_result = tokio::time::timeout(CONNECT_TIMEOUT, conn.list_tools()).await;
+    let list_result = tokio::time::timeout(connect_timeout, conn.list_tools()).await;
     match list_result {
         Ok(Ok(tools)) => {
             let peer = conn.peer();
@@ -524,8 +514,7 @@ pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
         }
         Err(_) => {
             eprintln!(
-                "Timed out listing tools from MCP server '{server_name}' after {}s",
-                CONNECT_TIMEOUT.as_secs()
+                "Timed out listing tools from MCP server '{server_name}' after {connect_secs}s",
             );
             (server_name, vec![])
         }

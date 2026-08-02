@@ -18,11 +18,13 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use genai::chat::Tool as GenaiTool;
 use interprocess::unnamed_pipe;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 // ── Tool trait ──────────────────────────────────────────────────────
@@ -548,37 +550,93 @@ pub fn resolve_path_partial(
     }
 }
 
-// ── output truncation ──────────────────────────────────────────────
+/// Configurable limits for the built-in tools.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolLimits {
+    /// `bash`: default timeout (ms) when no explicit `timeout` argument is given.
+    pub command_timeout_ms: u64,
+    /// `bash`: hard maximum timeout (ms) for a single command.
+    pub max_command_timeout_ms: u64,
+    /// Bytes kept from head and tail when truncating oversized tool output.
+    pub head_tail_bytes: usize,
+    /// Maximum output bytes for tool results before truncation.
+    pub max_output_bytes: usize,
+    /// `read`: default and maximum lines per call.
+    pub read_max_lines: usize,
+    /// `read`: byte budget per call.
+    pub read_max_bytes: usize,
+    /// `find`: maximum result lines.
+    pub find_max_lines: usize,
+    /// `search`: maximum result lines.
+    pub search_max_lines: usize,
+    /// `fetch`: maximum downloaded body bytes.
+    pub fetch_max_body_bytes: usize,
+    /// `fetch`: HTTP request timeout (ms).
+    pub fetch_timeout_ms: u64,
+    /// `mcp`: connection (handshake) timeout (ms).
+    pub mcp_connect_timeout_ms: u64,
+    /// `mcp`: single tool-call timeout (ms).
+    pub mcp_call_timeout_ms: u64,
+}
 
-/// Maximum bytes for tool output before truncation.
-const MAX_OUTPUT_BYTES: usize = 100 * 1024; // 100 KB
+impl Default for ToolLimits {
+    fn default() -> Self {
+        Self {
+            command_timeout_ms: 120_000,     // 2 minutes
+            max_command_timeout_ms: 600_000, // 10 minutes
+            head_tail_bytes: 3 * 1024,       // 3 KB each
+            max_output_bytes: 100 * 1024,    // 100 KB
+            read_max_lines: 2000,
+            read_max_bytes: 64 * 1024, // 64 KB
+            find_max_lines: 100,
+            search_max_lines: 500,
+            fetch_max_body_bytes: 8 * 1024 * 1024, // 8 MB
+            fetch_timeout_ms: 60_000,              // 1 minute
+            mcp_connect_timeout_ms: 60_000,        // 1 minute
+            mcp_call_timeout_ms: 300_000,          // 5 minutes
+        }
+    }
+}
 
-/// Number of bytes to keep from the head and tail when truncating.
-const HEAD_TAIL_BYTES: usize = 3 * 1024; // 3 KB each
+/// Process-wide tool limits, set once at startup from settings.
+static TOOL_LIMITS: OnceLock<ToolLimits> = OnceLock::new();
 
-/// Truncate output that exceeds [`MAX_OUTPUT_BYTES`], keeping head and tail.
+/// Apply tool limits from settings. Called once at startup; later calls are ignored.
+pub fn init_tool_limits(limits: ToolLimits) {
+    let _ = TOOL_LIMITS.set(limits);
+}
+
+/// The current effective tool limits (defaults until initialized).
+pub fn tool_limits() -> ToolLimits {
+    *TOOL_LIMITS.get().unwrap_or(&ToolLimits::default())
+}
+
+/// Truncate output that exceeds the configured maximum, keeping head and tail.
 pub(crate) fn truncate_output(s: String) -> String {
-    if s.len() <= MAX_OUTPUT_BYTES {
+    let limits = tool_limits();
+    let max = limits.max_output_bytes.max(1);
+    if s.len() <= max {
         return s;
     }
 
     let total = s.len();
-    let skipped = total - HEAD_TAIL_BYTES * 2;
+    // Shrink head/tail proportionally so tiny caps never underflow or overlap.
+    let head_tail = limits.head_tail_bytes.min(max / 2);
+    let skipped = total - head_tail * 2;
 
     // Find valid UTF-8 boundaries near the split points
-    let head_end = find_char_boundary(&s, HEAD_TAIL_BYTES);
-    let tail_start = find_char_boundary(&s, total - HEAD_TAIL_BYTES);
+    let head_end = find_char_boundary(&s, head_tail);
+    let tail_start = find_char_boundary(&s, total - head_tail);
 
     let head = &s[..head_end];
     let tail = &s[tail_start..];
 
-    let mut truncated = String::with_capacity(HEAD_TAIL_BYTES * 2 + 128);
+    let mut truncated = String::with_capacity(head_tail * 2 + 128);
     truncated.push_str(head);
     let _ = std::fmt::Write::write_fmt(
         &mut truncated,
-        format_args!(
-            "\n\n... [{skipped} bytes truncated ({total} total, max {MAX_OUTPUT_BYTES})] ...\n\n"
-        ),
+        format_args!("\n\n... [{skipped} bytes truncated ({total} total, max {max})] ...\n\n"),
     );
     truncated.push_str(tail);
     truncated
@@ -631,12 +689,6 @@ fn find_char_boundary(s: &str, pos: usize) -> usize {
 }
 
 // ── Process execution helpers ──────────────────────────────────────
-
-/// Default timeout (in seconds) for external commands spawned by tools.
-pub(crate) const COMMAND_TIMEOUT_SECONDS: u64 = 120;
-
-/// Maximum allowed timeout (in milliseconds) for a single command.
-pub(crate) const MAX_COMMAND_TIMEOUT_MS: u64 = 600_000; // 10 minutes
 
 /// Create an unnamed pipe pair for capturing child process output.
 ///

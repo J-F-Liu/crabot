@@ -181,7 +181,7 @@ impl Tool for CustomTool {
             child,
             Some(stdout_rx),
             Some(stderr_rx),
-            std::time::Duration::from_secs(super::COMMAND_TIMEOUT_SECONDS),
+            std::time::Duration::from_millis(super::tool_limits().command_timeout_ms),
             false, // custom tools don't run in their own process group
             cancel,
         )

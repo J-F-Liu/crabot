@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 
 use serde_json::{Value, json};
 
-use super::{Tool, arg_path, arg_u64, make_workspace_relative, resolve_path};
+use super::{Tool, arg_path, arg_u64, make_workspace_relative, resolve_path, tool_limits};
 
 pub struct ReadTool;
 
@@ -23,6 +23,7 @@ impl Tool for ReadTool {
     }
 
     fn schema(&self) -> Value {
+        let max_lines = tool_limits().read_max_lines;
         json!({
             "type": "object",
             "properties": {
@@ -36,7 +37,7 @@ impl Tool for ReadTool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to read (default: 2000, capped at 2000)"
+                    "description": format!("Maximum number of lines to read (default: {max_lines}, capped at {max_lines})")
                 }
             },
             "required": ["path"]
@@ -52,9 +53,6 @@ impl Tool for ReadTool {
         execute(args, workspace)
     }
 }
-
-const DEFAULT_MAX_LINES: usize = 2000;
-const DEFAULT_MAX_BYTES: usize = 64 * 1024; // 64 KB
 
 /// Number of decimal digits of `n` (0 → 1, 5 → 1, 99 → 2, …).
 const fn digit_count(mut n: usize) -> usize {
@@ -82,6 +80,10 @@ fn strip_newline(s: &str) -> &str {
 }
 
 pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
+    let limits = tool_limits();
+    let max_lines_cap = limits.read_max_lines;
+    let max_bytes = limits.read_max_bytes;
+
     let path = arg_path(args).ok_or("Missing 'path' argument")?;
     let file_path = resolve_path(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
@@ -129,10 +131,10 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
 
     let max_lines = user_limit
         .map(|n| n.max(1))
-        .unwrap_or(DEFAULT_MAX_LINES)
-        .min(DEFAULT_MAX_LINES);
+        .unwrap_or(max_lines_cap)
+        .min(max_lines_cap);
 
-    let mut out = String::with_capacity(DEFAULT_MAX_BYTES);
+    let mut out = String::with_capacity(max_bytes);
     let mut byte_count = 0usize;
     let mut lines_emitted = 0usize;
     let mut limit_kind: Option<LimitKind> = None;
@@ -149,7 +151,7 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
                 let content = strip_newline(&buf);
                 let fmt_len = formatted_len(line_num, content);
 
-                if byte_count + fmt_len > DEFAULT_MAX_BYTES {
+                if byte_count + fmt_len > max_bytes {
                     limit_kind = Some(LimitKind::Bytes);
                     next_line = Some(content.to_owned());
                     break;
@@ -188,12 +190,12 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     if out.is_empty() && limit_kind == Some(LimitKind::Bytes) {
         let line = next_line.as_deref().unwrap_or("");
         let approx_kb = (line.len() + 7) / 1024;
-        let limit_kb = DEFAULT_MAX_BYTES / 1024;
+        let limit_kb = max_bytes / 1024;
         // Emit as much of the oversized line as we can, with a truncation notice.
         let notice = format!(
             "[Line {offset} truncated: ~{approx_kb}KB, exceeds {limit_kb}KB limit — showing first {limit_kb}KB]\n",
         );
-        let available = DEFAULT_MAX_BYTES.saturating_sub(notice.len());
+        let available = max_bytes.saturating_sub(notice.len());
         let truncated = truncate_at_boundary(line, available);
         let _ = writeln!(&mut out, "{:>4}|{}", offset, truncated);
         out.push_str(&notice);
@@ -219,7 +221,7 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
         let _ = writeln!(
             &mut out,
             "[Line {next_line_num} is ~{approx_kb}KB, exceeds {}KB limit — skipped]",
-            DEFAULT_MAX_BYTES / 1024,
+            max_bytes / 1024,
         );
     }
 

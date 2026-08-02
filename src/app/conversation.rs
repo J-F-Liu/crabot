@@ -1120,6 +1120,7 @@ pub(crate) fn start_dialog(
         task_receiver: task_rx,
         user_agent: crabot::app_title().to_string(),
         cancel_token: tab.session_state.cancel_token.clone(),
+        max_iterations: app.settings.max_iterations,
     };
 
     let history = tab.session.history.clone();

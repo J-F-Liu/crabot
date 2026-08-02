@@ -6,7 +6,7 @@ use std::time::Duration;
 use dom_smoothie::{Article, Config, Readability};
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, truncate_output};
+use super::{Tool, arg_str, tool_limits, truncate_output};
 
 pub struct FetchTool;
 
@@ -51,11 +51,6 @@ impl Tool for FetchTool {
     }
 }
 
-/// Hard cap on the downloaded body (after decompression).
-const MAX_BODY_BYTES: usize = 8 * 1024 * 1024; // 8 MB
-
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
     Markdown,
@@ -73,6 +68,8 @@ enum ContentKind {
 }
 
 pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, String> {
+    let max_body_bytes = tool_limits().fetch_max_body_bytes;
+
     let url = arg_str(args, "url").ok_or("Missing 'url' argument")?;
     let format = match arg_str(args, "format").unwrap_or("markdown") {
         "markdown" => Format::Markdown,
@@ -111,10 +108,10 @@ pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, Strin
 
         // Refuse known-huge bodies before downloading.
         if let Some(len) = resp.content_length()
-            && len > MAX_BODY_BYTES as u64
+            && len > max_body_bytes as u64
         {
             return Err(format!(
-                "Response body too large: {len} bytes (max {MAX_BODY_BYTES})"
+                "Response body too large: {len} bytes (max {max_body_bytes})"
             ));
         }
 
@@ -136,7 +133,7 @@ pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, Strin
         };
 
         // Cap oversized bodies at a valid UTF-8 boundary.
-        let body = truncate_body(body);
+        let body = truncate_body(body, max_body_bytes);
 
         let output = match classify(mime_type(&content_type), &body) {
             ContentKind::Html => convert_html(&body, url, format)?,
@@ -168,7 +165,7 @@ fn client() -> Result<&'static reqwest::Client, String> {
     static CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
         reqwest::Client::builder()
             .user_agent(crate::app_title())
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(Duration::from_millis(tool_limits().fetch_timeout_ms))
             .build()
             .map_err(|e| format!("Failed to build HTTP client: {e}"))
     });
@@ -177,12 +174,12 @@ fn client() -> Result<&'static reqwest::Client, String> {
 
 // ── body helpers ───────────────────────────────────────────────────
 
-/// Truncate `s` to at most `MAX_BODY_BYTES` bytes on a UTF-8 boundary.
-fn truncate_body(s: String) -> String {
-    if s.len() <= MAX_BODY_BYTES {
+/// Truncate `s` to at most `max_bytes` bytes on a UTF-8 boundary.
+fn truncate_body(s: String, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
         return s;
     }
-    let mut end = MAX_BODY_BYTES;
+    let mut end = max_bytes;
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
@@ -457,12 +454,13 @@ clearly stands out from the surrounding boilerplate navigation and footer.</p>
 
     #[test]
     fn truncate_body_respects_char_boundaries() {
+        let max = super::tool_limits().fetch_max_body_bytes;
         // "é" is 2 bytes in UTF-8
-        let s = "a".repeat(MAX_BODY_BYTES - 1) + "é";
-        assert!(s.len() > MAX_BODY_BYTES);
-        let t = truncate_body(s);
+        let s = "a".repeat(max - 1) + "é";
+        assert!(s.len() > max);
+        let t = truncate_body(s, max);
         // Should not panic and should be valid UTF-8
-        assert!(t.len() <= MAX_BODY_BYTES);
+        assert!(t.len() <= max);
         assert!(t.ends_with('a'));
     }
 }
