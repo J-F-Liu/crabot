@@ -17,6 +17,8 @@ use crate::user::WorkMode;
 #[serde(default)]
 pub struct Session {
     pub id: String,
+    /// Parent session id — set by `renew`/`task` spawns, empty for user tabs.
+    pub parent: String,
     pub title: String,
     pub model: Option<ModelConfig>,
     pub workspace: PathBuf,
@@ -76,6 +78,7 @@ impl Session {
         let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
         Session {
             id,
+            parent: String::new(),
             title: String::new(),
             model: None,
             workspace: PathBuf::new(),

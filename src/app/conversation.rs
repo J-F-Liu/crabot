@@ -55,7 +55,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::NewSession => {
             let selected_model = app.conversation.viewing().selected_model.clone();
             let selected_preamble = app.conversation.viewing().selected_preamble.clone();
-            return new_session(app, selected_model, selected_preamble);
+            return new_session(app, selected_model, selected_preamble, String::new());
         }
         ConversationEvent::LoadSession(entry) => return load_session(app, entry),
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
@@ -184,9 +184,16 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
     Task::none()
 }
 
-fn new_session(app: &mut App, selected_model: String, selected_preamble: String) -> Task<Message> {
+/// New session tab; `parent` is the spawning session's id, empty for user tabs.
+fn new_session(
+    app: &mut App,
+    selected_model: String,
+    selected_preamble: String,
+    parent: String,
+) -> Task<Message> {
     let number = app.conversation.next_tab_number();
-    let tab = SessionTab::new(number, selected_model, selected_preamble);
+    let mut tab = SessionTab::new(number, selected_model, selected_preamble);
+    tab.session.parent = parent;
     app.conversation.session_tabs.push(tab);
     app.conversation.viewing = app.conversation.session_tabs.len() - 1;
 
@@ -554,13 +561,22 @@ fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
 /// Complete a renew spawn once its workspace scan has landed off-thread.
 fn continue_renew_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
-    let new_task = new_session(app, spawn.selected_model, spawn.selected_preamble);
+    let parent_id = app
+        .conversation
+        .tab_pos(spawn.number)
+        .map(|p| app.conversation.session_tabs[p].session.id.clone())
+        .unwrap_or_default();
+    let new_task = new_session(
+        app,
+        spawn.selected_model,
+        spawn.selected_preamble,
+        parent_id,
+    );
     let tab_pos = app.conversation.viewing;
-    let mode = match &spawn.kind {
-        SpawnKind::Renew { mode } => *mode,
-        SpawnKind::Task { .. } => None,
+    let SpawnKind::Renew { mode } = &spawn.kind else {
+        return Task::none();
     };
-    let user_prompt = UserPrompt::new(mode, spawn.prompt, spawn.workspace_tree);
+    let user_prompt = UserPrompt::new(*mode, spawn.prompt, spawn.workspace_tree);
     let launch_task = launch_dialog(app, tab_pos, &spawn.model, user_prompt, None);
     workspace_task.chain(new_task).chain(launch_task)
 }
@@ -671,10 +687,10 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
 
 /// Complete a task-tool spawn once its workspace scan and preamble read finish.
 fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
-    // The parent tab may have been closed while the scan was in flight.
-    if app.conversation.tab_pos(spawn.number).is_none() {
+    // Parent tab may have been closed while the scan was in flight.
+    let Some(parent_pos) = app.conversation.tab_pos(spawn.number) else {
         return Task::none();
-    }
+    };
     let (preamble, title) = match &spawn.kind {
         SpawnKind::Task { preamble, title } => (preamble.clone(), title.clone()),
         SpawnKind::Renew { .. } => (None, None),
@@ -684,19 +700,22 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
             .compose_system_prompt(Some(preamble), &app.settings.selected_rules)
     });
     let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
-    let tab_model_label = app.find_model_label(&spawn.model);
-    let parent_path = app
-        .conversation
-        .tab_pos(spawn.number)
-        .and_then(|p| app.conversation.session_tabs[p].task_path.clone());
-    let new_task = new_session(app, spawn.selected_model, spawn.selected_preamble);
+    let parent = &app.conversation.session_tabs[parent_pos];
+    let parent_path = parent.task_path.clone();
+    let new_task = new_session(
+        app,
+        spawn.selected_model,
+        spawn.selected_preamble,
+        parent.session.id.clone(),
+    );
     let tab_pos = app.conversation.viewing;
+    let tab_model_label = app.find_model_label(&spawn.model);
     {
         let tab = &mut app.conversation.session_tabs[tab_pos];
         let mut task_path = parent_path.unwrap_or_else(|| vec![spawn.number]);
         task_path.push(tab.number);
         tab.task_path = Some(task_path);
-        tab.selected_model = tab_model_label.clone();
+        tab.selected_model = tab_model_label;
     }
     let user_prompt = UserPrompt::new(None, spawn.prompt, spawn.workspace_tree);
     let launch_task = launch_dialog(app, tab_pos, &spawn.model, user_prompt, system_prompt);

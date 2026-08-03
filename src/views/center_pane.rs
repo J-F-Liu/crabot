@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use crabot::chat::{Dialog, Turn, TurnBody};
+use crabot::session::Session;
 use genai::chat::ChatRole;
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task,
@@ -80,8 +81,7 @@ pub(crate) fn scroll_page_up(viewport_height: f32) -> Task<()> {
     scroll_by(-viewport_height * PAGE_SCROLL_FRACTION)
 }
 
-/// Measure the y-offsets of all turns in the scrollable content.
-/// Returns a `Vec<f32>` where index `i` is the content-relative y-offset of turn `i`.
+/// Measure each turn's content-relative y-offset (index `i` → turn `i`).
 pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> {
     struct MeasureAll {
         scrollable_id: widget::Id,
@@ -100,11 +100,9 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
                 && let Some(idx) = self.turn_ids.iter().position(|tid| tid == id)
                 && let Some(sb) = self.scrollable_bounds
             {
-                // `bounds` is the absolute layout position (screen-relative,
-                // WITHOUT scroll translation — iced applies the translation
-                // separately during rendering via `renderer.with_translation`).
-                // So `bounds.y - sb.y` gives the content-relative y-offset,
-                // which is exactly what `scroll_to(AbsoluteOffset { y })` expects.
+                // `bounds` is absolute layout position without scroll translation —
+                // iced applies translation separately, so `bounds.y - sb.y` is the
+                // content-relative offset that `scroll_to(AbsoluteOffset { y })` expects.
                 let y = bounds.y - sb.y;
                 if idx >= self.offsets.len() {
                     self.offsets.resize(idx + 1, 0.0);
@@ -139,8 +137,7 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
     })
 }
 
-/// Scroll the message view to an absolute y-offset.
-/// Pass `None` to scroll to the top (same as [`scroll_to_start`]).
+/// Scroll the message view to an absolute y-offset; `None` scrolls to top.
 pub(crate) fn scroll_to(y: Option<f32>) -> Task<()> {
     match y {
         Some(y) => task_widget(scrollable_op::scroll_to(
@@ -293,9 +290,8 @@ fn args_preview<'a>(
     }
 }
 
-/// Build a Tool turn block — handles both completed (`Tool`) and pending (`Temp`) calls.
-/// Multiple tool calls from one LLM response are grouped into a single turn
-/// and rendered as stacked sub-items within the same bubble.
+/// Build a Tool turn block — completed (`Tool`) or pending (`Temp`) calls;
+/// multiple calls from one response are grouped as stacked sub-items.
 fn tool_turn_block<'a>(
     msg: &'a Turn,
     i: usize,
@@ -430,14 +426,13 @@ fn tool_turn_block<'a>(
     wrap_bubble(column(elements).spacing(8).width(Fill), tool_bubble_style)
 }
 
-/// Check whether the parsed markdown contains only a single paragraph (i.e., it's plain text
-/// with no headings, lists, code blocks, etc.).
+/// True when parsed markdown is a single plain-text paragraph
+/// (no headings, lists, code blocks, etc.).
 fn is_plain_text(md: &markdown::Content) -> bool {
     md.items().len() == 1 && matches!(md.items().first(), Some(markdown::Item::Paragraph(_)))
 }
 
-/// Render parsed markdown as a double-click-to-select element with
-/// transparent inline-code styling (shared by content and reasoning bodies).
+/// Render markdown as double-click-to-select text with transparent inline-code styling.
 fn markdown_element<'a>(
     md: &'a markdown::Content,
     i: usize,
@@ -598,10 +593,7 @@ pub(crate) fn center_pane<'a>(
     let ask_request: Option<&AskRequest> = tab.session_state.ask_request.as_ref();
     let ask_input: &str = &tab.session_state.ask_input;
     let search_state: &SearchState = &tab.search;
-    let model_id: Option<&str> = tab.session.model.as_ref().map(|m| m.model_id.as_str());
-    let created_at: &str = &tab.session.created_at;
-    // Ensure turn widget IDs match the current dialog layout so that
-    // scroll-to-match measurement can find each turn by its ID.
+    // Ensure turn widget IDs match the dialog layout for scroll-to-match.
     let total: usize = dialogs.iter().map(|d| d.turns.len()).sum();
     search_state.ensure_turn_ids(total);
     let turn_ids = search_state.turn_ids();
@@ -739,7 +731,7 @@ pub(crate) fn center_pane<'a>(
             },
             scrollable(
                 column![
-                    session_info(model_id, created_at, font_scale),
+                    session_info(&tab.session, font_scale, conversation),
                     column(dialog_blocks).spacing(8),
                 ]
                 .spacing(8)
@@ -771,8 +763,7 @@ pub(crate) fn center_pane<'a>(
 
 // ── session header ──────────────────────────────────────────────────
 
-/// Header bar at the top of the center pane: prompt text or "New session",
-/// plus copy-to-clipboard and resend action icons on the far right.
+/// Header bar: prompt text or "New session", plus copy/resend icons.
 fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
     let header = row![
         header_container(
@@ -808,25 +799,41 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
         .into()
 }
 
-/// Displays the model ID and creation time for the current session.
+/// Displays model ID, the spawning parent session, and creation time.
 fn session_info<'a>(
-    model_id: Option<&'a str>,
-    created_at: &'a str,
+    session: &'a Session,
     font_scale: f32,
+    conversation: &'a ConversationState,
 ) -> Element<'a, CenterPaneEvent> {
-    let Some(model_id) = model_id else {
+    let model_id = session.model.as_ref().map(|m| m.model_id.as_str());
+    let parent = session.parent.as_str();
+    if model_id.is_none() && parent.is_empty() {
         return row![].into();
-    };
-    let model_text = text(format!("Model: {model_id}"))
-        .size(12.0 * font_scale)
-        .color(color_muted());
-    let time_text = text(format!("Created: {created_at}"))
+    }
+    let mut info = row![].spacing(8).align_y(Alignment::Center);
+    if let Some(model_id) = model_id {
+        info = info.push(
+            text(format!("Model: {model_id}"))
+                .size(12.0 * font_scale)
+                .color(color_muted()),
+        );
+    }
+    if !parent.is_empty() {
+        info = info.push(Space::new().width(Length::Fill)).push(
+            text(format!(
+                "Spawned from {}",
+                parent_label(conversation, parent)
+            ))
+            .size(12.0 * font_scale)
+            .color(color_muted()),
+        );
+    }
+    let time_text = text(format!("Created: {}", session.created_at))
         .size(12.0 * font_scale)
         .color(color_muted());
     container(
-        row![model_text, Space::new().width(Length::Fill), time_text]
-            .spacing(8)
-            .align_y(Alignment::Center)
+        info.push(Space::new().width(Length::Fill))
+            .push(time_text)
             .width(Fill),
     )
     .padding(Padding {
@@ -838,8 +845,17 @@ fn session_info<'a>(
     .into()
 }
 
-/// Wraps content in a scrollable container that fills available width
-/// and scrolls vertically when its natural height exceeds `max_h`.
+/// Parent reference: the open tab's label ("Session 2"), else the raw session id.
+fn parent_label(conversation: &ConversationState, parent: &str) -> String {
+    conversation
+        .session_tabs
+        .iter()
+        .find(|t| t.session.id == parent)
+        .map(|t| t.tab_label())
+        .unwrap_or_else(|| format!("session {parent}"))
+}
+
+/// Scrollable container that fills width and scrolls vertically past `max_h`.
 fn header_container<'a>(
     content: impl Into<Element<'a, CenterPaneEvent>>,
     max_h: f32,
