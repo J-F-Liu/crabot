@@ -345,6 +345,7 @@ pub(crate) fn update(
                 // Back-date so the first content chunk scrolls immediately.
                 state.scroll_throttle.set(Instant::now() - SCROLL_THROTTLE);
             } else if phase == DialogPhase::ToolExecuting {
+                session.stamp_response();
                 // ToolExecuting means LLM conversation still not finished.
                 // When context fill ratio exceeds the threshold, suggest the LLM renew.
                 // Only inject if no prompt is already pending to avoid overwriting an existing one.
@@ -473,6 +474,7 @@ fn handle_stream_done(
     }
 
     session.history.extend(genai_messages);
+    session.stamp_response();
     let _ = session.save();
 }
 
@@ -486,6 +488,7 @@ fn handle_stream_error(
 ) {
     state.phase = DialogPhase::Idle;
     session.history.extend(genai_messages);
+    session.stamp_response();
     let _ = session.save();
 
     let error_msg = format!("Error: {err}");

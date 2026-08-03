@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use iced::{
     Alignment, Color, Element, Fill, Font, Length, alignment, font, padding,
     widget::{Space, button, column, container, row, rule, scrollable, text, toggler},
@@ -30,7 +32,7 @@ fn token_row<'a>(label: &'a str, value: String) -> Element<'a, RightPaneEvent> {
     .into()
 }
 
-fn section_header<'a>(title: &'a str) -> Element<'a, RightPaneEvent> {
+fn section_header(title: Cow<'static, str>) -> Element<'static, RightPaneEvent> {
     text(title).size(14).font(BOLD).into()
 }
 
@@ -56,7 +58,7 @@ fn todo_section(todo_items: &[TodoItem]) -> Option<Element<'static, RightPaneEve
     Some(
         column![
             rule::horizontal(1),
-            section_header("Todo List"),
+            section_header(Cow::Borrowed("Todo List")),
             column(rows).spacing(3),
         ]
         .spacing(8)
@@ -82,7 +84,11 @@ pub(crate) fn right_pane<'a>(
 
     // ── context window ──
     items.push(rule::horizontal(1).into());
-    items.push(section_header("Context window"));
+    let header = match context_window.filter(|&cw| cw > 0) {
+        Some(cw) => format!("Context window ({cw})"),
+        None => "Context window".to_string(),
+    };
+    items.push(section_header(Cow::from(header)));
     items.push(token_row(
         "Prompt tokens:",
         format!("{}", token_amount.prompt),
@@ -93,13 +99,12 @@ pub(crate) fn right_pane<'a>(
     ));
     if let Some(cw) = context_window.filter(|&cw| cw > 0) {
         let cfr = token_amount.context_fill_ratio(cw);
-        items.push(token_row("Window size:", format!("{cw}")));
         items.push(token_row("Fill ratio:", format!("{:.1}%", cfr)));
     }
 
     // ── cumulative token usage and cost ──
     items.push(rule::horizontal(1).into());
-    items.push(section_header("Token Usage"));
+    items.push(section_header(Cow::Borrowed("Token Usage")));
     items.push(token_row(
         "Input tokens:",
         format!("{}", session.tokens.input),
@@ -121,6 +126,9 @@ pub(crate) fn right_pane<'a>(
     items.push(token_row("Session cost:", session.formatted_cost()));
     items.push(rule::horizontal(1).into());
     items.push(token_row("Num Requests:", session.requests.to_string()));
+    if !session.updated_at.is_empty() {
+        items.push(token_row("Last Response:", session.updated_at_time()));
+    }
 
     // ── todo items ──
     if let Some(section) = todo_section(&todo_items) {
@@ -139,7 +147,7 @@ pub(crate) fn right_pane<'a>(
             })
             .collect();
         items.push(rule::horizontal(1).into());
-        items.push(section_header("Modified Files"));
+        items.push(section_header(Cow::Borrowed("Modified Files")));
         items.push(column(files).spacing(2).into());
     }
 

@@ -89,8 +89,8 @@ impl Session {
             cost: 0.0,
             currency: Currency::new(),
             modified_files: Vec::new(),
-            created_at: time.clone(),
-            updated_at: time,
+            created_at: time,
+            updated_at: String::new(),
         }
     }
 
@@ -100,7 +100,7 @@ impl Session {
         let now = chrono::Local::now();
         session.id = generate_session_id(now);
         session.created_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
-        session.updated_at = session.created_at.clone();
+        session.updated_at = String::new();
         // Fresh accumulators — the fork starts its own usage/cost accounting.
         session.tokens = TokenAmount::default();
         session.cost = 0.0;
@@ -130,7 +130,6 @@ impl Session {
     pub fn push_turn(&mut self, mut turn: Turn) {
         let now = chrono::Local::now();
         turn.timestamp = now.format("%H:%M:%S").to_string();
-        self.updated_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
         if let Some(last) = self.dialogs.last_mut() {
             last.turns.push(turn);
         } else {
@@ -170,6 +169,20 @@ impl Session {
                 self.currency = c.currency;
             }
         }
+    }
+
+    /// Time part of `updated_at` ("%H:%M:%S"), for compact display.
+    pub fn updated_at_time(&self) -> String {
+        self.updated_at
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or(&self.updated_at)
+            .to_string()
+    }
+
+    /// Record the time of the last received assistant response.
+    pub fn stamp_response(&mut self) {
+        self.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     }
 
     /// Format session cost as a string with the currency symbol prefix.
