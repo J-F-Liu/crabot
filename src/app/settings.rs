@@ -19,6 +19,7 @@ pub(crate) fn open_settings(app: &mut App) -> Task<Message> {
     app.settings_dialog.load_mcp(tools::mcp::McpList::load());
     app.settings_dialog.load_builtin_tools(
         app.settings.max_iterations,
+        app.settings.fill_ratio_threshold,
         app.settings.tool_limits,
         app.settings.task_models.clone(),
     );
@@ -80,6 +81,7 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             app.settings_dialog.update(event);
             // Apply parsed agent limits and task models, then persist + hot-swap limits.
             app.settings.max_iterations = app.settings_dialog.parsed_max_iterations();
+            app.settings.fill_ratio_threshold = app.settings_dialog.parsed_fill_ratio_threshold();
             app.settings.tool_limits = app.settings_dialog.parsed_tool_limits();
             app.settings.task_models = app.settings_dialog.working_task_models.clone();
             app.settings.save();

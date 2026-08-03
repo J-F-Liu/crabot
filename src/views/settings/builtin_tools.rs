@@ -208,6 +208,12 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
         .padding(4)
         .size(13);
 
+    let renew_input = text_input("25", &state.working_fill_ratio_threshold)
+        .on_input(SettingsEvent::EditFillRatioThreshold)
+        .width(Length::Fixed(110.0))
+        .padding(4)
+        .size(13);
+
     container(
         column![
             section_title("Agent"),
@@ -215,6 +221,15 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
                 text("Max iterations").size(13).width(180.0),
                 input,
                 text("Tool-calling rounds before the agent gives up.")
+                    .size(11)
+                    .color(color_muted()),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            row![
+                text("Renew threshold (%)").size(13).width(180.0),
+                renew_input,
+                text("Context fill ratio at which the agent is reminded to consider renewing.")
                     .size(11)
                     .color(color_muted()),
             ]
@@ -231,28 +246,40 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
 
 // ── Tool limits card ───────────────────────────────────────────────
 
-fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
-    let rows: Vec<Element<'_, SettingsEvent>> = ToolLimitField::ALL
-        .iter()
-        .map(|&field| {
-            let value = state.working_tool_limits.get(field);
-            let input = text_input("", value)
-                .on_input(move |v| SettingsEvent::EditToolLimit(field, v))
-                .width(Length::Fixed(110.0))
-                .padding(4)
-                .size(13);
-            row![text(field.label()).size(13).width(180.0), input,]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into()
-        })
-        .collect();
-
-    container(column![section_title("Tool Limits"), column(rows).spacing(6)].spacing(8))
-        .padding([10, 12])
-        .style(form_card_style)
-        .width(Length::Fill)
+fn limit_row(state: &SettingsState, field: ToolLimitField) -> Element<'_, SettingsEvent> {
+    let value = state.working_tool_limits.get(field);
+    let input = text_input("", value)
+        .on_input(move |v| SettingsEvent::EditToolLimit(field, v))
+        .width(Length::Fixed(110.0))
+        .padding(4)
+        .size(13);
+    row![text(field.label()).size(13).width(180.0), input,]
+        .spacing(8)
+        .align_y(Alignment::Center)
         .into()
+}
+
+fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
+    // Two columns, each holding one related pair group stacked vertically:
+    // left = bash / truncation / read, right = find+search / fetch / mcp.
+    let (left_fields, right_fields) = ToolLimitField::ALL.split_at(6);
+    let column_rows = |fields: &[ToolLimitField]| {
+        column(fields.iter().copied().map(|f| limit_row(state, f)))
+            .spacing(6)
+            .width(Length::FillPortion(1))
+    };
+
+    container(
+        column![
+            section_title("Tool Limits"),
+            row![column_rows(left_fields), column_rows(right_fields)].spacing(12),
+        ]
+        .spacing(8),
+    )
+    .padding([10, 12])
+    .style(form_card_style)
+    .width(Length::Fill)
+    .into()
 }
 
 // ── Sub-agent task models card ─────────────────────────────────────

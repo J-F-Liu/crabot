@@ -129,6 +129,8 @@ pub(crate) enum SettingsEvent {
     // ── Builtin Tools actions ─────────────────────────────
     /// Edit the max agent-loop iterations field (raw text).
     EditMaxIterations(String),
+    /// Edit the context-fill renew threshold field (raw text).
+    EditFillRatioThreshold(String),
     /// Edit one built-in tool limit field (raw text).
     EditToolLimit(builtin_tools::ToolLimitField, String),
     /// Pick a provider for a task sub-agent difficulty tier.
@@ -256,6 +258,8 @@ pub(crate) struct SettingsState {
     pub(super) expanded_recipe_mode: Option<usize>,
     /// Working copy of max agent-loop iterations (raw text) — parsed on Save.
     pub(crate) working_max_iterations: String,
+    /// Working copy of the context-fill renew threshold, percent (raw text) — parsed on Save.
+    pub(crate) working_fill_ratio_threshold: String,
     /// Working copies of built-in tool limits (raw text) — parsed on Save.
     pub(crate) working_tool_limits: builtin_tools::ToolLimitStrings,
     /// Working copy of sub-agent task models — saved on Save (Builtin Tools tab).
@@ -327,6 +331,7 @@ impl Default for SettingsState {
             working_prompt_recipes: indexmap::IndexMap::new(),
             expanded_recipe_mode: None,
             working_max_iterations: String::new(),
+            working_fill_ratio_threshold: String::new(),
             working_tool_limits: builtin_tools::ToolLimitStrings::default(),
             working_task_models: TaskModels::default(),
             working_tools: ToolList::default(),
@@ -757,6 +762,7 @@ impl SettingsState {
             }
             // ── Builtin Tools actions ─────────────────────────
             SettingsEvent::EditMaxIterations(v) => self.working_max_iterations = v,
+            SettingsEvent::EditFillRatioThreshold(v) => self.working_fill_ratio_threshold = v,
             SettingsEvent::EditToolLimit(field, v) => {
                 *self.working_tool_limits.get_mut(field) = v;
             }
@@ -822,6 +828,8 @@ impl SettingsState {
                 // Normalize fields to their parsed values, fall back to the defaults.
                 let max_iters = self.parsed_max_iterations();
                 self.working_max_iterations = max_iters.to_string();
+                let fill_ratio = self.parsed_fill_ratio_threshold();
+                self.working_fill_ratio_threshold = fill_ratio.to_string();
                 let limits = self.parsed_tool_limits();
                 self.working_tool_limits = builtin_tools::ToolLimitStrings::from_limits(&limits);
                 self.save_feedback = Some(SettingsTab::BuiltinTools);
@@ -1240,10 +1248,12 @@ impl SettingsState {
     pub(crate) fn load_builtin_tools(
         &mut self,
         max_iterations: usize,
+        fill_ratio_threshold: f32,
         limits: crabot::tools::ToolLimits,
         task_models: TaskModels,
     ) {
         self.working_max_iterations = max_iterations.to_string();
+        self.working_fill_ratio_threshold = fill_ratio_threshold.to_string();
         self.working_tool_limits = builtin_tools::ToolLimitStrings::from_limits(&limits);
         self.working_task_models = task_models;
     }
@@ -1256,6 +1266,17 @@ impl SettingsState {
             .ok()
             .filter(|&v: &usize| v > 0)
             .unwrap_or(100)
+    }
+
+    /// Parsed context-fill renew threshold (percent), clamped to (0, 100].
+    pub(crate) fn parsed_fill_ratio_threshold(&self) -> f32 {
+        self.working_fill_ratio_threshold
+            .trim()
+            .parse()
+            .ok()
+            .filter(|&v: &f32| v > 0.0)
+            .map(|v| v.min(100.0))
+            .unwrap_or(25.0)
     }
 
     /// Parsed tool limits, falling back per-field to the defaults.
