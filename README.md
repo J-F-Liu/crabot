@@ -21,21 +21,27 @@ A pure-Rust native GUI coding agent using [iced](https://iced.rs) and [genai](ht
 - [x] Built in pure Rust — single native binary, no runtime dependency, zero GC pauses.
 - [x] Each session is saved as a json file in workspace `.agent/sessions` folder.
 
+If you know the structure of the LLM context window, you will appreciate the UI design of crabot.
+<p align="center">
+<img src="doc/images/Context%20Window%20Components.webp" alt="Context Window Components" width="600">
+<img src="doc/images/screenshot.webp" alt="screen shot" width="800">
+</p>
+
 ## Built-in Tools
 
-| Tool     | Params                                                                                       | Description                                                                                              |
-| -------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `read`   | `path`, `offset`, `limit`                                                                    | Read any file in your workspace, with smart truncation for large files                                   |
-| `write`  | `path`, `content`                                                                            | Create or overwrite files, creating missing parent directories automatically                             |
-| `edit`   | `path`, `edits` [{`old_text`, `new_text`}]                                                   | Make precise text replacements in existing files, with conflict detection for overlapping edits          |
-| `find`   | `pattern`, `path`                                                                            | Locate files by name pattern, skipping ignored files (`.gitignore`)                                      |
-| `search` | `pattern`, `path`                                                                            | Search file contents with regular expressions, skipping ignored files (`.gitignore`)                     |
-| `bash`   | `command`, `timeout`                                                                         | Run shell commands in your workspace, with a timeout and instant cancellation                            |
-| `ask`    | `question`, `options`                                                                        | Pause and ask you a question when it needs your input or approval                                        |
-| `todo`   | `items` [{`text`, `depth`, `status`}]                                                        | Track its task list, shown live in the right pane                                                        |
-| `task`   | `title`, `prompt`, `mode`, `difficulty`                                                      | Delegate a subtask to a separate session and continue once the final report comes back                   |
-| `renew`  | `prompt`                                                                                     | Hand off to a fresh session seeded with a summary when the context window is nearly full                 |
-| `fetch`  | `url`, `format`                                                                              | Download web pages and convert them to clean Markdown                                                   |
+| Tool     | Params                                     | Description                                                                                     |
+| -------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `read`   | `path`, `offset`, `limit`                  | Read any file in your workspace, with smart truncation for large files                          |
+| `write`  | `path`, `content`                          | Create or overwrite files, creating missing parent directories automatically                    |
+| `edit`   | `path`, `edits` [{`old_text`, `new_text`}] | Make precise text replacements in existing files, with conflict detection for overlapping edits |
+| `find`   | `pattern`, `path`                          | Locate files by name pattern, skipping ignored files (`.gitignore`)                             |
+| `search` | `pattern`, `path`                          | Search file contents with regular expressions, skipping ignored files (`.gitignore`)            |
+| `bash`   | `command`, `timeout`                       | Run shell commands in your workspace, with a timeout and instant cancellation                   |
+| `ask`    | `question`, `options`                      | Pause and ask you a question when it needs your input or approval                               |
+| `todo`   | `items` [{`text`, `depth`, `status`}]      | Track its task list, shown live in the right pane                                               |
+| `task`   | `title`, `prompt`, `mode`, `difficulty`    | Delegate a subtask to a separate session and continue once the final report comes back          |
+| `renew`  | `prompt`                                   | Hand off to a fresh session seeded with a summary when the context window is nearly full        |
+| `fetch`  | `url`, `format`                            | Download web pages and convert them to clean Markdown                                           |
 
 Beyond the built-ins, you can add your own **custom CLI tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session.
 
