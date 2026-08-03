@@ -1,19 +1,26 @@
 use futures::{StreamExt, future::BoxFuture};
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::time::Duration;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent,
-    ReasoningEffort, ToolCall, ToolResponse,
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStream, ChatStreamEvent,
+    MessageContent, ReasoningEffort, ToolCall, ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
+use reqwest::StatusCode;
 
-use crate::app::session_state::{AskRequest, SessionEvent, TaskRequest};
+use crate::app::session_state::{AskRequest, RetryInfo, SessionEvent, TaskRequest};
 use crate::tools::{self, ToolRef};
 use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult, envelope_error};
 use crabot::model::ModelInfo;
 use crabot::user::UserPrompt;
+
+/// Seconds to wait between auto-retry attempts after a transient failure.
+const RETRY_DELAY_SECS: u32 = 60;
+/// Total number of connection attempts (initial request + retries).
+const MAX_ATTEMPTS: u32 = 5;
 
 // ── DialogPhase: tracks the current phase of an LLM interaction ────
 
@@ -50,7 +57,154 @@ async fn wait_cancelled(cancel_token: &AtomicBool) {
         if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A successfully established LLM stream plus its first event (if any).
+struct AcquiredStream {
+    stream: ChatStream,
+    /// First event already pulled from the stream, if any.
+    first: Option<ChatStreamEvent>,
+}
+
+/// Where a failed acquisition originated — used to label the error message.
+enum AcquireStage {
+    /// `exec_chat_stream` failed while setting up the request.
+    Setup,
+    /// The first stream poll failed (HTTP status / connection error).
+    FirstPoll,
+}
+
+/// Whether an HTTP status warrants an auto-retry (429 rate limit / 5xx server error).
+fn is_retryable_status(status: StatusCode) -> bool {
+    status.as_u16() == 429 || (500..600).contains(&status.as_u16())
+}
+
+/// Whether a reqwest error is a connection-level failure worth retrying.
+/// Note: reqwest classifies TLS handshake failures as connect-phase errors, so
+/// they are retried too — harmless, since attempts are bounded by `MAX_ATTEMPTS`.
+fn is_retryable_reqwest(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout()
+}
+
+/// Classify a genai error as transient (429 / 5xx / connection failure).
+/// Only pre-first-event failures are retried; mid-stream errors surface as-is.
+/// Statuses buried in `ChatResponseGeneration`/`ChatResponse` bodies aren't classified.
+fn is_retryable(e: &genai::Error) -> bool {
+    match e {
+        genai::Error::HttpError { status, .. } => is_retryable_status(*status),
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
+            genai::webc::Error::ResponseFailedStatus { status, .. } => is_retryable_status(*status),
+            genai::webc::Error::Reqwest(re) => is_retryable_reqwest(re),
+            _ => false,
+        },
+        genai::Error::WebStream { error, .. } => {
+            // Downcast to a nested genai error or a raw reqwest error.
+            if let Some(genai_err) = error.downcast_ref::<genai::Error>() {
+                return is_retryable(genai_err);
+            }
+            if let Some(reqwest_err) = error.downcast_ref::<reqwest::Error>() {
+                return is_retryable_reqwest(reqwest_err);
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Establish the stream, racing the request and first poll against cancellation.
+/// Returns `Ok(None)` if cancelled, `Err((stage, e))` on failure.
+async fn try_acquire_stream(
+    client: &Client,
+    model: &crabot::model::ModelInfo,
+    chat_req: &ChatRequest,
+    chat_options: &ChatOptions,
+    cancel_token: &AtomicBool,
+) -> Result<Option<AcquiredStream>, (AcquireStage, genai::Error)> {
+    let stream_result = tokio::select! {
+        res = client.exec_chat_stream(&model.model_id, chat_req.clone(), Some(chat_options)) => res,
+        _ = wait_cancelled(cancel_token) => return Ok(None),
+    };
+    let mut stream = match stream_result {
+        Ok(chat_res) => chat_res.stream,
+        Err(e) => return Err((AcquireStage::Setup, e)),
+    };
+
+    // SSE adapters emit a synthetic Start before the request is sent; HTTP
+    // errors (429/5xx/connect) surface on the poll after it. Pull past Start
+    // so the first real event (or error) decides acquisition success.
+    let first = loop {
+        let ev = tokio::select! {
+            ev = stream.next() => ev,
+            _ = wait_cancelled(cancel_token) => return Ok(None),
+        };
+        match ev {
+            Some(Ok(ChatStreamEvent::Start)) => continue,
+            other => break other,
+        }
+    };
+    Ok(Some(AcquiredStream {
+        stream,
+        first: first
+            .transpose()
+            .map_err(|e| (AcquireStage::FirstPoll, e))?,
+    }))
+}
+
+/// Establish the stream, auto-retrying transient failures (429/5xx/connect)
+/// with a per-second countdown. Returns `Ok(None)` if cancelled, `Err(msg)` on failure.
+async fn acquire_stream_with_retry(
+    client: &Client,
+    model: &crabot::model::ModelInfo,
+    chat_req: &ChatRequest,
+    chat_options: &ChatOptions,
+    cancel_token: &AtomicBool,
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+) -> Result<Option<AcquiredStream>, String> {
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match try_acquire_stream(client, model, chat_req, chat_options, cancel_token).await {
+            Ok(Some(acquired)) => return Ok(Some(acquired)),
+            Ok(None) => return Ok(None),
+            Err((_, e)) if attempt < MAX_ATTEMPTS && is_retryable(&e) => {
+                // Count down one second at a time, keeping Stop responsive.
+                for seconds_left in (1..=RETRY_DELAY_SECS).rev() {
+                    if !on_event(SessionEvent::RetryCountdown(RetryInfo {
+                        attempt: attempt + 1,
+                        max_attempts: MAX_ATTEMPTS,
+                        seconds_left,
+                    }))
+                    .await
+                    {
+                        return Ok(None);
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        _ = wait_cancelled(cancel_token) => return Ok(None),
+                    }
+                }
+                // Countdown finished — clear the stale countdown status before the next attempt.
+                if !on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await {
+                    return Ok(None);
+                }
+            }
+            Err((stage, e)) => {
+                // Report where the failure surfaced and how many attempts ran.
+                let message = match stage {
+                    AcquireStage::Setup => "Failed to start the LLM request",
+                    AcquireStage::FirstPoll => "The LLM request failed",
+                };
+                let attempts = if attempt == 1 {
+                    "1 attempt".to_string()
+                } else {
+                    format!("{attempt} attempts")
+                };
+                return Err(format!("{message} after {attempts}: {e}"));
+            }
+        }
     }
 }
 
@@ -173,23 +327,24 @@ pub async fn send_stream(
         // (Anthropic limit: 4 breakpoints; system prompt uses 1 for Ephemeral1h).
         mark_cache_tail(&mut chat_req.messages);
 
-        // Race the connect against cancellation so Stop takes effect promptly.
-        let stream_result = tokio::select! {
-            res = client.exec_chat_stream(&model.model_id, chat_req.clone(), Some(&chat_options)) => res,
-            _ = wait_cancelled(&cancel_token) => {
+        // Establish the stream, auto-retrying transient failures with a countdown.
+        let (mut stream, first_event) = match acquire_stream_with_retry(
+            &client,
+            &model,
+            &chat_req,
+            &chat_options,
+            &cancel_token,
+            on_event,
+        )
+        .await
+        {
+            Ok(Some(acquired)) => (acquired.stream, acquired.first),
+            Ok(None) => {
                 on_event(SessionEvent::Cancelled(genai_messages)).await;
                 return;
             }
-        };
-
-        let mut stream = match stream_result {
-            Ok(chat_res) => chat_res.stream,
-            Err(e) => {
-                on_event(SessionEvent::Error(
-                    format!("exec_chat_stream: {e}"),
-                    genai_messages,
-                ))
-                .await;
+            Err(msg) => {
+                on_event(SessionEvent::Error(msg, genai_messages)).await;
                 return;
             }
         };
@@ -199,14 +354,18 @@ pub async fn send_stream(
         let mut captured_reasoning: Option<String> = None;
         let mut thinking_signaled = false;
 
-        // Race each read against cancellation so Stop works during stream idle.
+        // Race each read against cancellation; the first event was already pulled.
+        let mut pending_event = first_event;
         loop {
-            let event = tokio::select! {
-                ev = stream.next() => ev,
-                _ = wait_cancelled(&cancel_token) => {
-                    on_event(SessionEvent::Cancelled(genai_messages)).await;
-                    return;
-                }
+            let event = match pending_event.take() {
+                Some(event) => Some(Ok(event)),
+                None => tokio::select! {
+                    ev = stream.next() => ev,
+                    _ = wait_cancelled(&cancel_token) => {
+                        on_event(SessionEvent::Cancelled(genai_messages)).await;
+                        return;
+                    }
+                },
             };
             let Some(event) = event else { break };
             match event {

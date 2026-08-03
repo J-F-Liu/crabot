@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crabot::chat::{Dialog, Turn, TurnBody};
@@ -582,7 +583,7 @@ pub(crate) fn center_pane<'a>(
     let dialogs: &[Dialog] = tab.session.dialogs.as_slice();
     let expanded_turns: &HashSet<(usize, usize)> = &tab.expanded_turns;
     let expanded_dialogs: &HashSet<usize> = &tab.expanded_dialogs;
-    let status: &str = conversation.status();
+    let status = conversation.status();
     let streaming: DialogPhase = tab.session_state.phase;
     let selectable_msgs: &HashSet<usize> = &tab.selectable_msgs;
     let pending_user_prompt: Option<&str> = tab
@@ -897,22 +898,22 @@ fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
 
 // ── status line ───────────────────────────────────────────────────
 
-fn status_line<'a>(
-    status_text: &'a str,
+fn status_line(
+    status_text: Cow<'static, str>,
     phase: DialogPhase,
     running_tabs: &[usize],
     viewing_number: usize,
     font_scale: f32,
-) -> Element<'a, CenterPaneEvent> {
+) -> Element<'static, CenterPaneEvent> {
     let mut row = row![].align_y(Alignment::Center).spacing(8);
 
-    // Viewing tab status and stop button.
+    // Viewing tab status; stop button while streaming.
+    row = row.push(
+        text(status_text)
+            .size(12.0 * font_scale)
+            .color(color_muted()),
+    );
     if phase != DialogPhase::Idle {
-        row = row.push(
-            text(status_text)
-                .size(12.0 * font_scale)
-                .color(color_muted()),
-        );
         row = row.push(
             button(text("⏹ Stop").size(11.0 * font_scale))
                 .on_press(CenterPaneEvent::Conversation(
@@ -920,12 +921,6 @@ fn status_line<'a>(
                 ))
                 .padding([4, 10])
                 .style(icon_button_style),
-        );
-    } else {
-        row = row.push(
-            text(status_text)
-                .size(12.0 * font_scale)
-                .color(color_muted()),
         );
     }
 

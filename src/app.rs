@@ -3,6 +3,7 @@
 //! This module owns the root [`App`] state, the nested domain [`Message`] enum,
 //! and the boot / update / view / subscription methods that drive the GUI.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -334,7 +335,7 @@ impl ConversationState {
     }
 
     /// Human-readable status for the viewing tab.
-    pub(crate) fn status(&self) -> &str {
+    pub(crate) fn status(&self) -> Cow<'static, str> {
         self.viewing()
             .session_state
             .status(self.viewing().session.is_empty())

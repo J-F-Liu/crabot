@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -50,6 +51,8 @@ pub(crate) struct SessionState {
     pub(crate) scroll_throttle: Cell<Instant>,
     /// Cooldown counter for renew hints — only inject every N ToolExecuting phases.
     pub(crate) renew_hint_cooldown: Cell<u32>,
+    /// Auto-retry countdown after a transient LLM failure (429/5xx/connection).
+    pub(crate) retry: Option<RetryInfo>,
 }
 
 impl SessionState {
@@ -68,6 +71,7 @@ impl SessionState {
             auto_scroll: Arc::new(AtomicBool::new(true)),
             scroll_throttle: Cell::new(Instant::now()),
             renew_hint_cooldown: Cell::new(0),
+            retry: None,
         }
     }
 
@@ -87,20 +91,41 @@ impl SessionState {
     }
 
     /// Human-readable status label for the current streaming phase.
-    pub(crate) fn status(&self, session_empty: bool) -> &str {
+    pub(crate) fn status(&self, session_empty: bool) -> Cow<'static, str> {
+        // While auto-retrying, surface the countdown in the status bar.
+        if let Some(retry) = self.retry {
+            return Cow::Owned(format!(
+                "Retry in {} second{} ({}/{})",
+                retry.seconds_left,
+                if retry.seconds_left == 1 { "" } else { "s" },
+                retry.attempt,
+                retry.max_attempts
+            ));
+        }
         match self.phase {
-            DialogPhase::LlmLoading => "⏳ Loading LLM…",
-            DialogPhase::LlmThinking => "💭 LLM thinking…",
-            DialogPhase::ToolExecuting => "🛠️ Tool executing…",
+            DialogPhase::LlmLoading => Cow::Borrowed("⏳ Loading LLM…"),
+            DialogPhase::LlmThinking => Cow::Borrowed("💭 LLM thinking…"),
+            DialogPhase::ToolExecuting => Cow::Borrowed("🛠️ Tool executing…"),
             DialogPhase::Idle => {
                 if session_empty {
-                    "Send user prompt to start dialog with LLM"
+                    Cow::Borrowed("Send user prompt to start dialog with LLM")
                 } else {
-                    "✅ Ready"
+                    Cow::Borrowed("✅ Ready")
                 }
             }
         }
     }
+}
+
+/// Auto-retry countdown shown in the status bar.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RetryInfo {
+    /// Attempt that runs after the countdown.
+    pub(crate) attempt: u32,
+    /// Total attempts (initial request + retries).
+    pub(crate) max_attempts: u32,
+    /// Seconds remaining until the next attempt.
+    pub(crate) seconds_left: u32,
 }
 
 /// Request displayed by the builtin ask tool.
@@ -148,6 +173,8 @@ pub(crate) enum SessionEvent {
     /// A user prompt injected during streaming (consumed by `send_stream`).
     UserPrompt(String),
     TokenUsage(Option<genai::chat::Usage>),
+    /// Auto-retry countdown after a transient failure (429/5xx/connection).
+    RetryCountdown(RetryInfo),
     Done(Vec<ChatMessage>),
     Error(String, Vec<ChatMessage>),
     Cancelled(Vec<ChatMessage>),
@@ -176,7 +203,16 @@ pub(crate) fn update(
     } = tab;
     let state: &mut SessionState = session_state;
 
+    // Any non-countdown event resumes/ends streaming — clear the retry countdown.
+    if !matches!(&event, SessionEvent::RetryCountdown(_)) {
+        state.retry = None;
+    }
+
     match event {
+        SessionEvent::RetryCountdown(retry) => {
+            state.retry = Some(retry);
+            return Task::none();
+        }
         SessionEvent::ToolCalls(tcs) => {
             session.push_turn(Turn::from_tool_results(vec![]));
             session.push_turn(Turn::from_tool_calls(tcs));
