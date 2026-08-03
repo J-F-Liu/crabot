@@ -39,6 +39,8 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
         OverlayEvent::RestartFromUpdate => {
             if let UpdateDownloadState::ReadyToRestart(path) = &app.overlay.download_state {
                 let path = path.clone();
+                // Snapshot exe path before rename — on Linux /proc/self/exe follows the rename.
+                let current_exe = std::env::current_exe().ok();
                 app.settings.last_update_version = None;
                 app.save_settings();
                 if let Err(e) = update::replace_current_exe(&path) {
@@ -46,8 +48,8 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
                     app.overlay.download_state = UpdateDownloadState::Failed;
                     return Task::none();
                 }
-                // Spawn the replaced binary and exit.
-                if let Ok(exe) = std::env::current_exe() {
+                // Spawn the new binary (now at the original path) and exit.
+                if let Some(exe) = current_exe {
                     let _ = std::process::Command::new(&exe).spawn();
                 }
                 return iced::exit();
