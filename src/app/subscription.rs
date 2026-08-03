@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use iced::event;
 use iced::keyboard;
 use iced::mouse;
@@ -8,6 +10,10 @@ use iced::{Event, Subscription};
 use crate::widgets::textarea;
 
 use super::{App, ConversationEvent, LayoutEvent, Message};
+
+/// Last Ctrl state, kept off `App` (non-capturing closure) and synced with
+/// `layout.ctrl_held` via messages.
+static CTRL_HELD: AtomicBool = AtomicBool::new(false);
 
 /// Interval between auto-repeat scroll ticks while an arrow is held.
 const SCROLL_REPEAT_MS: u64 = 50;
@@ -36,6 +42,26 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
             key: keyboard::Key::Named(keyboard::key::Named::Escape),
             ..
         }) => Some(Message::Layout(LayoutEvent::EscapePressed)),
+        // Track Ctrl even when a widget captured the event (Ctrl+Click on links).
+        // Must precede the command()-guarded shortcut arm, which would swallow a
+        // bare Control KeyPressed; ModifiersChanged drives the state, and
+        // emission is deduplicated to avoid redundant view rebuilds.
+        Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+            let held = modifiers.command();
+            (held != CTRL_HELD.swap(held, Ordering::Relaxed))
+                .then_some(Message::Layout(LayoutEvent::CtrlHeld(held)))
+        }
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Control),
+            ..
+        }) => (!CTRL_HELD.swap(true, Ordering::Relaxed))
+            .then_some(Message::Layout(LayoutEvent::CtrlHeld(true))),
+        Event::Keyboard(keyboard::Event::KeyReleased {
+            key: keyboard::Key::Named(keyboard::key::Named::Control),
+            ..
+        }) => CTRL_HELD
+            .swap(false, Ordering::Relaxed)
+            .then_some(Message::Layout(LayoutEvent::CtrlHeld(false))),
         // Skip keyboard shortcuts when a widget already captured the
         // event (e.g. dropdown overlay handling arrow-key navigation).
         Event::Keyboard(_) if status == event::Status::Captured => None,
@@ -95,14 +121,6 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
             key: keyboard::Key::Named(keyboard::key::Named::Shift),
             ..
         }) => Some(Message::Layout(LayoutEvent::ShiftHeld(false))),
-        Event::Keyboard(keyboard::Event::KeyPressed {
-            key: keyboard::Key::Named(keyboard::key::Named::Control),
-            ..
-        }) => Some(Message::Layout(LayoutEvent::CtrlHeld(true))),
-        Event::Keyboard(keyboard::Event::KeyReleased {
-            key: keyboard::Key::Named(keyboard::key::Named::Control),
-            ..
-        }) => Some(Message::Layout(LayoutEvent::CtrlHeld(false))),
         // Message-view scroll shortcuts (Home/End/PageUp/PageDown/Space).
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(keyboard::key::Named::Home),

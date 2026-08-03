@@ -1,7 +1,10 @@
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use genai::chat::ChatRole;
 use gh_emoji::Replacer;
+use linkify::{LinkFinder, LinkKind};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde_json::Value;
 
 use crate::user::WorkMode;
@@ -17,6 +20,10 @@ pub struct TextContent {
     pub content_md: Option<Box<iced::widget::markdown::Content>>,
     /// Cached parsed Markdown for the reasoning text (if any).
     pub reasoning_md: Option<Box<iced::widget::markdown::Content>>,
+    /// True if the content has a bare URL (rendered as a clickable link).
+    pub has_url: bool,
+    /// True if the reasoning text has a bare URL.
+    pub reasoning_has_url: bool,
 }
 
 impl Clone for TextContent {
@@ -29,6 +36,13 @@ impl Clone for TextContent {
         cloned.refresh_md_cache();
         cloned
     }
+}
+
+/// Linkify `text` and parse it; returns the markdown and whether a URL was wrapped.
+fn linkified_md(text: &str) -> (Box<iced::widget::markdown::Content>, bool) {
+    let (linked, has_url) = linkify_urls(text);
+    let md = Box::new(iced::widget::markdown::Content::parse(&linked));
+    (md, has_url)
 }
 
 impl TextContent {
@@ -47,13 +61,18 @@ impl TextContent {
 
     /// Ensure the markdown cache is up to date with the raw text content.
     pub fn refresh_md_cache(&mut self) {
-        self.content_md = Some(Box::new(iced::widget::markdown::Content::parse(
-            &self.content,
-        )));
-        self.reasoning_md = self
-            .reasoning
-            .as_deref()
-            .map(|r| Box::new(iced::widget::markdown::Content::parse(r)));
+        let (md, has_url) = linkified_md(&self.content);
+        self.content_md = Some(md);
+        self.has_url = has_url;
+
+        if let Some(reasoning) = &self.reasoning {
+            let (md, has_url) = linkified_md(reasoning);
+            self.reasoning_md = Some(md);
+            self.reasoning_has_url = has_url;
+        } else {
+            self.reasoning_md = None;
+            self.reasoning_has_url = false;
+        }
     }
 }
 
@@ -210,50 +229,130 @@ impl Turn {
 /// Static emoji replacer — compiled once and reused.
 static EMOJI: LazyLock<Replacer> = LazyLock::new(Replacer::new);
 
-/// Replace GitHub-flavored `:emoji:` codes with Unicode emoji in text.
-/// Use markdown parser to skip inline code and fenced code blocks.
-pub fn replace_emoji(text: &str) -> String {
-    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+/// Static link finder — URLs only (emails stay plain text).
+static LINK_FINDER: LazyLock<LinkFinder> = LazyLock::new(|| {
+    let mut finder = LinkFinder::new();
+    finder.kinds(&[LinkKind::Url]);
+    finder
+});
 
-    // Collect byte ranges covered by code regions.
-    let mut code_ranges: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut block_start: Option<usize> = None;
+/// Markdown parser options matching the iced renderer.
+fn markdown_options() -> Options {
+    Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+}
 
-    let parser = Parser::new(text).into_offset_iter();
-    for (event, range) in parser {
-        match event {
-            Event::Start(Tag::CodeBlock(_)) => {
-                block_start = Some(range.start);
-            }
-            Event::End(TagEnd::CodeBlock) => {
-                if let Some(start) = block_start.take() {
-                    code_ranges.push(start..range.end);
-                }
-            }
-            Event::Code(_) => {
-                code_ranges.push(range);
-            }
-            _ => {}
-        }
-    }
-    // Unclosed code block — extend to end of text.
-    if let Some(start) = block_start.take() {
-        code_ranges.push(start..text.len());
-    }
-
-    // Apply emoji replacement only to regions outside code ranges.
+/// Apply `f` outside `protected` ranges (kept verbatim); returns string + change flag.
+fn transform_outside(
+    text: &str,
+    protected: &[Range<usize>],
+    mut f: impl FnMut(&str) -> (String, bool),
+) -> (String, bool) {
     let mut result = String::with_capacity(text.len());
+    let mut changed = false;
     let mut pos = 0;
-    for range in &code_ranges {
+    for range in protected {
         if pos < range.start {
-            result.push_str(&EMOJI.replace_all(&text[pos..range.start]));
+            let (part, c) = f(&text[pos..range.start]);
+            changed |= c;
+            result.push_str(&part);
         }
         result.push_str(&text[range.start..range.end]);
         pos = range.end;
     }
     if pos < text.len() {
-        result.push_str(&EMOJI.replace_all(&text[pos..]));
+        let (part, c) = f(&text[pos..]);
+        changed |= c;
+        result.push_str(&part);
     }
+    (result, changed)
+}
 
-    result
+/// Replace `:emoji:` codes with Unicode, skipping the regions protected by
+/// `linkify_urls` so a link destination can't be corrupted.
+pub fn replace_emoji(text: &str) -> String {
+    transform_outside(text, &protected_ranges(text), |s| {
+        let replaced = EMOJI.replace_all(s);
+        let changed = replaced != s;
+        (replaced.into_owned(), changed)
+    })
+    .0
+}
+
+/// Byte ranges of code, link/image and raw-HTML constructs (merged, sorted).
+fn protected_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut protected = Vec::new();
+    let mut block_start: Option<usize> = None;
+    let mut link_start = Vec::new();
+    let mut image_start = Vec::new();
+    for (event, range) in Parser::new_ext(text, markdown_options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => block_start = Some(range.start),
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(start) = block_start.take() {
+                    protected.push(start..range.end);
+                }
+            }
+            Event::Code(_) => protected.push(range),
+            Event::Start(Tag::Link { .. }) => link_start.push(range.start),
+            Event::End(TagEnd::Link) => {
+                if let Some(start) = link_start.pop() {
+                    protected.push(start..range.end);
+                }
+            }
+            Event::Start(Tag::Image { .. }) => image_start.push(range.start),
+            Event::End(TagEnd::Image) => {
+                if let Some(start) = image_start.pop() {
+                    protected.push(start..range.end);
+                }
+            }
+            Event::Html(_) | Event::InlineHtml(_) => protected.push(range),
+            _ => {}
+        }
+    }
+    // Unclosed code block — extend to end of text.
+    if let Some(start) = block_start {
+        protected.push(start..text.len());
+    }
+    // Merge overlapping ranges (e.g. an image inside a link).
+    protected.sort_by_key(|r| r.start);
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(protected.len());
+    for range in protected {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
+}
+
+/// Wrap bare URLs in `<url>` autolink syntax. Code, links/images and raw HTML
+/// are untouched. Returns the string and whether any URL was wrapped.
+pub fn linkify_urls(text: &str) -> (String, bool) {
+    transform_outside(text, &protected_ranges(text), linkify_segment)
+}
+
+/// Wrap bare URLs in `segment` with `<url>` autolink syntax.
+fn linkify_segment(segment: &str) -> (String, bool) {
+    let mut result = String::with_capacity(segment.len());
+    let mut changed = false;
+    let mut last = 0;
+    for link in LINK_FINDER.links(segment) {
+        changed = true;
+        result.push_str(&segment[last..link.start()]);
+        result.push('<');
+        result.push_str(link.as_str());
+        result.push('>');
+        last = link.end();
+    }
+    if last < segment.len() {
+        result.push_str(&segment[last..]);
+    }
+    (result, changed)
 }

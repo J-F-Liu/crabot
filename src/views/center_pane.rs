@@ -525,7 +525,7 @@ fn text_turn_block<'a>(
                     highlighted_text(reasoning, ctx.search_query, 13.0 * ctx.font_scale)
                 } else if !ctx.selectable_msgs.contains(&i)
                     && let Some(md) = &tc.reasoning_md
-                    && !is_plain_text(md)
+                    && (!is_plain_text(md) || tc.reasoning_has_url)
                 {
                     markdown_element(md, i, 13.0, ctx)
                 } else {
@@ -555,7 +555,7 @@ fn text_turn_block<'a>(
         ));
     } else if !ctx.selectable_msgs.contains(&i)
         && let Some(md) = &tc.content_md
-        && !is_plain_text(md)
+        && (!is_plain_text(md) || tc.has_url)
     {
         content_col = content_col.push(markdown_element(md, i, 14.0, ctx));
     } else {
