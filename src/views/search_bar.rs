@@ -137,7 +137,6 @@ impl SearchState {
 pub(crate) enum SearchEvent {
     ToggleSearch,
     QueryChanged(String),
-    Submit,
     Navigate(i32),
 }
 
@@ -161,16 +160,15 @@ pub(crate) fn update_on(
         SearchEvent::QueryChanged(q) => {
             state.set_query(q);
         }
-        SearchEvent::Submit => {
-            if let Some(target) = state.submit(session) {
-                let q = state.query.clone();
-                expand_result(session, expanded_dialogs, expanded_turns, target, &q);
-                let total = session.total_turns();
-                return state.measure_and_scroll(tab_number, total, target);
-            }
-        }
         SearchEvent::Navigate(delta) => {
-            if let Some(target) = state.navigate(delta) {
+            // With no results yet (e.g. right after typing), first run the search
+            // and jump to the first match; afterwards, move to the next/previous.
+            let target = if state.results.is_empty() {
+                state.submit(session)
+            } else {
+                state.navigate(delta)
+            };
+            if let Some(target) = target {
                 let q = state.query.clone();
                 let changed = expand_result(session, expanded_dialogs, expanded_turns, target, &q);
                 if !changed && let Some(task) = state.scroll_to_target(target) {
@@ -253,7 +251,7 @@ pub(crate) fn view<'a>(
     let input = text_input("Search…", query)
         .id(SEARCH_INPUT.clone())
         .on_input(SearchEvent::QueryChanged)
-        .on_submit(SearchEvent::Submit)
+        .on_submit(SearchEvent::Navigate(1))
         .padding([4, 8])
         .size(13.0);
 

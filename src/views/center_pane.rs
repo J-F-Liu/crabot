@@ -598,7 +598,13 @@ pub(crate) fn center_pane<'a>(
     let total: usize = dialogs.iter().map(|d| d.turns.len()).sum();
     search_state.ensure_turn_ids(total);
     let turn_ids = search_state.turn_ids();
-    let search_query: &str = &search_state.query;
+    // Render against the query only while the bar is visible; a hidden bar
+    // (query preserved for Ctrl+F) fall back to normal markdown.
+    let search_query: &str = if search_state.visible {
+        &search_state.query
+    } else {
+        ""
+    };
     let search_results: &[usize] = &search_state.results;
     // Running-in-background tab numbers for the status line.
     let running_tabs: Vec<usize> = conversation
