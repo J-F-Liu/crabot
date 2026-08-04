@@ -52,6 +52,10 @@ pub(crate) struct SessionTab {
     pub(crate) task_path: Option<Vec<usize>>,
     /// Task-tool call_id this tab was spawned for — tags the final report to the parent.
     pub(crate) task_call_id: Option<String>,
+    /// Raw file paths whose original content was snapshotted this run.
+    pub(crate) snapshot_files: HashSet<String>,
+    /// Transient error from the last Revert action.
+    pub(crate) modified_files_error: Option<String>,
 }
 
 impl SessionTab {
@@ -75,6 +79,8 @@ impl SessionTab {
             end_status: None,
             task_path: None,
             task_call_id: None,
+            snapshot_files: HashSet::new(),
+            modified_files_error: None,
         }
     }
 
@@ -108,6 +114,8 @@ impl SessionTab {
             end_status: None,
             task_path: None,
             task_call_id: None,
+            snapshot_files: HashSet::new(),
+            modified_files_error: None,
         }
     }
 

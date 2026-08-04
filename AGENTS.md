@@ -16,8 +16,8 @@ Crabot is a pure-Rust native GUI coding agent using [iced](https://iced.rs) v0.1
 | Model config tabs          | Session tabs bar          | Theme toggle (top)      |
 | System prompt sections     | Session header + dialogs  | Context window stats    |
 | Session picker             | Search bar (Ctrl+F)       | Token usage & cost      |
-| Work mode tabs & toggle    | Turn bubbles (User/       | Modified files list     |
-| User prompt textarea       |    Assistant/Tool)        | Todo list               |
+| Work mode tabs & toggle    | Turn bubbles (User/       | Todo list               |
+| User prompt textarea       |    Assistant/Tool)        | Modified files list     |
 | Recipe dropdown            | Ask tool controls         | Restart button (bottom) |
 | Tool list (Builtin/Custom/ | Status bar + stop button  |                         |
 |   MCP)                     |                           |                         |
@@ -30,7 +30,7 @@ All panes live in `src/views/`. Left: `left_pane`, `model_config`, `user_prompt`
 
 - **UI → State:** `App::update` dispatches `Message` variants to domain handlers in `src/app/` (`layout`, `conversation`, `prompt`, `tool_state`, `settings`, `overlay`, `session_state`).
 - **LLM streaming:** `ConversationEvent::SendPrompt` → `llm::send_stream` agent loop (≤ `max_iterations`): request with system prompt + tools + history → stream chunks via callbacks → execute tool calls → append results → loop. Cancellation via `tokio::select!`.
-- **Persistence:** RON config in `~/.crabot/` (`settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`); sessions as JSON in `.agent/sessions/YYYY-MM/id.json`.
+- **Persistence:** RON config in `~/.crabot/` (`settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`); sessions as JSON in `.agent/sessions/YYYY-MM/id.json`; per-file raw snapshots (Revert) in `.agent/snapshots/{id}/`.
 - **MCP:** loads `~/.crabot/mcp.ron`, connects via `rmcp` (stdio/HTTP), auto-discovers tools; connections held in `LazyLock<Mutex<HashMap<String, McpConnection>>>`.
 
 ### Agent Loop (`llm::send_stream`)
@@ -45,28 +45,29 @@ All panes live in `src/views/`. Left: `left_pane`, `model_config`, `user_prompt`
 
 ### Module Map
 
-| Path                                                                        | Role                                                                          |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `src/main.rs`                                                               | Entry point; wires `iced::application` with `App::boot/update/view/subscription` |
-| `src/app.rs`                                                                | Root `App` (6 domain state groups), hierarchical `Message` (7 variants), boot + view |
-| `src/app/{layout,overlay,subscription,settings}.rs`                         | Window geometry/focus, banners & dialogs, input subscriptions, settings dialog |
-| `src/app/conversation.rs`                                                   | Session tab lifecycle, send/resend, stream orchestration, search, ask UI      |
-| `src/app/session_tab.rs` + `session_state.rs`                               | Per-tab state: streaming lifecycle, placeholders, auto-scroll, token totals   |
-| `src/app/prompt.rs` + `tool_state.rs`                                       | System-prompt composition (preamble/rules/workspace/AGENTS.md), tool enablement |
-| `src/lib.rs`                                                                | `HashSetExt::set()` toggle helper                                              |
-| `src/settings.rs`                                                           | Persistable RON state; `prompt_recipes` per work mode                          |
-| `src/model.rs` + `model_database.rs`                                        | `ModelList`/`ModelConfig`/`Provider` types; ~500-model read-only embedded DB   |
-| `src/chat.rs` + `session.rs`                                                | `Turn`/`Dialog` UI types; raw history + derived dialogs, usage, todo extraction |
-| `src/llm.rs`                                                                | Streaming engine, agent loop, `DialogPhase`, cache management                  |
-| `src/setup.rs` + `workspace.rs` + `fonts.rs` + `user.rs`                    | First-boot seeding; gitignore-aware tree scan; CJK font detection; `WorkMode`  |
-| `src/tools/mod.rs`                                                          | `Tool` trait, `ToolRegistry`, strict schema, process helpers, cancel support   |
-| `src/tools/{read,write,edit,find,search,bash,ask,todo,task,renew,fetch}.rs` | 11 built-in tools                                                             |
-| `src/tools/custom.rs` + `mcp.rs`                                            | Custom tool loader (TinyTemplate, typed params, pipes); MCP client            |
+| Path                                                                        | Role                                                                                                                                   |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main.rs`                                                               | Entry point; wires `iced::application` with `App::boot/update/view/subscription`                                                       |
+| `src/app.rs`                                                                | Root `App` (6 domain state groups), hierarchical `Message` (7 variants), boot + view                                                   |
+| `src/app/{layout,overlay,subscription,settings}.rs`                         | Window geometry/focus, banners & dialogs, input subscriptions, settings dialog                                                         |
+| `src/app/conversation.rs`                                                   | Session tab lifecycle, send/resend, stream orchestration, search, ask UI                                                               |
+| `src/app/session_tab.rs` + `session_state.rs`                               | Per-tab state: streaming lifecycle, placeholders, auto-scroll, token totals                                                            |
+| `src/app/prompt.rs` + `tool_state.rs`                                       | System-prompt composition (preamble/rules/workspace/AGENTS.md), tool enablement                                                        |
+| `src/lib.rs`                                                                | `HashSetExt::set()` toggle helper                                                                                                      |
+| `src/settings.rs`                                                           | Persistable RON state; `prompt_recipes` per work mode                                                                                  |
+| `src/model.rs` + `model_database.rs`                                        | `ModelList`/`ModelConfig`/`Provider` types; ~500-model read-only embedded DB                                                           |
+| `src/chat.rs` + `session.rs`                                                | `Turn`/`Dialog` UI types; raw history + derived dialogs, usage, todo extraction                                                        |
+| `src/llm.rs`                                                                | Streaming engine, agent loop, `DialogPhase`, cache management                                                                          |
+| `src/setup.rs` + `workspace.rs` + `fonts.rs` + `user.rs`                    | First-boot seeding; gitignore-aware tree scan; CJK font detection; `WorkMode`                                                          |
+| `src/tools/mod.rs`                                                          | `Tool` trait, `ToolRegistry`, strict schema, process helpers, cancel support                                                           |
+| `src/tools/{read,write,edit,find,search,bash,ask,todo,task,renew,fetch}.rs` | 11 built-in tools                                                                                                                      |
+| `src/tools/custom.rs` + `mcp.rs`                                            | Custom tool loader (TinyTemplate, typed params, pipes); MCP client                                                                     |
 | `src/views/`                                                                | UI pane modules; `settings/` with 7 tabs (ai_models, prompt_recipes, builtin_tools, custom_tools, mcp_servers, tool_playground, about) |
-| `src/widgets/`                                                              | Custom `TextArea` (undo/redo), `DropDown`, `PopupMenu`                         |
-| `assets/`                                                                   | Bundled preambles, `workmode.md`, `rules/`, models, tools, mcp, images         |
-| `~/.crabot/`                                                                | User config: `settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`, `preamble/`, `rules/` |
-| `.agent/sessions/`                                                          | Session JSON, grouped in `YYYY-MM/` subdirs                                    |
+| `src/widgets/`                                                              | Custom `TextArea` (undo/redo), `DropDown`, `PopupMenu`                                                                                 |
+| `assets/`                                                                   | Bundled preambles, `workmode.md`, `rules/`, models, tools, mcp, images                                                                 |
+| `~/.crabot/`                                                                | User config: `settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`, `preamble/`, `rules/`                                               |
+| `.agent/sessions/`                                                          | Session JSON, grouped in `YYYY-MM/` subdirs                                                                                            |
+| `.agent/snapshots/`                                                         | Per-file raw pre-images (`.agent/snapshots/{id}/`) backing the right-pane Revert actions                                               |
 
 ---
 
@@ -93,27 +94,27 @@ pub trait Tool: Send + Sync {
 
 ### Tool Categories
 
-| Category     | Source                          | Description                                                            |
-| ------------ | ------------------------------- | ---------------------------------------------------------------------- |
+| Category     | Source                                                                      | Description                                                              |
+| ------------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | Builtin (11) | `src/tools/{read,write,edit,find,search,bash,ask,todo,task,renew,fetch}.rs` | File I/O, shell, interaction, web, session handoff, sub-agent delegation |
-| Custom       | `~/.crabot/tools.ron`           | User-defined CLI tools (TinyTemplate command + JSON Schema params)      |
-| MCP          | `~/.crabot/mcp.ron` → rmcp      | Remote tools from stdio/HTTP servers                                    |
+| Custom       | `~/.crabot/tools.ron`                                                       | User-defined CLI tools (TinyTemplate command + JSON Schema params)       |
+| MCP          | `~/.crabot/mcp.ron` → rmcp                                                  | Remote tools from stdio/HTTP servers                                     |
 
 ### Built-in Tools
 
-| Tool     | Description                                                                                                   |
-| -------- | ------------------------------------------------------------------------------------------------------------- |
-| `read`   | File read with offset/limit, 64KB cap, smart truncation                                                       |
-| `write`  | File write with parent dir creation                                                                           |
-| `edit`   | Exact-string replacement via byte-range offsets, overlap detection                                            |
-| `find`   | Glob finder, gitignore-aware, 100-line cap                                                                    |
-| `search` | Regex search across files, gitignore-aware                                                                    |
-| `bash`   | Shell with timeout (default 120s), process-group kill                                                          |
-| `ask`    | Interactive prompt — intercepted by engine, routed to UI via mpsc                                             |
-| `todo`   | Shared todo list (written by tool, shown in right pane)                                                       |
-| `task`   | Delegate subtask to a new isolated session tab; blocks until final report arrives as the tool result          |
-| `renew`  | New session tab seeded with condensed summary — intercepted when context is nearly full                       |
-| `fetch`  | HTTP fetch with Markdown extraction via `dom_smoothie`                                                        |
+| Tool     | Description                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------------- |
+| `read`   | File read with offset/limit, 64KB cap, smart truncation                                              |
+| `write`  | File write with parent dir creation                                                                  |
+| `edit`   | Exact-string replacement via byte-range offsets, overlap detection                                   |
+| `find`   | Glob finder, gitignore-aware, 100-line cap                                                           |
+| `search` | Regex search across files, gitignore-aware                                                           |
+| `bash`   | Shell with timeout (default 120s), process-group kill                                                |
+| `ask`    | Interactive prompt — intercepted by engine, routed to UI via mpsc                                    |
+| `todo`   | Shared todo list (written by tool, shown in right pane)                                              |
+| `task`   | Delegate subtask to a new isolated session tab; blocks until final report arrives as the tool result |
+| `renew`  | New session tab seeded with condensed summary — intercepted when context is nearly full              |
+| `fetch`  | HTTP fetch with Markdown extraction via `dom_smoothie`                                               |
 
 ### Custom Tools
 

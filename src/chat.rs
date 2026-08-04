@@ -96,7 +96,7 @@ impl ToolResult {
     /// file path that was modified.
     pub fn get_modified_file(&self) -> Option<&str> {
         if self.result.is_ok() && (self.name == "write" || self.name == "edit") {
-            self.args.get("path").and_then(|v| v.as_str())
+            crate::tools::arg_path(&self.args)
         } else {
             None
         }

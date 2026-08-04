@@ -7,10 +7,21 @@ use iced::{
 
 use crate::OverlayEvent;
 
-use super::styles::{primary_button, secondary_button};
+use super::styles::{danger_button, primary_button, secondary_button};
 use super::theme::{CRABOT_DIALOG_RADIUS, CRABOT_MODAL_SCRIM, CRABOT_PRIMARY, color_dialog_bg};
 
-pub fn workspace_modal(default_path: &Path) -> Element<'_, OverlayEvent> {
+const TITLE: Font = Font {
+    weight: font::Weight::Bold,
+    ..Font::DEFAULT
+};
+
+/// Shared modal scaffold: scrim backdrop (click to dismiss) + centered card.
+fn modal<'a>(
+    dismiss: OverlayEvent,
+    title: &'a str,
+    body: impl Into<Element<'a, OverlayEvent>>,
+    buttons: impl Into<Element<'a, OverlayEvent>>,
+) -> Element<'a, OverlayEvent> {
     let backdrop = mouse_area(
         container(Space::new().width(Length::Fill).height(Length::Fill))
             .width(Length::Fill)
@@ -20,41 +31,20 @@ pub fn workspace_modal(default_path: &Path) -> Element<'_, OverlayEvent> {
                 ..container::Style::default()
             }),
     )
-    .on_press(OverlayEvent::EmptyWorkspaceConfirm(None));
+    .on_press(dismiss);
 
-    let dialog = container(
+    let card = container(
         column![
-            container(
-                text("Empty Workspace")
-                    .size(18)
-                    .font(Font {
-                        weight: font::Weight::Bold,
-                        ..Font::DEFAULT
-                    })
-                    .color(CRABOT_PRIMARY),
-            )
-            .padding(iced::Padding::new(0.0).bottom(8.0)),
+            container(text(title).size(18).font(TITLE).color(CRABOT_PRIMARY))
+                .padding(iced::Padding::new(0.0).bottom(8.0)),
             rule::horizontal(1).style(|_: &Theme| rule::Style {
                 color: CRABOT_PRIMARY,
                 fill_mode: rule::FillMode::Full,
                 radius: 0.0.into(),
                 snap: false,
             }),
-            text(format!(
-                "Workspace path is empty.\n\nContinue with the default workspace?\n{}",
-                default_path.display()
-            ))
-            .size(14),
-            row![
-                button(text("Yes")).style(primary_button).on_press(
-                    OverlayEvent::EmptyWorkspaceConfirm(Some(default_path.to_path_buf()))
-                ),
-                button(text("No"))
-                    .style(secondary_button)
-                    .on_press(OverlayEvent::EmptyWorkspaceConfirm(None)),
-            ]
-            .spacing(20)
-            .padding(10),
+            body.into(),
+            buttons.into(),
         ]
         .spacing(10)
         .padding(20)
@@ -69,11 +59,57 @@ pub fn workspace_modal(default_path: &Path) -> Element<'_, OverlayEvent> {
 
     stack![
         backdrop,
-        container(dialog)
+        container(card)
             .width(Length::Fill)
             .height(Length::Fill)
             .center_x(Length::Fill)
             .center_y(Length::Fill),
     ]
     .into()
+}
+
+pub fn workspace_modal(default_path: &Path) -> Element<'_, OverlayEvent> {
+    modal(
+        OverlayEvent::EmptyWorkspaceConfirm(None),
+        "Empty Workspace",
+        text(format!(
+            "Workspace path is empty.\n\nContinue with the default workspace?\n{}",
+            default_path.display()
+        ))
+        .size(14),
+        row![
+            button(text("Yes")).style(primary_button).on_press(
+                OverlayEvent::EmptyWorkspaceConfirm(Some(default_path.to_path_buf()))
+            ),
+            button(text("No"))
+                .style(secondary_button)
+                .on_press(OverlayEvent::EmptyWorkspaceConfirm(None)),
+        ]
+        .spacing(20)
+        .padding(10),
+    )
+}
+
+/// Confirmation dialog for Revert All — destructive, requires explicit confirmation.
+pub fn revert_all_modal() -> Element<'static, OverlayEvent> {
+    modal(
+        OverlayEvent::RevertAllConfirm(false),
+        "Revert All Files",
+        text(
+            "Revert all files modified by this session?\n\n\
+             Modified files are restored to their original content and files \
+             created by the session are deleted. This cannot be undone.",
+        )
+        .size(14),
+        row![
+            button(text("Revert All"))
+                .style(danger_button)
+                .on_press(OverlayEvent::RevertAllConfirm(true)),
+            button(text("Cancel"))
+                .style(secondary_button)
+                .on_press(OverlayEvent::RevertAllConfirm(false)),
+        ]
+        .spacing(20)
+        .padding(10),
+    )
 }

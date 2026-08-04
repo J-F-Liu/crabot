@@ -32,6 +32,7 @@ pub(crate) mod prompt;
 pub(crate) mod session_state;
 mod session_tab;
 mod settings;
+pub(crate) mod snapshot;
 mod subscription;
 mod tool_state;
 
@@ -378,6 +379,10 @@ impl ConversationState {
 pub(crate) struct OverlayState {
     pub(crate) show_workspace_dialog: bool,
     pub(crate) default_workspace_path: PathBuf,
+    /// Revert-All confirmation dialog visibility.
+    pub(crate) show_revert_all_confirm: bool,
+    /// Owning tab number captured when the dialog opened (Ctrl+1..9 still works under the modal).
+    pub(crate) revert_all_tab: usize,
     pub(crate) update_available: Option<String>,
     pub(crate) download_state: crate::views::update::UpdateDownloadState,
 }
@@ -517,6 +522,8 @@ pub(crate) enum OverlayEvent {
     UpdateReady(Result<PathBuf, String>),
     RestartFromUpdate,
     EmptyWorkspaceConfirm(Option<PathBuf>),
+    /// User answered the Revert-All confirmation dialog.
+    RevertAllConfirm(bool),
 }
 
 // ── Pane-level event types ─────────────────────────────────────────
@@ -540,11 +547,17 @@ pub(crate) enum CenterPaneEvent {
     TabBarScrolled(Viewport),
 }
 
-/// Events emitted by the right pane (conversation stats + theme toggle + restart).
+/// Events emitted by the right pane.
 #[derive(Clone)]
 pub(crate) enum RightPaneEvent {
     ToggleTheme(bool),
     Restart,
+    /// Restore the file from its snapshot.
+    RevertFile(String),
+    /// Restore all snapshotted files of the current session.
+    RevertAll,
+    /// Dismiss the transient revert error message.
+    DismissRevertError,
 }
 
 // ── Root Message ──────────────────────────────────────────────────
@@ -559,6 +572,13 @@ pub(crate) enum Message {
     Overlay(OverlayEvent),
     ModelSettings(ModelSettingsEvent),
     RestartApp,
+    RevertFile(String),
+    RevertAll,
+    /// Single-file revert finished: (tab number, Ok(raw) | Err(message)).
+    RevertDone(usize, Result<String, String>),
+    /// Revert All finished: (tab number, per-file outcomes).
+    RevertAllDone(usize, Vec<Result<String, String>>),
+    DismissRevertError,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -677,6 +697,8 @@ impl App {
             overlay: OverlayState {
                 show_workspace_dialog: false,
                 default_workspace_path: setup::default_workspace_path(),
+                show_revert_all_confirm: false,
+                revert_all_tab: 0,
                 update_available,
                 download_state: crate::views::update::UpdateDownloadState::Idle,
             },
@@ -731,6 +753,7 @@ impl App {
             Message::RestartApp => {
                 self.conversation.stop();
                 self.save_settings();
+                snapshot::cleanup_all(self);
                 let workspace_path = &self.prompt.workspace.1;
                 if let Ok(exe) = std::env::current_exe() {
                     if !workspace_path.as_os_str().is_empty() && exe.starts_with(workspace_path) {
@@ -742,6 +765,16 @@ impl App {
                     }
                 }
                 iced::exit()
+            }
+            Message::RevertFile(path) => snapshot::revert(self, path),
+            Message::RevertAll => snapshot::request_revert_all(self),
+            Message::RevertDone(number, outcome) => snapshot::revert_done(self, number, outcome),
+            Message::RevertAllDone(number, outcomes) => {
+                snapshot::revert_all_done(self, number, outcomes)
+            }
+            Message::DismissRevertError => {
+                self.conversation.viewing_mut().modified_files_error = None;
+                Task::none()
             }
         }
     }
@@ -852,6 +885,9 @@ impl App {
                     .map(Message::Overlay),
             ]
             .into()
+        } else if self.overlay.show_revert_all_confirm {
+            iced::widget::stack![main, crate::views::revert_all_modal().map(Message::Overlay)]
+                .into()
         } else {
             iced::widget::stack![main].into()
         }
@@ -907,6 +943,9 @@ impl App {
                 RightPaneEvent::ToggleTheme(dark) =>
                     Message::Layout(LayoutEvent::ToggleTheme(dark)),
                 RightPaneEvent::Restart => Message::RestartApp,
+                RightPaneEvent::RevertFile(path) => Message::RevertFile(path),
+                RightPaneEvent::RevertAll => Message::RevertAll,
+                RightPaneEvent::DismissRevertError => Message::DismissRevertError,
             }),
         ]
         .spacing(0)

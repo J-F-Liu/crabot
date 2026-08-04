@@ -65,6 +65,12 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
                 crate::app::conversation::send_prompt(app),
             ]);
         }
+        OverlayEvent::RevertAllConfirm(confirmed) => {
+            app.overlay.show_revert_all_confirm = false;
+            if confirmed {
+                return crate::app::snapshot::revert_all(app);
+            }
+        }
     }
     Task::none()
 }

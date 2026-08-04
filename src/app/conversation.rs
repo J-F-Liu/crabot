@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 
 use crate::app::session_state::{self, AskAction, SessionEvent, TaskRequest};
 use crate::app::session_tab::SessionTab;
+use crate::app::snapshot;
 use crate::app::{App, ConversationEvent, FocusedTarget, Message, TabBarScrollState};
 use crate::llm::DialogPhase;
 use crate::tools::TASK_MODES;
@@ -50,6 +51,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::AppClosing => {
             app.conversation.stop();
             app.save_settings();
+            snapshot::cleanup_all(app);
             return iced::exit();
         }
         ConversationEvent::NewSession => {
@@ -298,6 +300,8 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
     let was_viewing = pos == app.conversation.viewing;
     let removed_model = app.conversation.session_tabs[pos].selected_model.clone();
     let removed_preamble = app.conversation.session_tabs[pos].selected_preamble.clone();
+    let removed_session = &app.conversation.session_tabs[pos].session;
+    snapshot::cleanup(&removed_session.workspace, &removed_session.id);
     app.conversation.session_tabs.remove(pos);
     // Clean up the pending-ask queue — the tab is gone.
     app.conversation.pending_ask_queue.retain(|&n| n != number);
@@ -1178,6 +1182,7 @@ pub(crate) fn start_dialog(
     let config = crate::llm::SendConfig {
         model,
         workspace: app.prompt.workspace.1.clone(),
+        session_id: tab.session.id.clone(),
         system_prompt,
         user_prompt,
         tools,

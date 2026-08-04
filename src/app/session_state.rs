@@ -153,6 +153,8 @@ pub(crate) use crabot::tools::TaskRequest;
 #[derive(Debug, Clone)]
 pub(crate) enum SessionEvent {
     ToolCalls(Vec<ToolCall>),
+    /// Paths snapshotted before tool execution — populate the right-pane Revert list.
+    SnapshotsCaptured(Vec<String>),
     AskRequest(AskRequest),
     /// Prompt string for creating a new session to continue the task.
     RenewRequest(String),
@@ -190,6 +192,8 @@ pub(crate) fn update(
         expanded_dialogs,
         end_status,
         task_path,
+        snapshot_files,
+        modified_files_error,
         ..
     } = tab;
     let state: &mut SessionState = session_state;
@@ -205,6 +209,7 @@ pub(crate) fn update(
             return Task::none();
         }
         SessionEvent::ToolCalls(tcs) => {
+            *modified_files_error = None;
             session.push_turn(Turn::from_tool_results(vec![]));
             session.push_turn(Turn::from_tool_calls(tcs));
             return if viewing {
@@ -212,6 +217,9 @@ pub(crate) fn update(
             } else {
                 Task::none()
             };
+        }
+        SessionEvent::SnapshotsCaptured(files) => {
+            snapshot_files.extend(files);
         }
         SessionEvent::AskRequest(request) => {
             let no_options = request.options.is_empty();

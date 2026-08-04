@@ -418,6 +418,8 @@ async fn run_serial_tool(
 pub struct SendConfig {
     pub model: ModelInfo,
     pub workspace: std::path::PathBuf,
+    /// Session id keying this stream's file snapshots.
+    pub session_id: String,
     pub system_prompt: String,
     pub user_prompt: Option<UserPrompt>,
     pub tools: Vec<ToolRef>,
@@ -446,6 +448,7 @@ pub async fn send_stream(
     let SendConfig {
         model,
         workspace,
+        session_id,
         system_prompt,
         user_prompt,
         tools,
@@ -676,7 +679,21 @@ pub async fn send_stream(
                 args: tc.fn_arguments.clone(),
             })
             .collect();
-        if !on_event(SessionEvent::ToolCalls(calls)).await {
+        if !on_event(SessionEvent::ToolCalls(calls.clone())).await {
+            on_event(SessionEvent::Cancelled(genai_messages)).await;
+            return;
+        }
+
+        // Snapshot `write`/`edit` targets before tools run — blocking thread,
+        // awaited so the pre-image read beats the tool's own write.
+        let snapshotted = crate::app::snapshot::capture_tool_targets(
+            workspace.clone(),
+            session_id.clone(),
+            &calls,
+        )
+        .await;
+        if !snapshotted.is_empty() && !on_event(SessionEvent::SnapshotsCaptured(snapshotted)).await
+        {
             on_event(SessionEvent::Cancelled(genai_messages)).await;
             return;
         }

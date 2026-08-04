@@ -411,8 +411,15 @@ pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 /// Like `arg_str` but accepts common aliases for a path parameter.
-pub(crate) fn arg_path(args: &Value) -> Option<&str> {
-    const KEYS: &[&str] = &["path", "file", "file_path", "filepath", "filename"];
+pub fn arg_path(args: &Value) -> Option<&str> {
+    const KEYS: &[&str] = &[
+        "path",
+        "file",
+        "filename",
+        "file_path",
+        "filepath",
+        "filePath",
+    ];
     KEYS.iter().find_map(|k| arg_str(args, k))
 }
 

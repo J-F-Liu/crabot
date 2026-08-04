@@ -94,28 +94,38 @@ pub(crate) fn divider<M: Clone + 'static>(state: &DividerState) -> Element<'stat
 
 // ── button styles ───────────────────────────────────────────────
 
-pub(crate) fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
-    let base = button::Style {
-        background: Some(CRABOT_PRIMARY.into()),
+/// Colored button style — white text on `base`, with hover/pressed variants.
+fn colored(status: button::Status, base: Color, hover: Color, pressed: Color) -> button::Style {
+    let style = button::Style {
+        background: Some(base.into()),
         text_color: Color::WHITE,
         border: iced::Border::default().rounded(6),
         ..button::Style::default()
     };
     match status {
-        button::Status::Active => base,
+        button::Status::Active => style,
         button::Status::Hovered => button::Style {
-            background: Some(CRABOT_PRIMARY_HOVER.into()),
-            ..base
+            background: Some(hover.into()),
+            ..style
         },
         button::Status::Pressed => button::Style {
-            background: Some(CRABOT_PRIMARY_PRESSED.into()),
-            ..base
+            background: Some(pressed.into()),
+            ..style
         },
         button::Status::Disabled => button::Style {
-            background: Some(CRABOT_PRIMARY.scale_alpha(0.5).into()),
-            ..base
+            background: Some(base.scale_alpha(0.5).into()),
+            ..style
         },
     }
+}
+
+pub(crate) fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
+    colored(
+        status,
+        CRABOT_PRIMARY,
+        CRABOT_PRIMARY_HOVER,
+        CRABOT_PRIMARY_PRESSED,
+    )
 }
 
 /// Neutral / secondary button style — surface background with a border.
@@ -155,6 +165,16 @@ pub(crate) fn secondary_button(_theme: &Theme, status: button::Status) -> button
             ..base
         },
     }
+}
+
+/// Destructive red button — irreversible actions like Revert All.
+pub(crate) fn danger_button(_theme: &Theme, status: button::Status) -> button::Style {
+    colored(
+        status,
+        CRABOT_DANGER,
+        CRABOT_DANGER_HOVER,
+        CRABOT_DANGER_PRESSED,
+    )
 }
 
 pub(crate) fn primary_toggler(_theme: &Theme, status: toggler::Status) -> toggler::Style {

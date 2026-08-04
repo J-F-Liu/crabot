@@ -6,8 +6,8 @@ use iced::{
 };
 use iced_selection::Text as SelectableText;
 
-use super::styles::{pane_side, primary_button, primary_toggler, sel_primary};
-use super::theme::thin_vertical;
+use super::styles::{pane_side, primary_button, primary_toggler, secondary_button, sel_primary};
+use super::theme::{CRABOT_DANGER, thin_vertical};
 use crate::RightPaneEvent;
 use crate::app::SessionTab;
 use crabot::model::ModelConfig;
@@ -22,18 +22,36 @@ const BOLD: Font = Font {
     ..Font::DEFAULT
 };
 
+/// `label` with a right-aligned trailing widget (used for token rows and Revert buttons).
+fn with_trailing<'a>(
+    label: impl Into<Element<'a, RightPaneEvent>>,
+    trailing: impl Into<Element<'a, RightPaneEvent>>,
+) -> Element<'a, RightPaneEvent> {
+    row![
+        label.into(),
+        Space::new().width(Length::Fill),
+        trailing.into()
+    ]
+    .align_y(Alignment::Center)
+    .into()
+}
+
 /// Label-value row with the value right-aligned via a fill spacer.
 fn token_row<'a>(label: &'a str, value: String) -> Element<'a, RightPaneEvent> {
-    iced::widget::row![
-        text(label).size(16),
-        Space::new().width(Length::Fill),
-        text(value).size(16).font(MONO),
-    ]
-    .into()
+    with_trailing(text(label).size(16), text(value).size(16).font(MONO))
 }
 
 fn section_header(title: Cow<'static, str>) -> Element<'static, RightPaneEvent> {
     text(title).size(14).font(BOLD).into()
+}
+
+/// Small text button used for the Revert / Revert All actions.
+fn revert_button(label: &'static str, event: RightPaneEvent) -> Element<'static, RightPaneEvent> {
+    button(text(label).size(12))
+        .on_press(event)
+        .style(secondary_button)
+        .padding([2, 8])
+        .into()
 }
 
 /// Build the todo-list section, returning `None` when the list is empty.
@@ -141,14 +159,39 @@ pub(crate) fn right_pane<'a>(
             .modified_files
             .iter()
             .map(|p| {
-                container(SelectableText::new(p.as_str()).size(13).style(sel_primary))
-                    .padding([1, 0])
-                    .into()
+                let label = container(SelectableText::new(p.as_str()).size(13).style(sel_primary))
+                    .padding([1, 0]);
+                if tab.snapshot_files.contains(p) && !tab.running() {
+                    with_trailing(
+                        label,
+                        revert_button("Revert", RightPaneEvent::RevertFile(p.clone())),
+                    )
+                } else {
+                    label.into()
+                }
             })
             .collect();
         items.push(rule::horizontal(1).into());
-        items.push(section_header(Cow::Borrowed("Modified Files")));
+        let header = section_header(Cow::Borrowed("Modified Files"));
+        items.push(if tab.snapshot_files.is_empty() || tab.running() {
+            header
+        } else {
+            with_trailing(
+                header,
+                revert_button("Revert All", RightPaneEvent::RevertAll),
+            )
+        });
         items.push(column(files).spacing(2).into());
+        if let Some(err) = &tab.modified_files_error {
+            items.push(
+                container(with_trailing(
+                    text(err.as_str()).size(12).color(CRABOT_DANGER),
+                    revert_button("\u{00d7}", RightPaneEvent::DismissRevertError),
+                ))
+                .padding(padding::top(2))
+                .into(),
+            );
+        }
     }
 
     let col = column(items).spacing(8);
