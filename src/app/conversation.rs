@@ -333,8 +333,13 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
         .iter()
         .position(|t| t.session.id == entry.id)
     {
+        let tab = &mut app.conversation.session_tabs[existing];
+        tab.expanded_dialogs.clear();
+        tab.search.invalidate_offsets();
         if existing != app.conversation.viewing {
-            return switch_tab(app, app.conversation.session_tabs[existing].number);
+            let task = switch_tab(app, app.conversation.session_tabs[existing].number);
+            app.layout.focused = Some(FocusedTarget::SessionPicker);
+            return task;
         }
         return Task::none();
     }
