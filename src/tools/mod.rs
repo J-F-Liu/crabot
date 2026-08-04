@@ -12,7 +12,8 @@ mod task;
 pub mod todo;
 mod write;
 
-pub use task::TASK_MODES;
+pub use renew::normalize_renew_calls;
+pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
 
 use std::collections::HashSet;
 use std::io::Read;

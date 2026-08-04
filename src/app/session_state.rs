@@ -42,9 +42,9 @@ pub(crate) struct SessionState {
     /// Sender for the builtin ask tool — the UI calls `send()` to deliver
     /// the user's response to the streaming task's receiver.
     pub(crate) ask_sender: Option<mpsc::UnboundedSender<Result<String, String>>>,
-    /// Sender for the builtin task tool — the UI calls `send()` to deliver
-    /// a finished sub-agent session's final report to the waiting stream.
-    pub(crate) task_sender: Option<mpsc::UnboundedSender<Result<String, String>>>,
+    /// Sender for task-tool reports, tagged with the originating call_id so
+    /// parallel task calls can be correlated.
+    pub(crate) task_sender: Option<mpsc::UnboundedSender<(String, Result<String, String>)>>,
     /// Whether to auto-scroll the message view to the bottom during streaming.
     pub(crate) auto_scroll: Arc<AtomicBool>,
     /// Timestamp of the last auto-scroll snap, throttled to avoid jitter.
@@ -146,17 +146,8 @@ pub(crate) enum AskAction {
     OptionSelected(String),
 }
 
-/// Request emitted by the builtin task tool to spawn a sub-agent session.
-#[derive(Debug, Clone)]
-pub(crate) struct TaskRequest {
-    /// Short tab title; falls back to a prompt-derived title when absent.
-    pub title: Option<String>,
-    pub prompt: String,
-    /// Execution mode — selects the sub-agent's preamble (`{mode}.md`).
-    pub mode: Option<String>,
-    /// Difficulty tier — selects the sub-agent's configured model.
-    pub difficulty: Option<String>,
-}
+/// Task-tool spawn request — defined in the lib crate next to the tool.
+pub(crate) use crabot::tools::TaskRequest;
 
 /// Events emitted from the streaming runtime channel.
 #[derive(Debug, Clone)]

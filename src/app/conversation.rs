@@ -53,9 +53,10 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             return iced::exit();
         }
         ConversationEvent::NewSession => {
-            let selected_model = app.conversation.viewing().selected_model.clone();
-            let selected_preamble = app.conversation.viewing().selected_preamble.clone();
-            return new_session(app, selected_model, selected_preamble, String::new());
+            let tab = app.conversation.viewing();
+            let model = tab.selected_model.clone();
+            let preamble = tab.selected_preamble.clone();
+            return new_session(app, model, preamble, String::new());
         }
         ConversationEvent::LoadSession(entry) => return load_session(app, entry),
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
@@ -184,7 +185,8 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
     Task::none()
 }
 
-/// New session tab; `parent` is the spawning session's id, empty for user tabs.
+/// New session tab that becomes the viewing one (user/renew tabs);
+/// `parent` is the spawning session's id, empty for user tabs.
 fn new_session(
     app: &mut App,
     selected_model: String,
@@ -195,15 +197,30 @@ fn new_session(
     let mut tab = SessionTab::new(number, selected_model, selected_preamble);
     tab.session.parent = parent;
     app.conversation.session_tabs.push(tab);
-    app.conversation.viewing = app.conversation.session_tabs.len() - 1;
-
     app.layout.focused = None;
+
+    app.conversation.viewing = app.conversation.session_tabs.len() - 1;
 
     // Refresh workspace-dependent fields (files tree + AGENTS.md land async).
     let content_task = crate::app::prompt::refresh_workspace_content(app);
 
     // Fresh tab has no saved scroll offset — scroll to top.
     views::scroll_to_start().discard().chain(content_task)
+}
+
+/// Background session tab (task sub-agents) — Returns the new tab's position.
+fn new_background_session(
+    app: &mut App,
+    selected_model: String,
+    selected_preamble: String,
+    parent: String,
+) -> usize {
+    let number = app.conversation.next_tab_number();
+    let mut tab = SessionTab::new(number, selected_model, selected_preamble);
+    tab.session.parent = parent;
+    app.conversation.session_tabs.push(tab);
+    app.layout.focused = None;
+    app.conversation.session_tabs.len() - 1
 }
 
 /// Synchronise the left-pane workspace fields to match the session's workspace.
@@ -454,9 +471,7 @@ fn session_started_with_tree(tab: &SessionTab) -> bool {
 }
 
 /// Point the prompt workspace at `workspace` before spawning a successor
-/// session (renew/task). The new tab becomes the viewing tab, so without
-/// this a task fired from a background tab would run in the viewing tab's
-/// workspace instead of the origin session's.
+/// session — `start_dialog` derives the stream workspace from it.
 fn sync_spawn_workspace(app: &mut App, workspace: &Path) -> Task<Message> {
     if workspace.as_os_str().is_empty() || workspace == app.prompt.workspace.1 {
         Task::none()
@@ -465,16 +480,33 @@ fn sync_spawn_workspace(app: &mut App, workspace: &Path) -> Task<Message> {
     }
 }
 
-/// Send the task-tool result to the parent tab's waiting stream (if still open).
-fn deliver_task_report(app: &mut App, parent_number: usize, result: Result<String, String>) {
+/// Send the task-tool result, tagged with its call_id, to the parent tab's
+/// waiting stream (if still open).
+fn deliver_task_report(
+    app: &mut App,
+    parent_number: usize,
+    call_id: String,
+    result: Result<String, String>,
+) {
     if let Some(pos) = app.conversation.tab_pos(parent_number)
         && let Some(sender) = app.conversation.session_tabs[pos]
             .session_state
             .task_sender
             .as_ref()
     {
-        let _ = sender.send(result);
+        let _ = sender.send((call_id, result));
     }
+}
+
+/// Deliver a failure report for a task spawn and stop.
+fn fail_task_spawn(
+    app: &mut App,
+    number: usize,
+    call_id: String,
+    message: String,
+) -> Task<Message> {
+    deliver_task_report(app, number, call_id, Err(message));
+    Task::none()
 }
 
 /// Which tool triggered this successor spawn — each carries its own payload.
@@ -484,8 +516,9 @@ pub(crate) enum SpawnKind {
         mode: Option<WorkMode>,
     },
     Task {
-        preamble: Option<String>,
+        call_id: String,
         title: Option<String>,
+        preamble: Option<String>,
     },
 }
 
@@ -583,16 +616,21 @@ fn continue_renew_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
 
 // ── task tool (sub-agent) ─────────────────────────────────────────
 
-/// Handle a task-tool request: create a new session tab running the subtask
-/// with a mode-specific preamble and a difficulty-selected model, then deliver
-/// the sub-agent's final report back to the parent session on completion.
-///
-/// The workspace tree and mode preamble are read off the UI thread; the spawn
-/// itself happens in [`continue_task_spawn`] once the scan lands.
+/// Handle a task-tool request: spawn a sub-agent session tab with a mode
+/// preamble and difficulty-selected model, delivering its final report to the
+/// parent on completion. The workspace scan runs off the UI thread; the spawn
+/// itself happens in [`continue_task_spawn`].
 fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Task<Message> {
     let Some(pos) = app.conversation.tab_pos(number) else {
         return Task::none();
     };
+    let TaskRequest {
+        call_id,
+        title,
+        prompt,
+        mode,
+        difficulty,
+    } = request;
     // Resolve the parent tab's context (cheap — no filesystem access).
     let (parent_selected, parent_selected_preamble, parent_model, workspace, need_tree) = {
         let parent = &app.conversation.session_tabs[pos];
@@ -606,46 +644,40 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
     };
 
     // Difficulty → configured subtask model (fallback: the parent's model).
-    let difficulty = request.difficulty.as_deref().unwrap_or("medium");
+    let difficulty = difficulty.as_deref().unwrap_or("medium");
     let configured = app.settings.task_models.get_config(difficulty);
     let (selected_model, model) = if configured.is_empty() {
         // Empty config means "inherit the parent session's model".
         match parent_model {
             Some(cfg) => (parent_selected, cfg),
             None => {
-                deliver_task_report(
+                return fail_task_spawn(
                     app,
                     number,
-                    Err("No model available for the subtask.".into()),
+                    call_id.clone(),
+                    "No model available for the subtask.".into(),
                 );
-                return Task::none();
             }
         }
     } else {
         (app.find_model_label(configured), configured.clone())
     };
-    // Guard against a stale config whose provider/model no longer resolves —
-    // start_dialog would silently no-op and the parent would wait forever.
+    // Stale config would silently no-op `start_dialog` and strand the parent.
     if app.models.get_model_info(&model).is_none() {
-        deliver_task_report(
+        return fail_task_spawn(
             app,
             number,
-            Err(format!(
+            call_id,
+            format!(
                 "Subtask model is no longer resolvable: '{}' (provider '{}' / model '{}').",
                 selected_model, model.provider_id, model.model_id
-            )),
+            ),
         );
-        return Task::none();
     }
 
-    // The sub-agent inherits the parent's workspace — sync it before the new
-    // tab becomes viewing so the system prompt, tools, and session record all
-    // use the origin workspace even when the task fires from a background tab.
-    // The workspace tree and mode preamble are scanned off the UI thread.
+    // The sub-agent inherits the parent's workspace; the tree and mode
+    // preamble are scanned off the UI thread.
     let ws = workspace.clone();
-    let mode = request.mode.clone();
-    let prompt = request.prompt.clone();
-    let title = request.title.clone();
     Task::perform(
         async move {
             let tree = if need_tree {
@@ -655,12 +687,11 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
             } else {
                 None
             };
-            // Load the mode preamble and its picker name; only record the mode
-            // name when the file actually provided a preamble.
+            // Load the mode preamble; record the mode name only when a preamble file exists.
             let (preamble, preamble_name) = tokio::task::spawn_blocking(move || {
                 let name = mode.as_deref().map(str::to_ascii_lowercase);
                 let content = task_mode_preamble(name.as_deref());
-                let name_used = content.as_ref().and(name.as_deref()).map(str::to_string);
+                let name_used = name.filter(|_| content.is_some());
                 (content, name_used)
             })
             .await
@@ -677,7 +708,11 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
                     model,
                     workspace,
                     workspace_tree,
-                    kind: SpawnKind::Task { preamble, title },
+                    kind: SpawnKind::Task {
+                        call_id,
+                        title,
+                        preamble,
+                    },
                     prompt,
                 },
             )))
@@ -691,9 +726,13 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     let Some(parent_pos) = app.conversation.tab_pos(spawn.number) else {
         return Task::none();
     };
-    let (preamble, title) = match &spawn.kind {
-        SpawnKind::Task { preamble, title } => (preamble.clone(), title.clone()),
-        SpawnKind::Renew { .. } => (None, None),
+    let SpawnKind::Task {
+        call_id,
+        title,
+        preamble,
+    } = spawn.kind
+    else {
+        return Task::none();
     };
     let system_prompt = preamble.as_deref().map(|preamble| {
         app.prompt
@@ -702,19 +741,22 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
     let parent = &app.conversation.session_tabs[parent_pos];
     let parent_path = parent.task_path.clone();
-    let new_task = new_session(
+    let parent_id = parent.session.id.clone();
+    // Spawn in the background — the parent keeps the view; the new tab shows
+    // a running indicator and can be clicked to inspect.
+    let tab_pos = new_background_session(
         app,
         spawn.selected_model,
         spawn.selected_preamble,
-        parent.session.id.clone(),
+        parent_id,
     );
-    let tab_pos = app.conversation.viewing;
     let tab_model_label = app.find_model_label(&spawn.model);
     {
         let tab = &mut app.conversation.session_tabs[tab_pos];
         let mut task_path = parent_path.unwrap_or_else(|| vec![spawn.number]);
         task_path.push(tab.number);
         tab.task_path = Some(task_path);
+        tab.task_call_id = Some(call_id);
         tab.selected_model = tab_model_label;
     }
     let user_prompt = UserPrompt::new(None, spawn.prompt, spawn.workspace_tree);
@@ -725,7 +767,7 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
         tab.center_pane_title = title.clone();
         tab.session.title = title;
     }
-    workspace_task.chain(new_task).chain(launch_task)
+    workspace_task.chain(launch_task)
 }
 
 /// Load the mode-specific sub-agent preamble (`~/.crabot/preamble/{mode}.md`).
@@ -877,10 +919,10 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
         Task::none()
     };
 
-    // If this tab is a task-tool subtask that just terminated, deliver its
-    // final report to the parent session's waiting task tool.
+    // Task sub-agent that just terminated — deliver its final report to the parent.
     if let Some(parent) = app.conversation.session_tabs[pos].task_parent()
         && (finished || is_cancelled || task_error.is_some())
+        && let Some(call_id) = app.conversation.session_tabs[pos].task_call_id.take()
     {
         let result = if let Some(err) = task_error {
             Err(format!("Subtask failed: {err}"))
@@ -893,7 +935,7 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
                 ),
             )
         };
-        deliver_task_report(app, parent, result);
+        deliver_task_report(app, parent, call_id, result);
     }
 
     switch_task

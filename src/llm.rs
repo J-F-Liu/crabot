@@ -1,4 +1,5 @@
-use futures::{StreamExt, future::BoxFuture};
+use futures::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 use reqwest::StatusCode;
 
-use crate::app::session_state::{AskRequest, RetryInfo, SessionEvent, TaskRequest};
+use crate::app::session_state::{AskRequest, RetryInfo, SessionEvent};
 use crate::tools::{self, ToolRef};
 use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult, envelope_error};
 use crabot::model::ModelInfo;
@@ -208,6 +209,211 @@ async fn acquire_stream_with_retry(
     }
 }
 
+/// Tools that must run serially (interactive or state-modifying).
+fn is_serial_tool(name: &str) -> bool {
+    matches!(name, "ask" | "renew" | "write" | "edit" | "bash")
+}
+
+/// Look up a registered tool by name.
+fn find_tool(tools: &[ToolRef], name: &str) -> Option<ToolRef> {
+    tools.iter().find(|t| t.name() == name).cloned()
+}
+
+/// Lock a mutex, recovering from poisoning (a panicked holder).
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Execute a tool on a blocking thread; unknown tools report an error result.
+async fn exec_tool(
+    tool: Option<ToolRef>,
+    tc: &ToolCall,
+    workspace: std::path::PathBuf,
+    cancel_token: Arc<AtomicBool>,
+) -> Result<String, String> {
+    match tool {
+        Some(t) => {
+            let fn_arguments = tc.fn_arguments.clone();
+            tokio::task::spawn_blocking(move || {
+                t.execute(&fn_arguments, &workspace, cancel_token.as_ref())
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
+        }
+        None => Err(tools::unknown_tool_message(&tc.fn_name)),
+    }
+}
+
+/// Build genai `ToolResponse` and UI `ChatToolResult` from an execution result.
+fn build_tool_result(
+    tc: &ToolCall,
+    result: Result<String, String>,
+) -> (ToolResponse, ChatToolResult) {
+    let result_flat = match &result {
+        Ok(s) => s.clone(),
+        Err(e) => envelope_error(e),
+    };
+    let response = ToolResponse {
+        call_id: tc.call_id.clone(),
+        fn_name: Some(tc.fn_name.clone()),
+        content: result_flat,
+    };
+    let result = ChatToolResult {
+        name: tc.fn_name.clone(),
+        call_id: Some(tc.call_id.clone()),
+        args: tc.fn_arguments.clone(),
+        result,
+        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+    };
+    (response, result)
+}
+
+/// Shared state for tool execution.
+struct ExecutionCtx<'a> {
+    tools: &'a [ToolRef],
+    workspace: &'a std::path::Path,
+    cancel_token: &'a Arc<AtomicBool>,
+}
+
+/// Run a batch of parallel tool calls, emitting results in completion order.
+/// Task calls are emitted up front so all sub-agent tabs spawn before any waits;
+/// tagged reports route from `task_receiver` to their oneshot (genai matches by call_id).
+async fn run_parallel_batch(
+    batch: &mut Vec<&ToolCall>,
+    ctx: &ExecutionCtx<'_>,
+    task_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<(String, Result<String, String>)>,
+    tool_responses: &mut Vec<ToolResponse>,
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+) -> bool {
+    if batch.is_empty() {
+        return true;
+    }
+
+    // Fast path: a single non-task tool needs no parallel machinery.
+    if batch.len() == 1 && batch[0].fn_name != "task" {
+        let tc = batch.pop().unwrap();
+        let cancel = ctx.cancel_token.clone();
+        let tool = find_tool(ctx.tools, &tc.fn_name);
+        let workspace = ctx.workspace.to_path_buf();
+        let result = exec_tool(tool, tc, workspace, cancel).await;
+        let (response, result) = build_tool_result(tc, result);
+        tool_responses.push(response);
+        return on_event(SessionEvent::ToolResult(result)).await;
+    }
+
+    let mut futures = FuturesUnordered::new();
+    let mut task_waiters: HashMap<String, tokio::sync::oneshot::Sender<Result<String, String>>> =
+        HashMap::new();
+    for tc in batch.drain(..) {
+        let cancel = ctx.cancel_token.clone();
+
+        let future: BoxFuture<'static, (ToolResponse, ChatToolResult)> = if tc.fn_name == "task" {
+            let request = tools::task_request_from_call(&tc.call_id, &tc.fn_arguments);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if request.prompt.trim().is_empty() {
+                let _ = tx.send(Err(
+                    "Task called with an empty prompt — no subtask spawned.".into(),
+                ));
+            } else {
+                // Emit up front so every sub-agent tab spawns before any future waits.
+                if !on_event(SessionEvent::TaskRequest(request)).await {
+                    return false;
+                }
+                task_waiters.insert(tc.call_id.clone(), tx);
+            }
+            let tc = tc.clone();
+            Box::pin(async move {
+                let result = tokio::select! {
+                    result = rx => result.unwrap_or_else(|_| Err("Task response channel closed.".into())),
+                    _ = wait_cancelled(&cancel) => Err("Cancelled by user.".into()),
+                };
+                build_tool_result(&tc, result)
+            })
+        } else {
+            let tool = find_tool(ctx.tools, &tc.fn_name);
+            let workspace = ctx.workspace.to_path_buf();
+            let tc = tc.clone();
+            Box::pin(async move {
+                let result = exec_tool(tool, &tc, workspace, cancel).await;
+                build_tool_result(&tc, result)
+            })
+        };
+        futures.push(future);
+    }
+
+    // Tool futures finish on their own; task futures via the routed report below.
+    let mut receiver_open = true;
+    loop {
+        tokio::select! {
+            item = futures.next() => {
+                let Some((response, result)) = item else { break };
+                tool_responses.push(response);
+                if !on_event(SessionEvent::ToolResult(result)).await {
+                    return false;
+                }
+            }
+            report = task_receiver.recv(), if receiver_open => match report {
+                Some((id, result)) => {
+                    if let Some(waiter) = task_waiters.remove(&id) {
+                        let _ = waiter.send(result);
+                    }
+                }
+                // Channel closed — fail any task futures still waiting.
+                None => {
+                    receiver_open = false;
+                    task_waiters.clear();
+                }
+            },
+        }
+    }
+    true
+}
+
+/// Run one serial tool (ask/renew/write/edit/bash) and emit its result.
+/// Returns `false` when the stream must abort (ask channel closed).
+async fn run_serial_tool(
+    tc: &ToolCall,
+    ctx: &ExecutionCtx<'_>,
+    ask_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    renew_executed: &mut bool,
+    tool_responses: &mut Vec<ToolResponse>,
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+) -> bool {
+    let result = match tc.fn_name.as_str() {
+        "ask" => match handle_ask_tool(tc, ask_receiver, ctx.cancel_token, on_event).await {
+            Some(result) => result,
+            None => return false,
+        },
+        "renew" => {
+            let prompt = tc
+                .fn_arguments
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if prompt.is_empty() {
+                Err("Renew called with an empty prompt — no new session created.".into())
+            } else if !on_event(SessionEvent::RenewRequest(prompt.into())).await {
+                Err("Renew event channel closed.".into())
+            } else {
+                *renew_executed = true;
+                Ok("New session created with the provided prompt.".into())
+            }
+        }
+        _ => {
+            exec_tool(
+                find_tool(ctx.tools, &tc.fn_name),
+                tc,
+                ctx.workspace.to_path_buf(),
+                ctx.cancel_token.clone(),
+            )
+            .await
+        }
+    };
+    let (response, result) = build_tool_result(tc, result);
+    tool_responses.push(response);
+    on_event(SessionEvent::ToolResult(result)).await
+}
+
 /// Configuration for a send request to the LLM.
 pub struct SendConfig {
     pub model: ModelInfo,
@@ -219,8 +425,8 @@ pub struct SendConfig {
     pub injected_prompt: Arc<Mutex<Option<String>>>,
     /// Receiver for the builtin ask tool's user response.
     pub ask_receiver: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
-    /// Receiver for the builtin task tool's sub-agent report.
-    pub task_receiver: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    /// Receiver for task-tool reports, tagged with the originating call_id.
+    pub task_receiver: tokio::sync::mpsc::UnboundedReceiver<(String, Result<String, String>)>,
     pub user_agent: String,
     /// When set to `true`, in-progress tool execution is cancelled.
     pub cancel_token: Arc<AtomicBool>,
@@ -228,14 +434,10 @@ pub struct SendConfig {
     pub max_iterations: usize,
 }
 
-/// Stream an LLM interaction with tool-execution loop.
+/// Stream an LLM interaction with a tool-execution loop.
 ///
-/// Text and reasoning chunks are emitted immediately via the `on_event` callback.
-/// Tool calls are executed after the stream ends for that turn, and results
-/// are emitted. The loop continues until the LLM responds without tool calls.
-///
-/// The callback receives each [`Event`] and returns a future. If the
-/// future resolves to `false`, streaming stops early.
+/// Text/reasoning chunks and tool results are emitted via `on_event`; the loop
+/// repeats until the LLM responds without tool calls. A `false` return stops early.
 pub async fn send_stream(
     config: SendConfig,
     history: Vec<ChatMessage>,
@@ -287,7 +489,7 @@ pub async fn send_stream(
         chat_options = chat_options.with_max_tokens(model.max_tokens);
     }
 
-    // Set reasoning effort, When thinking is off, omit it entirely
+    // Set reasoning effort; omit it entirely when thinking is off.
     if model.thinking {
         let reasoning_effort = model
             .thinking_level
@@ -307,7 +509,7 @@ pub async fn send_stream(
         genai_messages: &mut Vec<ChatMessage>,
         on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
     ) -> Option<bool> {
-        let prompt = pending.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+        let prompt = lock(pending).take()?;
         let user_msg = ChatMessage::user(prompt.clone());
         chat_req.messages.push(user_msg.clone());
         genai_messages.push(user_msg);
@@ -318,6 +520,13 @@ pub async fn send_stream(
         }
         Some(true)
     }
+
+    // Execution context for the tool loop below (loop-invariant).
+    let exec_ctx = ExecutionCtx {
+        tools: &tools,
+        workspace: &workspace,
+        cancel_token: &cancel_token,
+    };
 
     for _ in 0..max_iterations {
         // Signal that we're connecting to the LLM.
@@ -414,7 +623,7 @@ pub async fn send_stream(
         // captured_content has full text + tool calls thanks to ChatOptions.
         let assistant_content =
             captured_content.unwrap_or_else(|| MessageContent::from_text(String::new()));
-        let tool_calls: Vec<ToolCall> = assistant_content
+        let mut tool_calls: Vec<ToolCall> = assistant_content
             .tool_calls()
             .into_iter()
             .cloned()
@@ -445,15 +654,17 @@ pub async fn send_stream(
             // Final assistant response — no more tool calls.
             finished = true;
             break;
+        } else if tool_calls.len() > 1
+            && let Err(message) = tools::normalize_renew_calls(&mut tool_calls)
+        {
+            on_event(SessionEvent::Error(message, genai_messages)).await;
+            return;
         }
 
-        // Signal tool execution state to the UI *before* we start
-        // executing so the status bar updates even when tools run
-        // synchronously on a worker thread.
+        // Signal tool execution before starting, so the status bar updates even for sync tools.
         on_event(SessionEvent::PhaseChange(DialogPhase::ToolExecuting)).await;
 
-        // Yield once so the iced event loop can pick up the state change
-        // and re-render before we proceed to tool execution.
+        // Yield so iced re-renders the state change before tool execution.
         tokio::task::yield_now().await;
 
         // Notify the UI of ALL pending tool calls at once
@@ -470,82 +681,57 @@ pub async fn send_stream(
             return;
         }
 
-        // Execute each tool call and record results.
-        // Unknown tools are reported back to the LLM as an error result
-        // rather than aborting the loop, giving the model a chance to recover.
+        // Parallel tools run in batches; serial tools (ask/renew/write/edit/bash) are barriers.
         let mut tool_responses: Vec<ToolResponse> = Vec::with_capacity(tool_calls.len());
         let mut renew_executed = false;
-        for tc in tool_calls {
-            // Resolve the tool on this thread so we don't have to clone the
-            // name into the blocking closure. Unknown tools short-circuit to
-            // an error result without spawning a task.
-            let result = match tools.iter().find(|t| t.name() == tc.fn_name).cloned() {
-                Some(_) if matches!(tc.fn_name.as_str(), "ask" | "task") => {
-                    // Interactive tools: ask/task are intercepted here and routed
-                    // to the UI, which answers through its mpsc channel.
-                    let handled = if tc.fn_name == "ask" {
-                        handle_ask_tool(&tc, &mut ask_receiver, &cancel_token, on_event).await
-                    } else {
-                        handle_task_tool(&tc, &mut task_receiver, &cancel_token, on_event).await
-                    };
-                    match handled {
-                        Some(result) => result,
-                        None => {
-                            on_event(SessionEvent::Cancelled(genai_messages)).await;
-                            return;
-                        }
-                    }
-                }
-                Some(_) if tc.fn_name == "renew" && !renew_executed => {
-                    let prompt = tc
-                        .fn_arguments
-                        .get("prompt")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    if prompt.is_empty() {
-                        Err("Renew called with an empty prompt — no new session created.".into())
-                    } else if !on_event(SessionEvent::RenewRequest(prompt)).await {
-                        Err("Renew event channel closed.".into())
-                    } else {
-                        renew_executed = true;
-                        Ok("New session created with the provided prompt.".into())
-                    }
-                }
-                Some(tool) => {
-                    // Run tool execution on a blocking thread so the async
-                    // task yields while the tool runs – this keeps the iced
-                    // UI responsive and lets the "Tool executing…" status be
-                    // painted.
-                    let fn_args = tc.fn_arguments.clone();
-                    let workspace = workspace.clone();
-                    let cancel = cancel_token.clone();
-                    tokio::task::spawn_blocking(move || {
-                        tool.execute(&fn_args, &workspace, cancel.as_ref())
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
-                }
-                None => Err(tools::unknown_tool_message(&tc.fn_name)),
-            };
+        let mut batch: Vec<&ToolCall> = Vec::new();
+        let mut ok = true;
 
-            // Flatten for genai's ToolResponse (genai expects plain String).
-            // Errors get a uniform "Error: " envelope so both the LLM and the
-            // session reload path can distinguish success from failure.
-            let result_flat = match result.clone() {
-                Ok(s) => s,
-                Err(e) => envelope_error(&e),
-            };
-            tool_responses.push(ToolResponse::from_tool_call(&tc, result_flat));
+        for tc in &tool_calls {
+            if !is_serial_tool(&tc.fn_name) {
+                batch.push(tc);
+                continue;
+            }
+            // Serial tools are barriers — run the pending parallel batch first.
+            ok = run_parallel_batch(
+                &mut batch,
+                &exec_ctx,
+                &mut task_receiver,
+                &mut tool_responses,
+                on_event,
+            )
+            .await;
+            if !ok {
+                break;
+            }
+            ok = run_serial_tool(
+                tc,
+                &exec_ctx,
+                &mut ask_receiver,
+                &mut renew_executed,
+                &mut tool_responses,
+                on_event,
+            )
+            .await;
+            if !ok || renew_executed {
+                break;
+            }
+        }
 
-            let tr = ChatToolResult {
-                name: tc.fn_name,
-                call_id: Some(tc.call_id),
-                args: tc.fn_arguments,
-                result,
-                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
-            };
-            on_event(SessionEvent::ToolResult(tr)).await;
+        // Drain any remaining parallel batch.
+        if ok {
+            ok = run_parallel_batch(
+                &mut batch,
+                &exec_ctx,
+                &mut task_receiver,
+                &mut tool_responses,
+                on_event,
+            )
+            .await;
+        }
+        if !ok {
+            on_event(SessionEvent::Cancelled(genai_messages)).await;
+            return;
         }
 
         // Append tool responses to the request and genai history.
@@ -558,7 +744,7 @@ pub async fn send_stream(
             return;
         }
 
-        // Check cancellation after executing tool calls to keep tool results match in history.
+        // Check cancellation after tool calls so to keep tool results match in history.
         if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
             on_event(SessionEvent::Cancelled(genai_messages)).await;
             return;
@@ -676,49 +862,6 @@ async fn wait_for_result(
             _ = wait_cancelled(cancel_token) => Err("Cancelled by user.".into()),
         }
     })
-}
-
-/// Handle a builtin task-tool call: parse arguments, emit the request to the
-/// UI (which spawns a sub-agent session tab), then wait for the sub-agent's
-/// final report or cancellation. There is no timeout — subtasks may run for
-/// many minutes; the Stop button remains the escape hatch.
-async fn handle_task_tool(
-    tc: &ToolCall,
-    task_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
-    cancel_token: &AtomicBool,
-    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-) -> Option<Result<String, String>> {
-    let prompt = tc
-        .fn_arguments
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    if prompt.trim().is_empty() {
-        return Some(Err(
-            "Task called with an empty prompt — no subtask spawned.".into(),
-        ));
-    }
-    let arg = |key: &str| {
-        tc.fn_arguments
-            .get(key)
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-    };
-    let request = TaskRequest {
-        title: arg("title"),
-        prompt,
-        mode: arg("mode"),
-        difficulty: arg("difficulty"),
-    };
-    wait_for_result(
-        task_receiver,
-        on_event,
-        cancel_token,
-        SessionEvent::TaskRequest(request),
-        None,
-    )
-    .await
 }
 
 /// Handle a builtin ask-tool call: parse arguments, emit the question to

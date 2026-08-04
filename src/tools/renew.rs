@@ -1,9 +1,26 @@
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
+use genai::chat::ToolCall;
 use serde_json::{Value, json};
 
 use super::Tool;
+
+/// Renew ends the session: at most one call per turn, moved to the end so the
+/// turn's other tools run first.
+pub fn normalize_renew_calls(calls: &mut Vec<ToolCall>) -> Result<(), String> {
+    let (mut renews, others): (Vec<_>, Vec<_>) =
+        calls.drain(..).partition(|tc| tc.fn_name == "renew");
+    if renews.len() > 1 {
+        return Err(format!(
+            "Multiple renew calls in one turn ({}) — only one is allowed.",
+            renews.len()
+        ));
+    }
+    *calls = others;
+    calls.append(&mut renews);
+    Ok(())
+}
 
 /// Triggers creation of a new session when the context window is nearly full.
 /// The prompt string describes the remaining task so the new session can continue.
@@ -19,7 +36,7 @@ impl Tool for RenewTool {
     }
 
     fn instruction(&self) -> &str {
-        "When user says that context fill ratio is near its limit and the current task cannot be completed soon, call the renew tool. If a todo list exists and is outdated, call todo to update items status along with the renew call."
+        "When user says that context fill ratio is near its limit and the current task cannot be completed soon, call the renew tool. If a todo list exists and is outdated, call todo to update items status along with the renew call. renew can only be called at most once."
     }
 
     fn schema(&self) -> Value {

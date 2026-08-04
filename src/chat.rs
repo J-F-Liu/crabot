@@ -176,18 +176,25 @@ impl Dialog {
     /// Append a completed tool result to the in-progress tool group.
     pub fn push_tool_result(&mut self, tr: ToolResult) {
         let n = self.turns.len();
-        if n >= 2 {
-            if let TurnBody::Tool(trs) = &mut self.turns[n - 2].body {
-                trs.push(tr);
-            }
-            if let TurnBody::Temp(calls) = &mut self.turns[n - 1].body {
-                if !calls.is_empty() {
-                    calls.remove(0);
-                }
-                if calls.is_empty() {
-                    self.turns.pop();
-                }
-            }
+        if n < 2 {
+            return;
+        }
+        // Parallel tools finish out of order — remove the matching pending call (FIFO fallback).
+        let pos = match &self.turns[n - 1].body {
+            TurnBody::Temp(calls) => calls.iter().position(|c| c.call_id == tr.call_id),
+            _ => None,
+        };
+        if let TurnBody::Tool(trs) = &mut self.turns[n - 2].body {
+            trs.push(tr);
+        }
+        let TurnBody::Temp(calls) = &mut self.turns[n - 1].body else {
+            return;
+        };
+        if !calls.is_empty() {
+            calls.remove(pos.unwrap_or(0));
+        }
+        if calls.is_empty() {
+            self.turns.pop();
         }
     }
 }

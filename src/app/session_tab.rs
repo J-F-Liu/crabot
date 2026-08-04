@@ -50,6 +50,8 @@ pub(crate) struct SessionTab {
     /// subtask of tab 1); `None` → plain "Session N" for user-created tabs.
     /// Stored as a full path so the label survives the parent tab closing.
     pub(crate) task_path: Option<Vec<usize>>,
+    /// Task-tool call_id this tab was spawned for — tags the final report to the parent.
+    pub(crate) task_call_id: Option<String>,
 }
 
 impl SessionTab {
@@ -72,6 +74,7 @@ impl SessionTab {
             selected_preamble,
             end_status: None,
             task_path: None,
+            task_call_id: None,
         }
     }
 
@@ -104,6 +107,7 @@ impl SessionTab {
             selected_preamble,
             end_status: None,
             task_path: None,
+            task_call_id: None,
         }
     }
 
