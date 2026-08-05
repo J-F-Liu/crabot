@@ -72,6 +72,9 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"
 linkify = "0.11.0"
+bashkit = { version = "=0.15.0", default-features = false, features = [
+    "realfs",
+] }
 
 [build-dependencies]
 winresource = "0.1.31"

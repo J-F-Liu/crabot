@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, tool_limits, wait_with_timeout};
+use super::{Tool, WaitError, arg_str, tool_limits, wait_with_timeout};
 
 pub struct BashTool;
 
@@ -65,33 +65,34 @@ pub(super) fn execute(
         .unwrap_or(limits.command_timeout_ms);
     let timeout = Duration::from_millis(timeout_ms);
 
-    // Create unnamed pipe pairs for stdout and stderr.
+    // Prefer bashkit's in-process interpreter; fall back to `bash -c` for
+    // scripts it cannot faithfully execute.
+    match super::bash_kit::collect_external_names(command) {
+        Ok(names) => super::bash_kit::execute(command, workspace, timeout, cancel, names),
+        Err(()) => execute_real_bash(command, workspace, timeout, cancel),
+    }
+}
+
+/// Fallback: run the command through a real `bash -c` process.
+fn execute_real_bash(
+    command: &str,
+    workspace: &Path,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
     let (stdout_tx, stdout_rx) = super::create_pipe_pair("stdout")?;
     let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
 
     let mut cmd = std::process::Command::new("bash");
-    // Don't inherit rustup's RUST_RECURSION_COUNT: once the value exceeds its internal max (20),
-    // every rustup proxy (rustc/cargo/... are all shims) abort with "infinite recursion".
+    // Don't inherit RUST_RECURSION_COUNT: rustup proxies abort past their counter max.
     cmd.env_remove("RUST_RECURSION_COUNT");
     cmd.arg("-c")
         .arg(command)
         .current_dir(workspace)
-        .stdout(super::sender_to_stdio(stdout_tx))
-        .stderr(super::sender_to_stdio(stderr_tx));
+        .stdout(super::pipe_to_stdio(stdout_tx))
+        .stderr(super::pipe_to_stdio(stderr_tx));
 
-    // Make the child the leader of a new process group so that, on timeout,
-    // we can kill the entire group (bash + any grandchildren it spawned)
-    // instead of just the shell itself.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+    super::detach_child(&mut cmd);
 
     let child = cmd
         .spawn()
@@ -102,9 +103,11 @@ pub(super) fn execute(
         Some(stdout_rx),
         Some(stderr_rx),
         timeout,
+        timeout,
         true, // bash runs in its own process group → kill the whole group
         cancel,
-    )?;
+    )
+    .map_err(WaitError::into_message)?;
 
     Ok(super::format_command_output(&output))
 }

@@ -165,8 +165,8 @@ impl Tool for CustomTool {
         let mut cmd = Command::new(exe);
         cmd.args(args)
             .current_dir(workspace)
-            .stdout(super::sender_to_stdio(stdout_tx))
-            .stderr(super::sender_to_stdio(stderr_tx));
+            .stdout(super::pipe_to_stdio(stdout_tx))
+            .stderr(super::pipe_to_stdio(stderr_tx));
         // Prevent a visible console window from flashing on Windows.
         #[cfg(windows)]
         {
@@ -177,15 +177,17 @@ impl Tool for CustomTool {
             .spawn()
             .map_err(|e| format!("Failed to execute custom tool '{}': {e}", self.name))?;
 
+        let timeout = std::time::Duration::from_millis(super::tool_limits().command_timeout_ms);
         let output = super::wait_with_timeout(
             child,
             Some(stdout_rx),
             Some(stderr_rx),
-            std::time::Duration::from_millis(super::tool_limits().command_timeout_ms),
+            timeout,
+            timeout,
             false, // custom tools don't run in their own process group
             cancel,
         )
-        .map_err(|e| format!("Custom tool '{}': {e}", self.name))?;
+        .map_err(|e| format!("Custom tool '{}': {}", self.name, e.into_message()))?;
 
         Ok(super::format_command_output(&output))
     }
