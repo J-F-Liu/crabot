@@ -2,7 +2,7 @@ mod ask;
 mod bash;
 pub mod custom;
 pub mod edit;
-mod fetch;
+pub mod fetch;
 mod find;
 pub mod mcp;
 mod read;
