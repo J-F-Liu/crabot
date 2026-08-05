@@ -15,6 +15,7 @@ mod write;
 pub use renew::normalize_renew_calls;
 pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
 
+use crate::BoundedCapture;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
@@ -802,20 +803,18 @@ fn set_recver_nonblocking(recver: &unnamed_pipe::Recver) -> Result<(), String> {
     }
 }
 
+// ── Bounded output capture ─────────────────────────────────────────
+
 /// Wait for a child process to finish, with a hard timeout.
 ///
-/// The pipe receivers (`stdout`, `stderr`) are created with the `interprocess`
-/// crate and switched to non-blocking mode so that they can be drained directly
-/// in the polling loop — no reader threads are spawned. This avoids the
-/// thread-leak problem where a surviving grandchild keeps a pipe write-end open
-/// and blocks a detached reader thread forever.
+/// Pipes are drained in non-blocking polling mode (no reader threads), so a
+/// surviving grandchild holding a pipe open cannot leak a thread. Output is
+/// captured with a bounded head/tail window (`tool_limits().max_output_bytes`
+/// total, split evenly), so runaway output (e.g. `yes`) cannot exhaust memory.
 ///
-/// On timeout the process — and, if `kill_tree` is set, its whole group/tree —
-/// is killed and reaped *without* blocking on pipe EOF.
-///
-/// `kill_tree` should be `true` only when the child was started as a
-/// process-group leader (e.g. bash with `process_group(0)` on Unix). Otherwise
-/// `kill -9 -pid` would target an unrelated process group.
+/// On timeout the process — and its whole tree if `kill_tree` — is killed and
+/// reaped without blocking on pipe EOF. `kill_tree` must be `true` only when
+/// the child was started as a process-group leader.
 pub(crate) fn wait_with_timeout(
     mut child: std::process::Child,
     mut stdout: Option<unnamed_pipe::Recver>,
@@ -826,9 +825,7 @@ pub(crate) fn wait_with_timeout(
 ) -> Result<std::process::Output, String> {
     let pid = child.id();
 
-    // Switch the pipe receivers to non-blocking mode so we can drain them in
-    // the polling loop without spawning reader threads. A blocking pipe would
-    // deadlock the loop, so propagate any failure.
+    // Non-blocking pipes let the polling loop drain them without reader threads.
     if let Some(ref r) = stdout {
         set_recver_nonblocking(r)?;
     }
@@ -837,16 +834,16 @@ pub(crate) fn wait_with_timeout(
     }
 
     let deadline = Instant::now() + timeout;
-    let mut stdout_buf = Vec::new();
-    let mut stderr_buf = Vec::new();
+    // Half the output budget per stream end. Round up so an odd budget still holds its full size.
+    let keep = tool_limits().max_output_bytes.div_ceil(2);
+    let mut stdout_cap = BoundedCapture::new(keep);
+    let mut stderr_cap = BoundedCapture::new(keep);
     let mut tmp = [0u8; 8192];
 
-    // Poll until the process exits, the deadline passes, or cancellation is
-    // requested. Drain pipe output along the way to prevent the child from
-    // blocking on a full pipe buffer.
+    // Drain pipes while polling, or the child blocks on a full pipe buffer.
     let status = loop {
-        drain_pipe(stdout.as_mut(), &mut stdout_buf, &mut tmp);
-        drain_pipe(stderr.as_mut(), &mut stderr_buf, &mut tmp);
+        drain_pipe(stdout.as_mut(), &mut stdout_cap, &mut tmp);
+        drain_pipe(stderr.as_mut(), &mut stderr_cap, &mut tmp);
 
         // Check for user cancellation before trying the child.
         if cancel.load(Ordering::Relaxed) {
@@ -854,8 +851,8 @@ pub(crate) fn wait_with_timeout(
                 &mut child,
                 pid,
                 kill_tree,
-                &stdout_buf,
-                &stderr_buf,
+                &stdout_cap,
+                &stderr_cap,
                 "Cancelled by user",
             ));
         }
@@ -868,8 +865,8 @@ pub(crate) fn wait_with_timeout(
                         &mut child,
                         pid,
                         kill_tree,
-                        &stdout_buf,
-                        &stderr_buf,
+                        &stdout_cap,
+                        &stderr_cap,
                         &format!("Command timed out after {}ms", timeout.as_millis()),
                     ));
                 }
@@ -883,14 +880,12 @@ pub(crate) fn wait_with_timeout(
         }
     };
 
-    // Final drain: the process has exited, so the pipe write-ends should be
-    // closed (unless a grandchild inherited them). Give the pipes up to 2
-    // seconds to reach EOF; if a grandchild still holds them open, return
-    // whatever output was collected so far.
+    // The process exited, but a grandchild may still hold the write-ends
+    // open; drain for up to 2s and return whatever was collected.
     let drain_deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let stdout_done = drain_pipe(stdout.as_mut(), &mut stdout_buf, &mut tmp);
-        let stderr_done = drain_pipe(stderr.as_mut(), &mut stderr_buf, &mut tmp);
+        let stdout_done = drain_pipe(stdout.as_mut(), &mut stdout_cap, &mut tmp);
+        let stderr_done = drain_pipe(stderr.as_mut(), &mut stderr_cap, &mut tmp);
         if stdout_done && stderr_done {
             break;
         }
@@ -902,19 +897,16 @@ pub(crate) fn wait_with_timeout(
 
     Ok(std::process::Output {
         status,
-        stdout: stdout_buf,
-        stderr: stderr_buf,
+        stdout: stdout_cap.into_bytes(),
+        stderr: stderr_cap.into_bytes(),
     })
 }
 
-/// Read all currently-available bytes from `reader` into `buf`.
-///
-/// Returns `true` if the pipe has reached EOF (or there is no reader), `false`
-/// if it is still open but has no data available right now (non-blocking
-/// `WouldBlock`).
+/// Drain all currently-available bytes from `reader` into `cap`. Returns
+/// `true` on EOF (or no reader), `false` on `WouldBlock`.
 fn drain_pipe(
     reader: Option<&mut unnamed_pipe::Recver>,
-    buf: &mut Vec<u8>,
+    cap: &mut BoundedCapture,
     tmp: &mut [u8],
 ) -> bool {
     let Some(reader) = reader else {
@@ -923,21 +915,19 @@ fn drain_pipe(
     loop {
         match reader.read(tmp) {
             Ok(0) => return true, // EOF — write end closed
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Ok(n) => cap.push(&tmp[..n]),
             Err(ref e) if is_would_block(e) => return false,
             Err(_) => return true, // treat unexpected errors as EOF
         }
     }
 }
 
-/// Check whether an I/O error means "no data available right now" in
-/// non-blocking mode.
+/// True if the error means "no data available right now" in non-blocking mode.
 fn is_would_block(e: &std::io::Error) -> bool {
     if e.kind() == std::io::ErrorKind::WouldBlock {
         return true;
     }
-    // On Windows, `PIPE_NOWAIT` mode causes `ReadFile` to fail with
-    // `ERROR_NO_DATA` when no data is available yet.
+    // Windows `PIPE_NOWAIT` pipes report `ERROR_NO_DATA` when empty.
     #[cfg(windows)]
     if e.raw_os_error() == Some(win32::ERROR_NO_DATA) {
         return true;
@@ -946,25 +936,34 @@ fn is_would_block(e: &std::io::Error) -> bool {
 }
 
 /// Append partial stdout/stderr content to an error message.
-fn append_partial_output(msg: &mut String, stdout: &[u8], stderr: &[u8]) {
-    if !stdout.is_empty() {
-        msg.push_str("\n--- partial stdout ---\n");
-        msg.push_str(&String::from_utf8_lossy(stdout));
+fn append_partial_output(msg: &mut String, stdout: &BoundedCapture, stderr: &BoundedCapture) {
+    append_stream(msg, "stdout", stdout);
+    append_stream(msg, "stderr", stderr);
+}
+
+fn append_stream(msg: &mut String, name: &str, cap: &BoundedCapture) {
+    if cap.total() == 0 {
+        return;
     }
-    if !stderr.is_empty() {
-        msg.push_str("\n--- partial stderr ---\n");
-        msg.push_str(&String::from_utf8_lossy(stderr));
+    msg.push_str(&format!("\n--- partial {name} ---\n"));
+    msg.push_str(&String::from_utf8_lossy(&cap.materialize()));
+    let skipped = cap.skipped();
+    if skipped > 0 {
+        msg.push_str(&format!(
+            "\n\n... [{skipped} bytes truncated ({} total)] ...\n",
+            cap.total()
+        ));
     }
 }
 
-/// Kill a child process (optionally its whole tree), reap it, and build an
-/// error message with the given reason and any partial output collected.
+/// Kill and reap the child (its whole tree if `kill_tree`) and build an error
+/// message with the reason and any partial output.
 fn kill_and_error(
     child: &mut std::process::Child,
     pid: u32,
     kill_tree: bool,
-    stdout: &[u8],
-    stderr: &[u8],
+    stdout: &BoundedCapture,
+    stderr: &BoundedCapture,
     reason: &str,
 ) -> String {
     if kill_tree {
@@ -992,7 +991,6 @@ mod win32 {
 
     pub(crate) const PIPE_NOWAIT: u32 = 0x0000_0001;
 
-    /// `ERROR_NO_DATA` (232) — returned by `ReadFile` on a `PIPE_NOWAIT` pipe
-    /// when no data is currently available.
+    /// `ReadFile` on a `PIPE_NOWAIT` pipe returns this when no data is available.
     pub(crate) const ERROR_NO_DATA: i32 = 232;
 }

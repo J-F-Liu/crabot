@@ -70,6 +70,9 @@ pub(super) fn execute(
     let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
 
     let mut cmd = std::process::Command::new("bash");
+    // Don't inherit rustup's RUST_RECURSION_COUNT: once the value exceeds its internal max (20),
+    // every rustup proxy (rustc/cargo/... are all shims) abort with "infinite recursion".
+    cmd.env_remove("RUST_RECURSION_COUNT");
     cmd.arg("-c")
         .arg(command)
         .current_dir(workspace)

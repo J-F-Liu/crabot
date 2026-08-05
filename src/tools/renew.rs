@@ -36,7 +36,7 @@ impl Tool for RenewTool {
     }
 
     fn instruction(&self) -> &str {
-        "When user says that context fill ratio is near its limit and the current task cannot be completed soon, call the renew tool. If a todo list exists and is outdated, call todo to update items status along with the renew call. renew can only be called at most once."
+        "When user says that context fill ratio is near its limit and the current task cannot be completed soon, call the renew tool. If todo was called and items status is outdated, call todo to update status along with the renew call. renew can only be called at most once."
     }
 
     fn schema(&self) -> Value {
