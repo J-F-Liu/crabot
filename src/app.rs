@@ -12,9 +12,9 @@ use iced::widget::{column, container, row, text_editor};
 use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
 
 use crabot::model::{self, ModelConfig, ModelList};
+use crabot::setup;
 use crabot::tools;
 use crabot::user::{UserPrompt, WorkMode};
-use crabot::{setup, workspace};
 use prompt::{FilepathEntry, TOOLS, WORKSPACE_TREE};
 
 use crate::views::{
@@ -609,8 +609,6 @@ impl App {
         let rules_options = crate::views::build_md_file_options("rules");
 
         let workspace_path = saved.workspace.clone();
-        let files_tree = workspace::build_files_tree(&workspace_path);
-        let (agents_md_exists, agents_md_content) = prompt::load_agents_md(&workspace_path);
         let enabled_mcp_servers: HashSet<_> = saved
             .mcp_servers
             .iter()
@@ -624,11 +622,8 @@ impl App {
             tool_list_state: ToolListState::default(),
         };
         let tools_summary = tools.summary();
-        let files_content = text_editor::Content::with_text(&files_tree);
-        let tools_content = text_editor::Content::with_text(&tools_summary);
 
         let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
-
         let update_available = saved
             .last_update_version
             .as_ref()
@@ -652,22 +647,23 @@ impl App {
         let prompt = PromptWorkspaceState {
             preamble_enabled: saved.preamble_enabled,
             rules_enabled: saved.rules_enabled,
-            workspace: (saved.workspace_enabled, workspace_path),
-            agents_md: (saved.agents_md_enabled, agents_md_content),
+            workspace: (saved.workspace_enabled, workspace_path.clone()),
+            agents_md: (saved.agents_md_enabled, String::new()),
             date: (saved.date_enabled, date_str),
             preamble_options,
             rules_options,
             workspace_options,
-            agents_md_exists,
+            agents_md_exists: false,
+            // Populated asynchronously via WorkspaceContentReady when the scan lands.
             files: ExpandableEditor {
                 expanded: false,
                 enabled: true,
-                content: files_content,
+                content: text_editor::Content::new(),
             },
             tools: ExpandableEditor {
                 expanded: false,
                 enabled: tools_enabled,
-                content: tools_content,
+                content: text_editor::Content::with_text(&tools_summary),
             },
             user_prompt: TextArea::new(),
             workmode: WorkMode::default_mode(),
@@ -703,7 +699,8 @@ impl App {
                 download_state: crate::views::update::UpdateDownloadState::Idle,
             },
         };
-        let session_task = conversation::refresh_session_list(app.prompt.workspace.1.clone());
+        let session_task = conversation::refresh_session_list(workspace_path.clone());
+        let workspace_task = prompt::scan_workspace_content(workspace_path, None);
         let discover_task = mcp_list
             .servers
             .into_iter()
@@ -723,8 +720,11 @@ impl App {
             } else {
                 Task::none()
             };
-        // Run session refresh, MCP discovery, and version check in parallel.
-        (app, Task::batch([session_task, discover_task, update_task]))
+        // Run workspace scan, session refresh, MCP discovery, and version check in parallel.
+        (
+            app,
+            Task::batch([session_task, workspace_task, discover_task, update_task]),
+        )
     }
 
     /// Rebuild the tools summary and refresh all UI fields that depend on it.

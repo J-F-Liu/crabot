@@ -1238,6 +1238,9 @@ pub(crate) fn start_dialog(
 
 /// Refresh the session list dropdown entries from disk.
 pub(crate) fn refresh_session_list(workspace: PathBuf) -> Task<Message> {
+    if workspace.as_os_str().is_empty() {
+        return Task::none();
+    }
     Task::perform(
         async move {
             let path = workspace.clone();
