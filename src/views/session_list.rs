@@ -4,7 +4,6 @@ use iced::{
 };
 
 use serde::Deserialize;
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use crate::ConversationEvent;
@@ -140,10 +139,11 @@ pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String
         .into_iter()
         .filter_map(|path| {
             let meta = read_meta(&path)?;
+            let year_month = crabot::session::year_month_from_id(&meta.id);
             Some(SessionEntry {
                 id: meta.id,
                 title: meta.title,
-                year_month: crabot::session::year_month_from_id(&meta.id),
+                year_month,
                 path,
                 is_header: false,
             })

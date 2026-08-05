@@ -1,13 +1,13 @@
 [package]
 name = "crabot"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 description = "A smart and powerful coding agent with native GUI."
 license = "MIT"
 repository = "https://github.com/J-F-Liu/crabot"
 
 [profile.release]
-opt-level = "s"
+opt-level = 3
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
