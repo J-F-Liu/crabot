@@ -360,24 +360,24 @@ pub fn vfs_cwd_to_host(
     ))
 }
 
-/// Host filesystem root backing the VFS root overlay: `/` on Unix; the workspace's
-/// drive root on Windows so the whole drive is reachable.
+/// Host filesystem root backing the VFS root overlay: `/` on Unix.
+#[cfg(unix)]
+fn host_filesystem_root(_workspace: &Path) -> PathBuf {
+    PathBuf::from("/")
+}
+
+/// Host filesystem root backing the VFS root overlay: the workspace's drive
+/// root on Windows so the whole drive is reachable.
+#[cfg(windows)]
 fn host_filesystem_root(workspace: &Path) -> PathBuf {
-    #[cfg(unix)]
-    {
-        PathBuf::from("/")
-    }
-    #[cfg(windows)]
-    {
-        for comp in workspace.components() {
-            if let Component::Prefix(prefix) = comp {
-                let mut root = PathBuf::from(prefix.as_os_str());
-                root.push("\\");
-                return root;
-            }
+    for comp in workspace.components() {
+        if let Component::Prefix(prefix) = comp {
+            let mut root = PathBuf::from(prefix.as_os_str());
+            root.push("\\");
+            return root;
         }
-        PathBuf::from("\\")
     }
+    PathBuf::from("\\")
 }
 
 /// A real host directory mounted into the VFS.

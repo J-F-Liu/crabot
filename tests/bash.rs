@@ -38,6 +38,7 @@ impl Drop for TempDir {
 
 /// Normalize Git Bash's POSIX-style PATH to Windows form (once per process) so
 /// children like `bash`, `cargo`, and `git` resolve under `CreateProcess`.
+#[cfg(windows)]
 fn fix_test_path() {
     use std::sync::OnceLock;
     static FIXED: OnceLock<()> = OnceLock::new();
@@ -75,6 +76,10 @@ fn fix_test_path() {
         }
     });
 }
+
+/// No-op on non-Windows: PATH is already in the correct format.
+#[cfg(not(windows))]
+fn fix_test_path() {}
 
 /// The crabot repository root (used as the test workspace where git exists).
 fn crabot_workspace() -> PathBuf {

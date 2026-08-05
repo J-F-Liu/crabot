@@ -73,6 +73,7 @@ fn resolve_relative_existing() {
 #[test]
 fn resolve_relative_with_dot_dot() {
     let tmp = TempDir::new("dotdot").unwrap();
+    tmp.mkdir("sub").unwrap();
     let f = tmp.mkfile("target.txt").unwrap();
     // go into sub/, then come back with ..
     let result = resolve_path("sub/../target.txt", &tmp.path);

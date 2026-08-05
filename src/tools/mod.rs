@@ -862,13 +862,19 @@ pub(crate) fn set_sender_nonblocking(sender: &unnamed_pipe::Sender) -> Result<()
 
 /// Prevent a pipe sender's handle from being inherited by spawned children.
 ///
-/// Windows-only: `CreateProcess` passes every inheritable handle to the child, and
-/// a child holding the write end of its own stdin pipe never sees EOF. Unix:
-/// `O_CLOEXEC` already prevents inheritance.
+/// On both platforms a child holding the write end of its own stdin pipe would
+/// never see EOF, so we explicitly mark the sender end non-inheritable.
 pub(crate) fn set_sender_noninheritable(sender: &unnamed_pipe::Sender) -> Result<(), String> {
     #[cfg(unix)]
     {
-        let _ = sender;
+        use std::os::unix::io::AsRawFd;
+        let fd = sender.as_raw_fd();
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+            return Err(format!(
+                "Failed to set FD_CLOEXEC: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
         Ok(())
     }
     #[cfg(windows)]

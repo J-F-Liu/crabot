@@ -1102,6 +1102,7 @@ dependencies = [
  "include_dir",
  "indexmap 2.14.0",
  "interprocess",
+ "libc",
  "linkify",
  "memchr",
  "open",

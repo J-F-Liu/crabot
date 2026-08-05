@@ -76,5 +76,8 @@ bashkit = { version = "=0.15.0", default-features = false, features = [
     "realfs",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [build-dependencies]
 winresource = "0.1.31"
