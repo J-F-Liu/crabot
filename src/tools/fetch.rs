@@ -52,7 +52,7 @@ impl Tool for FetchTool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Format {
+pub enum Format {
     Markdown,
     Text,
     Html,
@@ -60,7 +60,7 @@ enum Format {
 
 /// Content classification derived from the response's Content-Type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContentKind {
+pub enum ContentKind {
     Html,
     /// JSON, plain text, Markdown, XML — returned verbatim.
     Text,
@@ -175,7 +175,7 @@ fn client() -> Result<&'static reqwest::Client, String> {
 // ── body helpers ───────────────────────────────────────────────────
 
 /// Truncate `s` to at most `max_bytes` bytes on a UTF-8 boundary.
-fn truncate_body(s: String, max_bytes: usize) -> String {
+pub fn truncate_body(s: String, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s;
     }
@@ -189,12 +189,12 @@ fn truncate_body(s: String, max_bytes: usize) -> String {
 }
 
 /// Extract the bare MIME type from a Content-Type header value.
-fn mime_type(content_type: &str) -> &str {
+pub fn mime_type(content_type: &str) -> &str {
     content_type.split(';').next().unwrap_or("").trim()
 }
 
 /// Classify the response content; sniff the body when the header is missing.
-fn classify(mime: &str, body: &str) -> ContentKind {
+pub fn classify(mime: &str, body: &str) -> ContentKind {
     if mime.is_empty() {
         return if looks_like_html(body) {
             ContentKind::Html
@@ -222,7 +222,7 @@ fn is_textual_mime(mime: &str) -> bool {
 }
 
 /// Cheap sniff for HTML when the server omits Content-Type.
-fn looks_like_html(body: &str) -> bool {
+pub fn looks_like_html(body: &str) -> bool {
     let mut rest = body.trim_start();
     // Skip leading HTML comments like `<!-- license banner -->`.
     while let Some(after) = rest.strip_prefix("<!--") {
@@ -246,7 +246,7 @@ fn starts_with_ignore_ascii_case(s: &str, prefix: &str) -> bool {
 /// Render an HTML page in the requested format: raw markup, extracted plain
 /// text, or cleaned Markdown (readability extraction with a whole-page
 /// fallback).
-fn convert_html(html: &str, url: &str, format: Format) -> Result<String, String> {
+pub fn convert_html(html: &str, url: &str, format: Format) -> Result<String, String> {
     if format == Format::Html {
         return Ok(html.to_string());
     }
