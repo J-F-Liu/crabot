@@ -4,7 +4,7 @@ use iced::{
 };
 
 use serde::Deserialize;
-use std::io::BufReader;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use crate::ConversationEvent;
@@ -110,13 +110,26 @@ pub(crate) fn session_view<'a>(
     .into()
 }
 
-/// Only the fields needed for the dropdown; serde skips the rest
-/// (notably the large `history`) without allocating.
+/// Only the fields needed for the dropdown; serde skips the rest.
+/// For `.jsonl` only the first line is parsed; for legacy `.json` the whole file.
 #[derive(Deserialize)]
 struct SessionMeta {
     id: String,
     #[serde(default)]
     title: String,
+}
+
+/// Read just the `SessionMeta` from a session file — first line for `.jsonl`,
+/// the whole document for legacy `.json`.
+fn read_meta(path: &Path) -> Option<SessionMeta> {
+    let file = std::fs::File::open(path).ok()?;
+    if path.extension().is_some_and(|e| e == "jsonl") {
+        let mut first = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut first).ok()?;
+        serde_json::from_str(&first).ok()
+    } else {
+        serde_json::from_reader(std::io::BufReader::new(file)).ok()
+    }
 }
 
 /// List session metadata for a workspace, skipping unreadable/corrupt files.
@@ -126,14 +139,12 @@ pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String
     let mut entries: Vec<SessionEntry> = paths
         .into_iter()
         .filter_map(|path| {
-            let file = std::fs::File::open(&path).ok()?;
-            let meta: SessionMeta = serde_json::from_reader(BufReader::new(file)).ok()?;
-            let year_month = crabot::session::year_month_from_id(&meta.id);
+            let meta = read_meta(&path)?;
             Some(SessionEntry {
                 id: meta.id,
                 title: meta.title,
+                year_month: crabot::session::year_month_from_id(&meta.id),
                 path,
-                year_month,
                 is_header: false,
             })
         })

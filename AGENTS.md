@@ -30,7 +30,7 @@ All panes live in `src/views/`. Left: `left_pane`, `model_config`, `user_prompt`
 
 - **UI → State:** `App::update` dispatches `Message` variants to domain handlers in `src/app/` (`layout`, `conversation`, `prompt`, `tool_state`, `settings`, `overlay`, `session_state`).
 - **LLM streaming:** `ConversationEvent::SendPrompt` → `llm::send_stream` agent loop (≤ `max_iterations`): request with system prompt + tools + history → stream chunks via callbacks → execute tool calls → append results → loop. Cancellation via `tokio::select!`.
-- **Persistence:** RON config in `~/.crabot/` (`settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`); sessions as JSON in `.agent/sessions/YYYY-MM/id.json`; per-file raw snapshots (Revert) in `.agent/snapshots/{id}/`.
+- **Persistence:** RON config in `~/.crabot/` (`settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`); sessions as JSONL in `.agent/sessions/YYYY-MM/{id}.jsonl` (first line = metadata, then incremental messages + cumulative usage tally; legacy `.json` still loadable); per-file raw snapshots (Revert) in `.agent/snapshots/{id}/`.
 - **MCP:** loads `~/.crabot/mcp.ron`, connects via `rmcp` (stdio/HTTP), auto-discovers tools; connections held in `LazyLock<Mutex<HashMap<String, McpConnection>>>`.
 
 ### Agent Loop (`llm::send_stream`)
@@ -66,7 +66,7 @@ All panes live in `src/views/`. Left: `left_pane`, `model_config`, `user_prompt`
 | `src/widgets/`                                                              | Custom `TextArea` (undo/redo), `DropDown`, `PopupMenu`                                                                                 |
 | `assets/`                                                                   | Bundled preambles, `workmode.md`, `rules/`, models, tools, mcp, images                                                                 |
 | `~/.crabot/`                                                                | User config: `settings.ron`, `models.ron`, `tools.ron`, `mcp.ron`, `preamble/`, `rules/`                                               |
-| `.agent/sessions/`                                                          | Session JSON, grouped in `YYYY-MM/` subdirs                                                                                            |
+| `.agent/sessions/`                                                          | Session JSONL, grouped in `YYYY-MM/` subdirs; legacy `.json` still loadable                                                           |
 | `.agent/snapshots/`                                                         | Per-file raw pre-images (`.agent/snapshots/{id}/`) backing the right-pane Revert actions                                               |
 
 ---

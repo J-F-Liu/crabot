@@ -2,6 +2,7 @@ use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -12,7 +13,32 @@ use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
 use crate::user::WorkMode;
 
-/// A conversation session, persisted to `.agent/sessions/`.
+/// One self-contained line in a `{id}.jsonl` session file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SessionRecord {
+    /// Header — first line; session-list scan reads only this.
+    Meta {
+        id: String,
+        parent: String,
+        model: Option<ModelConfig>,
+        title: String,
+        workspace: PathBuf,
+        created_at: String,
+    },
+    /// One history message, appended incrementally.
+    Message { message: ChatMessage },
+    /// Cumulative usage snapshot — last record wins on load.
+    Tally {
+        tokens: TokenAmount,
+        cost: f64,
+        currency: Currency,
+        requests: u32,
+        updated_at: String,
+    },
+}
+
+/// A conversation session, persisted to `.agent/sessions/` as `{id}.jsonl`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
@@ -27,7 +53,14 @@ pub struct Session {
     /// Dialogs — each dialog groups one user prompt with its responses.
     #[serde(skip)]
     pub dialogs: Vec<Dialog>,
-    /// number of successful LLM requests in the session
+    /// History messages already written to the jsonl file.
+    /// `#[serde(skip)]` — reset to 0 on fork so the next save writes everything.
+    #[serde(skip)]
+    pub persisted: usize,
+    /// Serialized snapshot of the last-written `Meta` record.
+    #[serde(skip)]
+    pub saved_meta: Option<String>,
+    /// Number of successful LLM requests in the session.
     pub requests: u32,
     /// Accumulated token usage across all turns.
     pub tokens: TokenAmount,
@@ -84,6 +117,8 @@ impl Session {
             workspace: PathBuf::new(),
             history: Vec::new(),
             dialogs: Vec::new(),
+            persisted: 0,
+            saved_meta: None,
             requests: 0,
             tokens: TokenAmount::default(),
             cost: 0.0,
@@ -104,6 +139,9 @@ impl Session {
         // Fresh accumulators — the fork starts its own usage/cost accounting.
         session.tokens = TokenAmount::default();
         session.cost = 0.0;
+        // New file — everything must be written again.
+        session.persisted = 0;
+        session.saved_meta = None;
         session
     }
 
@@ -252,12 +290,10 @@ impl Session {
         results
     }
 
-    /// Reconstruct the `dialogs` Vec from the raw `history`.
-    /// Called after loading a session from disk (since `dialogs` is `#[serde(skip)]`).
+    /// Reconstruct `dialogs` from raw `history` (called after load, since
+    /// `dialogs` is `#[serde(skip)]`).
     pub fn rebuild_dialogs(&mut self) {
-        // First pass: collect tool responses indexed by call_id so we can
-        // pair them with their tool calls (matching the live-stream behaviour
-        // in llm.rs where each tool call+result is a single Turn).
+        // Index tool responses by call_id to pair with their tool calls.
         let mut results: HashMap<String, String> = HashMap::new();
         for msg in &self.history {
             if msg.role == ChatRole::Tool {
@@ -312,12 +348,11 @@ impl Session {
                         push_or_new(&mut dialogs, Turn::assistant(text, reasoning));
                     }
 
-                    // Collect all tool calls from this assistant message into
-                    // a single Turn, matching the live-stream grouping behaviour.
+                    // Group all tool calls from this assistant message into one Turn.
                     let mut trs: Vec<ToolResult> = Vec::new();
                     for tc in msg.content.tool_calls() {
                         let content = results.remove(&tc.call_id).unwrap_or_default();
-                        // Strip the "Error: " envelope, so reloaded display matches the live-stream behaviour.
+                        // Strip the "Error: " envelope to match live-stream display.
                         let result = if is_enveloped_error(&content) {
                             Err(strip_error_envelope(&content).to_string())
                         } else {
@@ -349,18 +384,14 @@ impl Session {
             }
         }
 
-        // todo: if results is not empty, log warning
-
         self.modified_files = modified;
         self.dialogs = dialogs;
     }
 
     /// Return the items of the last successful `todo` tool call.
     pub fn last_todo_items(&self) -> Vec<TodoItem> {
-        // One reverse pass: collect successful call-ids from Tool messages,
-        // then match them against todo calls in the preceding Assistant message.
-        // A successful todo response matches the pattern produced by
-        // [`crate::tools::todo::TodoTool::execute_inner`].
+        // Reverse pass: collect successful todo call-ids from Tool messages,
+        // then match against the preceding Assistant's todo tool call.
         static SUCCESS_RE: OnceLock<Regex> = OnceLock::new();
         let success_re = SUCCESS_RE.get_or_init(|| Regex::new(r"^Updated \d+ todo").unwrap());
         let mut successful: HashSet<&str> = HashSet::new();
@@ -395,41 +426,183 @@ impl Session {
     // ── Persistence ─────────────────────────────────────────────────
 
     /// Compute the save path for this session.
-    /// Sessions are stored under `.agent/sessions/{YYYY-MM}/{id}.json`.
+    /// Sessions are stored under `.agent/sessions/{YYYY-MM}/{id}.jsonl`.
     pub fn save_path(&self) -> Option<PathBuf> {
         if !self.workspace.is_dir() {
             return None;
         }
         let base = self.workspace.join(".agent").join("sessions");
         let year_month = year_month_from_id(&self.id);
-        Some(base.join(&year_month).join(format!("{}.json", self.id)))
+        Some(base.join(&year_month).join(format!("{}.jsonl", self.id)))
     }
 
-    /// Save the session to disk.
-    pub fn save(&self) -> Result<(), String> {
+    /// Save incrementally: append new `Message` lines and a cumulative `Tally`.
+    /// The `Meta` header is written on the first save and re-appended whenever
+    /// any meta field changes (last one wins on load).
+    pub fn save(&mut self) -> Result<(), String> {
         let path = self.save_path().ok_or("No workspace set")?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create session dir: {e}"))?;
         }
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize session: {e}"))?;
-        std::fs::write(&path, json).map_err(|e| format!("Failed to write session: {e}"))
+
+        let is_new = !path.exists();
+        let start = if is_new {
+            0
+        } else {
+            self.persisted.min(self.history.len())
+        };
+        let new_messages = self.history.len() > start;
+
+        // Build a Meta line when writing a new file or when the meta snapshot
+        // has changed since the last write.
+        let meta_json = serde_json::to_string(&self.meta_record())
+            .map_err(|e| format!("Failed to serialize meta: {e}"))?;
+        let write_meta = is_new || self.saved_meta.as_deref() != Some(&meta_json);
+
+        let mut buf = String::new();
+        if write_meta {
+            buf.push_str(&meta_json);
+            buf.push('\n');
+        }
+        for msg in &self.history[start..] {
+            let line = serde_json::to_string(&SessionRecord::Message {
+                message: msg.clone(),
+            })
+            .map_err(|e| format!("Failed to serialize message: {e}"))?;
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        // Tally follows new history so counters stay in sync without no-op growth.
+        if new_messages {
+            let line = serde_json::to_string(&SessionRecord::Tally {
+                requests: self.requests,
+                tokens: self.tokens,
+                cost: self.cost,
+                currency: self.currency,
+                updated_at: self.updated_at.clone(),
+            })
+            .map_err(|e| format!("Failed to serialize tally: {e}"))?;
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("Failed to open session file: {e}"))?;
+        file.write_all(buf.as_bytes())
+            .map_err(|e| format!("Failed to write session: {e}"))?;
+
+        self.persisted = self.history.len();
+        self.saved_meta = Some(meta_json);
+
+        // Remove a stale legacy `.json` sibling — the jsonl now holds everything.
+        if is_new {
+            let legacy = path.with_extension("json");
+            if legacy.exists() {
+                let _ = std::fs::remove_file(&legacy);
+            }
+        }
+        Ok(())
     }
 
-    /// Load a session from disk.
+    /// Load a session from disk. Prefers the `.jsonl` sibling when given a
+    /// legacy `.json` path.
     pub fn load(path: &Path) -> Result<Self, String> {
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read session file: {e}"))?;
-        let mut session: Self =
-            serde_json::from_str(&json).map_err(|e| format!("Failed to parse session: {e}"))?;
+        let path = match path.extension().and_then(|e| e.to_str()) {
+            Some("json") if path.with_extension("jsonl").exists() => path.with_extension("jsonl"),
+            _ => path.to_path_buf(),
+        };
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("jsonl") => Self::load_jsonl(&path),
+            _ => Self::load_legacy_json(&path),
+        }
+    }
+
+    /// Load from a jsonl file — merge all records line-by-line.
+    fn load_jsonl(path: &Path) -> Result<Self, String> {
+        let file =
+            std::fs::File::open(path).map_err(|e| format!("Failed to open session file: {e}"))?;
+        let reader = BufReader::new(file);
+
+        let mut session = Session::new();
+        let mut saw_meta = false;
+
+        for (line_no, line) in reader.lines().enumerate() {
+            let line = line
+                .map_err(|e| format!("Failed to read session file at line {}: {e}", line_no + 1))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<SessionRecord>(&line) {
+                Ok(SessionRecord::Meta {
+                    id,
+                    parent,
+                    title,
+                    model,
+                    workspace,
+                    created_at,
+                }) => {
+                    saw_meta = true;
+                    session.id = id;
+                    session.parent = parent;
+                    session.title = title;
+                    session.model = model;
+                    session.workspace = workspace;
+                    session.created_at = created_at;
+                }
+                Ok(SessionRecord::Message { message }) => session.history.push(message),
+                Ok(SessionRecord::Tally {
+                    requests,
+                    tokens,
+                    cost,
+                    currency,
+                    updated_at,
+                }) => {
+                    session.requests = requests;
+                    session.tokens = tokens;
+                    session.cost = cost;
+                    session.currency = currency;
+                    session.updated_at = updated_at;
+                }
+                Err(e) => eprintln!(
+                    "Warning: skipping unparseable line {} in {}: {e}",
+                    line_no + 1,
+                    path.display()
+                ),
+            }
+        }
+
+        // Fall back to the file stem when the Meta header is missing/corrupt.
+        if !saw_meta {
+            session.id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+        }
+
+        session.persisted = session.history.len();
+        session.saved_meta = serde_json::to_string(&session.meta_record()).ok();
         session.rebuild_dialogs();
         Ok(session)
     }
 
-    /// Fix history created by other models when resend to deepseek.
+    /// Load from a legacy whole-document `.json` file.
+    fn load_legacy_json(path: &Path) -> Result<Self, String> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read session file: {e}"))?;
+        let mut session: Self =
+            serde_json::from_str(&json).map_err(|e| format!("Failed to parse session: {e}"))?;
+        // `persisted` / `saved_meta` are `#[serde(skip)]` → next save writes a full jsonl.
+        session.rebuild_dialogs();
+        Ok(session)
+    }
+
+    /// Ensure Assistant messages with tool calls also carry a `ReasoningContent` part.
     pub fn fix_history(&mut self) {
-        // Ensure every Assistant message with tool calls also has a ReasoningContent part
         for message in &mut self.history {
             if message.role == ChatRole::Assistant
                 && message.content.contains_tool_call()
@@ -439,6 +612,18 @@ impl Session {
                     .content
                     .push(ContentPart::ReasoningContent(String::new()));
             }
+        }
+    }
+
+    /// Build the current `Meta` record from this session's fields.
+    fn meta_record(&self) -> SessionRecord {
+        SessionRecord::Meta {
+            id: self.id.clone(),
+            parent: self.parent.clone(),
+            model: self.model.clone(),
+            title: self.title.clone(),
+            workspace: self.workspace.clone(),
+            created_at: self.created_at.clone(),
         }
     }
 }
@@ -453,7 +638,8 @@ pub fn year_month_from_id(id: &str) -> String {
 }
 
 /// List saved session file paths for a workspace (newest first),
-/// scanning the last 3 months' year-month subdirectories.
+/// scanning the last 3 months' year-month subdirectories and the
+/// legacy flat base directory. Prefers `.jsonl` over `.json` for the same id.
 pub fn list_session_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
     let base = workspace.join(".agent").join("sessions");
     if !base.exists() {
@@ -474,31 +660,272 @@ pub fn list_session_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
         year_months.push(format!("{:04}-{:02}", y, m));
     }
 
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for ym in &year_months {
-        let dir = base.join(ym);
-        if dir.is_dir()
-            && let Ok(entries) = std::fs::read_dir(&dir)
-        {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "json") {
-                    paths.push(path);
-                }
-            }
-        }
-    }
+    // Collect paths, preferring .jsonl over .json for the same session id.
+    let mut seen: HashMap<String, PathBuf> = HashMap::new();
 
-    // Also scan the base directory for legacy flat session files.
-    if let Ok(entries) = std::fs::read_dir(&base) {
+    fn collect_into(dir: &Path, seen: &mut HashMap<String, PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
-                paths.push(path);
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !matches!(ext, "jsonl" | "json") {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            // Prefer .jsonl over .json for the same stem.
+            let replacing_jsonl_with_json = ext == "json"
+                && seen
+                    .get(stem)
+                    .is_some_and(|p| p.extension().is_some_and(|e| e == "jsonl"));
+            if !replacing_jsonl_with_json {
+                seen.insert(stem.to_string(), path);
             }
         }
     }
 
-    paths.sort_by(|a, b| b.cmp(a)); // newest first
+    for ym in &year_months {
+        let dir = base.join(ym);
+        if dir.is_dir() {
+            collect_into(&dir, &mut seen);
+        }
+    }
+    // Also scan the base directory for legacy flat session files.
+    collect_into(&base, &mut seen);
+
+    let mut paths: Vec<PathBuf> = seen.into_values().collect();
+    paths.sort_by(|a, b| b.file_stem().cmp(&a.file_stem())); // newest first by id
     Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_workspace() -> PathBuf {
+        let base = std::env::temp_dir().join(format!("crabot-test-{}", std::process::id()));
+        // Unique suffix so parallel tests don't interfere.
+        static CNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = CNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = base.join(format!("t{n}"));
+        let ws = dir.join("workspace");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&ws).unwrap();
+        ws
+    }
+
+    #[test]
+    fn round_trip_jsonl() {
+        let ws = temp_workspace();
+        let mut session = Session::new();
+        session.workspace = ws.clone();
+        session.title = "Hello world".into();
+        session.model = Some(ModelConfig {
+            model_id: "test-model".into(),
+            ..Default::default()
+        });
+
+        session.save().expect("first save");
+        let path = session.save_path().unwrap();
+        assert!(path.exists());
+        assert!(path.extension().is_some_and(|e| e == "jsonl"));
+
+        let loaded = Session::load(&path).expect("reload");
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.title, "Hello world");
+        assert_eq!(loaded.model.as_ref().unwrap().model_id, "test-model");
+        assert_eq!(loaded.persisted, loaded.history.len());
+    }
+
+    #[test]
+    fn incremental_append() {
+        let ws = temp_workspace();
+        let mut session = Session::new();
+        session.workspace = ws.clone();
+        session.title = "Incremental".into();
+
+        // First save: meta only (no messages).
+        session.save().expect("first save");
+        let path = session.save_path().unwrap();
+        let loaded1 = Session::load(&path).expect("load 1");
+        assert!(loaded1.history.is_empty());
+
+        // Add messages via history.
+        let msg = ChatMessage::user("test prompt");
+        session.history.push(msg.clone());
+        session.requests = 1;
+        session.tokens.prompt = 10;
+        session.tokens.output = 20;
+        session.updated_at = "2026-08-05 12:00:00".into();
+        session.save().expect("second save");
+
+        let loaded2 = Session::load(&path).expect("load 2");
+        assert_eq!(loaded2.history.len(), 1);
+        assert_eq!(loaded2.requests, 1);
+        assert_eq!(loaded2.tokens.prompt, 10);
+        assert_eq!(loaded2.updated_at, "2026-08-05 12:00:00");
+        assert_eq!(loaded2.persisted, 1);
+    }
+
+    #[test]
+    fn migrate_legacy_json() {
+        let ws = temp_workspace();
+        let mut session = Session::new();
+        session.workspace = ws.clone();
+        session.title = "Legacy".into();
+        session.history.push(ChatMessage::user("old prompt"));
+        session.requests = 3;
+
+        // Write a legacy .json file.
+        let legacy_path = session.save_path().unwrap().with_extension("json");
+        let json = serde_json::to_string_pretty(&session).unwrap();
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_path, &json).unwrap();
+
+        // Load from legacy path.
+        let mut loaded = Session::load(&legacy_path).expect("load legacy");
+        assert_eq!(loaded.persisted, 0); // not jsonl → 0
+        assert_eq!(loaded.title, "Legacy");
+
+        // Save → creates jsonl with full content; the legacy .json is removed.
+        loaded.save().expect("first jsonl save");
+        let jsonl_path = loaded.save_path().unwrap();
+        assert!(jsonl_path.extension().is_some_and(|e| e == "jsonl"));
+        assert!(jsonl_path.exists());
+        assert!(!legacy_path.exists());
+
+        // Load again via json path → prefers jsonl.
+        let reloaded = Session::load(&legacy_path).expect("reload via json");
+        assert_eq!(reloaded.requests, 3);
+    }
+
+    #[test]
+    fn list_dedupes_by_stem() {
+        let ws = temp_workspace();
+        // Use a current id so the file lands inside the scanned 3-month window.
+        let mut session = Session::new();
+        session.workspace = ws.clone();
+        let jsonl_path = session.save_path().unwrap();
+        session.save().expect("save jsonl");
+        // Also write a fake legacy .json next to it.
+        let json_path = jsonl_path.with_extension("json");
+        std::fs::write(&json_path, format!("{{\"id\":\"{}\"}}\n", session.id)).unwrap();
+
+        let paths = list_session_paths(&ws).expect("list");
+        let file_names: Vec<_> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(file_names, vec![format!("{}.jsonl", session.id)]);
+    }
+
+    #[test]
+    fn meta_update_appends_new_line() {
+        let ws = temp_workspace();
+        let mut session = Session::new();
+        session.workspace = ws.clone();
+        session.title = "Initial".into();
+        session.save().expect("first save");
+        let path = session.save_path().unwrap();
+
+        // Rename the session — the next save must commit a new Meta line.
+        session.title = "Renamed".into();
+        session.save().expect("second save");
+
+        let loaded = Session::load(&path).expect("reload");
+        assert_eq!(loaded.title, "Renamed");
+        // Meta from the first save, then the updated Meta line.
+        let lines = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(lines.lines().count(), 2);
+    }
+
+    #[test]
+    fn tally_skipped_when_unchanged() {
+        let ws = temp_workspace();
+        let mut session = Session::new();
+        session.workspace = ws.clone();
+        session.save().expect("first save");
+        let path = session.save_path().unwrap();
+
+        // No-op save: nothing to append (meta unchanged, no new messages).
+        session.save().expect("no-op save");
+        let lines = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(lines.lines().count(), 1);
+
+        // Counter change alone appends nothing — the tally follows new history.
+        session.requests = 5;
+        session.save().expect("counter-only save");
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
+
+        // A new message persists the updated counters in a fresh Tally line.
+        session.history.push(ChatMessage::user("second prompt"));
+        session.save().expect("message save");
+        let loaded = Session::load(&path).expect("reload");
+        assert_eq!(loaded.requests, 5);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);
+    }
+
+    #[test]
+    fn fork_resets_persisted() {
+        let mut session = Session::new();
+        session.persisted = 42;
+        let forked = session.fork();
+        assert_eq!(forked.persisted, 0);
+        assert_ne!(forked.id, session.id);
+    }
+
+    #[test]
+    fn workspace_switch_writes_full_history_to_new_file() {
+        let ws_a = temp_workspace();
+        let ws_b = temp_workspace();
+        let mut session = Session::new();
+        session.workspace = ws_a.clone();
+        session.title = "Workspace switch".into();
+        session.save().expect("first save");
+
+        // Two messages persisted under workspace A.
+        session.history.push(ChatMessage::user("first prompt"));
+        session.save().expect("save 2");
+        session.history.push(ChatMessage::assistant("first reply"));
+        session.save().expect("save 3");
+
+        // Simulate a workspace switch: same session id, new workspace dir.
+        session.workspace = ws_b.clone();
+        session.history.push(ChatMessage::user("second prompt"));
+        session.save().expect("save in workspace B");
+
+        let path_b = session.save_path().unwrap();
+        assert!(path_b.starts_with(&ws_b));
+        let loaded = Session::load(&path_b).expect("load from B");
+        // Full history must be present in the new file, not just the tail.
+        assert_eq!(loaded.history.len(), 3);
+        assert_eq!(loaded.id, session.id);
+        assert_eq!(loaded.persisted, 3);
+    }
+
+    #[test]
+    fn jsonl_without_meta_falls_back_to_file_stem() {
+        let ws = temp_workspace();
+        let mut session = Session::new();
+        session.workspace = ws.clone();
+        let path = session.save_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Header line corrupt, but a message line still parses.
+        std::fs::write(
+            &path,
+            format!(
+                "{{this is not json}}\n{}",
+                serde_json::to_string(&SessionRecord::Message {
+                    message: ChatMessage::user("orphan message")
+                })
+                .unwrap()
+            ),
+        )
+        .unwrap();
+
+        let loaded = Session::load(&path).expect("load degraded file");
+        assert_eq!(loaded.id, session.id); // fell back to the file stem
+        assert_eq!(loaded.history.len(), 1);
+    }
 }
