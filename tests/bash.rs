@@ -80,6 +80,27 @@ fn fix_test_path() {
 #[cfg(not(windows))]
 fn fix_test_path() {}
 
+/// Drive root of `path` and its lowercase VFS letter (`D:\` → (`D:\`, `d`)).
+#[cfg(windows)]
+fn drive_root_of(path: &Path) -> (PathBuf, char) {
+    let std::path::Component::Prefix(prefix) = path.components().next().unwrap() else {
+        panic!("no drive prefix: {}", path.display());
+    };
+    let (std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d)) = prefix.kind() else {
+        panic!("no disk prefix: {}", path.display());
+    };
+    let mut root = PathBuf::from(prefix.as_os_str());
+    root.push("\\");
+    (root, (d as char).to_ascii_lowercase())
+}
+
+/// Probe file in the drive root of `path`: host path + VFS path (`/d/name`).
+#[cfg(windows)]
+fn drive_probe(path: &Path, name: &str) -> (PathBuf, String) {
+    let (root, letter) = drive_root_of(path);
+    (root.join(name), format!("/{letter}/{name}"))
+}
+
 /// The crabot repository root (used as the test workspace where git exists).
 fn crabot_workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -233,7 +254,11 @@ fn bashkit_real_file_writes() {
 #[test]
 fn bashkit_readonly_zone_write_fails() {
     let tmp = TempDir::new("bash_ro_write").unwrap();
-    let result = run_bash("echo hello > /crabot_ro_probe.txt", &tmp.path, None).unwrap();
+    #[cfg(unix)]
+    let probe_vfs = "/crabot_ro_probe.txt";
+    #[cfg(windows)]
+    let probe_vfs = drive_probe(&tmp.path, "crabot_ro_probe.txt").1;
+    let result = run_bash(&format!("echo hello > {probe_vfs}"), &tmp.path, None).unwrap();
     assert!(
         result.contains("readonly"),
         "expected readonly error, got: {result}"
@@ -245,9 +270,8 @@ fn bashkit_readonly_zone_write_fails() {
 /// and the host file survives — no whiteout swallowing.
 #[test]
 fn bashkit_readonly_zone_rm_fails() {
-    // Host probe path: `/var/tmp` on Unix (outside the mounts), the
-    // workspace's drive root on Windows. The VFS form must NOT carry the
-    // drive letter — the `/` mount's backend is already the drive.
+    // Probe outside the writable mounts: `/var/tmp` on Unix, the
+    // workspace's drive root on Windows (via its drive-letter mount).
     let name = format!("crabot_ro_probe_{}", std::process::id());
     #[cfg(unix)]
     let (probe_host, probe_vfs) = (
@@ -255,11 +279,7 @@ fn bashkit_readonly_zone_rm_fails() {
         format!("/var/tmp/{name}"),
     );
     #[cfg(windows)]
-    let (probe_host, probe_vfs) = {
-        let mut root = PathBuf::from(crabot_workspace().components().next().unwrap().as_os_str());
-        root.push("\\");
-        (root.join(&name), format!("/{name}"))
-    };
+    let (probe_host, probe_vfs) = drive_probe(&crabot_workspace(), &name);
 
     // Create the host file directly; skip if this dir isn't writable by us.
     if fs::write(&probe_host, b"probe").is_err() {
@@ -273,6 +293,23 @@ fn bashkit_readonly_zone_rm_fails() {
     assert!(result.contains("Exit code:"), "unexpected: {result}");
     // The host file must survive the failed `rm`.
     assert_eq!(fs::read_to_string(&probe_host).unwrap(), "probe");
+    let _ = fs::remove_file(&probe_host);
+}
+
+/// Windows: the drive root is also readable at its drive-letter VFS path
+/// (`/d/...` for `D:\`), consistent with the workspace's own VFS form.
+/// Read-only enforcement there is covered by the readonly tests above.
+#[cfg(windows)]
+#[test]
+fn bashkit_windows_drive_root_mounted_at_drive_letter() {
+    let name = format!("crabot_drive_probe_{}", std::process::id());
+    let (probe_host, probe_vfs) = drive_probe(&crabot_workspace(), &name);
+    // Create the host file directly; skip if the drive root isn't writable.
+    if fs::write(&probe_host, b"probe").is_err() {
+        return;
+    }
+    let result = run_bash(&format!("cat {probe_vfs}"), &crabot_workspace(), None).unwrap();
+    assert!(result.contains("probe"), "unexpected: {result}");
     let _ = fs::remove_file(&probe_host);
 }
 
@@ -316,8 +353,9 @@ fn bashkit_cd_then_cargo_check() {
     assert!(!result.contains("Exit code"), "unexpected: {result}");
 }
 
-/// `cd /` runs host commands at the read-only root mount, not silently back
-/// in the workspace: `git` at the filesystem root is not inside a repository.
+/// `cd /` never falls back to the workspace: Unix `/` is the readonly host
+/// root (git there is not in a repository), Windows `/` has no backend and
+/// the host command errors instead.
 #[test]
 fn bashkit_cd_root_does_not_fall_back_to_workspace() {
     let result = run_bash(
@@ -326,7 +364,13 @@ fn bashkit_cd_root_does_not_fall_back_to_workspace() {
         None,
     )
     .unwrap();
+    #[cfg(unix)]
     assert!(result.contains("fatal:"), "unexpected: {result}");
+    #[cfg(windows)]
+    assert!(
+        result.contains("outside mapped cwd"),
+        "unexpected: {result}"
+    );
 }
 
 // ── exit codes & timeouts ───────────────────────────────────

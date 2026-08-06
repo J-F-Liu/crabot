@@ -340,70 +340,81 @@ fn resolve_cwd(vfs_cwd: &Path, mount_specs: &[RealMount]) -> Result<PathBuf, Str
     ))
 }
 
-/// The VFS mount table, in match order (root must be last — its `/` prefix
-/// matches everything). Single source of truth for `build_bash` (mounting)
-/// and `HostCommandBuiltin` (cwd mapping), so they can't drift apart.
+/// VFS mount table in match order (specific mounts before broad ones).
+/// Single source of truth for `build_bash` and `HostCommandBuiltin`.
 fn mounts(workspace: &Path, home: Option<&RealMount>) -> Vec<RealMount> {
     let mut list = vec![
-        RealMount {
-            host_path: workspace.to_path_buf(),
-            vfs_path: PathBuf::from(super::convert_path_to_unix_style(workspace)),
-            writable: true,
-        },
-        RealMount {
-            host_path: std::env::temp_dir(),
-            vfs_path: PathBuf::from("/tmp"),
-            writable: true,
-        },
-        RealMount {
-            host_path: host_filesystem_root(workspace),
-            vfs_path: PathBuf::from("/"),
-            writable: false,
-        },
+        RealMount::rw(workspace, super::convert_path_to_unix_style(workspace)),
+        RealMount::rw(std::env::temp_dir(), "/tmp"),
     ];
     if let Some(home) = home {
         list.insert(1, home.clone());
     }
+    list.extend(root_mount(workspace));
     list
 }
 
-/// Host filesystem root backing the VFS root overlay: `/` on Unix.
+/// Read-only fallback mount, appended last: `/` on Unix, the workspace's
+/// drive root at its drive-letter path (`/d` for `D:\`) on Windows — no
+/// `/` catch-all there, so unmapped paths error instead of being mangled.
 #[cfg(unix)]
-fn host_filesystem_root(_workspace: &Path) -> PathBuf {
-    PathBuf::from("/")
+fn root_mount(_workspace: &Path) -> Option<RealMount> {
+    Some(RealMount::ro("/", "/"))
 }
 
-/// Host filesystem root backing the VFS root overlay: the workspace's drive
-/// root on Windows so the whole drive is reachable.
 #[cfg(windows)]
-fn host_filesystem_root(workspace: &Path) -> PathBuf {
-    for comp in workspace.components() {
-        if let Component::Prefix(prefix) = comp {
-            let mut root = PathBuf::from(prefix.as_os_str());
-            root.push("\\");
-            return root;
-        }
-    }
-    PathBuf::from("\\")
+fn root_mount(workspace: &Path) -> Option<RealMount> {
+    let (host_path, vfs_path) = drive_root(workspace)?;
+    Some(RealMount::ro(host_path, vfs_path))
+}
+
+/// The workspace's drive root and its VFS path (`D:\` → (`D:\`, `/d`)),
+/// matching the `convert_path_to_unix_style` drive-letter scheme.
+#[cfg(windows)]
+fn drive_root(workspace: &Path) -> Option<(PathBuf, PathBuf)> {
+    let Component::Prefix(prefix) = workspace.components().next()? else {
+        return None;
+    };
+    let (std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d)) = prefix.kind() else {
+        return None;
+    };
+    let mut host_path = PathBuf::from(prefix.as_os_str());
+    host_path.push("\\");
+    let vfs_path = PathBuf::from(format!("/{}", (d as char).to_ascii_lowercase()));
+    Some((host_path, vfs_path))
 }
 
 /// A real host directory mounted into the VFS (see [`mounts`]).
 #[derive(Clone)]
 struct RealMount {
-    pub host_path: PathBuf,
-    pub vfs_path: PathBuf,
-    pub writable: bool,
+    host_path: PathBuf,
+    vfs_path: PathBuf,
+    writable: bool,
+}
+
+impl RealMount {
+    fn rw(host_path: impl Into<PathBuf>, vfs_path: impl Into<PathBuf>) -> Self {
+        Self {
+            host_path: host_path.into(),
+            vfs_path: vfs_path.into(),
+            writable: true,
+        }
+    }
+
+    fn ro(host_path: impl Into<PathBuf>, vfs_path: impl Into<PathBuf>) -> Self {
+        Self {
+            host_path: host_path.into(),
+            vfs_path: vfs_path.into(),
+            writable: false,
+        }
+    }
 }
 
 /// Resolve the real host home directory and its POSIX VFS mount path.
 fn real_home_mount() -> Option<RealMount> {
     let host_home = home_host_path()?;
-    let vfs_path = PathBuf::from(super::convert_path_to_unix_style(&host_home));
-    Some(RealMount {
-        host_path: host_home,
-        vfs_path,
-        writable: true,
-    })
+    let vfs_path = super::convert_path_to_unix_style(&host_home);
+    Some(RealMount::rw(host_home, vfs_path))
 }
 
 /// Resolve the real host home directory, preferring `$HOME` then `USERPROFILE`.
