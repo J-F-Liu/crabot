@@ -163,7 +163,7 @@ pub(crate) fn ask_result_view(
 
     let mut answer_col = column![];
 
-    if is_ok && !options.is_empty() {
+    if !options.is_empty() {
         let matched = options.iter().any(|opt| opt == answer);
         let option_rows = ask_option_list(&options, answer, font_scale, false);
 

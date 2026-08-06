@@ -232,7 +232,6 @@ fn apply_outcomes(tab: &mut SessionTab, outcomes: Vec<RevertOutcome>) {
         match outcome {
             Ok(raw) => {
                 tab.snapshot_files.remove(&raw);
-                tab.session.modified_files.retain(|p| *p != raw);
             }
             Err(e) => errors.push(e),
         }

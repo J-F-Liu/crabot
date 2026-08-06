@@ -66,6 +66,24 @@ fn non_array_edits_reports_value_type() {
 }
 
 #[test]
+fn bad_path_and_bad_edit_reported_together() {
+    // Arg-level and per-edit errors are collected and reported in one pass.
+    let dir = std::env::temp_dir().join(format!("crabot_edit_combo_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let err = execute(
+        &json!({
+            "path": "no_such_dir_xyz/file.txt",
+            "edits": [{ "old_text": "", "new_text": "x" }]
+        }),
+        &dir,
+    )
+    .unwrap_err();
+    assert!(err.contains("Failed to resolve path"), "got: {err}");
+    assert!(err.contains("'old_text' must not be empty"), "got: {err}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn line_number_at_matches_byte_and_char_boundaries() {
     // "é" is 2 bytes, so its start is a non-char-aligned byte offset.
     let content = "abé\ncd\n";

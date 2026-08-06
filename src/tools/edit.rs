@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
@@ -159,21 +160,25 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
         }
     };
 
-    // Report arg-level errors before proceeding.
-    if !errors.is_empty() {
-        return Err(errors.join("\n"));
-    }
-
-    // Safe: we returned above if either was invalid.
-    let file_path = file_path.unwrap();
-    let display_path = make_workspace_relative(&file_path, workspace);
-    let edits = edits.unwrap();
-
-    let raw = std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read {display_path}: {e}"))?;
-
+    // ── Load file content (optional — arg errors don't abort collection) ──
+    let display_path = file_path
+        .as_ref()
+        .map(|fp| make_workspace_relative(fp, workspace));
+    let raw: Option<String> = match &file_path {
+        Some(fp) => match std::fs::read_to_string(fp) {
+            Ok(raw) => Some(raw),
+            Err(e) => {
+                errors.push(format!(
+                    "Failed to read {}: {e}",
+                    display_path.as_deref().unwrap_or_default(),
+                ));
+                None
+            }
+        },
+        None => None,
+    };
     // Normalize CRLF → LF in file and edits; file is written back with `\n` endings.
-    let content = normalize_newlines(&raw);
+    let content: Option<Cow<'_, str>> = raw.as_deref().map(normalize_newlines);
 
     // Line index built lazily — only error messages (duplicates/overlaps) need line numbers.
     let mut line_starts: Option<Vec<usize>> = None;
@@ -185,6 +190,10 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
         end: usize,
         new_text: String,
     }
+    // 'edits' invalid — no per-edit checks possible; report everything collected so far.
+    let Some(edits) = edits else {
+        return Err(errors.join("\n"));
+    };
     let mut located: Vec<LocatedEdit> = Vec::with_capacity(edits.len());
     for (i, edit_value) in edits.iter().enumerate() {
         let idx = i + 1; // 1‑based for human‑readable messages
@@ -219,11 +228,16 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
             continue;
         }
 
+        // ── Content-dependent checks — only when the file was loaded ──
+        let Some(content) = content.as_deref() else {
+            continue; // file-level error already collected; skip per-edit lookups
+        };
+        let display = display_path.as_deref().unwrap_or_default();
         let start = match content.find(old_text.as_ref()) {
             Some(s) => s,
             None => {
                 errors.push(format!(
-                    "Edit {idx}: string of old_text not found in {display_path}",
+                    "Edit {idx}: string of old_text not found in {display}",
                 ));
                 continue;
             }
@@ -237,9 +251,9 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
             .unwrap_or(content.len());
         if let Some(pos) = content[search_from..].find(old_text.as_ref()) {
             let second = search_from + pos;
-            let starts = line_starts.get_or_insert_with(|| build_line_starts(&content));
+            let starts = line_starts.get_or_insert_with(|| build_line_starts(content));
             errors.push(format!(
-                "Edit {idx}: found multiple occurrences of '{old_text}' in {display_path} (lines {} and {}) — need unique match, add surrounding context to disambiguate",
+                "Edit {idx}: found multiple occurrences of '{old_text}' in {display} (lines {} and {}) — need unique match, add surrounding context to disambiguate",
                 line_number_at(starts, start),
                 line_number_at(starts, second),
             ));
@@ -256,20 +270,22 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
 
     // ── Phase 2: check for overlapping ranges ─────────────────────
     located.sort_by_key(|e| e.start);
-    for pair in located.windows(2) {
-        let a = &pair[0];
-        let b = &pair[1];
-        if a.end > b.start {
-            let starts = line_starts.get_or_insert_with(|| build_line_starts(&content));
-            errors.push(format!(
-                "Edits {} and {} overlap: edit {} range [lines {}..{}] conflicts with edit {} range [lines {}..{}]",
-                a.idx, b.idx, a.idx,
-                line_number_at(starts, a.start),
-                line_number_at(starts, a.end - 1),
-                b.idx,
-                line_number_at(starts, b.start),
-                line_number_at(starts, b.end - 1),
-            ));
+    if let Some(content) = content.as_deref() {
+        for pair in located.windows(2) {
+            let a = &pair[0];
+            let b = &pair[1];
+            if a.end > b.start {
+                let starts = line_starts.get_or_insert_with(|| build_line_starts(content));
+                errors.push(format!(
+                    "Edits {} and {} overlap: edit {} range [lines {}..{}] conflicts with edit {} range [lines {}..{}]",
+                    a.idx, b.idx, a.idx,
+                    line_number_at(starts, a.start),
+                    line_number_at(starts, a.end - 1),
+                    b.idx,
+                    line_number_at(starts, b.start),
+                    line_number_at(starts, b.end - 1),
+                ));
+            }
         }
     }
 
@@ -277,6 +293,11 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     if !errors.is_empty() {
         return Err(errors.join("\n"));
     }
+
+    // Safe: invalid args always pushed an error above.
+    let file_path = file_path.unwrap();
+    let display_path = display_path.unwrap();
+    let content = content.unwrap();
 
     // ── Phase 3: apply edits ───────────────────────────────────────
     let total_old: usize = located.iter().map(|e| e.end - e.start).sum();
