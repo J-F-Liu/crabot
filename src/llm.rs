@@ -284,9 +284,9 @@ async fn run_parallel_batch(
     task_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<(String, Result<String, String>)>,
     tool_responses: &mut Vec<ToolResponse>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-) -> bool {
+) {
     if batch.is_empty() {
-        return true;
+        return;
     }
 
     // Fast path: a single non-task tool needs no parallel machinery.
@@ -298,7 +298,8 @@ async fn run_parallel_batch(
         let result = exec_tool(tool, tc, workspace, cancel).await;
         let (response, result) = build_tool_result(tc, result);
         tool_responses.push(response);
-        return on_event(SessionEvent::ToolResult(result)).await;
+        on_event(SessionEvent::ToolResult(result)).await;
+        return;
     }
 
     let mut futures = FuturesUnordered::new();
@@ -317,9 +318,11 @@ async fn run_parallel_batch(
             } else {
                 // Emit up front so every sub-agent tab spawns before any future waits.
                 if !on_event(SessionEvent::TaskRequest(request)).await {
-                    return false;
+                    // The UI can't spawn the subtask — fail it instead of hanging forever.
+                    let _ = tx.send(Err("Task request event channel closed.".into()));
+                } else {
+                    task_waiters.insert(tc.call_id.clone(), tx);
                 }
-                task_waiters.insert(tc.call_id.clone(), tx);
             }
             let tc = tc.clone();
             Box::pin(async move {
@@ -348,9 +351,7 @@ async fn run_parallel_batch(
             item = futures.next() => {
                 let Some((response, result)) = item else { break };
                 tool_responses.push(response);
-                if !on_event(SessionEvent::ToolResult(result)).await {
-                    return false;
-                }
+                on_event(SessionEvent::ToolResult(result)).await;
             }
             report = task_receiver.recv(), if receiver_open => match report {
                 Some((id, result)) => {
@@ -366,11 +367,10 @@ async fn run_parallel_batch(
             },
         }
     }
-    true
 }
 
-/// Run one serial tool (ask/renew/write/edit/bash) and emit its result.
-/// Returns `false` when the stream must abort (ask channel closed).
+/// Run one serial tool (ask/renew/write/edit/bash) and emit its result;
+/// failures are recorded as tool results rather than aborting the run.
 async fn run_serial_tool(
     tc: &ToolCall,
     ctx: &ExecutionCtx<'_>,
@@ -378,12 +378,9 @@ async fn run_serial_tool(
     renew_executed: &mut bool,
     tool_responses: &mut Vec<ToolResponse>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-) -> bool {
+) {
     let result = match tc.fn_name.as_str() {
-        "ask" => match handle_ask_tool(tc, ask_receiver, ctx.cancel_token, on_event).await {
-            Some(result) => result,
-            None => return false,
-        },
+        "ask" => handle_ask_tool(tc, ask_receiver, ctx.cancel_token, on_event).await,
         "renew" => {
             let prompt = tc
                 .fn_arguments
@@ -392,6 +389,8 @@ async fn run_serial_tool(
                 .unwrap_or_default();
             if prompt.is_empty() {
                 Err("Renew called with an empty prompt — no new session created.".into())
+            } else if *renew_executed {
+                Err("Only the first 'renew' call is effective.".into())
             } else if !on_event(SessionEvent::RenewRequest(prompt.into())).await {
                 Err("Renew event channel closed.".into())
             } else {
@@ -411,7 +410,7 @@ async fn run_serial_tool(
     };
     let (response, result) = build_tool_result(tc, result);
     tool_responses.push(response);
-    on_event(SessionEvent::ToolResult(result)).await
+    on_event(SessionEvent::ToolResult(result)).await;
 }
 
 /// Configuration for a send request to the LLM.
@@ -657,11 +656,8 @@ pub async fn send_stream(
             // Final assistant response — no more tool calls.
             finished = true;
             break;
-        } else if tool_calls.len() > 1
-            && let Err(message) = tools::normalize_renew_calls(&mut tool_calls)
-        {
-            on_event(SessionEvent::Error(message, genai_messages)).await;
-            return;
+        } else if tool_calls.len() > 1 {
+            tools::move_renews_to_end(&mut tool_calls);
         }
 
         // Signal tool execution before starting, so the status bar updates even for sync tools.
@@ -699,10 +695,11 @@ pub async fn send_stream(
         }
 
         // Parallel tools run in batches; serial tools (ask/renew/write/edit/bash) are barriers.
+        // Every tool call runs and produces a result, so the tool calls in the
+        // assistant message always have matching results in history.
         let mut tool_responses: Vec<ToolResponse> = Vec::with_capacity(tool_calls.len());
         let mut renew_executed = false;
         let mut batch: Vec<&ToolCall> = Vec::new();
-        let mut ok = true;
 
         for tc in &tool_calls {
             if !is_serial_tool(&tc.fn_name) {
@@ -710,7 +707,7 @@ pub async fn send_stream(
                 continue;
             }
             // Serial tools are barriers — run the pending parallel batch first.
-            ok = run_parallel_batch(
+            run_parallel_batch(
                 &mut batch,
                 &exec_ctx,
                 &mut task_receiver,
@@ -718,10 +715,7 @@ pub async fn send_stream(
                 on_event,
             )
             .await;
-            if !ok {
-                break;
-            }
-            ok = run_serial_tool(
+            run_serial_tool(
                 tc,
                 &exec_ctx,
                 &mut ask_receiver,
@@ -730,26 +724,17 @@ pub async fn send_stream(
                 on_event,
             )
             .await;
-            if !ok || renew_executed {
-                break;
-            }
         }
 
         // Drain any remaining parallel batch.
-        if ok {
-            ok = run_parallel_batch(
-                &mut batch,
-                &exec_ctx,
-                &mut task_receiver,
-                &mut tool_responses,
-                on_event,
-            )
-            .await;
-        }
-        if !ok {
-            on_event(SessionEvent::Cancelled(genai_messages)).await;
-            return;
-        }
+        run_parallel_batch(
+            &mut batch,
+            &exec_ctx,
+            &mut task_receiver,
+            &mut tool_responses,
+            on_event,
+        )
+        .await;
 
         // Append tool responses to the request and genai history.
         chat_req = chat_req.append_message(tool_responses.clone());
@@ -844,41 +829,37 @@ fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Client {
 
 /// Drain stale results, emit `event` to the UI, then wait for the interactive
 /// result or cancellation — optionally bounded by `timeout` (whose message is
-/// returned to the caller as an `Ok` result).
+/// returned as an `Ok` result).
 ///
-/// Returns `None` when the event channel is closed (caller should emit
-/// `Cancelled` and stop the agent loop).
+/// `Err` covers Stop (the ask still keeps its result in history), a closed
+/// response channel, and a dead UI channel.
 async fn wait_for_result(
     receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
     cancel_token: &AtomicBool,
     event: SessionEvent,
     timeout: Option<(std::time::Duration, &'static str)>,
-) -> Option<Result<String, String>> {
-    // Drain any stale result left over from a previous wait (e.g. a response
-    // that arrived after its stream had already been cancelled).
-    while receiver.try_recv().is_ok() {}
+) -> Result<String, String> {
+    while receiver.try_recv().is_ok() {} // drain a stale result from a previous wait
     if !on_event(event).await {
-        return None;
+        // Stop raced the delivery, or the UI channel is dead — tell them apart.
+        return Err(if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
+            "Cancelled by user."
+        } else {
+            "Ask event channel closed."
+        }
+        .into());
     }
-    Some(if let Some((duration, message)) = timeout {
-        tokio::select! {
-            result = receiver.recv() => match result {
-                Some(result) => result,
-                None => Err("Response channel closed.".into()),
-            },
-            _ = tokio::time::sleep(duration) => Ok(message.into()),
-            _ = wait_cancelled(cancel_token) => Err("Cancelled by user.".into()),
-        }
-    } else {
-        tokio::select! {
-            result = receiver.recv() => match result {
-                Some(result) => result,
-                None => Err("Response channel closed.".into()),
-            },
-            _ = wait_cancelled(cancel_token) => Err("Cancelled by user.".into()),
-        }
-    })
+    // `pending()` never completes, keeping the timeout branch inert when unset.
+    let sleep: BoxFuture<'static, ()> = match timeout {
+        Some((d, _)) => Box::pin(tokio::time::sleep(d)),
+        None => Box::pin(std::future::pending()),
+    };
+    tokio::select! {
+        result = receiver.recv() => result.unwrap_or_else(|| Err("Response channel closed.".into())),
+        _ = wait_cancelled(cancel_token) => Err("Cancelled by user.".into()),
+        _ = sleep => Ok(timeout.expect("sleep only fires when a timeout is set").1.into()),
+    }
 }
 
 /// Handle a builtin ask-tool call: parse arguments, emit the question to
@@ -888,7 +869,7 @@ async fn handle_ask_tool(
     ask_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     cancel_token: &AtomicBool,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-) -> Option<Result<String, String>> {
+) -> Result<String, String> {
     let question = tc
         .fn_arguments
         .get("question")

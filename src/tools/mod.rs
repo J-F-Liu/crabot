@@ -14,7 +14,7 @@ mod task;
 pub mod todo;
 mod write;
 
-pub use renew::normalize_renew_calls;
+pub use renew::move_renews_to_end;
 pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
 
 use crate::BoundedCapture;

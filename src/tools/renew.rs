@@ -6,20 +6,13 @@ use serde_json::{Value, json};
 
 use super::Tool;
 
-/// Renew ends the session: at most one call per turn, moved to the end so the
-/// turn's other tools run first.
-pub fn normalize_renew_calls(calls: &mut Vec<ToolCall>) -> Result<(), String> {
+/// Move renew calls to the end so the turn's other tools run first.
+/// Only the first renew takes effect; later renews are reported as errors.
+pub fn move_renews_to_end(calls: &mut Vec<ToolCall>) {
     let (mut renews, others): (Vec<_>, Vec<_>) =
         calls.drain(..).partition(|tc| tc.fn_name == "renew");
-    if renews.len() > 1 {
-        return Err(format!(
-            "Multiple renew calls in one turn ({}) — only one is allowed.",
-            renews.len()
-        ));
-    }
     *calls = others;
     calls.append(&mut renews);
-    Ok(())
 }
 
 /// Triggers creation of a new session when the context window is nearly full.
