@@ -142,6 +142,8 @@ pub(crate) enum AskAction {
     Ok,
     /// User chose to skip the question.
     Skip,
+    /// User chose none of the provided options.
+    NoneApply,
     /// User selected one of the provided options.
     OptionSelected(String),
 }

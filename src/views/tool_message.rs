@@ -84,7 +84,10 @@ pub(crate) fn ask_view(
         SelectableText::new(request.question.clone())
             .style(sel_default)
             .into();
-    let skip = button(text("Skip"))
+    let none_apply = button(text("None apply"))
+        .style(secondary_button)
+        .on_press(ConversationEvent::AskAction(AskAction::NoneApply));
+    let skip = button(text("You decide"))
         .style(secondary_button)
         .on_press(ConversationEvent::AskAction(AskAction::Skip));
     let controls: Element<'static, ConversationEvent> = if request.options.is_empty() {
@@ -113,6 +116,7 @@ pub(crate) fn ask_view(
                 } else {
                     None
                 }),
+            none_apply,
             skip
         ]
         .spacing(8)
