@@ -291,19 +291,38 @@ fn args_preview<'a>(
     }
 }
 
+/// Tool item header without an expand indicator (pending/streaming/ask items).
+fn tool_header_row<'a>(
+    badge: impl Into<Element<'a, CenterPaneEvent>>,
+    status_text: impl Into<Element<'a, CenterPaneEvent>>,
+    ts_text: impl Into<Element<'a, CenterPaneEvent>>,
+) -> Element<'a, CenterPaneEvent> {
+    row![
+        badge.into(),
+        status_text.into(),
+        Space::new().width(Length::Fill),
+        ts_text.into(),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center)
+    .into()
+}
+
 /// Build a Tool turn block — completed (`Tool`) or pending (`Temp`) calls;
 /// multiple calls from one response are grouped as stacked sub-items.
 fn tool_turn_block<'a>(
     msg: &'a Turn,
     i: usize,
     ctx: &TurnView<'_>,
+    streaming_ids: &HashSet<&str>,
 ) -> Element<'a, CenterPaneEvent> {
-    // Build a unified list of (name, args, result_opt, timestamp) from either variant.
+    // Unified (name, args, result, timestamp, streaming) items from either variant.
     type ToolItem<'a> = (
         &'a str,
         &'a Value,
         Option<&'a Result<String, String>>,
         &'a str,
+        bool, // streaming: still running, `result` holds partial live output
     );
     let items: Vec<ToolItem<'a>> = match &msg.body {
         TurnBody::Tool(trs) => {
@@ -318,31 +337,46 @@ fn tool_turn_block<'a>(
                         &tr.args,
                         Some(&tr.result),
                         tr.timestamp.as_str(),
+                        tr.streaming,
                     )
                 })
                 .collect()
         }
         TurnBody::Temp(tcs) => tcs
             .iter()
-            .map(|tc| (tc.name.as_str(), &tc.args, None, msg.timestamp.as_str()))
+            // Hidden when a live streaming placeholder already renders the call.
+            .filter(|tc| {
+                tc.call_id
+                    .as_deref()
+                    .is_none_or(|id| !streaming_ids.contains(id))
+            })
+            .map(|tc| {
+                (
+                    tc.name.as_str(),
+                    &tc.args,
+                    None,
+                    msg.timestamp.as_str(),
+                    false,
+                )
+            })
             .collect(),
         _ => unreachable!("tool_turn_block called on non-tool turn"),
     };
 
     let mut elements: Vec<Element<'a, CenterPaneEvent>> = Vec::new();
 
-    for (idx, (name, args, result, ts)) in items.into_iter().enumerate() {
+    for (idx, (name, args, result, ts, streaming)) in items.into_iter().enumerate() {
         if idx > 0 {
             elements.push(Space::new().height(8).into());
         }
 
         let badge = role_badge(format!("Tool - {name}"), "Tool", ctx.font_scale);
-        let completed = result.is_some();
+        let completed = result.is_some() && !streaming;
 
-        let (status_icon, status_color) = match result {
-            Some(Ok(_)) => ("✓", CRABOT_SUCCESS),
-            Some(Err(_)) => ("✗", CRABOT_DANGER),
-            None => ("⏳", color_muted()),
+        let (status_icon, status_color) = match (result, streaming) {
+            (Some(Ok(_)), false) => ("✓", CRABOT_SUCCESS),
+            (Some(Err(_)), false) => ("✗", CRABOT_DANGER),
+            _ => ("⏳", color_muted()),
         };
 
         let status_text = text(status_icon)
@@ -359,17 +393,23 @@ fn tool_turn_block<'a>(
 
         let ts_text = text(ts).size(11.0 * ctx.font_scale).color(color_muted());
 
+        // Running tool: header + args + live output, no expand/collapse
+        // control; the placeholder is replaced by the final result on finish.
+        if streaming {
+            elements.push(tool_header_row(badge, status_text, ts_text));
+            elements.extend(args_rows(name, args, ctx.font_scale, ctx.search_query));
+            if let Some(Ok(buffer)) = result {
+                elements.push(super::tool_message::streaming_result_text(
+                    buffer,
+                    ctx.font_scale,
+                ));
+            }
+            continue;
+        }
+
         // Completed ask tool: render question + answer without expand/collapse.
         if name == "ask" && completed {
-            let header = row![
-                badge,
-                status_text,
-                Space::new().width(Length::Fill),
-                ts_text,
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center);
-            elements.push(header.into());
+            elements.push(tool_header_row(badge, status_text, ts_text));
             elements.push(
                 ask_result_view(args, result.unwrap(), ctx.font_scale)
                     .map(CenterPaneEvent::Conversation),
@@ -401,15 +441,7 @@ fn tool_turn_block<'a>(
                     .into(),
             );
         } else {
-            let header = row![
-                badge,
-                status_text,
-                Space::new().width(Length::Fill),
-                ts_text,
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center);
-            elements.push(header.into());
+            elements.push(tool_header_row(badge, status_text, ts_text));
         }
 
         if expanded {
@@ -566,9 +598,14 @@ fn text_turn_block<'a>(
 }
 
 /// Build a single turn block (header + body) wrapped in its role-colored bubble.
-fn turn_block<'a>(msg: &'a Turn, i: usize, ctx: &TurnView<'a>) -> Element<'a, CenterPaneEvent> {
+fn turn_block<'a>(
+    msg: &'a Turn,
+    i: usize,
+    ctx: &TurnView<'a>,
+    streaming_ids: &HashSet<&str>,
+) -> Element<'a, CenterPaneEvent> {
     match &msg.body {
-        TurnBody::Tool(_) | TurnBody::Temp(_) => tool_turn_block(msg, i, ctx),
+        TurnBody::Tool(_) | TurnBody::Temp(_) => tool_turn_block(msg, i, ctx, streaming_ids),
         TurnBody::Text(_) => text_turn_block(msg, i, ctx),
     }
 }
@@ -680,6 +717,17 @@ pub(crate) fn center_pane<'a>(
                 flat_idx += dialog.turns.len();
                 Vec::new()
             } else {
+                // Pending calls already rendered by a live streaming placeholder.
+                let mut streaming_ids: HashSet<&str> = HashSet::new();
+                for turn in &dialog.turns {
+                    if let TurnBody::Tool(trs) = &turn.body {
+                        streaming_ids.extend(
+                            trs.iter()
+                                .filter(|tr| tr.streaming)
+                                .filter_map(|tr| tr.call_id.as_deref()),
+                        );
+                    }
+                }
                 dialog
                     .turns
                     .iter()
@@ -690,7 +738,7 @@ pub(crate) fn center_pane<'a>(
                         let is_current = is_match
                             && !search_results.is_empty()
                             && search_results[search_state.current] == i;
-                        let block = turn_block(msg, i, &turn_ctx);
+                        let block = turn_block(msg, i, &turn_ctx, &streaming_ids);
                         let style: fn(&Theme) -> container::Style = if is_current {
                             search_current_style
                         } else if is_match {

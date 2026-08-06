@@ -1,7 +1,7 @@
 use iced::{Task, widget};
 
 use crabot::HashSetExt;
-use crabot::chat::Turn;
+use crabot::chat::{Turn, TurnBody};
 use crabot::model::ModelConfig;
 use crabot::session::Session;
 use crabot::user::{UserPrompt, WorkMode};
@@ -105,6 +105,11 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             let tab = app.conversation.viewing_mut();
             let expanded = tab.expanded_dialogs.contains(&index);
             tab.expanded_dialogs.set(index, !expanded);
+            if expanded {
+                // Collapsing a dialog also collapses its tool turns, so
+                // re-expanding shows compact headers instead of full results.
+                collapse_tool_turns(tab, Some(index));
+            }
             tab.search.invalidate_offsets();
             app.layout.focused = None;
         }
@@ -114,6 +119,8 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
                 tab.expanded_dialogs.extend(0..tab.session.dialogs.len());
             } else {
                 tab.expanded_dialogs.clear();
+                // Collapsing every dialog also collapses every tool turn.
+                collapse_tool_turns(tab, None);
             }
             tab.search.invalidate_offsets();
             app.layout.focused = None;
@@ -327,6 +334,24 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
         return restore_viewing_tab(app);
     }
     Task::none()
+}
+
+/// Remove tool-turn expansion keys from `expanded_turns`.
+/// `dialog_index` of `None` covers every dialog.
+fn collapse_tool_turns(tab: &mut SessionTab, dialog_index: Option<usize>) {
+    let mut flat_idx: usize = 0;
+    for (di, dialog) in tab.session.dialogs.iter().enumerate() {
+        if dialog_index.is_none_or(|target| target == di) {
+            for (offset, turn) in dialog.turns.iter().enumerate() {
+                if let TurnBody::Tool(trs) = &turn.body {
+                    for sub in 0..trs.len() {
+                        tab.expanded_turns.remove(&(flat_idx + offset, sub));
+                    }
+                }
+            }
+        }
+        flat_idx += dialog.turns.len();
+    }
 }
 
 fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task<Message> {

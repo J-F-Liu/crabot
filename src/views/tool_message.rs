@@ -672,6 +672,43 @@ pub(super) fn path_arg_row<'a, M: Clone + 'static>(
     Some(arg_row("path", path.to_string(), font_scale, search_query))
 }
 
+/// Rounded content-box style shared by tool result bodies.
+fn tool_box_style(background: Color, border: Color) -> container::Style {
+    container::Style {
+        background: Some(background.into()),
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Live view of a running tool's output buffer — plain mono text, since the
+/// final selectable result replaces it when the tool completes.
+pub(super) fn streaming_result_text<'a, M: Clone + 'static>(
+    buffer: &'a str,
+    font_scale: f32,
+) -> Element<'a, M> {
+    container(
+        column![
+            text("Running…")
+                .size(11.0 * font_scale)
+                .color(CRABOT_TOOL_ACCENT)
+                .font(bold_font()),
+            text(buffer).size(13.0 * font_scale).font(mono_font()),
+        ]
+        .spacing(4)
+        .width(Fill),
+    )
+    .padding([8, 10])
+    .style(move |_theme: &Theme| {
+        tool_box_style(color_tool_content_bg(), color_tool_content_border())
+    })
+    .into()
+}
+
 /// Tool result text (success or error).
 pub(super) fn result_text<'a, M: Clone + 'static>(
     result: &'a Result<String, String>,
@@ -714,25 +751,12 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
         .width(Fill),
     )
     .padding([8, 10])
-    .style(move |_theme: &Theme| container::Style {
-        background: Some(
-            if is_ok {
-                color_tool_content_bg()
-            } else {
-                color_diff_bg_del()
-            }
-            .into(),
-        ),
-        border: Border {
-            color: if is_ok {
-                color_tool_content_border()
-            } else {
-                accent.scale_alpha(0.4)
-            },
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..container::Style::default()
+    .style(move |_theme: &Theme| {
+        if is_ok {
+            tool_box_style(color_tool_content_bg(), color_tool_content_border())
+        } else {
+            tool_box_style(color_diff_bg_del(), accent.scale_alpha(0.4))
+        }
     })
     .into()
 }

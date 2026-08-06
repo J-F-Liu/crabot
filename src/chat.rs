@@ -89,6 +89,10 @@ pub struct ToolResult {
     pub result: Result<String, String>,
     /// Time the tool finished execution (HH:MM:SS).
     pub timestamp: String,
+    /// True while the tool is still running and `result` holds partial
+    /// streamed output. Transient — never persisted; the final result
+    /// replaces the placeholder in place.
+    pub streaming: bool,
 }
 
 impl ToolResult {
@@ -173,7 +177,9 @@ pub struct Dialog {
 }
 
 impl Dialog {
-    /// Append a completed tool result to the in-progress tool group.
+    /// Append a completed tool result to the in-progress tool group. A result
+    /// matching a streaming placeholder replaces it in place; others append,
+    /// so parallel batches keep their completion order.
     pub fn push_tool_result(&mut self, tr: ToolResult) {
         let n = self.turns.len();
         if n < 2 {
@@ -185,7 +191,15 @@ impl Dialog {
             _ => None,
         };
         if let TurnBody::Tool(trs) = &mut self.turns[n - 2].body {
-            trs.push(tr);
+            if let Some(slot) = tr
+                .call_id
+                .as_ref()
+                .and_then(|id| trs.iter_mut().find(|t| t.call_id.as_ref() == Some(id)))
+            {
+                *slot = tr; // replace the streaming placeholder in place
+            } else {
+                trs.push(tr);
+            }
         }
         let TurnBody::Temp(calls) = &mut self.turns[n - 1].body else {
             return;
@@ -196,6 +210,50 @@ impl Dialog {
         if calls.is_empty() {
             self.turns.pop();
         }
+    }
+
+    /// Append an incremental output chunk to the streaming placeholder of the
+    /// still-pending call `call_id`, creating the placeholder on the first
+    /// chunk. Returns the placeholder's index and whether it was created.
+    pub fn push_tool_output(
+        &mut self,
+        call_id: Option<&str>,
+        chunk: &str,
+    ) -> Option<(usize, bool)> {
+        let n = self.turns.len();
+        if n < 2 {
+            return None;
+        }
+        // Chunks belong only to still-pending calls — stale ones are dropped.
+        let TurnBody::Temp(calls) = &self.turns[n - 1].body else {
+            return None;
+        };
+        let call = calls.iter().find(|c| c.call_id.as_deref() == call_id)?;
+        let (name, args) = (call.name.clone(), call.args.clone());
+        let TurnBody::Tool(trs) = &mut self.turns[n - 2].body else {
+            return None;
+        };
+        let (idx, created) = match trs.iter().position(|t| t.call_id.as_deref() == call_id) {
+            Some(idx) => (idx, false),
+            None => {
+                trs.push(ToolResult {
+                    name,
+                    call_id: call_id.map(str::to_string),
+                    args,
+                    result: Ok(String::new()),
+                    timestamp: String::new(),
+                    streaming: true,
+                });
+                (trs.len() - 1, true)
+            }
+        };
+        let tr = &mut trs[idx];
+        if tr.streaming
+            && let Ok(buffer) = &mut tr.result
+        {
+            buffer.push_str(chunk);
+        }
+        Some((idx, created))
     }
 }
 

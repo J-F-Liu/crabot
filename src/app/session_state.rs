@@ -14,6 +14,7 @@ use crate::model::Cost;
 use crate::model::TokenAmount;
 use crate::views::ASK_INPUT;
 use crate::views::scroll_to_end;
+use crabot::HashSetExt;
 use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use crabot::session::Session;
 use crabot::user::UserPrompt;
@@ -165,6 +166,12 @@ pub(crate) enum SessionEvent {
     Content(String),
     Reasoning(String),
     ToolResult(ToolResult),
+    /// Incremental output chunk from a running tool; `call_id` matches the
+    /// pending call in the `Temp` turn.
+    ToolOutput {
+        call_id: Option<String>,
+        chunk: String,
+    },
     /// A user prompt injected during streaming (consumed by `send_stream`).
     UserPrompt(String),
     TokenUsage(Option<genai::chat::Usage>),
@@ -192,6 +199,7 @@ pub(crate) fn update(
         search,
         latest_tokens,
         expanded_dialogs,
+        expanded_turns,
         end_status,
         task_path,
         snapshot_files,
@@ -273,6 +281,25 @@ pub(crate) fn update(
             }
             return if viewing {
                 maybe_scroll_to_end(&state.auto_scroll)
+            } else {
+                Task::none()
+            };
+        }
+        SessionEvent::ToolOutput { call_id, chunk } => {
+            let Some(dialog) = session.dialogs.last_mut() else {
+                return Task::none();
+            };
+            // Drops stale chunks; creates the placeholder on the first chunk.
+            let Some((idx, created)) = dialog.push_tool_output(call_id.as_deref(), &chunk) else {
+                return Task::none();
+            };
+            // First chunk reveals the live output; later chunks must not
+            // re-expand what the user collapsed.
+            if created {
+                expanded_turns.set((session.total_turns() - 2, idx), true);
+            }
+            return if viewing {
+                maybe_scroll_to_end_throttled(&state.auto_scroll, &state.scroll_throttle)
             } else {
                 Task::none()
             };

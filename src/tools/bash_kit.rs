@@ -17,8 +17,8 @@ use bashkit::analysis::analyze_with_limits;
 use bashkit::{Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, async_trait};
 
 use super::{
-    WaitError, create_pipe_pair, is_would_block, pipe_to_stdio, set_sender_nonblocking,
-    set_sender_noninheritable, wait_with_timeout,
+    ChunkForwarder, OutputSink, WaitError, create_pipe_pair, is_would_block, pipe_to_stdio,
+    set_sender_nonblocking, set_sender_noninheritable, wait_with_timeout,
 };
 
 /// Per-stream output cap (head-only backstop; crabot's own truncation is the visible limit).
@@ -65,8 +65,11 @@ pub(crate) fn collect_external_names(script: &str) -> Result<Vec<String>, ()> {
 
 /// Execute `command` through the in-process bashkit interpreter.
 ///
-/// `external_names` are bridged to host executables. The whole script shares one
-/// deadline (`timeout`) plus the caller's cancel flag.
+/// `external_names` are bridged to host executables. The whole script shares
+/// one deadline (`timeout`) plus the caller's cancel flag. When `sink` is
+/// set, output streams live: host commands via their pipe drains, and
+/// builtin-only scripts via the interpreter callback plus a flush ticker
+/// (which also covers quiet stretches after output).
 ///
 /// # Panics
 ///
@@ -79,11 +82,15 @@ pub(crate) fn execute(
     timeout: Duration,
     cancel: &AtomicBool,
     external_names: Vec<String>,
+    sink: Option<OutputSink>,
 ) -> Result<String, String> {
     let shared_cancel = Arc::new(AtomicBool::new(false));
     let deadline_ms = Arc::new(AtomicU64::new(
         now_ms().saturating_add(timeout.as_millis() as u64),
     ));
+
+    // One script-level forwarder, so the byte cap applies per script, not per command.
+    let forwarder = sink.map(|s| Arc::new(Mutex::new(ChunkForwarder::new(s))));
 
     let mut bash = build_bash(
         workspace,
@@ -91,20 +98,77 @@ pub(crate) fn execute(
         &external_names,
         Arc::clone(&deadline_ms),
         Arc::clone(&shared_cancel),
+        forwarder.clone(),
     );
 
     let handle = tokio::runtime::Handle::current();
-    handle
+    let result = handle
         .block_on(async {
             tokio::select! {
-                result = bash.exec(command) => result.map_err(|e| e.to_string()),
+                result = run_script(&mut bash, command, &external_names, &forwarder) => {
+                    result.map_err(|e| e.to_string())
+                }
                 _ = tokio::time::sleep(timeout) => {
                     Err(format!("Command timed out after {}ms", timeout.as_millis()))
                 }
                 _ = sync_cancel(cancel, &shared_cancel) => Err("Cancelled by user".to_string()),
             }
         })
-        .map(|result| format_exec_result(&result))
+        .map(|result| format_exec_result(&result));
+
+    // Flush carried/coalesced bytes now that the script is done.
+    if let Some(f) = &forwarder {
+        super::lock(f).finish();
+    }
+    result
+}
+
+/// Streaming callback route, used only for builtin-only scripts: bridged host
+/// commands already stream via their pipe drains, and the callback would
+/// re-emit their output a second time at command end.
+async fn run_script(
+    bash: &mut Bash,
+    command: &str,
+    external_names: &[String],
+    forwarder: &Option<Arc<Mutex<ChunkForwarder>>>,
+) -> Result<ExecResult, bashkit::Error> {
+    if external_names.is_empty()
+        && let Some(f) = forwarder
+    {
+        let cb_forwarder = Arc::clone(f);
+        // Flush time-due chunks during quiet stretches (this route has no
+        // pipe drains to drive the flush).
+        let _ticker = FlushTicker(tokio::spawn(flush_ticker(Arc::clone(f))));
+        bash.exec_streaming(
+            command,
+            Box::new(move |stdout, stderr| {
+                let mut guard = super::lock(&cb_forwarder);
+                guard.push(stdout.as_bytes());
+                guard.push(stderr.as_bytes());
+            }),
+        )
+        .await
+    } else {
+        bash.exec(command).await
+    }
+}
+
+/// Periodically tick the forwarder while a builtin-only script runs.
+async fn flush_ticker(forwarder: Arc<Mutex<ChunkForwarder>>) {
+    loop {
+        tokio::time::sleep(super::COALESCE_MS).await;
+        super::lock(&forwarder).tick();
+    }
+}
+
+/// Abort-on-drop guard so the ticker never outlives the script (including
+/// when the enclosing future is dropped on timeout/cancel).
+struct FlushTicker(tokio::task::JoinHandle<()>);
+
+impl Drop for FlushTicker {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Poll the tool's cancel flag; when set, mirror it into `shared` and complete.
@@ -127,6 +191,7 @@ fn build_bash(
     external_names: &[String],
     deadline_ms: Arc<AtomicU64>,
     cancel: Arc<AtomicBool>,
+    forwarder: Option<Arc<Mutex<ChunkForwarder>>>,
 ) -> Bash {
     let home_mount = real_home_mount();
     let workspace_vfs = super::convert_path_to_unix_style(workspace);
@@ -177,6 +242,7 @@ fn build_bash(
                 cancel: Arc::clone(&cancel),
                 deadline_ms: Arc::clone(&deadline_ms),
                 timeout,
+                forwarder: forwarder.clone(),
             }),
         );
     }
@@ -200,6 +266,8 @@ struct HostCommandBuiltin {
     deadline_ms: Arc<AtomicU64>,
     /// Total user-visible timeout for the whole script (used in error messages).
     timeout: Duration,
+    /// Script-level output forwarder; chunks stream live via the pipe drains.
+    forwarder: Option<Arc<Mutex<ChunkForwarder>>>,
 }
 
 #[async_trait]
@@ -280,8 +348,12 @@ impl Builtin for HostCommandBuiltin {
 
         let cancel = Arc::clone(&self.cancel);
         let timeout = self.timeout;
+        let forwarder = self.forwarder.clone();
         // spawn_blocking so the outer select can still observe timeout/cancel.
         let result = tokio::task::spawn_blocking(move || {
+            // No contention: callback/ticker routes never coexist with host
+            // commands, so holding the script-level lock is safe.
+            let mut guard = forwarder.as_ref().map(|f| super::lock(f));
             wait_with_timeout(
                 child,
                 Some(stdout_rx),
@@ -290,6 +362,7 @@ impl Builtin for HostCommandBuiltin {
                 timeout,
                 true,
                 cancel.as_ref(),
+                guard.as_deref_mut(),
             )
         })
         .await

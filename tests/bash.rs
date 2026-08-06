@@ -4,6 +4,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use crabot::tools::ToolRegistry;
@@ -106,6 +107,38 @@ fn crabot_workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Registered bash tool plus the JSON args for `command`.
+fn bash_tool(
+    command: &str,
+    timeout_ms: Option<u64>,
+) -> (crabot::tools::ToolRef, serde_json::Value) {
+    fix_test_path();
+    let registry = ToolRegistry::new();
+    let bash = registry.find_tool("bash").expect("bash tool registered");
+    let mut args = serde_json::json!({ "command": command });
+    if let Some(ms) = timeout_ms {
+        args["timeout"] = serde_json::json!(ms);
+    }
+    (bash, args)
+}
+
+/// Multi-thread test runtime (tool execution needs `spawn_blocking`).
+fn test_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime")
+}
+
+/// Join a spawned tool task like `llm.rs::await_tool` does.
+async fn await_tool(
+    handle: tokio::task::JoinHandle<Result<String, String>>,
+) -> Result<String, String> {
+    handle
+        .await
+        .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
+}
+
 /// Run the `bash` tool exactly like `llm.rs::exec_tool` does: on a blocking
 /// thread with a tokio runtime context.
 fn run_bash(command: &str, workspace: &Path, timeout_ms: Option<u64>) -> Result<String, String> {
@@ -119,23 +152,68 @@ fn run_bash_with_cancel(
     timeout_ms: Option<u64>,
     cancel: AtomicBool,
 ) -> Result<String, String> {
-    fix_test_path();
-    let registry = ToolRegistry::new();
-    let bash = registry.find_tool("bash").expect("bash tool registered");
-    let mut args = serde_json::json!({ "command": command });
-    if let Some(ms) = timeout_ms {
-        args["timeout"] = serde_json::json!(ms);
-    }
+    let (bash, args) = bash_tool(command, timeout_ms);
     let workspace = workspace.to_path_buf();
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime");
-    rt.block_on(async {
-        tokio::task::spawn_blocking(move || bash.execute(&args, &workspace, &cancel))
-            .await
-            .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
+    test_runtime().block_on(async {
+        await_tool(tokio::task::spawn_blocking(move || {
+            bash.execute(&args, &workspace, &cancel)
+        }))
+        .await
     })
+}
+
+/// Like [`run_bash`] but via `execute_streaming`, forwarding every output
+/// chunk to `tx` as it is produced.
+fn run_bash_streaming(
+    command: &str,
+    workspace: &Path,
+    timeout_ms: Option<u64>,
+    tx: std::sync::mpsc::Sender<String>,
+) -> Result<String, String> {
+    let (bash, args) = bash_tool(command, timeout_ms);
+    let workspace = workspace.to_path_buf();
+    let cancel = AtomicBool::new(false);
+    let sink: crabot::tools::OutputSink = Arc::new(move |chunk| {
+        let _ = tx.send(chunk.to_string());
+    });
+    test_runtime().block_on(async {
+        await_tool(tokio::task::spawn_blocking(move || {
+            bash.execute_streaming(&args, &workspace, &cancel, &sink)
+        }))
+        .await
+    })
+}
+
+/// Spawn `run_bash_streaming` on a thread; returns its handle and the chunk receiver.
+fn spawn_stream(
+    command: &str,
+    workspace: &Path,
+    timeout_ms: Option<u64>,
+) -> (
+    std::thread::JoinHandle<Result<String, String>>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let command = command.to_string();
+    let workspace = workspace.to_path_buf();
+    let handle =
+        std::thread::spawn(move || run_bash_streaming(&command, &workspace, timeout_ms, tx));
+    (handle, rx)
+}
+
+/// Run a streaming command to completion, collecting all chunks.
+fn stream_and_collect(
+    command: &str,
+    workspace: &Path,
+    timeout_ms: Option<u64>,
+) -> (Result<String, String>, Vec<String>) {
+    let (handle, rx) = spawn_stream(command, workspace, timeout_ms);
+    let mut chunks = Vec::new();
+    while let Ok(chunk) = rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        chunks.push(chunk);
+    }
+    let result = handle.join().expect("streaming thread panicked");
+    (result, chunks)
 }
 
 // ── external command bridge ─────────────────────────────────
@@ -410,13 +488,12 @@ fn bashkit_spawn_failure_exit_code() {
     assert!(result.contains("Exit code: 127"), "unexpected: {result}");
 }
 
-/// Signal death is reported like real bash (`128 + signal`, SIGTERM → 143) —
-/// `exit_code_of` normalizes both the Unix and MSYS/Cygwin encodings.
-/// `perl -e 'kill 15,$$'` self-terminates with SIGTERM (perl ships with Git
-/// for Windows and every Unix).
+/// Signal death is reported like real bash (`128 + signal`, SIGTERM → 143):
+/// the inner `sh` kills its own PID via its builtin `kill`. Interpreter
+/// reentry, so this runs through the real `bash -c` fallback.
 #[test]
-fn bashkit_signal_death_exit_code() {
-    let result = run_bash("perl -e 'kill 15,$$'", &crabot_workspace(), None).unwrap();
+fn nested_sh_signal_death_exit_code() {
+    let result = run_bash("sh -c 'kill -TERM $$'", &crabot_workspace(), None).unwrap();
     assert!(result.contains("Exit code: 143"), "unexpected: {result}");
 }
 
@@ -458,6 +535,86 @@ fn bashkit_cancel_aborts_whole_script() {
 fn bashkit_sleep_timeout() {
     let err = run_bash("sleep 100", &crabot_workspace(), Some(3000)).unwrap_err();
     assert!(err.contains("timed out"), "unexpected: {err}");
+}
+
+// ── streaming output ────────────────────────────────────────
+
+/// External commands (`git` → HostCommandBuiltin) stream their output live
+/// from the pipe drain, and the final result must still contain everything.
+#[test]
+fn bashkit_streaming_external_output() {
+    // Three slow git invocations; each hash line streams while the script is
+    // still running (the sleeps stretch the timeline).
+    let script = "git rev-parse --short HEAD; sleep 0.5; git rev-parse --short HEAD; sleep 0.5; git rev-parse --short HEAD";
+    let (result, chunks) = stream_and_collect(script, &crabot_workspace(), Some(20_000));
+    let result = result.unwrap();
+    assert!(chunks.len() >= 2, "expected live chunks, got: {chunks:?}");
+    // Live stream equals the final result (modulo CRLF normalization); this
+    // relies on `git rev-parse` writing only to stdout.
+    let joined: String = chunks.concat();
+    assert_eq!(
+        result.replace("\r\n", "\n"),
+        joined,
+        "streamed output diverges from final result"
+    );
+}
+
+/// `eval` forces the real `bash -c` fallback; its pipe drain must stream too.
+#[test]
+fn real_bash_streaming_output() {
+    let tmp = TempDir::new("bash_stream_real").unwrap();
+    let script = "eval 'for i in 1 2 3; do echo $i; sleep 0.3; done'";
+    let (result, chunks) = stream_and_collect(script, &tmp.path, Some(10_000));
+    let result = result.unwrap();
+    assert!(chunks.len() >= 2, "expected live chunks, got: {chunks:?}");
+    let joined: String = chunks.concat();
+    assert!(
+        joined.contains("1\n2\n3"),
+        "lines not streamed in order: {joined:?}"
+    );
+    assert_eq!(result.lines().last(), Some("3"), "unexpected: {result}");
+}
+
+/// Output emitted before a quiet stretch must stream live via the
+/// time-based flush — not wait for the command to finish.
+#[test]
+fn real_bash_streaming_quiet_stretch() {
+    let tmp = TempDir::new("bash_stream_quiet").unwrap();
+    // `eval` forces the real `bash -c` route; `early` must flush from the
+    // poll-loop tick during the sleep, not at process exit.
+    let start = std::time::Instant::now();
+    let (handle, rx) = spawn_stream("eval 'echo early; sleep 1.5'", &tmp.path, Some(10_000));
+    let first = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("no live chunk");
+    let first_at = start.elapsed();
+    let result = handle.join().expect("streaming thread panicked");
+    let total = start.elapsed();
+    assert!(result.unwrap().contains("early"));
+    assert!(first.contains("early"), "unexpected first chunk: {first:?}");
+    // The live flush lands well before the ~1.5s command finish.
+    assert!(
+        first_at + std::time::Duration::from_millis(300) < total,
+        "first chunk at {first_at:?} was not live (total {total:?})"
+    );
+}
+
+/// Runaway output must not flood the sink: forwarded bytes stay within the
+/// configured cap while the final result still carries the truncation marker.
+#[test]
+fn bashkit_streaming_output_capped() {
+    let tmp = TempDir::new("bash_stream_cap").unwrap();
+    // `eval` forces the real `bash -c` route; pure builtins emit ~300KB.
+    let script = "eval 'i=0; while [ $i -lt 20000 ]; do echo 0123456789-$i; i=$((i+1)); done'";
+    let (result, chunks) = stream_and_collect(script, &tmp.path, Some(20_000));
+    let result = result.unwrap();
+    let forwarded: usize = chunks.iter().map(String::len).sum();
+    let cap = crabot::tools::tool_limits().max_output_bytes;
+    assert!(forwarded <= cap, "forwarded {forwarded} > cap {cap}");
+    assert!(
+        result.contains("truncated"),
+        "expected truncation marker in: {result}"
+    );
 }
 
 // ── fallback to real bash ───────────────────────────────────

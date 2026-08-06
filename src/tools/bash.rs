@@ -1,10 +1,11 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::{Tool, WaitError, arg_str, tool_limits, wait_with_timeout};
+use super::{ChunkForwarder, OutputSink, Tool, WaitError, arg_str, tool_limits, wait_with_timeout};
 
 pub struct BashTool;
 
@@ -51,6 +52,16 @@ impl Tool for BashTool {
     ) -> Result<String, String> {
         execute(args, workspace, cancel)
     }
+
+    fn execute_streaming_inner(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &AtomicBool,
+        sink: &OutputSink,
+    ) -> Result<String, String> {
+        execute_streaming(args, workspace, cancel, sink)
+    }
 }
 
 pub(super) fn execute(
@@ -58,18 +69,37 @@ pub(super) fn execute(
     workspace: &Path,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
+    run(args, workspace, cancel, None)
+}
+
+/// Like [`execute`] but forwards incremental output chunks to `sink`.
+pub(super) fn execute_streaming(
+    args: &Value,
+    workspace: &Path,
+    cancel: &AtomicBool,
+    sink: &OutputSink,
+) -> Result<String, String> {
+    run(args, workspace, cancel, Some(Arc::clone(sink)))
+}
+
+fn run(
+    args: &Value,
+    workspace: &Path,
+    cancel: &AtomicBool,
+    sink: Option<OutputSink>,
+) -> Result<String, String> {
     let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
     let limits = tool_limits();
-    let timeout_ms = super::arg_u64(args, "timeout")
-        .map(|v| v.clamp(1000, limits.max_command_timeout_ms))
-        .unwrap_or(limits.command_timeout_ms);
-    let timeout = Duration::from_millis(timeout_ms);
-
+    let timeout = Duration::from_millis(
+        super::arg_u64(args, "timeout")
+            .map(|v| v.clamp(1000, limits.max_command_timeout_ms))
+            .unwrap_or(limits.command_timeout_ms),
+    );
     // Prefer bashkit's in-process interpreter; fall back to `bash -c` for
     // scripts it cannot faithfully execute.
     match super::bash_kit::collect_external_names(command) {
-        Ok(names) => super::bash_kit::execute(command, workspace, timeout, cancel, names),
-        Err(()) => execute_real_bash(command, workspace, timeout, cancel),
+        Ok(names) => super::bash_kit::execute(command, workspace, timeout, cancel, names, sink),
+        Err(()) => execute_real_bash(command, workspace, timeout, cancel, sink),
     }
 }
 
@@ -79,6 +109,7 @@ fn execute_real_bash(
     workspace: &Path,
     timeout: Duration,
     cancel: &AtomicBool,
+    sink: Option<OutputSink>,
 ) -> Result<String, String> {
     let (stdout_tx, stdout_rx) = super::create_pipe_pair("stdout")?;
     let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
@@ -98,7 +129,8 @@ fn execute_real_bash(
         .spawn()
         .map_err(|e| format!("Failed to execute command: {e}"))?;
 
-    let output = wait_with_timeout(
+    let mut forwarder = sink.map(ChunkForwarder::new);
+    let result = wait_with_timeout(
         child,
         Some(stdout_rx),
         Some(stderr_rx),
@@ -106,9 +138,13 @@ fn execute_real_bash(
         timeout,
         true, // bash runs in its own process group → kill the whole group
         cancel,
-    )
-    .map_err(WaitError::into_message)?;
-
+        forwarder.as_mut(),
+    );
+    // Flush carried/coalesced bytes on every path (success, timeout, cancel).
+    if let Some(f) = &mut forwarder {
+        f.finish();
+    }
+    let output = result.map_err(WaitError::into_message)?;
     Ok(super::format_command_output(&output))
 }
 

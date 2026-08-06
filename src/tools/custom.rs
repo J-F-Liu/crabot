@@ -186,6 +186,7 @@ impl Tool for CustomTool {
             timeout,
             false, // custom tools don't run in their own process group
             cancel,
+            None, // custom tools don't stream output
         )
         .map_err(|e| format!("Custom tool '{}': {}", self.name, e.into_message()))?;
 

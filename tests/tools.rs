@@ -1,8 +1,12 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use crabot::tools::{resolve_path, resolve_path_partial};
+use crabot::tools::{
+    COALESCE_MS, ChunkForwarder, OutputSink, resolve_path, resolve_path_partial, tool_limits,
+};
 
 /// Helper: create a temp workspace dir that is cleaned up on drop.
 struct TempDir {
@@ -201,4 +205,78 @@ fn empty_workspace_empty_path() {
     // empty path + empty workspace: dunce::canonicalize("") errors
     let result = resolve_path("", Path::new(""));
     assert!(result.is_err());
+}
+
+// ── ChunkForwarder ─────────────────────────────────────────────
+
+/// Forwarder whose chunks are collected into a Vec for inspection.
+fn forwarder() -> (ChunkForwarder, Arc<Mutex<Vec<String>>>) {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let sink: OutputSink = Arc::new({
+        let captured = Arc::clone(&captured);
+        move |chunk| captured.lock().unwrap().push(chunk.to_string())
+    });
+    (ChunkForwarder::new(sink), captured)
+}
+
+/// All captured chunks joined into one string.
+fn joined(captured: &Mutex<Vec<String>>) -> String {
+    captured.lock().unwrap().join("")
+}
+
+#[test]
+fn normalizes_crlf_within_chunk() {
+    let (mut f, out) = forwarder();
+    f.push(b"a\r\nb");
+    f.finish();
+    assert_eq!(joined(&out), "a\nb");
+}
+
+#[test]
+fn normalizes_crlf_split_across_chunks() {
+    let (mut f, out) = forwarder();
+    f.push(b"a\r");
+    f.push(b"\nb");
+    f.finish();
+    assert_eq!(joined(&out), "a\nb");
+}
+
+#[test]
+fn keeps_trailing_bare_cr() {
+    let (mut f, out) = forwarder();
+    f.push(b"a\r");
+    f.finish();
+    assert_eq!(joined(&out), "a\r");
+}
+
+#[test]
+fn carries_incomplete_utf8_across_chunks() {
+    let (mut f, out) = forwarder();
+    // 中 = [0xE4, 0xB8, 0xAD], split 2 + 1.
+    f.push(&[0xE4, 0xB8]);
+    f.push(&[0xAD, b'x']);
+    f.finish();
+    assert_eq!(joined(&out), "中x");
+}
+
+#[test]
+fn tick_flushes_time_due_pending() {
+    let (mut f, out) = forwarder();
+    f.push(b"early");
+    // Too small and too fresh to flush on push.
+    assert!(joined(&out).is_empty());
+    std::thread::sleep(COALESCE_MS + Duration::from_millis(20));
+    f.tick();
+    assert_eq!(joined(&out), "early");
+}
+
+#[test]
+fn caps_forwarded_bytes() {
+    let (mut f, out) = forwarder();
+    f.push(&vec![b'x'; 300 * 1024]);
+    f.finish();
+    let total = joined(&out).len();
+    let cap = tool_limits().max_output_bytes;
+    assert!(total <= cap, "forwarded {total} > cap {cap}");
+    assert!(total > 0, "nothing forwarded");
 }

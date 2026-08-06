@@ -224,6 +224,15 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Join a spawned tool task, mapping panics to an error result.
+async fn await_tool(
+    handle: tokio::task::JoinHandle<Result<String, String>>,
+) -> Result<String, String> {
+    handle
+        .await
+        .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
+}
+
 /// Execute a tool on a blocking thread; unknown tools report an error result.
 async fn exec_tool(
     tool: Option<ToolRef>,
@@ -234,14 +243,52 @@ async fn exec_tool(
     match tool {
         Some(t) => {
             let fn_arguments = tc.fn_arguments.clone();
-            tokio::task::spawn_blocking(move || {
+            await_tool(tokio::task::spawn_blocking(move || {
                 t.execute(&fn_arguments, &workspace, cancel_token.as_ref())
-            })
+            }))
             .await
-            .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
         }
         None => Err(tools::unknown_tool_message(&tc.fn_name)),
     }
+}
+
+/// Execute a tool while forwarding its live output chunks as
+/// [`SessionEvent::ToolOutput`]. If the UI stops accepting events, chunks are
+/// drained silently but the tool still runs to completion, so its final result
+/// always replaces the streaming placeholder.
+async fn exec_tool_streaming(
+    tool: Option<ToolRef>,
+    tc: &ToolCall,
+    workspace: std::path::PathBuf,
+    cancel_token: Arc<AtomicBool>,
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+) -> Result<String, String> {
+    let Some(tool) = tool else {
+        return Err(tools::unknown_tool_message(&tc.fn_name));
+    };
+    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let sink: tools::OutputSink = Arc::new(move |chunk| {
+        let _ = chunk_tx.send(chunk.to_string());
+    });
+    let fn_arguments = tc.fn_arguments.clone();
+    let call_id = tc.call_id.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        tool.execute_streaming(&fn_arguments, &workspace, cancel_token.as_ref(), &sink)
+    });
+
+    // Forward chunks until the tool finishes (its sink drop closes the channel).
+    let mut forwarding = true;
+    while let Some(chunk) = chunk_rx.recv().await {
+        if forwarding {
+            forwarding = on_event(SessionEvent::ToolOutput {
+                call_id: Some(call_id.clone()),
+                chunk,
+            })
+            .await;
+        }
+    }
+
+    await_tool(handle).await
 }
 
 /// Build genai `ToolResponse` and UI `ChatToolResult` from an execution result.
@@ -264,6 +311,7 @@ fn build_tool_result(
         args: tc.fn_arguments.clone(),
         result,
         timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+        streaming: false,
     };
     (response, result)
 }
@@ -399,13 +447,15 @@ async fn run_serial_tool(
             }
         }
         _ => {
-            exec_tool(
-                find_tool(ctx.tools, &tc.fn_name),
-                tc,
-                ctx.workspace.to_path_buf(),
-                ctx.cancel_token.clone(),
-            )
-            .await
+            let tool = find_tool(ctx.tools, &tc.fn_name);
+            let workspace = ctx.workspace.to_path_buf();
+            let cancel = ctx.cancel_token.clone();
+            // bash streams its output live like LLM text chunks.
+            if tc.fn_name == "bash" {
+                exec_tool_streaming(tool, tc, workspace, cancel, on_event).await
+            } else {
+                exec_tool(tool, tc, workspace, cancel).await
+            }
         }
     };
     let (response, result) = build_tool_result(tc, result);

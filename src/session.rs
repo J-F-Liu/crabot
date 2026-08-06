@@ -364,6 +364,7 @@ impl Session {
                             args: tc.fn_arguments.clone(),
                             result,
                             timestamp: String::new(),
+                            streaming: false,
                         };
                         // Track files modified by write / edit tools.
                         if let Some(path_str) = tr.get_modified_file()

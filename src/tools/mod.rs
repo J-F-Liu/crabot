@@ -22,6 +22,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -34,6 +35,9 @@ use serde_json::Value;
 // ── Tool trait ──────────────────────────────────────────────────────
 
 pub type ToolRef = Arc<dyn Tool>;
+
+/// Sink for incremental tool output (e.g. bash stdout/stderr chunks).
+pub type OutputSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Trait implemented by every tool (built-in or custom).
 pub trait Tool: Send + Sync {
@@ -65,6 +69,36 @@ pub trait Tool: Send + Sync {
         workspace: &Path,
         cancel: &AtomicBool,
     ) -> Result<String, String>;
+
+    /// Streaming variant of [`execute`](Self::execute): the same cancel-aware
+    /// wrapper, but live-output tools forward incremental chunks to `sink`.
+    /// The default ignores `sink` and behaves like `execute`. Chunks are raw
+    /// text (UTF-8, newline normalized); the final result stays authoritative.
+    fn execute_streaming(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &AtomicBool,
+        sink: &OutputSink,
+    ) -> Result<String, String> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled by user".into());
+        }
+        self.execute_streaming_inner(args, workspace, cancel, sink)
+    }
+
+    /// Implement this instead of [`execute_streaming`](Self::execute_streaming)
+    /// to stream output live; the default ignores `sink` and falls back to
+    /// [`execute_inner`](Self::execute_inner).
+    fn execute_streaming_inner(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &AtomicBool,
+        _sink: &OutputSink,
+    ) -> Result<String, String> {
+        self.execute_inner(args, workspace, cancel)
+    }
 
     /// Full tool declaration suitable for genai ChatRequest.
     fn tool_declaration(&self, strict: bool) -> GenaiTool {
@@ -897,6 +931,162 @@ pub(crate) fn set_sender_noninheritable(sender: &unnamed_pipe::Sender) -> Result
     }
 }
 
+// ── Incremental output forwarding ──────────────────────────────────
+
+/// Coalesce small chunks until this many bytes accumulate before flushing.
+const COALESCE_BYTES: usize = 4 * 1024;
+/// Coalesce small chunks for at most this long before flushing.
+pub const COALESCE_MS: Duration = Duration::from_millis(100);
+
+/// Lock a mutex, recovering the payload if the holder panicked (poisoned).
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Forwards raw pipe bytes to an [`OutputSink`] as text chunks: stdout and
+/// stderr merge in arrival order, `\r\n` normalizes to `\n`, and small chunks
+/// are coalesced (size/time) so tight loops cannot flood the UI. Bytes past
+/// the output cap are dropped — the final tool result stays authoritative.
+pub struct ChunkForwarder {
+    sink: OutputSink,
+    /// Cap on forwarded bytes; the sink is silently muted past this.
+    cap: usize,
+    /// Total bytes forwarded so far.
+    forwarded: usize,
+    /// Incomplete UTF-8 sequence carried between chunks.
+    carry: Vec<u8>,
+    /// A trailing `\r` held back, pending a following `\n`.
+    pending_cr: bool,
+    /// Coalesced text awaiting flush.
+    pending: String,
+    last_flush: std::time::Instant,
+}
+
+impl ChunkForwarder {
+    pub fn new(sink: OutputSink) -> Self {
+        Self {
+            sink,
+            cap: tool_limits().max_output_bytes.max(1),
+            forwarded: 0,
+            carry: Vec::with_capacity(8),
+            pending_cr: false,
+            pending: String::new(),
+            last_flush: std::time::Instant::now(),
+        }
+    }
+
+    /// Forward a raw chunk of stream bytes to the sink.
+    pub fn push(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        // Decode chunk + carried tail as UTF-8; keep an incomplete trailing
+        // sequence for the next chunk.
+        let mut full = std::mem::take(&mut self.carry);
+        full.extend_from_slice(bytes);
+        match std::str::from_utf8(&full) {
+            Ok(s) => self.push_text(s),
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    // SAFETY: valid_up_to() is a valid UTF-8 boundary.
+                    self.push_text(unsafe { std::str::from_utf8_unchecked(&full[..valid]) });
+                }
+                if e.error_len().is_none() {
+                    // Incomplete sequence at the end — carry to the next chunk.
+                    self.carry = full[valid..].to_vec();
+                } else {
+                    // Truly invalid bytes — lossy-replace like from_utf8_lossy.
+                    let tail = String::from_utf8_lossy(&full[valid..]);
+                    self.push_text(&tail);
+                }
+            }
+        }
+    }
+
+    /// Flush carried/coalesced bytes at the end of the stream.
+    pub fn finish(&mut self) {
+        self.flush_carry();
+        if self.pending_cr {
+            self.pending_cr = false;
+            self.pending.push('\r');
+        }
+        self.flush();
+    }
+
+    /// Flush the coalescing buffer once it is large or old enough. Called
+    /// after each push and periodically from idle loops, so a quiet stretch
+    /// after some output still streams promptly.
+    pub fn tick(&mut self) {
+        if self.pending.len() >= COALESCE_BYTES
+            || (!self.pending.is_empty() && self.last_flush.elapsed() >= COALESCE_MS)
+        {
+            self.flush();
+        }
+    }
+
+    /// Normalize `\r\n` → `\n` (carrying a trailing `\r`), then coalesce.
+    fn push_text(&mut self, s: &str) {
+        let mut out = String::with_capacity(s.len() + 1);
+        let mut chars = s.chars();
+        if self.pending_cr {
+            self.pending_cr = false;
+            match chars.next() {
+                Some('\n') => out.push('\n'), // `\r\n` split across chunks
+                Some(c) => {
+                    out.push('\r');
+                    out.push(c);
+                }
+                None => self.pending_cr = true,
+            }
+        }
+        let mut iter = chars.peekable();
+        while let Some(c) = iter.next() {
+            if c == '\r' {
+                match iter.peek() {
+                    Some('\n') => {
+                        out.push('\n');
+                        iter.next();
+                    }
+                    Some(_) => out.push('\r'),
+                    None => self.pending_cr = true,
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        if !out.is_empty() {
+            self.pending.push_str(&out);
+        }
+        self.tick();
+    }
+
+    fn flush(&mut self) {
+        if self.pending.is_empty() || self.forwarded >= self.cap {
+            self.pending.clear();
+            return;
+        }
+        let s = std::mem::take(&mut self.pending);
+        let room = self.cap - self.forwarded;
+        let take = if s.len() > room {
+            &s[..find_char_boundary(&s, room)] // drop the overflow (final result has it)
+        } else {
+            &s
+        };
+        self.forwarded += take.len();
+        (self.sink)(take);
+        self.last_flush = std::time::Instant::now();
+    }
+
+    fn flush_carry(&mut self) {
+        if !self.carry.is_empty() {
+            let carry = std::mem::take(&mut self.carry);
+            let t = String::from_utf8_lossy(&carry);
+            self.push_text(&t);
+        }
+    }
+}
+
 // ── Bounded output capture ─────────────────────────────────────────
 
 /// Failure from [`wait_with_timeout`], classified so callers can map to bash
@@ -942,6 +1132,8 @@ impl WaitError {
 ///
 /// `remaining` is the budget actually waited; `timeout_total` is reported in
 /// the timeout message (they differ when the caller already spent budget).
+/// `forwarder` receives each drained chunk for live output streaming.
+#[allow(clippy::too_many_arguments)] // 8 params; a context struct would churn 3 call sites
 pub(crate) fn wait_with_timeout(
     mut child: std::process::Child,
     mut stdout: Option<unnamed_pipe::Recver>,
@@ -950,6 +1142,7 @@ pub(crate) fn wait_with_timeout(
     timeout_total: Duration,
     kill_tree: bool,
     cancel: &AtomicBool,
+    mut forwarder: Option<&mut ChunkForwarder>,
 ) -> Result<std::process::Output, WaitError> {
     let pid = child.id();
 
@@ -978,8 +1171,23 @@ pub(crate) fn wait_with_timeout(
 
     // Drain pipes while polling, or the child blocks on a full pipe buffer.
     let status = loop {
-        drain_pipe(stdout.as_mut(), &mut stdout_cap, &mut tmp);
-        drain_pipe(stderr.as_mut(), &mut stderr_cap, &mut tmp);
+        drain_pipe(
+            stdout.as_mut(),
+            &mut stdout_cap,
+            &mut tmp,
+            forwarder.as_deref_mut(),
+        );
+        drain_pipe(
+            stderr.as_mut(),
+            &mut stderr_cap,
+            &mut tmp,
+            forwarder.as_deref_mut(),
+        );
+
+        // Time-based flush so coalesced bytes stream while the child is quiet.
+        if let Some(f) = forwarder.as_deref_mut() {
+            f.tick();
+        }
 
         // Check for user cancellation before trying the child.
         if cancel.load(Ordering::Relaxed) {
@@ -1020,8 +1228,18 @@ pub(crate) fn wait_with_timeout(
     // open; drain for up to 2s and return whatever was collected.
     let drain_deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        let stdout_done = drain_pipe(stdout.as_mut(), &mut stdout_cap, &mut tmp);
-        let stderr_done = drain_pipe(stderr.as_mut(), &mut stderr_cap, &mut tmp);
+        let stdout_done = drain_pipe(
+            stdout.as_mut(),
+            &mut stdout_cap,
+            &mut tmp,
+            forwarder.as_deref_mut(),
+        );
+        let stderr_done = drain_pipe(
+            stderr.as_mut(),
+            &mut stderr_cap,
+            &mut tmp,
+            forwarder.as_deref_mut(),
+        );
         if (stdout_done && stderr_done) || Instant::now() >= drain_deadline {
             break;
         }
@@ -1036,11 +1254,13 @@ pub(crate) fn wait_with_timeout(
 }
 
 /// Drain all currently-available bytes from `reader` into `cap`. Returns
-/// `true` on EOF (or no reader), `false` on `WouldBlock`.
+/// `true` on EOF (or no reader), `false` on `WouldBlock`. Each drained chunk
+/// is also forwarded to `forwarder` for live streaming.
 fn drain_pipe(
     reader: Option<&mut unnamed_pipe::Recver>,
     cap: &mut BoundedCapture,
     tmp: &mut [u8],
+    mut forwarder: Option<&mut ChunkForwarder>,
 ) -> bool {
     let Some(reader) = reader else {
         return true;
@@ -1048,7 +1268,12 @@ fn drain_pipe(
     loop {
         match reader.read(tmp) {
             Ok(0) => return true, // EOF — write end closed
-            Ok(n) => cap.push(&tmp[..n]),
+            Ok(n) => {
+                cap.push(&tmp[..n]);
+                if let Some(f) = forwarder.as_mut() {
+                    f.push(&tmp[..n]);
+                }
+            }
             Err(ref e) if is_would_block(e) => return false,
             Err(_) => return true, // treat unexpected errors as EOF
         }
