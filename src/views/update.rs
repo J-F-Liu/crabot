@@ -1,5 +1,5 @@
 //! Version-check banner shown at the top of the window when a newer Crabot
-//! release is available on crates.io.
+//! release is available on GitHub.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -9,7 +9,6 @@ use iced::{
     widget::{Space, button, container, row, text},
 };
 use semver::Version;
-use serde::Deserialize;
 
 use crate::OverlayEvent;
 
@@ -17,19 +16,6 @@ use crate::OverlayEvent;
 pub(crate) const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// GitHub releases page opened from the banner.
 pub(crate) const RELEASES_URL: &str = "https://github.com/J-F-Liu/crabot/releases";
-/// crates.io endpoint listing the most recent Crabot versions, newest first.
-const CRATES_IO_URL: &str = "https://crates.io/api/v1/crates/crabot/versions?per_page=5";
-
-#[derive(Deserialize)]
-struct VersionsResponse {
-    versions: Vec<CrateVersion>,
-}
-
-#[derive(Deserialize)]
-struct CrateVersion {
-    num: String,
-    yanked: bool,
-}
 
 /// Download state machine for the "Install New Version" button.
 #[derive(Clone)]
@@ -44,30 +30,30 @@ pub(crate) enum UpdateDownloadState {
     Failed,
 }
 
-/// Query crates.io for the latest stable version of Crabot.
+/// Query GitHub for the latest stable release of Crabot.
 /// Returns `Some(version)` if a newer version exists, `None` otherwise.
 pub(crate) async fn check_for_updates() -> Option<String> {
     let client = reqwest::Client::builder()
         .user_agent(crabot::app_title())
         .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .ok()?;
-    let response: VersionsResponse = client
-        .get(CRATES_IO_URL)
+    // `/releases/latest` redirects (302) to `/releases/tag/v{version}`.
+    let response = client
+        .get(format!("{RELEASES_URL}/latest"))
         .send()
         .await
-        .ok()?
-        .json()
-        .await
         .ok()?;
-    // Pick the newest stable release, skipping yanked and pre-release versions.
-    let latest = response
-        .versions
-        .into_iter()
-        .filter(|v| !v.yanked)
-        .filter_map(|v| Version::parse(&v.num).ok())
-        .filter(|v| v.pre.is_empty())
-        .max()?;
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)?
+        .to_str()
+        .ok()?;
+    // GitHub tags are prefixed with "v" (e.g. "v0.4.2"); strip it before parsing.
+    let tag = location.rsplit('/').next()?;
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    let latest = Version::parse(version).ok()?;
     let current = Version::parse(CURRENT_VERSION).ok()?;
     (latest > current).then(|| latest.to_string())
 }
@@ -103,7 +89,7 @@ fn asset_download_url(version: &str, asset_name: &str) -> String {
     format!("{RELEASES_URL}/download/v{version}/{asset_name}")
 }
 
-/// Re-check crates.io for the latest version, then download and extract it.
+/// Re-check GitHub for the latest version, then download and extract it.
 /// Used by the "Install New Version" button so the version is always fresh.
 pub(crate) async fn check_and_download() -> Result<PathBuf, String> {
     let version = check_for_updates()
