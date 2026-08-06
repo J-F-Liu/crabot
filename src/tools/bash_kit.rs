@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bashkit::analysis::analyze_with_limits;
@@ -120,9 +120,7 @@ async fn sync_cancel(cancel: &AtomicBool, shared: &Arc<AtomicBool>) {
 
 /// Build a bashkit `Bash` wired to the real workspace.
 ///
-/// Mounts: host filesystem root read-only (copy-on-write overlay), real home
-/// read-write with `$HOME` pointed at it, and workspace read-write directly
-/// (the overlay's upper layer would swallow `echo > file` writes).
+/// Applies mount table (`mounts`), seeds env, and bridges external command names.
 fn build_bash(
     workspace: &Path,
     timeout: Duration,
@@ -130,33 +128,34 @@ fn build_bash(
     deadline_ms: Arc<AtomicU64>,
     cancel: Arc<AtomicBool>,
 ) -> Bash {
-    let workspace_root = host_filesystem_root(workspace);
     let home_mount = real_home_mount();
     let workspace_vfs = super::convert_path_to_unix_style(workspace);
-
-    let mut allowed = vec![workspace_root.clone(), workspace.to_path_buf()];
-    if let Some(home) = &home_mount {
-        allowed.push(home.host_path.clone());
-    }
+    let mount_specs = mounts(workspace, home_mount.as_ref());
+    let shared_mounts: Arc<[RealMount]> = Arc::from(mount_specs.clone());
 
     let mut builder = Bash::builder()
         .cwd(PathBuf::from(&workspace_vfs))
-        .allowed_mount_paths(allowed)
-        .mount_real_readonly(workspace_root);
-
-    if let Some(home) = &home_mount {
-        builder = builder.mount_real_readwrite_at(home.host_path.clone(), home.vfs_path.clone());
+        .allowed_mount_paths(
+            mount_specs
+                .iter()
+                .map(|m| m.host_path.clone())
+                .collect::<Vec<_>>(),
+        );
+    for m in mount_specs {
+        builder = if m.writable {
+            builder.mount_real_readwrite_at(m.host_path, m.vfs_path)
+        } else {
+            builder.mount_real_readonly_at(m.host_path, m.vfs_path)
+        };
     }
 
-    builder = builder
-        .mount_real_readwrite_at(workspace.to_path_buf(), workspace_vfs)
-        .limits(
-            ExecutionLimits::default()
-                .timeout(timeout)
-                .max_commands(1_000_000)
-                .max_stdout_bytes(MAX_STREAM_BYTES)
-                .max_stderr_bytes(MAX_STREAM_BYTES),
-        );
+    builder = builder.limits(
+        ExecutionLimits::default()
+            .timeout(timeout)
+            .max_commands(1_000_000)
+            .max_stdout_bytes(MAX_STREAM_BYTES)
+            .max_stderr_bytes(MAX_STREAM_BYTES),
+    );
 
     // Seed env from host; HOME comes from the VFS home mount so `~` expands to
     // a clean POSIX path (the host's is often a Windows `C:\` form).
@@ -174,23 +173,29 @@ fn build_bash(
             name.clone(),
             Box::new(HostCommandBuiltin {
                 name: name.clone(),
-                workspace: workspace.to_path_buf(),
-                home: home_mount.clone(),
+                mounts: Arc::clone(&shared_mounts),
                 cancel: Arc::clone(&cancel),
                 deadline_ms: Arc::clone(&deadline_ms),
                 timeout,
             }),
         );
     }
+    // bashkit warns on stderr per read-write mount; silence stderr while
+    // building (locked so concurrent builds can't swap each other's handles).
+    let _lock = SILENCER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _silence = stderr_silencer::StderrSilencer::new();
     builder.build()
 }
+
+/// Serializes `Bash::build` — the stderr swap is process-wide, so concurrent
+/// silencers would save and restore each other's handles.
+static SILENCER_LOCK: Mutex<()> = Mutex::new(());
 
 /// Builtin that executes a host command directly (no bash involved).
 struct HostCommandBuiltin {
     name: String,
-    workspace: PathBuf,
-    /// Real home mount (host + VFS paths), for mapping `cd ~` back to the host.
-    home: Option<RealMount>,
+    /// VFS mount table, shared with `build_bash` via Arc.
+    mounts: Arc<[RealMount]>,
     cancel: Arc<AtomicBool>,
     deadline_ms: Arc<AtomicU64>,
     /// Total user-visible timeout for the whole script (used in error messages).
@@ -219,11 +224,7 @@ impl Builtin for HostCommandBuiltin {
             let mut cmd = std::process::Command::new(&self.name);
             cmd.args(ctx.args);
             cmd.env_remove("RUST_RECURSION_COUNT"); // rustup proxies abort past their counter max
-            cmd.current_dir(vfs_cwd_to_host(
-                ctx.cwd,
-                &self.workspace,
-                self.home.as_ref(),
-            )?);
+            cmd.current_dir(resolve_cwd(ctx.cwd, &self.mounts)?);
 
             let stdin_writer = match ctx.stdin {
                 Some(data) => {
@@ -326,38 +327,44 @@ fn match_mount(vfs_cwd: &Path, vfs_prefix: &str, host_root: &Path) -> Option<Pat
     Some(host_root.join(components.as_path()))
 }
 
-/// Map a bashkit VFS cwd back to the real host path.
-///
-/// The cwd is matched against the workspace and home mounts first, then the
-/// read-only root mount. A cwd matching none is an error: silently falling
-/// back to the workspace would run the command in the wrong directory.
-///
-/// `pub` only so `tests/bash.rs` can exercise the mapping.
-pub fn vfs_cwd_to_host(
-    vfs_cwd: &Path,
-    workspace: &Path,
-    home: Option<&RealMount>,
-) -> Result<PathBuf, String> {
-    let workspace_vfs = super::convert_path_to_unix_style(workspace);
-    if let Some(host) = match_mount(vfs_cwd, &workspace_vfs, workspace) {
-        return Ok(host);
-    }
-    if let Some(home) = home {
-        let home_vfs = home.vfs_path.to_string_lossy();
-        if let Some(host) = match_mount(vfs_cwd, &home_vfs, &home.host_path) {
+/// Translate the bashkit VFS cwd to the real host path via the mount table.
+fn resolve_cwd(vfs_cwd: &Path, mount_specs: &[RealMount]) -> Result<PathBuf, String> {
+    for m in mount_specs {
+        if let Some(host) = match_mount(vfs_cwd, &m.vfs_path.to_string_lossy(), &m.host_path) {
             return Ok(host);
         }
-    }
-    // Root mount: strip the leading `/` and join onto the host filesystem root
-    // (identity on Unix; the workspace's drive root on Windows).
-    if vfs_cwd.components().next() == Some(Component::RootDir) {
-        let rest = vfs_cwd.strip_prefix("/").unwrap_or(vfs_cwd);
-        return Ok(host_filesystem_root(workspace).join(rest));
     }
     Err(format!(
         "host command outside mapped cwd: {}",
         vfs_cwd.display()
     ))
+}
+
+/// The VFS mount table, in match order (root must be last — its `/` prefix
+/// matches everything). Single source of truth for `build_bash` (mounting)
+/// and `HostCommandBuiltin` (cwd mapping), so they can't drift apart.
+fn mounts(workspace: &Path, home: Option<&RealMount>) -> Vec<RealMount> {
+    let mut list = vec![
+        RealMount {
+            host_path: workspace.to_path_buf(),
+            vfs_path: PathBuf::from(super::convert_path_to_unix_style(workspace)),
+            writable: true,
+        },
+        RealMount {
+            host_path: std::env::temp_dir(),
+            vfs_path: PathBuf::from("/tmp"),
+            writable: true,
+        },
+        RealMount {
+            host_path: host_filesystem_root(workspace),
+            vfs_path: PathBuf::from("/"),
+            writable: false,
+        },
+    ];
+    if let Some(home) = home {
+        list.insert(1, home.clone());
+    }
+    list
 }
 
 /// Host filesystem root backing the VFS root overlay: `/` on Unix.
@@ -380,13 +387,12 @@ fn host_filesystem_root(workspace: &Path) -> PathBuf {
     PathBuf::from("\\")
 }
 
-/// A real host directory mounted into the VFS.
-///
-/// `pub` only so `tests/bash.rs` can build a fake home mount.
+/// A real host directory mounted into the VFS (see [`mounts`]).
 #[derive(Clone)]
-pub struct RealMount {
+struct RealMount {
     pub host_path: PathBuf,
     pub vfs_path: PathBuf,
+    pub writable: bool,
 }
 
 /// Resolve the real host home directory and its POSIX VFS mount path.
@@ -396,6 +402,7 @@ fn real_home_mount() -> Option<RealMount> {
     Some(RealMount {
         host_path: host_home,
         vfs_path,
+        writable: true,
     })
 }
 
@@ -404,8 +411,9 @@ fn home_host_path() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
     {
+        // Git Bash exports HOME as an MSYS path like `/c/Users/...`.
         #[cfg(windows)]
-        if let Some(win) = msys_to_windows_path(&home)
+        if let Some(win) = super::convert_path_to_windows_style(&home)
             && win.is_dir()
         {
             return Some(win);
@@ -420,27 +428,6 @@ fn home_host_path() -> Option<PathBuf> {
         if p.is_absolute() && p.is_dir() {
             return Some(p);
         }
-    }
-    None
-}
-
-/// Convert an MSYS-style POSIX path (`/c/Users/liujf`) to a Windows path (`C:\Users\liujf`).
-#[cfg(windows)]
-fn msys_to_windows_path(msys: &str) -> Option<PathBuf> {
-    let trimmed = msys.trim_start_matches('/');
-    let mut parts = trimmed.split('/');
-    let first = parts.next()?;
-    if first.len() == 1
-        && first
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic())
-    {
-        let mut win = PathBuf::from(format!("{}:\\", first.to_ascii_uppercase()));
-        for p in parts {
-            win.push(p);
-        }
-        return Some(win);
     }
     None
 }
@@ -472,4 +459,142 @@ fn format_exec_result(result: &ExecResult) -> String {
         );
     }
     super::truncate_output(output)
+}
+
+/// Drain a captured-stderr pipe, re-emitting everything except bashkit's
+/// "writable mount" warning (0.15.0 has no flag to silence it).
+fn drain_and_reemit(mut file: std::fs::File) {
+    let mut buf = Vec::new();
+    let _ = std::io::Read::read_to_end(&mut file, &mut buf);
+    for line in String::from_utf8_lossy(&buf).lines() {
+        if !line.starts_with("bashkit: warning: writable mount") {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// Swap stderr to a pipe during `Bash::build`; on drop, restore stderr and
+/// re-emit the captured output via `drain_and_reemit`.
+#[cfg(unix)]
+mod stderr_silencer {
+    use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+
+    pub(super) struct StderrSilencer {
+        saved: Option<OwnedFd>,
+        read_end: Option<OwnedFd>,
+    }
+
+    impl StderrSilencer {
+        pub(super) fn new() -> Self {
+            let mut fds = [0i32; 2];
+            // SAFETY: pipe() creates two fresh fds, wrapped in OwnedFd at once.
+            let (read_end, write_end) = if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
+                unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+            } else {
+                return Self {
+                    saved: None,
+                    read_end: None,
+                };
+            };
+            // SAFETY: dup() duplicates the stderr fd.
+            let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
+            if saved < 0 {
+                return Self {
+                    saved: None,
+                    read_end: None,
+                }; // write_end closed here
+            }
+            // SAFETY: saved is a fresh fd, now owned.
+            let saved = unsafe { OwnedFd::from_raw_fd(saved) };
+            // SAFETY: dup2 on raw fds; STDERR_FILENO then holds a dup of the
+            // write end, so dropping `write_end` keeps the pipe open.
+            unsafe { libc::dup2(write_end.as_raw_fd(), libc::STDERR_FILENO) };
+            drop(write_end);
+            Self {
+                saved: Some(saved),
+                read_end: Some(read_end),
+            }
+        }
+    }
+
+    impl Drop for StderrSilencer {
+        fn drop(&mut self) {
+            // Restore stderr — this dup2 also closes the pipe write end held
+            // in STDERR_FILENO, so the drain below reaches EOF.
+            if let Some(saved) = self.saved.take() {
+                // SAFETY: saved is the fd captured in `new`.
+                unsafe { libc::dup2(saved.as_raw_fd(), libc::STDERR_FILENO) };
+                // saved (OwnedFd) dropped here → closes the duplicate.
+            }
+            if let Some(read_end) = self.read_end.take() {
+                super::drain_and_reemit(std::fs::File::from(read_end));
+            }
+        }
+    }
+}
+
+/// Same as the Unix variant via `SetStdHandle` — std re-queries
+/// `STD_ERROR_HANDLE` per write, so the swap takes effect immediately.
+#[cfg(windows)]
+mod stderr_silencer {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    unsafe extern "system" {
+        fn CreatePipe(
+            hreadpipe: *mut isize,
+            hwritepipe: *mut isize,
+            lppipeattributes: *mut std::ffi::c_void,
+            nsize: u32,
+        ) -> i32;
+        fn GetStdHandle(n_std_handle: u32) -> isize;
+        fn SetStdHandle(n_std_handle: u32, handle: isize) -> i32;
+    }
+    const STD_ERROR_HANDLE: u32 = (-12i32) as u32;
+
+    pub(super) struct StderrSilencer {
+        saved: Option<isize>,
+        read_end: Option<OwnedHandle>,
+        /// Held open during `build()`; closed on drop before reading the pipe.
+        write_end: Option<OwnedHandle>,
+    }
+
+    impl StderrSilencer {
+        pub(super) fn new() -> Self {
+            let mut read = 0isize;
+            let mut write = 0isize;
+            // SAFETY: CreatePipe with valid out-pointers; null attrs → defaults.
+            if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null_mut(), 0) } == 0 {
+                return Self {
+                    saved: None,
+                    read_end: None,
+                    write_end: None,
+                };
+            }
+            // SAFETY: handles are freshly created, wrapped in OwnedHandle.
+            let read_end = unsafe { OwnedHandle::from_raw_handle(read as *mut _) };
+            let write_end = unsafe { OwnedHandle::from_raw_handle(write as *mut _) };
+            // SAFETY: GetStdHandle/SetStdHandle with valid constants.
+            let saved = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+            unsafe { SetStdHandle(STD_ERROR_HANDLE, write_end.as_raw_handle() as isize) };
+            Self {
+                saved: Some(saved),
+                read_end: Some(read_end),
+                write_end: Some(write_end),
+            }
+        }
+    }
+
+    impl Drop for StderrSilencer {
+        fn drop(&mut self) {
+            // Restore stderr first, then close the write end so reads reach EOF.
+            if let Some(saved) = self.saved.take() {
+                // SAFETY: restores the handle captured in `new`.
+                unsafe { SetStdHandle(STD_ERROR_HANDLE, saved) };
+            }
+            self.write_end.take();
+            if let Some(read_end) = self.read_end.take() {
+                super::drain_and_reemit(std::fs::File::from(read_end));
+            }
+        }
+    }
 }

@@ -500,7 +500,7 @@ fn candidate_path(path: &str, workspace: &std::path::Path) -> std::path::PathBuf
 /// `C:\Users\...` `PathBuf`. Returns `None` when `path` is not Unix‑style
 /// absolute (i.e. does not start with `/`).
 #[cfg(windows)]
-fn convert_path_to_windows_style(path: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn convert_path_to_windows_style(path: &str) -> Option<std::path::PathBuf> {
     let stripped = path.strip_prefix('/')?;
     let native = if let Some((drive, rest)) = stripped.split_once('/')
         && drive.len() == 1

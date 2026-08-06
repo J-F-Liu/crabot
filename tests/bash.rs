@@ -1,13 +1,12 @@
-//! Tests for the `bash` tool: the bashkit in-process interpreter route, its
-//! `bash -c` fallback, and the VFS→host cwd mapping (`vfs_cwd_to_host`).
+//! Tests for the `bash` tool: the bashkit in-process interpreter route and
+//! its `bash -c` fallback.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-use crabot::tools::bash_kit::{RealMount, vfs_cwd_to_host};
-use crabot::tools::{ToolRegistry, convert_path_to_unix_style};
+use crabot::tools::ToolRegistry;
 
 /// Helper: create a temp workspace dir that is cleaned up on drop.
 struct TempDir {
@@ -227,6 +226,82 @@ fn bashkit_real_file_writes() {
     assert_eq!(copied, "hello\n");
 }
 
+// ── read-only root enforcement ──────────────────────────────
+
+/// Writes outside the workspace, home, and `/tmp` mounts must FAIL with a
+/// readonly error — never fake-succeed into a throwaway overlay.
+#[test]
+fn bashkit_readonly_zone_write_fails() {
+    let tmp = TempDir::new("bash_ro_write").unwrap();
+    let result = run_bash("echo hello > /crabot_ro_probe.txt", &tmp.path, None).unwrap();
+    assert!(
+        result.contains("readonly"),
+        "expected readonly error, got: {result}"
+    );
+    assert!(result.contains("Exit code:"), "unexpected: {result}");
+}
+
+/// `rm` on an EXISTING host file in the readonly zone fails (readonly error)
+/// and the host file survives — no whiteout swallowing.
+#[test]
+fn bashkit_readonly_zone_rm_fails() {
+    // Host probe path: `/var/tmp` on Unix (outside the mounts), the
+    // workspace's drive root on Windows. The VFS form must NOT carry the
+    // drive letter — the `/` mount's backend is already the drive.
+    let name = format!("crabot_ro_probe_{}", std::process::id());
+    #[cfg(unix)]
+    let (probe_host, probe_vfs) = (
+        Path::new("/var/tmp").join(&name),
+        format!("/var/tmp/{name}"),
+    );
+    #[cfg(windows)]
+    let (probe_host, probe_vfs) = {
+        let mut root = PathBuf::from(crabot_workspace().components().next().unwrap().as_os_str());
+        root.push("\\");
+        (root.join(&name), format!("/{name}"))
+    };
+
+    // Create the host file directly; skip if this dir isn't writable by us.
+    if fs::write(&probe_host, b"probe").is_err() {
+        return;
+    }
+    let result = run_bash(&format!("rm {probe_vfs}"), &crabot_workspace(), None).unwrap();
+    assert!(
+        result.contains("readonly"),
+        "expected readonly error, got: {result}"
+    );
+    assert!(result.contains("Exit code:"), "unexpected: {result}");
+    // The host file must survive the failed `rm`.
+    assert_eq!(fs::read_to_string(&probe_host).unwrap(), "probe");
+    let _ = fs::remove_file(&probe_host);
+}
+
+/// `/tmp` is a real read-write mount: writes persist to the host temp dir,
+/// visible to later host commands.
+#[test]
+fn bashkit_tmp_mount_writes_to_real_temp() {
+    let tmp = TempDir::new("bash_tmp").unwrap();
+    let probe = format!("crabot_tmp_probe_{}", std::process::id());
+    let result = run_bash(&format!("echo hello > /tmp/{probe}"), &tmp.path, None).unwrap();
+    assert!(!result.contains("Exit code"), "unexpected: {result}");
+    let host = std::env::temp_dir().join(&probe);
+    assert_eq!(fs::read_to_string(&host).unwrap(), "hello\n");
+    let _ = fs::remove_file(&host);
+}
+
+/// `cd /tmp` maps host commands to the real host temp dir, not the workspace:
+/// `git` there is not inside a repository (the workspace is).
+#[test]
+fn bashkit_cd_tmp_does_not_fall_back_to_workspace() {
+    let result = run_bash(
+        "cd /tmp && git rev-parse --show-toplevel",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("fatal:"), "unexpected: {result}");
+}
+
 // ── cwd mapping ─────────────────────────────────────────────
 
 /// `cd src && cargo check` — cwd persists via ctx.cwd, mapped to the host.
@@ -365,105 +440,4 @@ fn bashkit_parse_error_falls_back() {
         result.contains("unexpected EOF") || result.contains("EOF"),
         "unexpected: {result}"
     );
-}
-
-// ── vfs_cwd_to_host mapping ─────────────────────────────────
-
-/// A workspace path in the host's native style.
-fn test_workspace() -> PathBuf {
-    #[cfg(windows)]
-    {
-        PathBuf::from(r"D:\Rust\crabot")
-    }
-    #[cfg(not(windows))]
-    {
-        PathBuf::from("/home/user/crabot")
-    }
-}
-
-fn test_home() -> RealMount {
-    #[cfg(windows)]
-    {
-        RealMount {
-            host_path: PathBuf::from(r"C:\Users\alice"),
-            vfs_path: PathBuf::from("/c/Users/alice"),
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        RealMount {
-            host_path: PathBuf::from("/home/alice"),
-            vfs_path: PathBuf::from("/home/alice"),
-        }
-    }
-}
-
-/// A cwd under the workspace maps back to the real host path.
-#[test]
-fn cwd_under_workspace_maps_to_host() {
-    let ws = test_workspace();
-    let vfs = convert_path_to_unix_style(&ws);
-    let cwd = PathBuf::from(format!("{vfs}/src/tools"));
-    assert_eq!(
-        vfs_cwd_to_host(&cwd, &ws, None).unwrap(),
-        ws.join("src/tools")
-    );
-}
-
-/// The workspace itself maps to the workspace.
-#[test]
-fn cwd_equals_workspace_maps_to_workspace() {
-    let ws = test_workspace();
-    let vfs = convert_path_to_unix_style(&ws);
-    assert_eq!(vfs_cwd_to_host(Path::new(&vfs), &ws, None).unwrap(), ws);
-}
-
-/// `cd ~` maps to the real home directory, not the workspace.
-#[test]
-fn cwd_under_home_maps_to_home() {
-    let ws = test_workspace();
-    let home = test_home();
-    let home_vfs = home.vfs_path.to_string_lossy();
-    let cwd = PathBuf::from(format!("{home_vfs}/Documents"));
-    assert_eq!(
-        vfs_cwd_to_host(&cwd, &ws, Some(&home)).unwrap(),
-        home.host_path.join("Documents")
-    );
-}
-
-/// A cwd on the read-only root mount (e.g. `cd /tmp`) maps to the host
-/// filesystem root, never the workspace.
-#[test]
-fn cwd_on_root_mount_maps_to_host_root() {
-    let ws = test_workspace();
-    let cwd = PathBuf::from("/tmp");
-    let host = vfs_cwd_to_host(&cwd, &ws, None).unwrap();
-    #[cfg(windows)]
-    assert_eq!(host, PathBuf::from(r"D:\tmp")); // workspace's drive root
-    #[cfg(not(windows))]
-    assert_eq!(host, PathBuf::from("/tmp"));
-}
-
-/// A sibling of the workspace (longer prefix match) is not the workspace:
-/// it maps through the root mount instead of silently landing there.
-#[test]
-fn cwd_sibling_of_workspace_does_not_map_to_workspace() {
-    let ws = test_workspace();
-    let mut sibling_vfs = convert_path_to_unix_style(&ws);
-    sibling_vfs.push('2'); // e.g. /d/Rust/crabot2 or /home/user/crabot2
-    let cwd = PathBuf::from(format!("{sibling_vfs}/src"));
-    let host = vfs_cwd_to_host(&cwd, &ws, None).unwrap();
-    assert_ne!(host, ws.join("src"));
-    #[cfg(windows)]
-    assert_eq!(host, PathBuf::from(r"D:\d\Rust\crabot2\src"));
-    #[cfg(not(windows))]
-    assert_eq!(host, cwd); // identity on Unix
-}
-
-/// A cwd that matches no mount is an error, not a silent workspace fallback.
-#[test]
-fn unmappable_cwd_is_an_error() {
-    let ws = test_workspace();
-    let err = vfs_cwd_to_host(Path::new("src"), &ws, None).unwrap_err();
-    assert!(err.contains("outside mapped cwd"), "unexpected: {err}");
 }
