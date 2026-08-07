@@ -19,7 +19,7 @@ impl Tool for BashTool {
     }
 
     fn instruction(&self) -> &str {
-        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files, dedicated tools are available for those operations."
+        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files, dedicated tools are available for those operations. Run `compgen -b` to list all available built-in commands (such as `json`, `csv`, `yaml`, `tomlq`, `http`); run `help <cmd>` for a description of a specific builtin."
     }
 
     fn schema(&self) -> Value {
@@ -115,8 +115,9 @@ fn execute_real_bash(
     let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
 
     let mut cmd = std::process::Command::new("bash");
-    // Don't inherit RUST_RECURSION_COUNT: rustup proxies abort past their counter max.
-    cmd.env_remove("RUST_RECURSION_COUNT");
+    // Drop secrets (names ending in `API_KEY`) and rustup's recursion counter
+    // (rustup proxies abort past their counter max).
+    super::sanitize_child_env(&mut cmd);
     cmd.arg("-c")
         .arg(command)
         .current_dir(workspace)

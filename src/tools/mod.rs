@@ -824,6 +824,24 @@ pub(crate) fn detach_child(cmd: &mut std::process::Command) {
     }
 }
 
+/// Whether an env var name is a secret that must not reach bash execution
+/// (names ending in `API_KEY`, e.g. `OPENAI_API_KEY`).
+pub(crate) fn is_secret_env_key(key: &str) -> bool {
+    key.ends_with("API_KEY")
+}
+
+/// Strip secrets from a child command's inherited env: every variable whose
+/// name ends in `API_KEY`, plus rustup's recursion counter which aborts
+/// proxies past their max.
+pub(crate) fn sanitize_child_env(cmd: &mut std::process::Command) {
+    cmd.env_remove("RUST_RECURSION_COUNT");
+    for key in std::env::vars().map(|(k, _)| k) {
+        if is_secret_env_key(&key) {
+            cmd.env_remove(&key);
+        }
+    }
+}
+
 /// Convert an unnamed pipe end (`Sender` or `Recver`) to `std::process::Stdio`.
 #[cfg(unix)]
 pub(crate) fn pipe_to_stdio<E: Into<std::os::unix::io::OwnedFd>>(end: E) -> std::process::Stdio {

@@ -230,9 +230,10 @@ fn build_bash(
     );
 
     // Seed env from host; HOME comes from the VFS home mount so `~` expands to
-    // a clean POSIX path (the host's is often a Windows `C:\` form).
+    // a clean POSIX path (the host's is often a Windows `C:\` form). Secret
+    // vars (names ending in `API_KEY`) are withheld from the interpreter.
     for (key, value) in std::env::vars() {
-        if key != "HOME" {
+        if key != "HOME" && !super::is_secret_env_key(&key) {
             builder = builder.env(key, value);
         }
     }
@@ -302,7 +303,7 @@ impl Builtin for HostCommandBuiltin {
         let prepared = (|| -> Result<_, String> {
             let mut cmd = std::process::Command::new(&self.name);
             cmd.args(ctx.args);
-            cmd.env_remove("RUST_RECURSION_COUNT"); // rustup proxies abort past their counter max
+            super::sanitize_child_env(&mut cmd); // drop secrets + rustup counter
             cmd.current_dir(resolve_cwd(ctx.cwd, &self.mounts)?);
 
             let stdin_writer = match ctx.stdin {
