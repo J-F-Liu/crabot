@@ -32,7 +32,14 @@ const OPAQUE_BUILTINS: &[&str] = &["command", "exec"];
 /// Cached set of every builtin this bashkit build can dispatch.
 pub(crate) fn builtin_names() -> &'static HashSet<String> {
     static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
-    NAMES.get_or_init(|| Bash::new().builtin_names().into_iter().collect())
+    NAMES.get_or_init(|| {
+        let mut names: HashSet<String> = Bash::new().builtin_names().into_iter().collect();
+        // `Bash::new()` skips builder-registered builtins; `build_bash`
+        // registers these explicitly via `.python()`.
+        names.insert("python".to_string());
+        names.insert("python3".to_string());
+        names
+    })
 }
 
 /// Statically collect the external command names a script executes.
@@ -232,6 +239,10 @@ fn build_bash(
     if let Some(home) = &home_mount {
         builder = builder.env("HOME", home.vfs_path.to_string_lossy().into_owned());
     }
+
+    // Embedded Python (Monty) registers `python`/`python3` builtins and is
+    // runtime-gated in bashkit; Must come after the host-env seeding above.
+    builder = builder.python().env("BASHKIT_ALLOW_INPROCESS_PYTHON", "1");
 
     for name in external_names {
         builder = builder.builtin(

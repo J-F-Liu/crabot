@@ -216,7 +216,7 @@ fn stream_and_collect(
     (result, chunks)
 }
 
-// ── external command bridge ─────────────────────────────────
+// ── bashkit syntax features ─────────────────────────────────
 
 /// `cargo --version && git --version` — external-command bridge + `&&` list.
 #[test]
@@ -241,6 +241,51 @@ fn bashkit_if_control_flow() {
     )
     .unwrap();
     assert!(result.contains("ok"), "unexpected: {result}");
+}
+
+// ── embedded python (bashkit `python` feature) ─────────────
+
+/// `python` dispatches to bashkit's embedded Monty interpreter, not a host binary.
+#[test]
+fn bashkit_python_builtin() {
+    let result = run_bash("python -c 'print(1 + 2)'", &crabot_workspace(), None).unwrap();
+    assert!(result.contains("3"), "unexpected: {result}");
+}
+
+/// `python3` is registered as an alias of the same embedded runtime.
+#[test]
+fn bashkit_python3_version() {
+    let result = run_bash("python3 --version", &crabot_workspace(), None).unwrap();
+    assert!(result.contains("monty"), "unexpected: {result}");
+}
+
+/// Python `open()` is bridged to the VFS, so real workspace files are readable.
+#[test]
+fn bashkit_python_vfs_open() {
+    let result = run_bash(
+        "python -c \"print(open('README.md').readline().strip())\"",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("Crabot"), "unexpected: {result}");
+}
+
+/// Builtin-only scripts stream via the interpreter callback; python output
+/// must arrive in live chunks, not only at command end.
+#[test]
+fn bashkit_python_streaming() {
+    let (result, chunks) = stream_and_collect(
+        "python -c 'for i in range(3): print(i)'",
+        &crabot_workspace(),
+        None,
+    );
+    result.unwrap();
+    let joined = chunks.concat();
+    assert!(
+        joined.contains("0") && joined.contains("1") && joined.contains("2"),
+        "unexpected: {joined}"
+    );
 }
 
 // ── bashkit syntax features ─────────────────────────────────

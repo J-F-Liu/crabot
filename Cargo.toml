@@ -74,6 +74,7 @@ memchr = "2"
 linkify = "0.11.0"
 bashkit = { version = "=0.15.0", default-features = false, features = [
     "realfs",
+    "python",
 ] }
 
 [target.'cfg(unix)'.dependencies]
