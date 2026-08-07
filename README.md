@@ -45,6 +45,50 @@ If you know the structure of the LLM context window, you will appreciate the UI 
 
 Beyond the built-ins, you can add your own **custom CLI tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session.
 
+## Keyboard Shortcuts
+
+### Global
+
+| Shortcut              | Action                                                                                 |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| `Ctrl+N`              | Start a new session (new tab)                                                          |
+| `Ctrl+W`              | Close the current tab (disabled while the session is running)                          |
+| `Ctrl+0`–`Ctrl+9`     | Switch to the Nth tab (`Ctrl+0` switches to the last tab)                              |
+| `Ctrl+F`              | Toggle the search bar                                                                  |
+| `Ctrl+E`              | Expand or collapse all dialogs                                                         |
+| `Ctrl+Z` / `Ctrl+Y`   | Undo / redo in the prompt editor                                                       |
+| `Ctrl+=` / `Ctrl+-`   | Zoom the font in / out                                                                 |
+| `↑` / `↓`             | Scroll the message view; navigate the session list while the session picker is focused |
+| `Home` / `End`        | Scroll the message view to the top / bottom                                            |
+| `PageUp` / `PageDown` | Scroll the message view up / down by one page                                          |
+| `Space`               | Scroll the message view down by one page                                               |
+| `Esc`                 | Close the settings dialog or search bar, or exit selectable-text mode                  |
+
+### Mouse
+
+| Gesture                | Action                                                                                                                                                   |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Double-click a message | Toggle the message between rendered Markdown and plain selectable text (double-click again to switch back; `Esc` exits selectable mode for all messages) |
+| `Ctrl+Click` a link    | Open the link in your default browser                                                                                                                    |
+
+### Prompt & inputs
+
+| Shortcut             | Action                                          |
+| -------------------- | ----------------------------------------------- |
+| `Enter`              | Send the prompt (or submit the ask-tool answer) |
+| `Shift+Enter`        | Insert a newline in the prompt editor           |
+| `Enter` (search bar) | Jump to the next search match                   |
+
+### Dropdowns (when open)
+
+| Shortcut              | Action                        |
+| --------------------- | ----------------------------- |
+| `↑` / `↓`             | Move the selection            |
+| `PageUp` / `PageDown` | Jump one page                 |
+| `Home` / `End`        | Jump to the first / last item |
+| `Enter`               | Confirm the highlighted item  |
+| `Esc`                 | Close the dropdown            |
+
 ## Installation
 
 ### Download pre-built binaries
