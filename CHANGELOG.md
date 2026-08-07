@@ -1,3 +1,26 @@
+# Crabot v0.8.0
+
+- **In-process `bash` tool** — the `bash` tool now runs inside Crabot's own embedded bash interpreter (bashkit) instead of spawning a real bash process, so shell commands work natively on Windows with no bash installed. External commands (cargo/git/…) are bridged to host executables through the sandboxed virtual filesystem, and scripts the interpreter cannot faithfully handle (parse errors, dynamic command names, `eval`/`exec`/`source`) automatically fall back to real `bash -c`.
+- **Embedded Python in `bash` tool** — the `python`/`python3` commands now dispatch to bashkit's in-process Monty interpreter (enabled via the bashkit `python` feature): no host Python needed, and `open()`/`pathlib.Path` I/O is bridged to the sandboxed virtual filesystem.
+- **Streaming `bash` tool output** — bash commands now stream their output into the tool message live (like LLM text chunks) instead of appearing all at once when the command finishes: the tool row shows a growing `Running…` buffer, then the final result replaces it in place. External commands (cargo/git/…) stream straight from the pipe drains; builtin-only scripts stream per command. Live output is capped at the configured `max_output_bytes` so runaway output cannot flood the UI, and `\r\n` is normalized to `\n` while streaming.
+- **Parallel tool calls & background tabs** — independent tool calls from a single assistant response now execute in parallel (results arrive in completion order), and sessions spawned by the `task` tool open in background tabs so the parent session keeps the view.
+- **Incremental JSONL session persistence** — sessions are now stored as `{id}.jsonl` with incremental appends instead of full rewrites. The first line holds session metadata (enabling fast session-list scanning), subsequent lines contain raw history messages, and a `Tally` record captures the cumulative usage snapshot. Legacy `.json` sessions are still loadable and migrate transparently on the next save. A new `examples/jsonl_to_json.rs` converts a session file into a whole-document JSON.
+- **Per-session file snapshots** — every file modified by the agent is snapshotted per session, and the right pane gains Revert / Revert All actions that restore the original contents in the background.
+- **Auto-retry transient LLM errors** — 429 / 5xx / connection failures are retried automatically with an on-screen countdown, so brief provider hiccups no longer interrupt a run.
+- **Ask tool prompt improvements** — ask prompts show a live countdown with an "Extend +5 min" button, a new "None apply" button answers "None of the options apply.", and "Skip" is renamed "You decide" ("No preference. Use your best judgment.").
+- **Clickable bare URLs** — URLs that appear in messages without Markdown link syntax are now rendered as clickable links, opened with Ctrl+Click.
+- **Parent session tracking** — sessions spawned by the `renew`/`task` tools show their spawning parent in the header: the parent's tab label when it is still open, else the parent session id.
+- **Last response time** — the right pane now shows when the last assistant response was received.
+- **Configurable renew threshold** — the Builtin Tools settings tab adds a context-fill threshold that triggers the `renew` handoff, and the tool-limits layout is now two columns.
+- **Faster startup** — the workspace file tree and AGENTS.md scan asynchronously on startup.
+- **Update check from GitHub Releases** — version updates are now checked against GitHub releases instead of crates.io.
+- **Session picker refinements** — re-selecting an already-open session resets it to the collapsed dialog overview, and pressing Enter in the search bar advances to the next match like the ▼ button.
+- **Clearer edit tool errors** — the edit tool now collects all argument errors (including file-read failures) before reporting, so a failed edit produces one complete message.
+- **Documentation refresh** — the README now documents every keyboard shortcut, mouse gesture, and dropdown key.
+- **Fix: ask tool result lost on Stop** — clicking Stop while an `ask` tool call was pending no longer leaves the call unmatched in session history; the call is resolved with a "Cancelled by user." result that stays paired with it on save and reload.
+
+**Full Changelog**: [`v0.7.0...v0.8.0`](https://github.com/J-F-Liu/crabot/compare/v0.7.0...v0.8.0)
+
 # Crabot v0.7.0
 
 - **Multi-tab session management** — run several sessions in parallel, each in its own tab. Create, close, and switch tabs freely; every session keeps its own conversation, model, and workspace.

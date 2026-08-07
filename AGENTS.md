@@ -126,7 +126,7 @@ Configured in `~/.crabot/mcp.ron`: transport (`Stdio("cmd args")` or `Http("url"
 
 ### Process Helpers (`src/tools/mod.rs`)
 
-Pipe I/O via `interprocess` (no reader threads); `wait_with_timeout()` (polls + drains + kills on timeout); `kill_process_tree()` (Unix pgid / Windows `taskkill /F /T`); `truncate_output()` (100KB cap, head+tail); `format_command_output()`; `resolve_path[_partial]()` (Unix-style `/c/...` and workspace-relative).
+Pipe I/O via `interprocess` (no reader threads); `wait_with_timeout()` (polls + drains + kills on timeout, optional `ChunkForwarder` for live output streaming); `ChunkForwarder` (stdout+stderr merged in arrival order, UTF-8 carry, `\r\n` → `\n`, `max_output_bytes` cap, size/time coalescing); `kill_process_tree()` (Unix pgid / Windows `taskkill /F /T`); `truncate_output()` (100KB cap, head+tail); `format_command_output()`; `resolve_path[_partial]()` (Unix-style `/c/...` and workspace-relative).
 
 ---
 
@@ -142,6 +142,7 @@ Pipe I/O via `interprocess` (no reader threads); `wait_with_timeout()` (polls + 
 - `ConversationState` owns `Vec<SessionTab>` (per-tab session, streaming, search, todo, scroll, model)
 - Dual session data: `Session.history` (raw `Vec<ChatMessage>`) + `Session.dialogs` (UI); `rebuild_dialogs()` syncs
 - Placeholder streaming: empty `Turn::assistant("")` pushed on `LlmThinking`, chunks appended, `handle_stream_done()` finalizes
+- Tool output streaming: `Tool::execute_streaming` (default delegates to `execute`); bash streams live via `SessionEvent::ToolOutput` → placeholder `ToolResult { streaming: true }` replaced in place on finish (replace-by-`call_id` in `Dialog::push_tool_result`); bashkit host-command route streams from pipe drains, builtin-only scripts via `exec_streaming` callback (skipped when external names exist — would duplicate)
 - Work modes Plan/Code/Review parsed from `workmode.md`; togglable, per-mode recipe templates
 - Custom widgets: `TextArea` (undo/redo, 100-deep, edit coalescing); `DropDown`; `PopupMenu`
 - Emoji rendering with code-region awareness; JSON-safe tool output; CJK fonts via `fontdb`; RFD file dialogs
