@@ -800,8 +800,13 @@ pub(crate) fn center_pane<'a>(
             .on_scroll(CenterPaneEvent::SessionViewScrolled),
             ask_request
                 .map(|request| {
-                    super::tool_message::ask_view(request, ask_input, font_scale)
-                        .map(CenterPaneEvent::Conversation)
+                    super::tool_message::ask_view(
+                        request,
+                        ask_input,
+                        tab.session_state.ask_seconds_left,
+                        font_scale,
+                    )
+                    .map(CenterPaneEvent::Conversation)
                 })
                 .unwrap_or_else(|| Space::new().into()),
             status_line(status, streaming, &running_tabs, viewing_number, font_scale),

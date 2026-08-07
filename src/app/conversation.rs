@@ -9,6 +9,8 @@ use futures::{SinkExt, future::FutureExt};
 use genai::chat::ChatRole;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::app::session_state::{self, AskAction, SessionEvent, TaskRequest};
 use crate::app::session_tab::SessionTab;
@@ -453,6 +455,13 @@ fn ask_action(app: &mut App, action: AskAction) -> Task<Message> {
     let result = match action {
         AskAction::OptionSelected(option) => {
             app.conversation.viewing_mut().session_state.ask_input = option;
+            return Task::none();
+        }
+        AskAction::Extend => {
+            app.conversation
+                .viewing_mut()
+                .session_state
+                .extend_ask_deadline();
             return Task::none();
         }
         AskAction::Ok => Ok(app.conversation.viewing().session_state.ask_input.clone()),
@@ -1186,10 +1195,10 @@ pub(crate) fn start_dialog(
     tab.session_state.start_index = tab.session.total_turns();
     tab.session_state.auto_scroll.store(true, Ordering::Relaxed);
 
-    // Create a fresh mpsc channel for this stream's ask-tool responses,
-    // and one for task-tool (sub-agent) reports.
+    // Fresh ask-response / task-report channels and a fresh ask deadline for this stream.
     let (ask_tx, ask_rx) = tokio::sync::mpsc::unbounded_channel();
     tab.session_state.ask_sender = Some(ask_tx);
+    tab.session_state.ask_deadline = Arc::new(Mutex::new(Instant::now()));
     let (task_tx, task_rx) = tokio::sync::mpsc::unbounded_channel();
     tab.session_state.task_sender = Some(task_tx);
 
@@ -1214,6 +1223,7 @@ pub(crate) fn start_dialog(
         tools,
         injected_prompt: tab.session_state.injected_prompt.clone(),
         ask_receiver: ask_rx,
+        ask_deadline: tab.session_state.ask_deadline.clone(),
         task_receiver: task_rx,
         user_agent: crabot::app_title().to_string(),
         cancel_token: tab.session_state.cancel_token.clone(),

@@ -12,6 +12,7 @@ use super::theme::{
     CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT, color_diff_bg_add, color_diff_bg_del,
     color_muted, color_text, color_tool_content_bg, color_tool_content_border,
 };
+use crate::app::session_state::ASK_EXTEND_SECS;
 use crate::tools::edit::EditParam;
 use crate::tools::todo::{TodoItem, TodoStatus};
 use crate::{AskAction, AskRequest, ConversationEvent};
@@ -77,9 +78,28 @@ fn ask_option_list(
 pub(crate) fn ask_view(
     request: &AskRequest,
     input: &str,
+    seconds_left: u64,
     font_scale: f32,
 ) -> Element<'static, ConversationEvent> {
-    let header = text("🤖 LLM asks:").size(13.0).color(CRABOT_TOOL_ACCENT);
+    let countdown: Element<'static, ConversationEvent> = row![
+        text(format!("⏳ {seconds_left}s left"))
+            .size(12.0 * font_scale)
+            .color(color_muted()),
+        button(text(format!("Extend +{} min", ASK_EXTEND_SECS / 60)))
+            .style(secondary_button)
+            // Dead at 0s — the timeout result is already in flight.
+            .on_press_maybe(
+                (seconds_left > 0).then_some(ConversationEvent::AskAction(AskAction::Extend))
+            ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into();
+    let header = row![
+        text("🤖 LLM asks:").size(13.0).color(CRABOT_TOOL_ACCENT),
+        Space::new().width(Fill),
+        countdown
+    ];
     let question: Element<'static, ConversationEvent> =
         SelectableText::new(request.question.clone())
             .style(sel_default)

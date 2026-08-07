@@ -9,7 +9,7 @@ use iced::widget::scrollable::Viewport;
 use tokio::sync::mpsc;
 
 use crate::app::{SessionEndStatus, SessionTab};
-use crate::llm::DialogPhase;
+use crate::llm::{DialogPhase, lock};
 use crate::model::Cost;
 use crate::model::TokenAmount;
 use crate::views::ASK_INPUT;
@@ -22,6 +22,10 @@ use genai::chat::{ChatMessage, ChatRole};
 
 /// Minimum context-window size (tokens) for which the auto-injected renew hint is eligible.
 const MIN_CW_FOR_RENEW_HINT: u32 = 1_000_000;
+/// Seconds the builtin ask tool waits for user input before timing out.
+pub(crate) const ASK_TIMEOUT_SECS: u64 = 120;
+/// Seconds added to the ask deadline each time the user clicks "Extend".
+pub(crate) const ASK_EXTEND_SECS: u64 = 300;
 
 /// Streaming session state bundled together for the LLM interaction lifecycle.
 #[derive(Debug)]
@@ -40,6 +44,10 @@ pub(crate) struct SessionState {
     /// Active ask-tool request shown in the tool turn.
     pub(crate) ask_request: Option<AskRequest>,
     pub(crate) ask_input: String,
+    /// Shared ask-tool deadline — the UI extends it while a question is pending.
+    pub(crate) ask_deadline: Arc<Mutex<Instant>>,
+    /// Seconds left on the active ask countdown (ticked by `AskCountdown`).
+    pub(crate) ask_seconds_left: u64,
     /// Sender for the builtin ask tool — the UI calls `send()` to deliver
     /// the user's response to the streaming task's receiver.
     pub(crate) ask_sender: Option<mpsc::UnboundedSender<Result<String, String>>>,
@@ -67,6 +75,8 @@ impl SessionState {
             pending_prompt: None,
             ask_request: None,
             ask_input: String::new(),
+            ask_deadline: Arc::new(Mutex::new(Instant::now())),
+            ask_seconds_left: 0,
             ask_sender: None,
             task_sender: None,
             auto_scroll: Arc::new(AtomicBool::new(true)),
@@ -79,6 +89,14 @@ impl SessionState {
     /// Signal this session to stop streaming.
     pub(crate) fn stop(&self) {
         self.cancel_token.store(true, Ordering::Release);
+    }
+
+    /// Push the ask deadline back by `ASK_EXTEND_SECS` and refresh the
+    /// countdown immediately instead of waiting for the next tick.
+    pub(crate) fn extend_ask_deadline(&mut self) {
+        let mut deadline = lock(&self.ask_deadline);
+        *deadline += Duration::from_secs(ASK_EXTEND_SECS);
+        self.ask_seconds_left = deadline.saturating_duration_since(Instant::now()).as_secs();
     }
 
     /// Store the raw content of a user prompt into the shared lock for
@@ -147,6 +165,8 @@ pub(crate) enum AskAction {
     NoneApply,
     /// User selected one of the provided options.
     OptionSelected(String),
+    /// User extended the response deadline.
+    Extend,
 }
 
 /// Task-tool spawn request — defined in the lib crate next to the tool.
@@ -159,6 +179,8 @@ pub(crate) enum SessionEvent {
     /// Paths snapshotted before tool execution — populate the right-pane Revert list.
     SnapshotsCaptured(Vec<String>),
     AskRequest(AskRequest),
+    /// Seconds remaining on the active ask-tool deadline (ticked every second).
+    AskCountdown(u64),
     /// Prompt string for creating a new session to continue the task.
     RenewRequest(String),
     /// Spawn a sub-agent session; its final report answers the tool call.
@@ -235,9 +257,14 @@ pub(crate) fn update(
             let no_options = request.options.is_empty();
             state.ask_request = Some(request);
             state.ask_input.clear();
+            state.ask_seconds_left = ASK_TIMEOUT_SECS;
             if no_options && viewing {
                 return iced::widget::operation::focus(ASK_INPUT.clone());
             }
+        }
+        SessionEvent::AskCountdown(seconds_left) => {
+            state.ask_seconds_left = seconds_left;
+            return Task::none();
         }
         SessionEvent::Content(chunk) => {
             if let Some(last) = session.last_turn_mut()

@@ -1,7 +1,7 @@
 use futures::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
@@ -12,7 +12,7 @@ use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 use reqwest::StatusCode;
 
-use crate::app::session_state::{AskRequest, RetryInfo, SessionEvent};
+use crate::app::session_state::{ASK_TIMEOUT_SECS, AskRequest, RetryInfo, SessionEvent};
 use crate::tools::{self, ToolRef};
 use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult, envelope_error};
 use crabot::model::ModelInfo;
@@ -220,7 +220,7 @@ fn find_tool(tools: &[ToolRef], name: &str) -> Option<ToolRef> {
 }
 
 /// Lock a mutex, recovering from poisoning (a panicked holder).
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -321,6 +321,8 @@ struct ExecutionCtx<'a> {
     tools: &'a [ToolRef],
     workspace: &'a std::path::Path,
     cancel_token: &'a Arc<AtomicBool>,
+    /// Shared ask-tool deadline — the UI extends it to give more time.
+    ask_deadline: &'a Arc<Mutex<Instant>>,
 }
 
 /// Run a batch of parallel tool calls, emitting results in completion order.
@@ -428,7 +430,7 @@ async fn run_serial_tool(
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) {
     let result = match tc.fn_name.as_str() {
-        "ask" => handle_ask_tool(tc, ask_receiver, ctx.cancel_token, on_event).await,
+        "ask" => handle_ask_tool(tc, ask_receiver, ctx, on_event).await,
         "renew" => {
             let prompt = tc
                 .fn_arguments
@@ -476,6 +478,8 @@ pub struct SendConfig {
     pub injected_prompt: Arc<Mutex<Option<String>>>,
     /// Receiver for the builtin ask tool's user response.
     pub ask_receiver: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
+    /// Shared ask-tool deadline — the UI extends it to give more time.
+    pub ask_deadline: Arc<Mutex<Instant>>,
     /// Receiver for task-tool reports, tagged with the originating call_id.
     pub task_receiver: tokio::sync::mpsc::UnboundedReceiver<(String, Result<String, String>)>,
     pub user_agent: String,
@@ -503,6 +507,7 @@ pub async fn send_stream(
         tools,
         injected_prompt,
         mut ask_receiver,
+        ask_deadline,
         mut task_receiver,
         user_agent,
         cancel_token,
@@ -578,6 +583,7 @@ pub async fn send_stream(
         tools: &tools,
         workspace: &workspace,
         cancel_token: &cancel_token,
+        ask_deadline: &ask_deadline,
     };
 
     for _ in 0..max_iterations {
@@ -877,47 +883,56 @@ fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Client {
         .build()
 }
 
-/// Drain stale results, emit `event` to the UI, then wait for the interactive
-/// result or cancellation — optionally bounded by `timeout` (whose message is
-/// returned as an `Ok` result).
-///
-/// `Err` covers Stop (the ask still keeps its result in history), a closed
-/// response channel, and a dead UI channel.
+/// Error for a failed event delivery: user Stop vs. a dead UI channel.
+fn event_send_error(cancel_token: &AtomicBool) -> String {
+    if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
+        "Session cancelled by user.".into()
+    } else {
+        "Ask event channel closed.".into()
+    }
+}
+
+/// Drain stale results, emit `event`, then wait for the response, cancellation,
+/// or the shared `ask_deadline` timeout — ticking `AskCountdown` each second so
+/// the UI can extend the deadline.
 async fn wait_for_result(
     receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
     cancel_token: &AtomicBool,
     event: SessionEvent,
-    timeout: Option<(std::time::Duration, &'static str)>,
+    ask_deadline: &Arc<Mutex<Instant>>,
+    timeout: (Duration, &'static str),
 ) -> Result<String, String> {
+    let (timeout_dur, timeout_msg) = timeout;
     while receiver.try_recv().is_ok() {} // drain a stale result from a previous wait
     if !on_event(event).await {
-        // Stop raced the delivery, or the UI channel is dead — tell them apart.
-        return Err(if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
-            "Cancelled by user."
-        } else {
-            "Ask event channel closed."
-        }
-        .into());
+        return Err(event_send_error(cancel_token));
     }
-    // `pending()` never completes, keeping the timeout branch inert when unset.
-    let sleep: BoxFuture<'static, ()> = match timeout {
-        Some((d, _)) => Box::pin(tokio::time::sleep(d)),
-        None => Box::pin(std::future::pending()),
-    };
-    tokio::select! {
-        result = receiver.recv() => result.unwrap_or_else(|| Err("Response channel closed.".into())),
-        _ = wait_cancelled(cancel_token) => Err("Cancelled by user.".into()),
-        _ = sleep => Ok(timeout.expect("sleep only fires when a timeout is set").1.into()),
+    // Anchor the deadline now; the UI pushes it later via `ask_deadline`.
+    *lock(ask_deadline) = Instant::now() + timeout_dur;
+    loop {
+        // Re-read the shared deadline so UI extensions take effect immediately.
+        let remaining = lock(ask_deadline).saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(timeout_msg.into());
+        }
+        if !on_event(SessionEvent::AskCountdown(remaining.as_secs())).await {
+            return Err(event_send_error(cancel_token));
+        }
+        tokio::select! {
+            result = receiver.recv() => return result.unwrap_or_else(|| Err("Response channel closed.".into())),
+            _ = wait_cancelled(cancel_token) => return Err("Cancelled by user.".into()),
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
     }
 }
 
-/// Handle a builtin ask-tool call: parse arguments, emit the question to
-/// the UI, then wait for user response, cancellation, or timeout (120 s).
+/// Handle a builtin ask-tool call: parse arguments, emit the question to the
+/// UI, then wait for user response, cancellation, or `ASK_TIMEOUT_SECS`.
 async fn handle_ask_tool(
     tc: &ToolCall,
     ask_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
-    cancel_token: &AtomicBool,
+    ctx: &ExecutionCtx<'_>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) -> Result<String, String> {
     let question = tc
@@ -940,12 +955,13 @@ async fn handle_ask_tool(
     wait_for_result(
         ask_receiver,
         on_event,
-        cancel_token,
+        ctx.cancel_token,
         SessionEvent::AskRequest(AskRequest { question, options }),
-        Some((
-            std::time::Duration::from_secs(120),
+        ctx.ask_deadline,
+        (
+            Duration::from_secs(ASK_TIMEOUT_SECS),
             "User did not respond before the timeout.",
-        )),
+        ),
     )
     .await
 }
