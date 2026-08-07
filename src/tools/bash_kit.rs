@@ -6,7 +6,7 @@
 //! names, `eval`/`exec`/`source`, path-based or glob-shaped names) make
 //! [`collect_external_names`] return `Err`, falling back to real `bash -c`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -255,6 +255,7 @@ fn build_bash(
                 deadline_ms: Arc::clone(&deadline_ms),
                 timeout,
                 forwarder: forwarder.clone(),
+                home: home_mount.clone(),
             }),
         );
     }
@@ -280,6 +281,36 @@ struct HostCommandBuiltin {
     timeout: Duration,
     /// Script-level output forwarder; chunks stream live via the pipe drains.
     forwarder: Option<Arc<Mutex<ChunkForwarder>>>,
+    /// Seeded home mount; maps the interpreter's VFS HOME to the host path.
+    home: Option<RealMount>,
+}
+
+/// Mirror the script env (`export`, prefix assignments, `unset`) into the
+/// child, remapping the seeded VFS HOME to its host path and dropping
+/// secrets + rustup's recursion counter.
+fn apply_child_env(
+    cmd: &mut std::process::Command,
+    env: &HashMap<String, String>,
+    home: Option<&RealMount>,
+) {
+    cmd.env_clear();
+    for (key, value) in env {
+        // Remap the seeded VFS HOME to the host path (script-assigned HOME passes through).
+        if key == "HOME"
+            && let Some(home) = home
+            && value.as_str() == home.vfs_path.to_string_lossy()
+        {
+            cmd.env("HOME", &home.host_path);
+        } else if key != "RUST_RECURSION_COUNT" && !super::is_secret_env_key(key) {
+            cmd.env(key, value);
+        }
+    }
+    // No host home: keep the inherited HOME as a fallback.
+    if home.is_none()
+        && let Some(home_dir) = std::env::var_os("HOME")
+    {
+        cmd.env("HOME", home_dir);
+    }
 }
 
 #[async_trait]
@@ -303,9 +334,8 @@ impl Builtin for HostCommandBuiltin {
         let prepared = (|| -> Result<_, String> {
             let mut cmd = std::process::Command::new(&self.name);
             cmd.args(ctx.args);
-            super::sanitize_child_env(&mut cmd); // drop secrets + rustup counter
             cmd.current_dir(resolve_cwd(ctx.cwd, &self.mounts)?);
-
+            apply_child_env(&mut cmd, ctx.env, self.home.as_ref());
             let stdin_writer = match ctx.stdin {
                 Some(data) => {
                     let (stdin_tx, stdin_rx) = create_pipe_pair("stdin")?;

@@ -107,7 +107,7 @@ Extract and place the binary in your `PATH`.
 ### From crates.io
 
 ```sh
-cargo install crabot
+cargo install crabot --locked
 ```
 
 ### From latest source

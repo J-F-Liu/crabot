@@ -462,6 +462,55 @@ fn bashkit_cd_tmp_does_not_fall_back_to_workspace() {
     assert!(result.contains("fatal:"), "unexpected: {result}");
 }
 
+// ── host command environment ────────────────────────────────
+
+/// Run a script against bridged host `git` with `GIT_CONFIG_GLOBAL` pointing
+/// at a probe config (path single-quoted for bash); returns the output.
+fn run_git_config_probe(script: impl Fn(&str) -> String) -> Result<String, String> {
+    let tmp = TempDir::new("bash_env_probe").unwrap();
+    let config = tmp.join("probe.gitconfig");
+    fs::write(&config, "[probe]\n\tkey = probe-value\n").unwrap();
+    let path = format!("'{}'", config.display());
+    run_bash(&script(&path), &tmp.path, None)
+}
+
+/// `export VAR=...` must reach bridged host commands: `git` reads
+/// `GIT_CONFIG_GLOBAL` from its environment.
+#[test]
+fn bashkit_export_reaches_host_command() {
+    let result = run_git_config_probe(|path| {
+        format!("export GIT_CONFIG_GLOBAL={path}\ngit config --get probe.key")
+    })
+    .unwrap();
+    assert!(result.contains("probe-value"), "unexpected: {result}");
+}
+
+/// Prefix assignments (`VAR=value cmd`) must reach bridged host commands.
+#[test]
+fn bashkit_prefix_assignment_reaches_host_command() {
+    let result =
+        run_git_config_probe(|path| format!("GIT_CONFIG_GLOBAL={path} git config --get probe.key"))
+            .unwrap();
+    assert!(result.contains("probe-value"), "unexpected: {result}");
+}
+
+/// `unset VAR` must hide the var from bridged host commands, not just the
+/// interpreter: `git` must not see a config exported and unset in the script.
+#[test]
+fn bashkit_unset_hides_env_from_host_command() {
+    let result = run_git_config_probe(|path| {
+        format!(
+            "export GIT_CONFIG_GLOBAL={path}\nunset GIT_CONFIG_GLOBAL\ngit config --get probe.key"
+        )
+    })
+    .unwrap();
+    assert!(
+        !result.contains("probe-value"),
+        "unset var leaked to host command: {result}"
+    );
+    assert!(result.contains("Exit code: 1"), "unexpected: {result}");
+}
+
 // ── cwd mapping ─────────────────────────────────────────────
 
 /// `cd src && cargo check` — cwd persists via ctx.cwd, mapped to the host.
