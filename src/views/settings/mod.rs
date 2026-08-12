@@ -131,6 +131,8 @@ pub(crate) enum SettingsEvent {
     EditMaxIterations(String),
     /// Edit the context-fill renew threshold field (raw text).
     EditFillRatioThreshold(String),
+    /// Edit the stream stall timeout field (s, raw text; 0 disables).
+    EditStreamStallTimeout(String),
     /// Edit one built-in tool limit field (raw text).
     EditToolLimit(builtin_tools::ToolLimitField, String),
     /// Pick a provider for a task sub-agent difficulty tier.
@@ -139,7 +141,7 @@ pub(crate) enum SettingsEvent {
     TaskModelSelectModel(&'static str, String),
     /// Toggle "inherit the parent session's model" for a tier.
     TaskModelInherit(&'static str, bool),
-    /// Persist max iterations, tool limits, and task models to disk.
+    /// Persist agent limits, tool limits, and task models.
     SaveBuiltinTools,
     // Custom tool actions
     /// Expand/collapse the tool card at the given index.
@@ -260,6 +262,8 @@ pub(crate) struct SettingsState {
     pub(crate) working_max_iterations: String,
     /// Working copy of the context-fill renew threshold, percent (raw text) — parsed on Save.
     pub(crate) working_fill_ratio_threshold: String,
+    /// Working copy of the stream stall timeout (s, raw text) — parsed on Save.
+    pub(crate) working_stream_stall_timeout: String,
     /// Working copies of built-in tool limits (raw text) — parsed on Save.
     pub(crate) working_tool_limits: builtin_tools::ToolLimitStrings,
     /// Working copy of sub-agent task models — saved on Save (Builtin Tools tab).
@@ -332,6 +336,7 @@ impl Default for SettingsState {
             expanded_recipe_mode: None,
             working_max_iterations: String::new(),
             working_fill_ratio_threshold: String::new(),
+            working_stream_stall_timeout: String::new(),
             working_tool_limits: builtin_tools::ToolLimitStrings::default(),
             working_task_models: TaskModels::default(),
             working_tools: ToolList::default(),
@@ -763,6 +768,7 @@ impl SettingsState {
             // ── Builtin Tools actions ─────────────────────────
             SettingsEvent::EditMaxIterations(v) => self.working_max_iterations = v,
             SettingsEvent::EditFillRatioThreshold(v) => self.working_fill_ratio_threshold = v,
+            SettingsEvent::EditStreamStallTimeout(v) => self.working_stream_stall_timeout = v,
             SettingsEvent::EditToolLimit(field, v) => {
                 *self.working_tool_limits.get_mut(field) = v;
             }
@@ -830,6 +836,8 @@ impl SettingsState {
                 self.working_max_iterations = max_iters.to_string();
                 let fill_ratio = self.parsed_fill_ratio_threshold();
                 self.working_fill_ratio_threshold = fill_ratio.to_string();
+                let stall = self.parsed_stream_stall_timeout();
+                self.working_stream_stall_timeout = stall.to_string();
                 let limits = self.parsed_tool_limits();
                 self.working_tool_limits = builtin_tools::ToolLimitStrings::from_limits(&limits);
                 self.save_feedback = Some(SettingsTab::BuiltinTools);
@@ -1245,38 +1253,37 @@ impl SettingsState {
     }
 
     /// Load builtin-tool settings into the dialog's working copies (on dialog open).
-    pub(crate) fn load_builtin_tools(
-        &mut self,
-        max_iterations: usize,
-        fill_ratio_threshold: f32,
-        limits: crabot::tools::ToolLimits,
-        task_models: TaskModels,
-    ) {
-        self.working_max_iterations = max_iterations.to_string();
-        self.working_fill_ratio_threshold = fill_ratio_threshold.to_string();
-        self.working_tool_limits = builtin_tools::ToolLimitStrings::from_limits(&limits);
-        self.working_task_models = task_models;
+    pub(crate) fn load_builtin_tools(&mut self, settings: &crabot::settings::Settings) {
+        self.working_max_iterations = settings.max_iterations.to_string();
+        self.working_fill_ratio_threshold = settings.fill_ratio_threshold.to_string();
+        self.working_stream_stall_timeout = settings.stream_stall_timeout.to_string();
+        self.working_tool_limits =
+            builtin_tools::ToolLimitStrings::from_limits(&settings.tool_limits);
+        self.working_task_models = settings.task_models.clone();
+    }
+
+    /// Apply the parsed agent limits and task models to `settings`.
+    pub(crate) fn apply_builtin_tools(&self, settings: &mut crabot::settings::Settings) {
+        settings.max_iterations = self.parsed_max_iterations();
+        settings.fill_ratio_threshold = self.parsed_fill_ratio_threshold();
+        settings.stream_stall_timeout = self.parsed_stream_stall_timeout();
+        settings.tool_limits = self.parsed_tool_limits();
+        settings.task_models = self.working_task_models.clone();
     }
 
     /// Parsed max agent-loop iterations, falling back to the current default.
     pub(crate) fn parsed_max_iterations(&self) -> usize {
-        self.working_max_iterations
-            .trim()
-            .parse()
-            .ok()
-            .filter(|&v: &usize| v > 0)
-            .unwrap_or(100)
+        builtin_tools::parse_num(&self.working_max_iterations, 100, None, false)
     }
 
     /// Parsed context-fill renew threshold (percent), clamped to (0, 100].
     pub(crate) fn parsed_fill_ratio_threshold(&self) -> f32 {
-        self.working_fill_ratio_threshold
-            .trim()
-            .parse()
-            .ok()
-            .filter(|&v: &f32| v > 0.0)
-            .map(|v| v.min(100.0))
-            .unwrap_or(25.0)
+        builtin_tools::parse_num(&self.working_fill_ratio_threshold, 25.0, Some(100.0), false)
+    }
+
+    /// Parsed stream stall timeout in seconds (0 = off), clamped to 1h.
+    pub(crate) fn parsed_stream_stall_timeout(&self) -> u64 {
+        builtin_tools::parse_num(&self.working_stream_stall_timeout, 120, Some(3600), true)
     }
 
     /// Parsed tool limits, falling back per-field to the defaults.

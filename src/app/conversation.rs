@@ -1228,6 +1228,7 @@ pub(crate) fn start_dialog(
         user_agent: crabot::app_title().to_string(),
         cancel_token: tab.session_state.cancel_token.clone(),
         max_iterations: app.settings.max_iterations,
+        stream_stall_timeout_secs: app.settings.stream_stall_timeout,
     };
 
     let history = tab.session.history.clone();

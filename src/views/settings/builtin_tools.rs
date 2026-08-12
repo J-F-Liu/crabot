@@ -159,16 +159,29 @@ impl ToolLimitStrings {
     }
 }
 
-/// Parse a positive integer, falling back to `default` when blank or invalid.
-fn parse<T>(s: &str, default: T) -> T
+/// Parse a numeric field: invalid (or 0 unless `allow_zero`) falls back to
+/// `default`; `max` clamps the value when given.
+pub(super) fn parse_num<T>(s: &str, default: T, max: Option<T>, allow_zero: bool) -> T
 where
-    T: std::str::FromStr + PartialOrd + From<u8>,
+    T: std::str::FromStr + PartialOrd + From<u8> + Copy,
 {
     s.trim()
         .parse()
         .ok()
-        .filter(|v| *v > T::from(0))
+        .filter(|&v| allow_zero || v > T::from(0))
+        .map(|v| match max {
+            Some(m) if v > m => m,
+            _ => v,
+        })
         .unwrap_or(default)
+}
+
+/// Parse a positive integer, falling back to `default` when blank or invalid.
+fn parse<T>(s: &str, default: T) -> T
+where
+    T: std::str::FromStr + PartialOrd + From<u8> + Copy,
+{
+    parse_num(s, default, None, false)
 }
 
 // ── Page ───────────────────────────────────────────────────────────
@@ -201,40 +214,67 @@ pub(super) fn builtin_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Se
 
 // ── Agent card ─────────────────────────────────────────────────────
 
+/// Labeled numeric-setting row: label + input + muted hint.
+fn setting_row<'a>(
+    label: &'static str,
+    input: Element<'a, SettingsEvent>,
+    hint: &'static str,
+) -> Element<'a, SettingsEvent> {
+    row![
+        text(label).size(13).width(180.0),
+        input,
+        text(hint).size(11).color(color_muted()),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Numeric text input bound to a settings field.
+fn num_input<'a>(
+    placeholder: &'static str,
+    value: &'a str,
+    on_input: impl Fn(String) -> SettingsEvent + 'a,
+) -> Element<'a, SettingsEvent> {
+    text_input(placeholder, value)
+        .on_input(on_input)
+        .width(Length::Fixed(110.0))
+        .padding(4)
+        .size(13)
+        .into()
+}
+
 fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
-    let input = text_input("100", &state.working_max_iterations)
-        .on_input(SettingsEvent::EditMaxIterations)
-        .width(Length::Fixed(110.0))
-        .padding(4)
-        .size(13);
-
-    let renew_input = text_input("25", &state.working_fill_ratio_threshold)
-        .on_input(SettingsEvent::EditFillRatioThreshold)
-        .width(Length::Fixed(110.0))
-        .padding(4)
-        .size(13);
-
     container(
         column![
             section_title("Agent"),
-            row![
-                text("Max iterations").size(13).width(180.0),
-                input,
-                text("Tool-calling rounds before the agent gives up.")
-                    .size(11)
-                    .color(color_muted()),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-            row![
-                text("Renew threshold (%)").size(13).width(180.0),
-                renew_input,
-                text("Context fill ratio at which the agent is reminded to consider renewing.")
-                    .size(11)
-                    .color(color_muted()),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
+            setting_row(
+                "Max iterations",
+                num_input(
+                    "100",
+                    &state.working_max_iterations,
+                    SettingsEvent::EditMaxIterations
+                ),
+                "Tool-calling rounds before the agent gives up.",
+            ),
+            setting_row(
+                "Renew threshold (%)",
+                num_input(
+                    "25",
+                    &state.working_fill_ratio_threshold,
+                    SettingsEvent::EditFillRatioThreshold
+                ),
+                "Context fill ratio at which the agent is reminded to consider renewing.",
+            ),
+            setting_row(
+                "Stream stall timeout (s)",
+                num_input(
+                    "120",
+                    &state.working_stream_stall_timeout,
+                    SettingsEvent::EditStreamStallTimeout
+                ),
+                "Seconds with no stream data before giving up. 0 = off.",
+            ),
         ]
         .spacing(8),
     )
@@ -248,11 +288,7 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
 
 fn limit_row(state: &SettingsState, field: ToolLimitField) -> Element<'_, SettingsEvent> {
     let value = state.working_tool_limits.get(field);
-    let input = text_input("", value)
-        .on_input(move |v| SettingsEvent::EditToolLimit(field, v))
-        .width(Length::Fixed(110.0))
-        .padding(4)
-        .size(13);
+    let input = num_input("", value, move |v| SettingsEvent::EditToolLimit(field, v));
     row![text(field.label()).size(13).width(180.0), input,]
         .spacing(8)
         .align_y(Alignment::Center)

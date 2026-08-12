@@ -42,6 +42,8 @@ pub struct Settings {
     pub fill_ratio_threshold: f32,
     /// Max agent-loop iterations (tool-calling rounds) before giving up.
     pub max_iterations: usize,
+    /// Seconds of LLM stream silence before giving up (0 = off).
+    pub stream_stall_timeout: u64,
     /// Configurable limits for the built-in tools (timeouts, output caps, …).
     pub tool_limits: ToolLimits,
     /// Sub-agent model per difficulty tier used by the `task` tool.
@@ -78,6 +80,8 @@ impl Default for Settings {
             prompt_recipes: IndexMap::new(),
             fill_ratio_threshold: 25.0,
             max_iterations: 100,
+            // Anthropic heartbeats every ~15-30s; 120s of silence means a dead stream.
+            stream_stall_timeout: 120,
             tool_limits: ToolLimits::default(),
             task_models: TaskModels::default(),
             auto_check_updates: true,

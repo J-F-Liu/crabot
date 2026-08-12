@@ -487,6 +487,8 @@ pub struct SendConfig {
     pub cancel_token: Arc<AtomicBool>,
     /// Max agent-loop iterations (tool-calling rounds) before giving up.
     pub max_iterations: usize,
+    /// Seconds of stream silence before giving up (0 = off).
+    pub stream_stall_timeout_secs: u64,
 }
 
 /// Stream an LLM interaction with a tool-execution loop.
@@ -512,6 +514,7 @@ pub async fn send_stream(
         user_agent,
         cancel_token,
         max_iterations,
+        stream_stall_timeout_secs,
     } = config;
 
     let client = build_client(&model.base_url, &model.api_key, &model.api_type);
@@ -578,6 +581,14 @@ pub async fn send_stream(
         Some(true)
     }
 
+    /// Sleep until `deadline`, or wait forever when the stall watchdog is off.
+    async fn stall_sleep(deadline: Option<Instant>) {
+        match deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+
     // Execution context for the tool loop below (loop-invariant).
     let exec_ctx = ExecutionCtx {
         tools: &tools,
@@ -621,20 +632,41 @@ pub async fn send_stream(
         let mut captured_reasoning: Option<String> = None;
         let mut thinking_signaled = false;
 
-        // Race each read against cancellation; the first event was already pulled.
+        // Stall watchdog: Anthropic heartbeats every ~15-30s, so silence past
+        // the window means the stream died. Any event resets the deadline.
+        let stall_timeout = Duration::from_secs(stream_stall_timeout_secs);
+        let mut stall_deadline =
+            (stall_timeout > Duration::ZERO).then(|| Instant::now() + stall_timeout);
+
+        // First event was already pulled; race the rest against cancellation
+        // and the stall watchdog.
         let mut pending_event = first_event;
         loop {
             let event = match pending_event.take() {
                 Some(event) => Some(Ok(event)),
                 None => tokio::select! {
-                    ev = stream.next() => ev,
+                    // Biased so ties resolve deterministically: cancel > stream data > stall timeout.
+                    biased;
                     _ = wait_cancelled(&cancel_token) => {
                         on_event(SessionEvent::Cancelled(genai_messages)).await;
+                        return;
+                    }
+                    ev = stream.next() => ev,
+                    _ = stall_sleep(stall_deadline) => {
+                        on_event(SessionEvent::Error(
+                            format!(
+                                "LLM stream stalled: no data for {stream_stall_timeout_secs}s; the connection may have died. Please retry.",
+                            ),
+                            genai_messages,
+                        ))
+                        .await;
                         return;
                     }
                 },
             };
             let Some(event) = event else { break };
+            // Any event is proof of life — reset the stall deadline.
+            stall_deadline = stall_deadline.map(|_| Instant::now() + stall_timeout);
             match event {
                 // Skip empty chunk, so a UI placeholder isn't created for it.
                 Ok(ChatStreamEvent::Chunk(chunk)) if !chunk.content.is_empty() => {
@@ -665,7 +697,7 @@ pub async fn send_stream(
                         return;
                     }
                 }
-                // ignore Start, ThoughtSignature, ToolCallChunk, empty chunks
+                // ignore Start, Heartbeat, ThoughtSignature, ToolCallChunk, empty chunks
                 Ok(_) => {}
                 Err(e) => {
                     on_event(SessionEvent::Error(
