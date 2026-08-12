@@ -13,7 +13,6 @@ This environment is a custom bash build (5.2.15) in which all entries — includ
 | ---------- | -------------------------------------------------------------------------------------- |
 | `json`     | JSON processor: `get, set, keys, length, type, format, pretty`                         |
 | `csv`      | CSV processor: `select, count, headers, filter, sort`                                  |
-| `yaml`     | YAML processor: `get, keys, length, type`                                              |
 | `tomlq`    | TOML query: `tomlq [-r] [-t] QUERY [FILE]`                                             |
 | `http`     | HTTP client: `http [METHOD] URL [ITEMS...]`                                            |
 | `dotenv`   | Load `.env` files (looks for `.env` in the current directory)                          |

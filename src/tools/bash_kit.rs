@@ -8,8 +8,9 @@
 //!
 //! Wrapper builtins (`timeout`, `xargs`, `find -exec`) hide commands in their
 //! arguments; [`collect_external_names`] extracts those names from literal
-//! arguments. `env`/`watch` never run commands in-process and fall back when a
-//! command is involved. Mirrors bashkit 0.15.0 — re-verify when bumping.
+//! arguments. `watch`/`parallel` stubs never run commands and `env` refuses
+//! them, so scripts that would involve one fall back to real bash. Mirrors
+//! bashkit 0.16.0 — re-verify when bumping.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -70,6 +71,7 @@ pub(crate) fn collect_external_names(script: &str) -> Result<Vec<String>, ()> {
             "timeout" => collect_timeout_command(command, &mut names, builtins)?,
             "xargs" => collect_xargs_command(command, &mut names, builtins)?,
             "watch" => return Err(()), // its stub never runs the wrapped command
+            "parallel" => return Err(()), // its stub only reports a dry-run plan
             "env" if env_would_run_command(command)? => return Err(()), // stub refuses commands
             _ => {}
         }
@@ -82,6 +84,11 @@ pub(crate) fn collect_external_names(script: &str) -> Result<Vec<String>, ()> {
 /// interpreter re-entries (`eval`/`source`/`.`/`bash`/`sh`), path-based
 /// (`./s.sh`) and glob-shaped (`$TOOL`, `x*`) names. `[` is exempt — its
 /// name is literally `[`.
+///
+/// The other wrappers in bashkit's `analysis::COMMAND_WRAPPERS` — `doas`,
+/// `nice`, `nohup`, `setsid`, `stdbuf`, `sudo` — need no special handling:
+/// they are not builtins, so bridging the wrapper itself runs the host
+/// binary, which spawns the wrapped command exactly like real bash does.
 fn is_unbridgeable(name: &str) -> bool {
     matches!(
         name,
@@ -521,7 +528,7 @@ impl Builtin for HostCommandBuiltin {
                     set_sender_nonblocking(&stdin_tx)?;
                     set_sender_noninheritable(&stdin_tx)?;
                     cmd.stdin(pipe_to_stdio(stdin_rx));
-                    Some((data.to_owned(), stdin_tx))
+                    Some((data.as_bytes().to_vec(), stdin_tx))
                 }
                 None => {
                     cmd.stdin(Stdio::null());
@@ -555,7 +562,7 @@ impl Builtin for HostCommandBuiltin {
                 let deadline = Instant::now() + Duration::from_secs(5);
                 let mut written = 0;
                 while written < data.len() && Instant::now() < deadline {
-                    match stdin_tx.write(&data.as_bytes()[written..]) {
+                    match stdin_tx.write(&data[written..]) {
                         Ok(0) => break,
                         Ok(n) => written += n,
                         Err(e) if is_would_block(&e) => {
@@ -591,8 +598,8 @@ impl Builtin for HostCommandBuiltin {
 
         match result {
             Ok(output) => Ok(ExecResult {
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                stdout: output.stdout.into(),
+                stderr: output.stderr.into(),
                 exit_code: super::exit_code_of(&output.status),
                 ..Default::default()
             }),
@@ -767,7 +774,7 @@ fn format_exec_result(result: &ExecResult) -> String {
 }
 
 /// Drain a captured-stderr pipe, re-emitting everything except bashkit's
-/// "writable mount" warning (0.15.0 has no flag to silence it).
+/// "writable mount" warning (no flag to silence it).
 fn drain_and_reemit(mut file: std::fs::File) {
     let mut buf = Vec::new();
     let _ = std::io::Read::read_to_end(&mut file, &mut buf);

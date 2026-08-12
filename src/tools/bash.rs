@@ -19,7 +19,7 @@ impl Tool for BashTool {
     }
 
     fn instruction(&self) -> &str {
-        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files, dedicated tools are available for those operations. Run `compgen -b` to list all available built-in commands (such as `json`, `csv`, `yaml`, `tomlq`, `http`); run `help <cmd>` for a description of a specific builtin."
+        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files, dedicated tools are available for those operations. Run `compgen -b` to list all available built-in commands (such as `json`, `csv`, `tomlq`, `http`); run `help <cmd>` for a description of a specific builtin."
     }
 
     fn schema(&self) -> Value {
