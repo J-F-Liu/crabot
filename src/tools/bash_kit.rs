@@ -5,6 +5,11 @@
 //! the interpreter cannot faithfully handle (parse errors, dynamic command
 //! names, `eval`/`exec`/`source`, path-based or glob-shaped names) make
 //! [`collect_external_names`] return `Err`, falling back to real `bash -c`.
+//!
+//! Wrapper builtins (`timeout`, `xargs`, `find -exec`) hide commands in their
+//! arguments; [`collect_external_names`] extracts those names from literal
+//! arguments. `env`/`watch` never run commands in-process and fall back when a
+//! command is involved. Mirrors bashkit 0.15.0 — re-verify when bumping.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -13,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bashkit::analysis::analyze_with_limits;
+use bashkit::analysis::{AnalyzedCommand, analyze_with_limits};
 use bashkit::{Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, async_trait};
 
 use super::{
@@ -23,11 +28,6 @@ use super::{
 
 /// Per-stream output cap (head-only backstop; crabot's own truncation is the visible limit).
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
-
-/// Builtins whose payload is opaque to static analysis (`command cmd`, `exec cmd`).
-/// `eval`/`source`/`.`/`bash`/`sh` are handled by bashkit's `is_interpreter_reentry`.
-/// Re-verify when bumping the pinned bashkit version (0.15.0).
-const OPAQUE_BUILTINS: &[&str] = &["command", "exec"];
 
 /// Cached set of every builtin this bashkit build can dispatch.
 pub(crate) fn builtin_names() -> &'static HashSet<String> {
@@ -45,8 +45,9 @@ pub(crate) fn builtin_names() -> &'static HashSet<String> {
 /// Statically collect the external command names a script executes.
 ///
 /// Returns `Err(())` when the script cannot run faithfully in-process (parse
-/// error, dynamic/path-based/glob-shaped command names, opaque builtins).
-/// Otherwise returns the names to bridge (empty when only builtins are used).
+/// error, dynamic/path-based/glob-shaped command names, opaque builtins,
+/// wrapper arguments that hide a command). Otherwise returns the names to
+/// bridge (empty when only builtins are used).
 pub(crate) fn collect_external_names(script: &str) -> Result<Vec<String>, ()> {
     let analysis = analyze_with_limits(script, 100, 100_000).map_err(|_| ())?;
     if analysis.is_opaque() {
@@ -54,20 +55,198 @@ pub(crate) fn collect_external_names(script: &str) -> Result<Vec<String>, ()> {
     }
     let builtins = builtin_names();
     let mut names = Vec::new();
-    for name in analysis.command_names() {
-        // Unsupported: opaque payload, path-based (`./script.sh`), or glob-shaped
-        // (`$TOOL`, `tool*`). `[` is exempt — its name is literally `[`.
-        if OPAQUE_BUILTINS.contains(&name)
-            || name.contains('/')
-            || (name != "[" && name.contains(['$', '`', '*', '?', '[']))
-        {
+    for command in &analysis.commands {
+        let Some(name) = command.name.as_deref() else {
+            continue; // dynamic names already made the analysis opaque
+        };
+        // Unsupported: opaque payload, path-based (`./s.sh`), glob-shaped (`$TOOL`).
+        if is_unbridgeable(name) {
             return Err(());
         }
-        if !builtins.contains(name) {
-            names.push(name.to_string());
+        // Wrappers hide a command in their arguments — extract it for bridging,
+        // or fall back when it cannot run faithfully in-process.
+        match name {
+            "find" => collect_find_commands(command, &mut names, builtins)?,
+            "timeout" => collect_timeout_command(command, &mut names, builtins)?,
+            "xargs" => collect_xargs_command(command, &mut names, builtins)?,
+            "watch" => return Err(()), // its stub never runs the wrapped command
+            "env" if env_would_run_command(command)? => return Err(()), // stub refuses commands
+            _ => {}
         }
+        push_external(name, &mut names, builtins);
     }
     Ok(names)
+}
+
+/// Names that must never be bridged: opaque builtins (`command`, `exec`),
+/// interpreter re-entries (`eval`/`source`/`.`/`bash`/`sh`), path-based
+/// (`./s.sh`) and glob-shaped (`$TOOL`, `x*`) names. `[` is exempt — its
+/// name is literally `[`.
+fn is_unbridgeable(name: &str) -> bool {
+    matches!(
+        name,
+        "command" | "exec" | "eval" | "source" | "." | "bash" | "sh"
+    ) || name.contains('/')
+        || (name != "[" && name.contains(['$', '`', '*', '?', '[']))
+}
+
+/// Append `name` once, unless it is a builtin — names often appear both
+/// literally and wrapped.
+fn push_external(name: &str, names: &mut Vec<String>, builtins: &HashSet<String>) {
+    if !builtins.contains(name) && !names.iter().any(|n| n == name) {
+        names.push(name.to_string());
+    }
+}
+
+/// Register a wrapped command name; `None` (no command there) is fine, but a
+/// non-literal or unbridgeable name forces a fallback.
+fn push_wrapped_arg(
+    arg: Option<&str>,
+    names: &mut Vec<String>,
+    builtins: &HashSet<String>,
+) -> Result<(), ()> {
+    let Some(cmd) = arg else {
+        return Ok(()); // no command — wrapper default or bashkit's own error
+    };
+    if is_unbridgeable(cmd) {
+        return Err(()); // cannot bridge — fall back
+    }
+    push_external(cmd, names, builtins);
+    Ok(())
+}
+
+/// True when `env` would run a command — its stub refuses, so the script
+/// falls back to real bash (print mode stays in-process).
+fn env_would_run_command(command: &AnalyzedCommand) -> Result<bool, ()> {
+    for arg in command.literal_args().ok_or(())? {
+        if arg == "-u" {
+            return Err(()); // bashkit's stub errors on `-u` — fall back
+        }
+        if !(arg == "-i" || arg == "--ignore-environment" || arg.contains('=')) {
+            return Ok(true); // COMMAND
+        }
+    }
+    Ok(false) // print/assignment mode — the stub is faithful
+}
+
+/// Option surface of a bashkit wrapper builtin, mirroring its parser.
+struct WrapperOpts {
+    /// Flags with a separate value (`-k 5`, `--max-procs 4`).
+    with_value: &'static [&'static str],
+    /// Prefixes of attached-value flags (`-n5`, `--max-procs=4`).
+    attached: &'static [&'static str],
+    /// Flags consumed as-is (`--preserve-status`, `-0`).
+    plain: &'static [&'static str],
+    /// Skip unknown flags (timeout); otherwise they make bashkit error out.
+    lenient: bool,
+}
+
+const TIMEOUT_OPTS: WrapperOpts = WrapperOpts {
+    with_value: &["-k", "-s"],
+    attached: &[],
+    plain: &["--preserve-status"],
+    lenient: true,
+};
+
+const XARGS_OPTS: WrapperOpts = WrapperOpts {
+    with_value: &["-I", "-n", "-d", "-P", "--max-procs", "--process-slot-var"],
+    attached: &[
+        "-I",
+        "-n",
+        "-d",
+        "-P",
+        "--max-procs=",
+        "--process-slot-var=",
+    ],
+    plain: &["-0", "--help", "--version"],
+    lenient: false,
+};
+
+/// Scan past the wrapper's option/value args; returns the COMMAND position.
+/// `Err` when an unknown option would make bashkit fail before dispatching.
+fn skip_options(args: &[&str], opts: &WrapperOpts) -> Result<usize, ()> {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i];
+        if opts.with_value.contains(&arg) {
+            i += 2; // flag + value
+        } else if opts.attached.iter().any(|f| arg.starts_with(f)) {
+            i += 1; // attached value (`-n5`, `--max-procs=4`)
+        } else if opts.plain.contains(&arg) {
+            i += 1;
+        } else if arg.len() > 1 && arg.starts_with('-') {
+            if !opts.lenient {
+                return Err(()); // unknown option — bashkit errors; fall back
+            }
+            if arg.as_bytes()[1].is_ascii_digit() {
+                break; // negative-looking DURATION (timeout)
+            }
+            i += 1; // timeout skips unknown flags
+        } else {
+            break; // COMMAND position
+        }
+    }
+    Ok(i)
+}
+
+/// `timeout [OPTION] DURATION COMMAND [ARG]...` — register the wrapped
+/// COMMAND (a missing one is bashkit's error to report).
+fn collect_timeout_command(
+    command: &AnalyzedCommand,
+    names: &mut Vec<String>,
+    builtins: &HashSet<String>,
+) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    let i = skip_options(&args, &TIMEOUT_OPTS)?;
+    push_wrapped_arg(args.get(i + 1).copied(), names, builtins)
+}
+
+/// `xargs [OPTION]... [COMMAND [ARG]...]` — register the wrapped COMMAND
+/// (bashkit defaults to the `echo` builtin when absent).
+fn collect_xargs_command(
+    command: &AnalyzedCommand,
+    names: &mut Vec<String>,
+    builtins: &HashSet<String>,
+) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    let i = skip_options(&args, &XARGS_OPTS)?;
+    push_wrapped_arg(args.get(i).copied(), names, builtins)
+}
+
+/// `find [PATH]... [EXPRESSION]` — register the command of every
+/// `-exec`/`-execdir` template (first template arg, up to `;`/`\;`/`+`).
+/// Unknown predicates make bashkit fail before dispatching → fall back.
+fn collect_find_commands(
+    command: &AnalyzedCommand,
+    names: &mut Vec<String>,
+    builtins: &HashSet<String>,
+) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i];
+        match arg {
+            "-name" | "-path" | "-type" | "-maxdepth" | "-mindepth" | "-printf" => i += 2,
+            "-print" | "-print0" | "-not" | "!" => i += 1,
+            "-exec" | "-execdir" => {
+                let mut cmd = None;
+                i += 1;
+                while i < args.len() && !matches!(args[i], ";" | "\\;" | "+") {
+                    cmd.get_or_insert(args[i]);
+                    i += 1;
+                }
+                if let Some(cmd) = cmd {
+                    push_wrapped_arg(Some(cmd), names, builtins)?;
+                }
+                i += 1; // past the terminator
+            }
+            _ if arg.len() > 1 && arg.starts_with('-') => {
+                return Err(()); // unknown predicate (`-delete`, `-ok`, …)
+            }
+            _ => i += 1, // search path
+        }
+    }
+    Ok(())
 }
 
 /// Execute `command` through the in-process bashkit interpreter.

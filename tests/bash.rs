@@ -216,6 +216,28 @@ fn stream_and_collect(
     (result, chunks)
 }
 
+/// True when a host executable of `name` is resolvable (git-bash/Unix).
+fn host_command_exists(name: &str) -> bool {
+    std::process::Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Assert `result` is exactly `n` lines of 40-char hex SHA-1 (git hash-object).
+fn assert_sha_lines(result: &str, n: usize) {
+    let shas: Vec<&str> = result.lines().collect();
+    assert_eq!(shas.len(), n, "unexpected: {result}");
+    assert!(
+        shas.iter()
+            .all(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())),
+        "unexpected: {result}"
+    );
+}
+
 // ── bashkit syntax features ─────────────────────────────────
 
 /// `cargo --version && git --version` — external-command bridge + `&&` list.
@@ -709,6 +731,158 @@ fn bashkit_streaming_output_capped() {
         result.contains("truncated"),
         "expected truncation marker in: {result}"
     );
+}
+
+// ── wrapper commands (env, xargs, timeout, find -exec, watch) ──
+//
+// Commands hidden in wrapper arguments must be extracted or the script falls
+// back to real bash.
+
+/// `timeout 5 git --version` — the wrapped name must be bridged.
+#[test]
+fn bashkit_timeout_wraps_host_command() {
+    let result = run_bash("timeout 5 git --version", &crabot_workspace(), None).unwrap();
+    assert!(result.contains("git version"), "unexpected: {result}");
+}
+
+/// `timeout 10 sh -c …` — a wrapped interpreter re-entry falls back to real
+/// bash, exactly like a top-level `sh -c`.
+#[test]
+fn bashkit_timeout_nested_sh_falls_back() {
+    let result = run_bash("timeout 10 sh -c 'echo wrapped'", &crabot_workspace(), None).unwrap();
+    assert!(result.contains("wrapped"), "unexpected: {result}");
+}
+
+/// `timeout 10 $CMD` — a dynamic wrapped name falls back to real bash.
+#[test]
+fn bashkit_timeout_dynamic_command_falls_back() {
+    let result = run_bash(
+        "CMD=git; timeout 10 $CMD --version",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("git version"), "unexpected: {result}");
+}
+
+/// Attached option values (`-n1`) parse like bashkit's; each chunk runs the
+/// bridged host command.
+#[test]
+fn bashkit_xargs_attached_option_runs_host_command() {
+    let result = run_bash(
+        "printf '%s\\n' README.md Cargo.toml | xargs -n1 git hash-object",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_sha_lines(&result, 2);
+}
+
+/// `xargs git` — the wrapped name must be bridged; input items become the
+/// trailing args (`git --version`).
+#[test]
+fn bashkit_xargs_runs_host_command() {
+    let result = run_bash(
+        "printf '%s\\n' --version | xargs git",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("git version"), "unexpected: {result}");
+}
+
+/// Wrapped bashkit builtins stay in-process (`echo` needs no bridge).
+#[test]
+fn bashkit_xargs_builtin_command_stays_in_process() {
+    let result = run_bash("printf 'a b\\n' | xargs echo", &crabot_workspace(), None).unwrap();
+    assert!(result.contains("a b"), "unexpected: {result}");
+}
+
+/// `xargs $CMD` — a dynamic wrapped name falls back to real bash.
+#[test]
+fn bashkit_xargs_dynamic_command_falls_back() {
+    let result = run_bash(
+        "CMD=git; printf '%s\\n' --version | xargs $CMD",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("git version"), "unexpected: {result}");
+}
+
+/// `xargs -r` (GNU) is unknown to bashkit's parser — fall back to real bash.
+#[test]
+fn bashkit_xargs_unknown_option_falls_back() {
+    let result = run_bash(
+        "printf '%s\\n' --version | xargs -r git",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("git version"), "unexpected: {result}");
+}
+
+/// `find -exec` — the wrapped name must be bridged.
+#[test]
+fn bashkit_find_exec_runs_host_command() {
+    let result = run_bash(
+        "find . -maxdepth 1 -name Cargo.toml -exec git hash-object {} \\;",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_sha_lines(&result, 1);
+}
+
+/// `find -exec … +` batch mode — one invocation with all matches.
+#[test]
+fn bashkit_find_exec_batch_runs_host_command() {
+    let result = run_bash(
+        "find . -maxdepth 1 -name '*.toml' -exec git hash-object {} +",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_sha_lines(&result, 2);
+}
+
+/// `env CMD` — the stub refuses commands, so the script falls back to real
+/// bash, which runs the wrapped command natively.
+#[test]
+fn bashkit_env_runs_host_command() {
+    let result = run_bash("env FOO=bar git --version", &crabot_workspace(), None).unwrap();
+    assert!(result.contains("git version"), "unexpected: {result}");
+}
+
+/// `env` print mode stays in-process and still sees exported variables.
+#[test]
+fn bashkit_env_print_shows_interpreter_env() {
+    let result = run_bash(
+        "export CRABOT_ENV_TEST=hello; env",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(
+        result.lines().any(|l| l == "CRABOT_ENV_TEST=hello"),
+        "unexpected: {result}"
+    );
+}
+
+/// `watch`'s stub never runs the command; the script falls back to real bash
+/// (repeatedly — the tool timeout cuts it short). Requires a host `watch`.
+#[test]
+fn bashkit_watch_runs_host_command() {
+    if !host_command_exists("watch") {
+        eprintln!("skipping: no host `watch` executable");
+        return;
+    }
+    let (result, chunks) =
+        stream_and_collect("watch -n 1 git --version", &crabot_workspace(), Some(3000));
+    let err = result.unwrap_err();
+    assert!(err.contains("timed out"), "unexpected: {err}");
+    let joined = chunks.concat();
+    assert!(joined.contains("git version"), "unexpected: {joined}");
 }
 
 // ── fallback to real bash ───────────────────────────────────
