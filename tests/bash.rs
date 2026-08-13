@@ -458,6 +458,26 @@ fn bashkit_windows_drive_root_mounted_at_drive_letter() {
     let _ = fs::remove_file(&probe_host);
 }
 
+/// Windows: every present drive (not just the workspace's) is readable at
+/// its drive-letter VFS path (`/c`, `/d`, …). Drives bashkit cannot open
+/// (empty card readers, stale network shares) are skipped the same way by
+/// both the test and the mount table, so only canonicalizable drives assert.
+#[cfg(windows)]
+#[test]
+fn bashkit_windows_all_drives_mounted_at_drive_letters() {
+    let mut asserted = 0;
+    for letter in 'A'..='Z' {
+        if std::fs::canonicalize(format!("{letter}:\\")).is_err() {
+            continue; // no media — bashkit skips this drive too
+        }
+        asserted += 1;
+        let vfs = format!("/{}", letter.to_ascii_lowercase());
+        let result = run_bash(&format!("ls {vfs}"), &crabot_workspace(), None).unwrap();
+        assert!(!result.contains("Exit code:"), "ls {vfs} failed: {result}");
+    }
+    assert!(asserted > 0, "no readable drives on this host");
+}
+
 /// `/tmp` is a real read-write mount: writes persist to the host temp dir,
 /// visible to later host commands.
 #[test]

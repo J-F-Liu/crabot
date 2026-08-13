@@ -651,38 +651,58 @@ fn mounts(workspace: &Path, home: Option<&RealMount>) -> Vec<RealMount> {
     if let Some(home) = home {
         list.insert(1, home.clone());
     }
-    list.extend(root_mount(workspace));
+    list.extend(readonly_roots());
     list
 }
 
-/// Read-only fallback mount, appended last: `/` on Unix, the workspace's
-/// drive root at its drive-letter path (`/d` for `D:\`) on Windows — no
-/// `/` catch-all there, so unmapped paths error instead of being mangled.
+/// Read-only fallback mounts, appended last: `/` on Unix, every present
+/// drive at its drive-letter path (`/c`, `/d`, …) on Windows — no `/`
+/// catch-all there, so unmapped paths error instead of being mangled.
 #[cfg(unix)]
-fn root_mount(_workspace: &Path) -> Option<RealMount> {
-    Some(RealMount::ro("/", "/"))
+fn readonly_roots() -> Vec<RealMount> {
+    vec![RealMount::ro("/", "/")]
 }
 
+/// Every present drive mounted read-only at its drive-letter VFS path
+/// (`C:\` → `/c`), like `convert_path_to_unix_style` produces.
 #[cfg(windows)]
-fn root_mount(workspace: &Path) -> Option<RealMount> {
-    let (host_path, vfs_path) = drive_root(workspace)?;
-    Some(RealMount::ro(host_path, vfs_path))
+fn readonly_roots() -> Vec<RealMount> {
+    present_drive_letters()
+        .into_iter()
+        .map(|letter| {
+            RealMount::ro(
+                format!("{letter}:\\"),
+                format!("/{}", letter.to_ascii_lowercase()),
+            )
+        })
+        .collect()
 }
 
-/// The workspace's drive root and its VFS path (`D:\` → (`D:\`, `/d`)),
-/// matching the `convert_path_to_unix_style` drive-letter scheme.
+/// Letters of every drive present on this host with a usable root.
+/// `GetDriveTypeW` never probes media, so drives that still fail to open
+/// (empty card readers, stale network shares) are filtered by bashkit's
+/// build-time canonicalize.
 #[cfg(windows)]
-fn drive_root(workspace: &Path) -> Option<(PathBuf, PathBuf)> {
-    let Component::Prefix(prefix) = workspace.components().next()? else {
-        return None;
-    };
-    let (std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d)) = prefix.kind() else {
-        return None;
-    };
-    let mut host_path = PathBuf::from(prefix.as_os_str());
-    host_path.push("\\");
-    let vfs_path = PathBuf::from(format!("/{}", (d as char).to_ascii_lowercase()));
-    Some((host_path, vfs_path))
+fn present_drive_letters() -> Vec<char> {
+    const DRIVE_UNKNOWN: u32 = 0;
+    const DRIVE_NO_ROOT_DIR: u32 = 1;
+    unsafe extern "system" {
+        fn GetLogicalDrives() -> u32;
+        fn GetDriveTypeW(lp_root_path_name: *const u16) -> u32;
+    }
+    // SAFETY: GetLogicalDrives takes no arguments; bit i is drive 'A' + i.
+    let mask = unsafe { GetLogicalDrives() };
+    (0..26)
+        .filter(|&i| mask & (1 << i) != 0)
+        .map(|i| char::from(b'A' + i as u8))
+        .filter(|&letter| {
+            let root = format!("{letter}:\\");
+            let wide: Vec<u16> = root.encode_utf16().chain([0]).collect();
+            // SAFETY: `root` is a valid drive root; the result is a plain u32.
+            let kind = unsafe { GetDriveTypeW(wide.as_ptr()) };
+            !matches!(kind, DRIVE_UNKNOWN | DRIVE_NO_ROOT_DIR)
+        })
+        .collect()
 }
 
 /// A real host directory mounted into the VFS (see [`mounts`]).
@@ -773,13 +793,18 @@ fn format_exec_result(result: &ExecResult) -> String {
     super::truncate_output(output)
 }
 
-/// Drain a captured-stderr pipe, re-emitting everything except bashkit's
-/// "writable mount" warning (no flag to silence it).
+/// Drain a captured-stderr pipe, re-emitting everything except bashkit
+/// warnings expected by design: writable mounts (cannot be silenced) and
+/// drive roots that failed to mount (unreadable media probed every build).
 fn drain_and_reemit(mut file: std::fs::File) {
+    const EXPECTED: [&str; 2] = [
+        "bashkit: warning: writable mount",
+        "bashkit: warning: failed to canonicalize mount path",
+    ];
     let mut buf = Vec::new();
     let _ = std::io::Read::read_to_end(&mut file, &mut buf);
     for line in String::from_utf8_lossy(&buf).lines() {
-        if !line.starts_with("bashkit: warning: writable mount") {
+        if !EXPECTED.iter().any(|p| line.starts_with(*p)) {
             eprintln!("{line}");
         }
     }
