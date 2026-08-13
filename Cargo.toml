@@ -76,6 +76,7 @@ bashkit = { version = "=0.16.0", default-features = false, features = [
     "realfs",
     "python",
 ] }
+tokio-util = "0.7.19"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

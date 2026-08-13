@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
@@ -43,7 +43,7 @@ impl Tool for AskTool {
         &self,
         _args: &Value,
         _workspace: &Path,
-        _cancel: &AtomicBool,
+        _cancel: &CancellationToken,
     ) -> Result<String, String> {
         Err("ask must be handled by the user interface".into())
     }

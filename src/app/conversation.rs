@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::app::session_state::{self, AskAction, SessionEvent, TaskRequest};
 use crate::app::session_tab::SessionTab;
@@ -1214,6 +1215,12 @@ pub(crate) fn start_dialog(
     if tab.task_path.is_some() {
         tools.retain(|t| t.name() != "renew");
     }
+    tab.session_state.phase = DialogPhase::LlmLoading;
+    tab.end_status = None;
+    // Fresh token per stream: a stale cancel can't leak into the next run.
+    tab.session_state.cancel_token = CancellationToken::new();
+    let cancel_token = tab.session_state.cancel_token.clone();
+
     let config = crate::llm::SendConfig {
         model,
         workspace: app.prompt.workspace.1.clone(),
@@ -1226,19 +1233,12 @@ pub(crate) fn start_dialog(
         ask_deadline: tab.session_state.ask_deadline.clone(),
         task_receiver: task_rx,
         user_agent: crabot::app_title().to_string(),
-        cancel_token: tab.session_state.cancel_token.clone(),
+        cancel_token: cancel_token.clone(),
         max_iterations: app.settings.max_iterations,
         stream_stall_timeout_secs: app.settings.stream_stall_timeout,
     };
 
     let history = tab.session.history.clone();
-
-    tab.session_state.phase = DialogPhase::LlmLoading;
-    tab.end_status = None;
-    tab.session_state
-        .cancel_token
-        .store(false, Ordering::Relaxed);
-    let cancel_token = tab.session_state.cancel_token.clone();
 
     Task::batch([
         if is_viewing {
@@ -1259,11 +1259,7 @@ pub(crate) fn start_dialog(
                             )))
                             .await
                             .is_ok();
-                        if cancel.load(Ordering::Relaxed) {
-                            false
-                        } else {
-                            ok
-                        }
+                        if cancel.is_cancelled() { false } else { ok }
                     }
                     .boxed()
                 }

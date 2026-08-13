@@ -1,7 +1,9 @@
 use futures::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use tokio_util::sync::CancellationToken;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
@@ -49,16 +51,6 @@ fn mark_cache_tail(messages: &mut [ChatMessage]) {
     // Set the rolling breakpoint on the tail message.
     if let Some(last) = messages.last_mut() {
         last.options.get_or_insert_default().cache_control = Some(CacheControl::Ephemeral);
-    }
-}
-
-/// Resolve once the cancel token is set.
-async fn wait_cancelled(cancel_token: &AtomicBool) {
-    loop {
-        if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -122,11 +114,12 @@ async fn try_acquire_stream(
     model: &crabot::model::ModelInfo,
     chat_req: &ChatRequest,
     chat_options: &ChatOptions,
-    cancel_token: &AtomicBool,
+    cancel_token: &CancellationToken,
 ) -> Result<Option<AcquiredStream>, (AcquireStage, genai::Error)> {
     let stream_result = tokio::select! {
+        biased;
+        _ = cancel_token.cancelled() => return Ok(None),
         res = client.exec_chat_stream(&model.model_id, chat_req.clone(), Some(chat_options)) => res,
-        _ = wait_cancelled(cancel_token) => return Ok(None),
     };
     let mut stream = match stream_result {
         Ok(chat_res) => chat_res.stream,
@@ -138,8 +131,9 @@ async fn try_acquire_stream(
     // so the first real event (or error) decides acquisition success.
     let first = loop {
         let ev = tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => return Ok(None),
             ev = stream.next() => ev,
-            _ = wait_cancelled(cancel_token) => return Ok(None),
         };
         match ev {
             Some(Ok(ChatStreamEvent::Start)) => continue,
@@ -161,7 +155,7 @@ async fn acquire_stream_with_retry(
     model: &crabot::model::ModelInfo,
     chat_req: &ChatRequest,
     chat_options: &ChatOptions,
-    cancel_token: &AtomicBool,
+    cancel_token: &CancellationToken,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) -> Result<Option<AcquiredStream>, String> {
     let mut attempt: u32 = 0;
@@ -183,8 +177,9 @@ async fn acquire_stream_with_retry(
                         return Ok(None);
                     }
                     tokio::select! {
+                        biased;
+                        _ = cancel_token.cancelled() => return Ok(None),
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-                        _ = wait_cancelled(cancel_token) => return Ok(None),
                     }
                 }
                 // Countdown finished — clear the stale countdown status before the next attempt.
@@ -238,13 +233,13 @@ async fn exec_tool(
     tool: Option<ToolRef>,
     tc: &ToolCall,
     workspace: std::path::PathBuf,
-    cancel_token: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
 ) -> Result<String, String> {
     match tool {
         Some(t) => {
             let fn_arguments = tc.fn_arguments.clone();
             await_tool(tokio::task::spawn_blocking(move || {
-                t.execute(&fn_arguments, &workspace, cancel_token.as_ref())
+                t.execute(&fn_arguments, &workspace, &cancel_token)
             }))
             .await
         }
@@ -260,7 +255,7 @@ async fn exec_tool_streaming(
     tool: Option<ToolRef>,
     tc: &ToolCall,
     workspace: std::path::PathBuf,
-    cancel_token: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) -> Result<String, String> {
     let Some(tool) = tool else {
@@ -273,7 +268,7 @@ async fn exec_tool_streaming(
     let fn_arguments = tc.fn_arguments.clone();
     let call_id = tc.call_id.clone();
     let handle = tokio::task::spawn_blocking(move || {
-        tool.execute_streaming(&fn_arguments, &workspace, cancel_token.as_ref(), &sink)
+        tool.execute_streaming(&fn_arguments, &workspace, &cancel_token, &sink)
     });
 
     // Forward chunks until the tool finishes (its sink drop closes the channel).
@@ -320,7 +315,7 @@ fn build_tool_result(
 struct ExecutionCtx<'a> {
     tools: &'a [ToolRef],
     workspace: &'a std::path::Path,
-    cancel_token: &'a Arc<AtomicBool>,
+    cancel_token: &'a CancellationToken,
     /// Shared ask-tool deadline — the UI extends it to give more time.
     ask_deadline: &'a Arc<Mutex<Instant>>,
 }
@@ -377,8 +372,9 @@ async fn run_parallel_batch(
             let tc = tc.clone();
             Box::pin(async move {
                 let result = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => Err(crate::tools::CANCEL_REASON.into()),
                     result = rx => result.unwrap_or_else(|_| Err("Task response channel closed.".into())),
-                    _ = wait_cancelled(&cancel) => Err(crate::tools::CANCEL_REASON.into()),
                 };
                 build_tool_result(&tc, result)
             })
@@ -483,8 +479,8 @@ pub struct SendConfig {
     /// Receiver for task-tool reports, tagged with the originating call_id.
     pub task_receiver: tokio::sync::mpsc::UnboundedReceiver<(String, Result<String, String>)>,
     pub user_agent: String,
-    /// When set to `true`, in-progress tool execution is cancelled.
-    pub cancel_token: Arc<AtomicBool>,
+    /// In-progress tool execution stops when this token is cancelled.
+    pub cancel_token: CancellationToken,
     /// Max agent-loop iterations (tool-calling rounds) before giving up.
     pub max_iterations: usize,
     /// Seconds of stream silence before giving up (0 = off).
@@ -647,7 +643,7 @@ pub async fn send_stream(
                 None => tokio::select! {
                     // Biased so ties resolve deterministically: cancel > stream data > stall timeout.
                     biased;
-                    _ = wait_cancelled(&cancel_token) => {
+                    _ = cancel_token.cancelled() => {
                         on_event(SessionEvent::Cancelled(genai_messages)).await;
                         return;
                     }
@@ -835,7 +831,7 @@ pub async fn send_stream(
         }
 
         // Check cancellation after tool calls so to keep tool results match in history.
-        if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
+        if cancel_token.is_cancelled() {
             on_event(SessionEvent::Cancelled(genai_messages)).await;
             return;
         }
@@ -916,8 +912,8 @@ fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Client {
 }
 
 /// Error for a failed event delivery: user Stop vs. a dead UI channel.
-fn event_send_error(cancel_token: &AtomicBool) -> String {
-    if cancel_token.load(std::sync::atomic::Ordering::Acquire) {
+fn event_send_error(cancel_token: &CancellationToken) -> String {
+    if cancel_token.is_cancelled() {
         "Session cancelled by user.".into()
     } else {
         "Ask event channel closed.".into()
@@ -930,7 +926,7 @@ fn event_send_error(cancel_token: &AtomicBool) -> String {
 async fn wait_for_result(
     receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-    cancel_token: &AtomicBool,
+    cancel_token: &CancellationToken,
     event: SessionEvent,
     ask_deadline: &Arc<Mutex<Instant>>,
     timeout: (Duration, &'static str),
@@ -952,8 +948,9 @@ async fn wait_for_result(
             return Err(event_send_error(cancel_token));
         }
         tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => return Err(crate::tools::CANCEL_REASON.into()),
             result = receiver.recv() => return result.unwrap_or_else(|| Err("Response channel closed.".into())),
-            _ = wait_cancelled(cancel_token) => return Err(crate::tools::CANCEL_REASON.into()),
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
         }
     }

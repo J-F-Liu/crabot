@@ -5,7 +5,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+
+use tokio_util::sync::CancellationToken;
 
 use crabot::tools::ToolRegistry;
 
@@ -142,15 +143,15 @@ async fn await_tool(
 /// Run the `bash` tool exactly like `llm.rs::exec_tool` does: on a blocking
 /// thread with a tokio runtime context.
 fn run_bash(command: &str, workspace: &Path, timeout_ms: Option<u64>) -> Result<String, String> {
-    run_bash_with_cancel(command, workspace, timeout_ms, AtomicBool::new(false))
+    run_bash_with_cancel(command, workspace, timeout_ms, CancellationToken::new())
 }
 
-/// Like [`run_bash`], with a caller-controlled cancel flag.
+/// Like [`run_bash`], with a caller-controlled cancel token.
 fn run_bash_with_cancel(
     command: &str,
     workspace: &Path,
     timeout_ms: Option<u64>,
-    cancel: AtomicBool,
+    cancel: CancellationToken,
 ) -> Result<String, String> {
     let (bash, args) = bash_tool(command, timeout_ms);
     let workspace = workspace.to_path_buf();
@@ -172,7 +173,7 @@ fn run_bash_streaming(
 ) -> Result<String, String> {
     let (bash, args) = bash_tool(command, timeout_ms);
     let workspace = workspace.to_path_buf();
-    let cancel = AtomicBool::new(false);
+    let cancel = CancellationToken::new();
     let sink: crabot::tools::OutputSink = Arc::new(move |chunk| {
         let _ = tx.send(chunk.to_string());
     });
@@ -652,13 +653,16 @@ fn real_bash_signal_death_exit_code() {
 /// cancelled one runs — same as real bash, where the process group is killed.
 #[test]
 fn bashkit_cancel_aborts_whole_script() {
-    let err = run_bash_with_cancel(
-        "sleep 100; echo after",
-        &crabot_workspace(),
-        None,
-        AtomicBool::new(true),
-    )
-    .unwrap_err();
+    // Cancel mid-run: this must hit the outer `select!` (not the pre-execute
+    // wrapper check), which drops the script future before `echo after` runs.
+    let cancel = CancellationToken::new();
+    let flipper = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        flipper.cancel();
+    });
+    let err = run_bash_with_cancel("sleep 100; echo after", &crabot_workspace(), None, cancel)
+        .unwrap_err();
     assert!(err.contains("Cancelled by user"), "unexpected: {err}");
     assert!(
         !err.contains("after"),
@@ -707,11 +711,11 @@ fn bashkit_timeout_includes_partial_host_output() {
 fn bashkit_cancel_includes_partial_output() {
     let (bash, args) = bash_tool("echo before; sleep 100", None);
     let workspace = crabot_workspace();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let flipper = Arc::clone(&cancel);
+    let cancel = CancellationToken::new();
+    let flipper = cancel.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(300));
-        flipper.store(true, std::sync::atomic::Ordering::Relaxed);
+        flipper.cancel();
     });
     let err = test_runtime()
         .block_on(async {

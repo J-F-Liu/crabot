@@ -21,11 +21,10 @@ use crate::BoundedCapture;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
+
+use tokio_util::sync::CancellationToken;
 
 use genai::chat::Tool as GenaiTool;
 use interprocess::unnamed_pipe;
@@ -60,16 +59,15 @@ pub trait Tool: Send + Sync {
     fn instruction(&self) -> &str;
     fn schema(&self) -> Value;
 
-    /// Cancel-aware wrapper: checks the cancellation flag *before* delegating to
-    /// [`execute_inner`](Self::execute_inner). Individual tools may also
-    /// honour the flag during long-running operations.
+    /// Cancel-aware wrapper: checks the token *before* delegating to
+    /// [`execute_inner`](Self::execute_inner); tools may also poll it while running.
     fn execute(
         &self,
         args: &Value,
         workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
     ) -> Result<String, String> {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(CANCEL_REASON.into());
         }
         self.execute_inner(args, workspace, cancel)
@@ -81,7 +79,7 @@ pub trait Tool: Send + Sync {
         &self,
         args: &Value,
         workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
     ) -> Result<String, String>;
 
     /// Streaming variant of [`execute`](Self::execute): the same cancel-aware
@@ -92,10 +90,10 @@ pub trait Tool: Send + Sync {
         &self,
         args: &Value,
         workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
         sink: &OutputSink,
     ) -> Result<String, String> {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(CANCEL_REASON.into());
         }
         self.execute_streaming_inner(args, workspace, cancel, sink)
@@ -108,7 +106,7 @@ pub trait Tool: Send + Sync {
         &self,
         args: &Value,
         workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
         _sink: &OutputSink,
     ) -> Result<String, String> {
         self.execute_inner(args, workspace, cancel)
@@ -1182,7 +1180,7 @@ impl ChunkForwarder {
 pub(crate) enum WaitError {
     /// The child outlived the deadline; it was killed and reaped.
     Timeout(String),
-    /// The caller's cancel flag was set; the child was killed and reaped.
+    /// The caller's cancel token was cancelled; the child was killed and reaped.
     Cancelled(String),
     /// Pipe setup or `wait()` failure — neither a timeout nor a cancel.
     Other(String),
@@ -1229,7 +1227,7 @@ pub(crate) fn wait_with_timeout(
     remaining: Duration,
     timeout_total: Duration,
     kill_tree: bool,
-    cancel: &AtomicBool,
+    cancel: &CancellationToken,
     mut forwarder: Option<&mut ChunkForwarder>,
 ) -> Result<std::process::Output, WaitError> {
     let pid = child.id();
@@ -1279,7 +1277,7 @@ pub(crate) fn wait_with_timeout(
         }
 
         // Check for user cancellation before trying the child.
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(WaitError::Cancelled(kill_and_error(
                 &mut child,
                 pid,
@@ -1306,9 +1304,14 @@ pub(crate) fn wait_with_timeout(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(WaitError::Other(format!("Failed to wait on command: {e}")));
+                return Err(WaitError::Other(kill_and_error(
+                    &mut child,
+                    pid,
+                    kill_tree,
+                    &stdout_cap,
+                    &stderr_cap,
+                    &format!("Failed to wait on command: {e}"),
+                )));
             }
         }
     };

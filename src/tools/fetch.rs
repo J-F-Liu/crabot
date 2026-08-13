@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
 
 use dom_smoothie::{Article, Config, Readability};
 use serde_json::{Value, json};
@@ -45,7 +46,7 @@ impl Tool for FetchTool {
         &self,
         args: &Value,
         _workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
     ) -> Result<String, String> {
         execute(args, cancel)
     }
@@ -67,7 +68,7 @@ pub enum ContentKind {
     Unsupported,
 }
 
-pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, String> {
+pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     let max_body_bytes = tool_limits().fetch_max_body_bytes;
 
     let url = arg_str(args, "url").ok_or("Missing 'url' argument")?;
@@ -93,11 +94,12 @@ pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, Strin
     tokio::runtime::Handle::current().block_on(async {
         // Race the HTTP request against user cancellation.
         let resp = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                return Err(CANCEL_REASON.into());
+            }
             r = client()?.get(parsed.clone()).send() => {
                 r.map_err(|e| format!("Failed to fetch {url}: {e}"))?
-            }
-            _ = cancel_signal(cancel) => {
-                return Err(CANCEL_REASON.into());
             }
         };
 
@@ -124,11 +126,12 @@ pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, Strin
 
         // Download the body, with cancellation support.
         let body = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                return Err(CANCEL_REASON.into());
+            }
             r = resp.text() => {
                 r.map_err(|e| format!("Failed to read response body: {e}"))?
-            }
-            _ = cancel_signal(cancel) => {
-                return Err(CANCEL_REASON.into());
             }
         };
 
@@ -149,16 +152,6 @@ pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, Strin
 }
 
 // ── async helpers ──────────────────────────────────────────────────
-
-/// Returns a future that completes when `cancel` becomes true.
-async fn cancel_signal(cancel: &AtomicBool) {
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
 
 /// Shared async client: keeps one connection pool across all fetch calls.
 fn client() -> Result<&'static reqwest::Client, String> {

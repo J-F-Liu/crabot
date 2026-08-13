@@ -1,7 +1,9 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::sync::{Arc, Mutex};
+
+use tokio_util::sync::CancellationToken;
 
 use super::Tool;
 
@@ -102,7 +104,7 @@ impl Tool for TodoTool {
         &self,
         args: &Value,
         _workspace: &Path,
-        _cancel: &AtomicBool,
+        _cancel: &CancellationToken,
     ) -> Result<String, String> {
         let items_value = args.get("items").ok_or("Missing 'items' argument")?;
         let items: Vec<TodoItem> = serde_json::from_value(items_value.clone())

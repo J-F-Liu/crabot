@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
@@ -48,7 +49,7 @@ impl Tool for BashTool {
         &self,
         args: &Value,
         workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
     ) -> Result<String, String> {
         execute(args, workspace, cancel)
     }
@@ -57,7 +58,7 @@ impl Tool for BashTool {
         &self,
         args: &Value,
         workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
         sink: &OutputSink,
     ) -> Result<String, String> {
         execute_streaming(args, workspace, cancel, sink)
@@ -67,7 +68,7 @@ impl Tool for BashTool {
 pub(super) fn execute(
     args: &Value,
     workspace: &Path,
-    cancel: &AtomicBool,
+    cancel: &CancellationToken,
 ) -> Result<String, String> {
     run(args, workspace, cancel, None)
 }
@@ -76,7 +77,7 @@ pub(super) fn execute(
 pub(super) fn execute_streaming(
     args: &Value,
     workspace: &Path,
-    cancel: &AtomicBool,
+    cancel: &CancellationToken,
     sink: &OutputSink,
 ) -> Result<String, String> {
     run(args, workspace, cancel, Some(Arc::clone(sink)))
@@ -85,7 +86,7 @@ pub(super) fn execute_streaming(
 fn run(
     args: &Value,
     workspace: &Path,
-    cancel: &AtomicBool,
+    cancel: &CancellationToken,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
     let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
@@ -108,7 +109,7 @@ fn execute_real_bash(
     command: &str,
     workspace: &Path,
     timeout: Duration,
-    cancel: &AtomicBool,
+    cancel: &CancellationToken,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
     let (stdout_tx, stdout_rx) = super::create_pipe_pair("stdout")?;

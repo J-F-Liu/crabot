@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use iced::Task;
 use iced::widget::scrollable::Viewport;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::app::{SessionEndStatus, SessionTab};
 use crate::llm::{DialogPhase, lock};
@@ -35,7 +36,7 @@ pub(crate) struct SessionState {
     /// Index (flat turn count) where the current stream's placeholders begin.
     pub(crate) start_index: usize,
     /// Cancellation token to stop an in-progress stream early.
-    pub(crate) cancel_token: Arc<AtomicBool>,
+    pub(crate) cancel_token: CancellationToken,
     /// Shared slot for a raw user prompt injected during streaming.
     pub(crate) injected_prompt: Arc<Mutex<Option<String>>>,
     /// Parked full `UserPrompt` (work mode, workspace tree) to be dispatched
@@ -70,7 +71,7 @@ impl SessionState {
         Self {
             phase: DialogPhase::Idle,
             start_index: 0,
-            cancel_token: Arc::new(AtomicBool::new(false)),
+            cancel_token: CancellationToken::new(),
             injected_prompt: Arc::new(Mutex::new(None)),
             pending_prompt: None,
             ask_request: None,
@@ -88,7 +89,7 @@ impl SessionState {
 
     /// Signal this session to stop streaming.
     pub(crate) fn stop(&self) {
-        self.cancel_token.store(true, Ordering::Release);
+        self.cancel_token.cancel();
     }
 
     /// Push the ask deadline back by `ASK_EXTEND_SECS` and refresh the

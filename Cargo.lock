@@ -1239,6 +1239,7 @@ dependencies = [
  "tar",
  "tinytemplate",
  "tokio",
+ "tokio-util",
  "winresource",
  "zip",
 ]

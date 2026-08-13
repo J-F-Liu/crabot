@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
@@ -41,7 +41,7 @@ impl Tool for SearchTool {
         &self,
         args: &Value,
         workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
     ) -> Result<String, String> {
         execute_search(args, workspace, cancel)
     }
@@ -50,7 +50,7 @@ impl Tool for SearchTool {
 pub(super) fn execute_search(
     args: &Value,
     workspace: &Path,
-    cancel: &AtomicBool,
+    cancel: &CancellationToken,
 ) -> Result<String, String> {
     let max_lines = tool_limits().search_max_lines;
 
@@ -96,7 +96,7 @@ pub(super) fn execute_search(
                 truncated = true;
                 break;
             }
-            if cancel.load(Ordering::Relaxed) {
+            if cancel.is_cancelled() {
                 break;
             }
             let entry = match entry {
@@ -134,7 +134,7 @@ pub(super) fn execute_search(
             super::make_workspace_relative(&search_path, workspace)
         ));
     }
-    if cancel.load(Ordering::Relaxed) {
+    if cancel.is_cancelled() {
         let _ =
             std::fmt::Write::write_fmt(&mut out, format_args!("\n... [search was cancelled]\n"));
         Ok(super::truncate_output(out))

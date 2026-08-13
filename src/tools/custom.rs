@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
+
+use tokio_util::sync::CancellationToken;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -131,7 +132,7 @@ impl Tool for CustomTool {
         &self,
         args: &Value,
         workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
     ) -> Result<String, String> {
         // Build context: all defined params default to null,
         // then overlay with actual args.
@@ -267,7 +268,7 @@ mod tests {
 
         let args = json!({"crate": "iced"});
         let result = crate_source
-            .execute(&args, Path::new("."), &AtomicBool::new(false))
+            .execute(&args, Path::new("."), &CancellationToken::new())
             .unwrap();
         println!("{:?}", result);
 

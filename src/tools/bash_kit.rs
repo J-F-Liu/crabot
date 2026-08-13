@@ -15,7 +15,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use tokio_util::sync::CancellationToken;
+
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -274,11 +277,11 @@ pub(crate) fn execute(
     command: &str,
     workspace: &Path,
     timeout: Duration,
-    cancel: &AtomicBool,
+    cancel: &CancellationToken,
     external_names: Vec<String>,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
-    let shared_cancel = Arc::new(AtomicBool::new(false));
+    let shared_cancel = CancellationToken::new();
     let deadline_ms = Arc::new(AtomicU64::new(
         now_ms().saturating_add(timeout.as_millis() as u64),
     ));
@@ -291,7 +294,7 @@ pub(crate) fn execute(
         timeout + Duration::from_secs(1), // backstop; outer select fires first
         &external_names,
         Arc::clone(&deadline_ms),
-        Arc::clone(&shared_cancel),
+        shared_cancel.clone(),
         Arc::clone(&forwarder),
     );
 
@@ -299,14 +302,20 @@ pub(crate) fn execute(
     let result = handle
         .block_on(async {
             tokio::select! {
+                // Cancel first: bashkit aborts at the next command boundary via `shared_cancel`.
+                biased;
+                _ = cancel.cancelled() => {
+                    shared_cancel.cancel();
+                    Err(error_with_partial(&forwarder, CANCEL_REASON))
+                }
                 result = run_script(&mut bash, command, &external_names, &forwarder) => {
                     result.map_err(|e| e.to_string())
                 }
                 _ = tokio::time::sleep(timeout) => {
+                    // Abort any in-flight host command too: its own deadline is
+                    // `timeout + 1s` (backstop), but the script is already over.
+                    shared_cancel.cancel();
                     Err(error_with_partial(&forwarder, &timeout_message(timeout)))
-                }
-                _ = sync_cancel(cancel, &shared_cancel) => {
-                    Err(error_with_partial(&forwarder, CANCEL_REASON))
                 }
             }
         })
@@ -375,17 +384,6 @@ impl Drop for FlushTicker {
     }
 }
 
-/// Poll the tool's cancel flag; when set, mirror it into `shared` and complete.
-async fn sync_cancel(cancel: &AtomicBool, shared: &Arc<AtomicBool>) {
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            shared.store(true, Ordering::Relaxed);
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 /// Build a bashkit `Bash` wired to the real workspace.
 ///
 /// Applies mount table (`mounts`), seeds env, and bridges external command names.
@@ -394,7 +392,7 @@ fn build_bash(
     timeout: Duration,
     external_names: &[String],
     deadline_ms: Arc<AtomicU64>,
-    cancel: Arc<AtomicBool>,
+    cancel: CancellationToken,
     forwarder: Arc<Mutex<ChunkForwarder>>,
 ) -> Bash {
     let home_mount = real_home_mount();
@@ -448,7 +446,7 @@ fn build_bash(
             Box::new(HostCommandBuiltin {
                 name: name.clone(),
                 mounts: Arc::clone(&shared_mounts),
-                cancel: Arc::clone(&cancel),
+                cancel: cancel.clone(),
                 deadline_ms: Arc::clone(&deadline_ms),
                 timeout,
                 forwarder: forwarder.clone(),
@@ -472,7 +470,7 @@ struct HostCommandBuiltin {
     name: String,
     /// VFS mount table, shared with `build_bash` via Arc.
     mounts: Arc<[RealMount]>,
-    cancel: Arc<AtomicBool>,
+    cancel: CancellationToken,
     deadline_ms: Arc<AtomicU64>,
     /// Total user-visible timeout for the whole script (used in error messages).
     timeout: Duration,
@@ -513,7 +511,7 @@ fn apply_child_env(
 #[async_trait]
 impl Builtin for HostCommandBuiltin {
     async fn execute(&self, ctx: BuiltinContext<'_>) -> bashkit::Result<ExecResult> {
-        if self.cancel.load(Ordering::Relaxed) {
+        if self.cancel.is_cancelled() {
             // Record cancel as a failed command (130), NOT a script abort:
             // `ExecResult::err` keeps the script running, like real bash after
             // a non-zero exit. The whole-script abort comes from the outer
@@ -582,7 +580,7 @@ impl Builtin for HostCommandBuiltin {
             });
         }
 
-        let cancel = Arc::clone(&self.cancel);
+        let cancel = self.cancel.clone();
         let timeout = self.timeout;
         let forwarder = Arc::clone(&self.forwarder);
         // spawn_blocking so the outer select can still observe timeout/cancel.
@@ -597,7 +595,7 @@ impl Builtin for HostCommandBuiltin {
                 remaining,
                 timeout,
                 true,
-                cancel.as_ref(),
+                &cancel,
                 Some(&mut guard),
             )
         })

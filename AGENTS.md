@@ -81,11 +81,11 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn instruction(&self) -> &str;
     fn schema(&self) -> Value;
-    fn execute(&self, args: &Value, workspace: &Path, cancel: &AtomicBool) -> Result<String, String> {
-        if cancel.load(Ordering::Relaxed) { return Err("Cancelled by user".into()); }
+    fn execute(&self, args: &Value, workspace: &Path, cancel: &CancellationToken) -> Result<String, String> {
+        if cancel.is_cancelled() { return Err("Cancelled by user".into()); }
         self.execute_inner(args, workspace, cancel)
     }
-    fn execute_inner(&self, args: &Value, workspace: &Path, cancel: &AtomicBool) -> Result<String, String>;
+    fn execute_inner(&self, args: &Value, workspace: &Path, cancel: &CancellationToken) -> Result<String, String>;
     fn tool_declaration(&self, strict: bool) -> GenaiTool { ... }
 }
 ```
@@ -135,7 +135,7 @@ Pipe I/O via `interprocess` (no reader threads); `wait_with_timeout()` (polls + 
 ### Errors & Async
 - `Result<_, Box<dyn Error>>` / `Result<_, String>`; tools return `Result<String, String>`; `Settings::load()` → `Option`; no `thiserror`/`anyhow`
 - Tokio (Iced integration); `iced::stream::channel` for streaming (`SessionEvent` → `ConversationEvent::SessionEvent`)
-- Tools: builtin/custom → `spawn_blocking`; MCP → `block_in_place`; ask → mpsc; cancel via `AtomicBool` + `tokio::select!`; pending prompt via `Arc<Mutex<Option<String>>>`
+- Tools: builtin/custom → `spawn_blocking`; MCP → `block_in_place`; ask → mpsc; cancel via `CancellationToken` (`biased` `tokio::select!` on `cancelled()`, sync loops poll `is_cancelled()`; fresh token per stream); pending prompt via `Arc<Mutex<Option<String>>>`
 
 ### State & UI
 - 6 domain state groups in `App`; hierarchical `Message` (7 variants incl. `RestartApp`); `FocusedTarget` is exclusive

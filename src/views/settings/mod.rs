@@ -15,8 +15,7 @@ use iced::{
 };
 use indexmap::IndexMap;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use tokio_util::sync::CancellationToken;
 
 pub mod about;
 pub mod ai_models;
@@ -296,7 +295,7 @@ pub(crate) struct SettingsState {
     /// Whether a playground tool is currently executing.
     pub(crate) playground_running: bool,
     /// Cancellation token for in-progress playground execution.
-    pub(crate) playground_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) playground_cancel: CancellationToken,
     /// Monotonically incrementing generation counter — used to discard stale
     /// [`PlaygroundToolResult`] messages from cancelled or superseded executions.
     pub(crate) playground_generation: u64,
@@ -354,7 +353,7 @@ impl Default for SettingsState {
             playground_param_values: std::collections::HashMap::new(),
             playground_result: None,
             playground_running: false,
-            playground_cancel: Arc::new(AtomicBool::new(false)),
+            playground_cancel: CancellationToken::new(),
             playground_generation: 0,
         }
     }
@@ -418,10 +417,14 @@ impl SettingsState {
         self.playground_result = None;
         self.playground_running = false;
         // Cancel any in-flight execution and bump generation.
-        self.playground_cancel
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.playground_cancel = Arc::new(AtomicBool::new(false));
+        self.reset_playground_cancel();
         self.playground_generation = self.playground_generation.wrapping_add(1);
+    }
+
+    /// Cancel the in-flight playground execution and hand out a fresh token.
+    fn reset_playground_cancel(&mut self) {
+        self.playground_cancel.cancel();
+        self.playground_cancel = CancellationToken::new();
     }
 
     /// Refresh the playground tool list without resetting user selection or parameters.
@@ -1138,17 +1141,14 @@ impl SettingsState {
             }
             SettingsEvent::ExecutePlaygroundTool => {
                 // Cancel any in-flight execution before starting a new one.
-                self.playground_cancel
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                self.playground_cancel = Arc::new(AtomicBool::new(false));
+                self.reset_playground_cancel();
                 self.playground_running = true;
                 self.playground_result = None;
                 // Bump generation so stale results from previous runs are ignored.
                 self.playground_generation = self.playground_generation.wrapping_add(1);
             }
             SettingsEvent::CancelPlaygroundTool => {
-                self.playground_cancel
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.playground_cancel.cancel();
             }
             SettingsEvent::PlaygroundToolResult(generation, result, _is_todo) => {
                 if self.playground_generation == generation {

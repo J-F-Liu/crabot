@@ -5,9 +5,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
+
+use tokio_util::sync::CancellationToken;
 
 use indexmap::IndexMap;
 use rmcp::model::{
@@ -158,19 +159,6 @@ impl McpTool {
     }
 }
 
-/// Poll a cancellation flag, resolving when it becomes `true`.
-///
-/// Used in `tokio::select!` to race against in-flight MCP tool calls so
-/// that user-initiated cancellation can interrupt them promptly.
-async fn wait_for_cancel(cancel: &AtomicBool) {
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
 impl Tool for McpTool {
     fn name(&self) -> &str {
         &self.name
@@ -192,7 +180,7 @@ impl Tool for McpTool {
         &self,
         args: &Value,
         _workspace: &Path,
-        cancel: &AtomicBool,
+        cancel: &CancellationToken,
     ) -> Result<String, String> {
         let arguments: Map<String, Value> = args.as_object().cloned().unwrap_or_default();
 
@@ -208,6 +196,10 @@ impl Tool for McpTool {
                 let call_secs = call_timeout.as_secs();
                 handle.block_on(async move {
                     tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => {
+                            Err(format!("Tool '{name}' cancelled by user"))
+                        }
                         result = tokio::time::timeout(call_timeout, peer.call_tool(params)) => {
                             match result {
                                 Ok(Ok(result)) => Ok(result),
@@ -216,9 +208,6 @@ impl Tool for McpTool {
                                     "Tool '{name}' timed out after {call_secs}s",
                                 )),
                             }
-                        }
-                        _ = wait_for_cancel(cancel) => {
-                            Err(format!("Tool '{name}' cancelled by user"))
                         }
                     }
                 })
