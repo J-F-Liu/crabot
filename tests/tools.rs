@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crabot::tools::{
-    COALESCE_MS, ChunkForwarder, OutputSink, resolve_path, resolve_path_partial, tool_limits,
+    COALESCE_MS, ChunkForwarder, OutStream, OutputSink, ToolLimits, resolve_path,
+    resolve_path_partial, tool_limits,
 };
 
 /// Helper: create a temp workspace dir that is cleaned up on drop.
@@ -207,6 +208,27 @@ fn empty_workspace_empty_path() {
     assert!(result.is_err());
 }
 
+// ── ToolLimits::sanitize ──────────────────────────────────────
+
+/// Invalid settings (e.g. `max_command_timeout_ms < 1000`) are sanitized at
+/// init, so the bash tool's `clamp(1000, max)` and its JSON schema
+/// (`minimum <= maximum`) can never break.
+#[test]
+fn sanitize_keeps_timeouts_valid() {
+    let mut limits = ToolLimits::new();
+    limits.max_command_timeout_ms = 500;
+    limits.command_timeout_ms = 20_000;
+    limits.sanitize();
+    assert_eq!(limits.max_command_timeout_ms, 1000);
+    assert_eq!(limits.command_timeout_ms, 1000);
+
+    let mut limits = ToolLimits::new();
+    limits.max_command_timeout_ms = 10_000;
+    limits.command_timeout_ms = 30_000;
+    limits.sanitize();
+    assert_eq!(limits.command_timeout_ms, 10_000);
+}
+
 // ── ChunkForwarder ─────────────────────────────────────────────
 
 /// Forwarder whose chunks are collected into a Vec for inspection.
@@ -216,7 +238,7 @@ fn forwarder() -> (ChunkForwarder, Arc<Mutex<Vec<String>>>) {
         let captured = Arc::clone(&captured);
         move |chunk| captured.lock().unwrap().push(chunk.to_string())
     });
-    (ChunkForwarder::new(sink), captured)
+    (ChunkForwarder::new(Some(sink)), captured)
 }
 
 /// All captured chunks joined into one string.
@@ -224,10 +246,14 @@ fn joined(captured: &Mutex<Vec<String>>) -> String {
     captured.lock().unwrap().join("")
 }
 
+fn push_stdout(f: &mut ChunkForwarder, bytes: &[u8]) {
+    f.push(OutStream::Stdout, bytes);
+}
+
 #[test]
 fn normalizes_crlf_within_chunk() {
     let (mut f, out) = forwarder();
-    f.push(b"a\r\nb");
+    push_stdout(&mut f, b"a\r\nb");
     f.finish();
     assert_eq!(joined(&out), "a\nb");
 }
@@ -235,8 +261,8 @@ fn normalizes_crlf_within_chunk() {
 #[test]
 fn normalizes_crlf_split_across_chunks() {
     let (mut f, out) = forwarder();
-    f.push(b"a\r");
-    f.push(b"\nb");
+    push_stdout(&mut f, b"a\r");
+    push_stdout(&mut f, b"\nb");
     f.finish();
     assert_eq!(joined(&out), "a\nb");
 }
@@ -244,7 +270,7 @@ fn normalizes_crlf_split_across_chunks() {
 #[test]
 fn keeps_trailing_bare_cr() {
     let (mut f, out) = forwarder();
-    f.push(b"a\r");
+    push_stdout(&mut f, b"a\r");
     f.finish();
     assert_eq!(joined(&out), "a\r");
 }
@@ -253,8 +279,8 @@ fn keeps_trailing_bare_cr() {
 fn carries_incomplete_utf8_across_chunks() {
     let (mut f, out) = forwarder();
     // 中 = [0xE4, 0xB8, 0xAD], split 2 + 1.
-    f.push(&[0xE4, 0xB8]);
-    f.push(&[0xAD, b'x']);
+    push_stdout(&mut f, &[0xE4, 0xB8]);
+    push_stdout(&mut f, &[0xAD, b'x']);
     f.finish();
     assert_eq!(joined(&out), "中x");
 }
@@ -262,7 +288,7 @@ fn carries_incomplete_utf8_across_chunks() {
 #[test]
 fn tick_flushes_time_due_pending() {
     let (mut f, out) = forwarder();
-    f.push(b"early");
+    push_stdout(&mut f, b"early");
     // Too small and too fresh to flush on push.
     assert!(joined(&out).is_empty());
     std::thread::sleep(COALESCE_MS + Duration::from_millis(20));
@@ -273,7 +299,7 @@ fn tick_flushes_time_due_pending() {
 #[test]
 fn caps_forwarded_bytes() {
     let (mut f, out) = forwarder();
-    f.push(&vec![b'x'; 300 * 1024]);
+    push_stdout(&mut f, &vec![b'x'; 300 * 1024]);
     f.finish();
     let total = joined(&out).len();
     let cap = tool_limits().max_output_bytes;

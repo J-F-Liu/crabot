@@ -23,8 +23,9 @@ use bashkit::analysis::{AnalyzedCommand, analyze_with_limits};
 use bashkit::{Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, async_trait};
 
 use super::{
-    ChunkForwarder, OutputSink, WaitError, create_pipe_pair, is_would_block, pipe_to_stdio,
-    set_sender_nonblocking, set_sender_noninheritable, wait_with_timeout,
+    CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, WaitError, create_pipe_pair,
+    is_would_block, pipe_to_stdio, set_sender_nonblocking, set_sender_noninheritable,
+    timeout_message, wait_with_timeout,
 };
 
 /// Per-stream output cap (head-only backstop; crabot's own truncation is the visible limit).
@@ -260,9 +261,9 @@ fn collect_find_commands(
 ///
 /// `external_names` are bridged to host executables. The whole script shares
 /// one deadline (`timeout`) plus the caller's cancel flag. When `sink` is
-/// set, output streams live: host commands via their pipe drains, and
-/// builtin-only scripts via the interpreter callback plus a flush ticker
-/// (which also covers quiet stretches after output).
+/// set, output streams live (host commands via pipe drains, builtins via the
+/// callback + flush ticker); timeout/cancel errors report partial output like
+/// the real-bash route.
 ///
 /// # Panics
 ///
@@ -282,8 +283,8 @@ pub(crate) fn execute(
         now_ms().saturating_add(timeout.as_millis() as u64),
     ));
 
-    // One script-level forwarder, so the byte cap applies per script, not per command.
-    let forwarder = sink.map(|s| Arc::new(Mutex::new(ChunkForwarder::new(s))));
+    // Script-level forwarder: cap and partial capture apply per script, not per command.
+    let forwarder = Arc::new(Mutex::new(ChunkForwarder::new(sink)));
 
     let mut bash = build_bash(
         workspace,
@@ -291,7 +292,7 @@ pub(crate) fn execute(
         &external_names,
         Arc::clone(&deadline_ms),
         Arc::clone(&shared_cancel),
-        forwarder.clone(),
+        Arc::clone(&forwarder),
     );
 
     let handle = tokio::runtime::Handle::current();
@@ -302,42 +303,52 @@ pub(crate) fn execute(
                     result.map_err(|e| e.to_string())
                 }
                 _ = tokio::time::sleep(timeout) => {
-                    Err(format!("Command timed out after {}ms", timeout.as_millis()))
+                    Err(error_with_partial(&forwarder, &timeout_message(timeout)))
                 }
-                _ = sync_cancel(cancel, &shared_cancel) => Err("Cancelled by user".to_string()),
+                _ = sync_cancel(cancel, &shared_cancel) => {
+                    Err(error_with_partial(&forwarder, CANCEL_REASON))
+                }
             }
         })
         .map(|result| format_exec_result(&result));
 
-    // Flush carried/coalesced bytes now that the script is done.
-    if let Some(f) = &forwarder {
-        super::lock(f).finish();
+    // Flush carried/coalesced bytes; skip if a wedged host task holds the lock.
+    if let Ok(mut guard) = forwarder.try_lock() {
+        guard.finish();
     }
     result
 }
 
-/// Streaming callback route, used only for builtin-only scripts: bridged host
-/// commands already stream via their pipe drains, and the callback would
-/// re-emit their output a second time at command end.
+/// Timeout/cancel error with captured partial output; falls back to the bare
+/// reason when the forwarder lock stays held past [`super::CAPTURE_GRACE`].
+fn error_with_partial(forwarder: &Arc<Mutex<ChunkForwarder>>, reason: &str) -> String {
+    let Some(guard) = super::try_lock_for(forwarder, super::CAPTURE_GRACE) else {
+        return reason.to_string();
+    };
+    let mut msg = reason.to_string();
+    guard.append_partial_output(&mut msg);
+    msg
+}
+
+/// Callback route for builtin-only scripts (host commands already stream via
+/// pipe drains; the callback would re-emit their output). Also feeds the
+/// script-level partial-output capture.
 async fn run_script(
     bash: &mut Bash,
     command: &str,
     external_names: &[String],
-    forwarder: &Option<Arc<Mutex<ChunkForwarder>>>,
+    forwarder: &Arc<Mutex<ChunkForwarder>>,
 ) -> Result<ExecResult, bashkit::Error> {
-    if external_names.is_empty()
-        && let Some(f) = forwarder
-    {
-        let cb_forwarder = Arc::clone(f);
-        // Flush time-due chunks during quiet stretches (this route has no
-        // pipe drains to drive the flush).
-        let _ticker = FlushTicker(tokio::spawn(flush_ticker(Arc::clone(f))));
+    if external_names.is_empty() {
+        let forwarder = Arc::clone(forwarder);
+        // Flush time-due chunks during quiet stretches (no pipe drains here).
+        let _ticker = FlushTicker(tokio::spawn(flush_ticker(Arc::clone(&forwarder))));
         bash.exec_streaming(
             command,
             Box::new(move |stdout, stderr| {
-                let mut guard = super::lock(&cb_forwarder);
-                guard.push(stdout.as_bytes());
-                guard.push(stderr.as_bytes());
+                let mut guard = super::lock(&forwarder);
+                guard.push(OutStream::Stdout, stdout.as_bytes());
+                guard.push(OutStream::Stderr, stderr.as_bytes());
             }),
         )
         .await
@@ -384,7 +395,7 @@ fn build_bash(
     external_names: &[String],
     deadline_ms: Arc<AtomicU64>,
     cancel: Arc<AtomicBool>,
-    forwarder: Option<Arc<Mutex<ChunkForwarder>>>,
+    forwarder: Arc<Mutex<ChunkForwarder>>,
 ) -> Bash {
     let home_mount = real_home_mount();
     let workspace_vfs = super::convert_path_to_unix_style(workspace);
@@ -465,8 +476,8 @@ struct HostCommandBuiltin {
     deadline_ms: Arc<AtomicU64>,
     /// Total user-visible timeout for the whole script (used in error messages).
     timeout: Duration,
-    /// Script-level output forwarder; chunks stream live via the pipe drains.
-    forwarder: Option<Arc<Mutex<ChunkForwarder>>>,
+    /// Script-level forwarder: live streaming via pipe drains + partial capture.
+    forwarder: Arc<Mutex<ChunkForwarder>>,
     /// Seeded home mount; maps the interpreter's VFS HOME to the host path.
     home: Option<RealMount>,
 }
@@ -507,14 +518,11 @@ impl Builtin for HostCommandBuiltin {
             // `ExecResult::err` keeps the script running, like real bash after
             // a non-zero exit. The whole-script abort comes from the outer
             // `select!` in `execute`, which drops the interpreter within ~50ms.
-            return Ok(ExecResult::err("Cancelled by user", 130));
+            return Ok(ExecResult::err(CANCEL_REASON, 130));
         }
         let remaining = remaining_timeout(self.deadline_ms.load(Ordering::Relaxed));
         if remaining.is_zero() {
-            return Ok(ExecResult::err(
-                format!("Command timed out after {}ms", self.timeout.as_millis()),
-                124,
-            ));
+            return Ok(ExecResult::err(timeout_message(self.timeout), 124));
         }
 
         let prepared = (|| -> Result<_, String> {
@@ -576,12 +584,12 @@ impl Builtin for HostCommandBuiltin {
 
         let cancel = Arc::clone(&self.cancel);
         let timeout = self.timeout;
-        let forwarder = self.forwarder.clone();
+        let forwarder = Arc::clone(&self.forwarder);
         // spawn_blocking so the outer select can still observe timeout/cancel.
         let result = tokio::task::spawn_blocking(move || {
             // No contention: callback/ticker routes never coexist with host
             // commands, so holding the script-level lock is safe.
-            let mut guard = forwarder.as_ref().map(|f| super::lock(f));
+            let mut guard = super::lock(&forwarder);
             wait_with_timeout(
                 child,
                 Some(stdout_rx),
@@ -590,7 +598,7 @@ impl Builtin for HostCommandBuiltin {
                 timeout,
                 true,
                 cancel.as_ref(),
-                guard.as_deref_mut(),
+                Some(&mut guard),
             )
         })
         .await

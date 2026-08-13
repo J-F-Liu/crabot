@@ -6,7 +6,7 @@ use std::time::Duration;
 use dom_smoothie::{Article, Config, Readability};
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, tool_limits, truncate_output};
+use super::{CANCEL_REASON, Tool, arg_str, tool_limits, truncate_output};
 
 pub struct FetchTool;
 
@@ -97,7 +97,7 @@ pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, Strin
                 r.map_err(|e| format!("Failed to fetch {url}: {e}"))?
             }
             _ = cancel_signal(cancel) => {
-                return Err("Cancelled by user".into());
+                return Err(CANCEL_REASON.into());
             }
         };
 
@@ -128,7 +128,7 @@ pub(super) fn execute(args: &Value, cancel: &AtomicBool) -> Result<String, Strin
                 r.map_err(|e| format!("Failed to read response body: {e}"))?
             }
             _ = cancel_signal(cancel) => {
-                return Err("Cancelled by user".into());
+                return Err(CANCEL_REASON.into());
             }
         };
 

@@ -130,7 +130,7 @@ fn execute_real_bash(
         .spawn()
         .map_err(|e| format!("Failed to execute command: {e}"))?;
 
-    let mut forwarder = sink.map(ChunkForwarder::new);
+    let mut forwarder = ChunkForwarder::new(sink);
     let result = wait_with_timeout(
         child,
         Some(stdout_rx),
@@ -139,12 +139,10 @@ fn execute_real_bash(
         timeout,
         true, // bash runs in its own process group → kill the whole group
         cancel,
-        forwarder.as_mut(),
+        Some(&mut forwarder),
     );
     // Flush carried/coalesced bytes on every path (success, timeout, cancel).
-    if let Some(f) = &mut forwarder {
-        f.finish();
-    }
+    forwarder.finish();
     let output = result.map_err(WaitError::into_message)?;
     Ok(super::format_command_output(&output))
 }

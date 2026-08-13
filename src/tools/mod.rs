@@ -22,15 +22,29 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use genai::chat::Tool as GenaiTool;
 use interprocess::unnamed_pipe;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+// ── Constants ────────────────────────────────────────────────────────
+
+/// Coalesce small chunks until this many bytes accumulate before flushing.
+const COALESCE_BYTES: usize = 4 * 1024;
+/// Coalesce small chunks for at most this long before flushing.
+pub const COALESCE_MS: Duration = Duration::from_millis(100);
+
+/// User-cancel reason shared by tools and the LLM loop.
+pub const CANCEL_REASON: &str = "Cancelled by user";
+
+/// How long timeout/cancel errors wait for a detached host command's final
+/// drain (the forwarder lock) before reporting without partial output.
+pub(crate) const CAPTURE_GRACE: Duration = Duration::from_secs(2);
 
 // ── Tool trait ──────────────────────────────────────────────────────
 
@@ -56,7 +70,7 @@ pub trait Tool: Send + Sync {
         cancel: &AtomicBool,
     ) -> Result<String, String> {
         if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled by user".into());
+            return Err(CANCEL_REASON.into());
         }
         self.execute_inner(args, workspace, cancel)
     }
@@ -82,7 +96,7 @@ pub trait Tool: Send + Sync {
         sink: &OutputSink,
     ) -> Result<String, String> {
         if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled by user".into());
+            return Err(CANCEL_REASON.into());
         }
         self.execute_streaming_inner(args, workspace, cancel, sink)
     }
@@ -643,6 +657,15 @@ impl ToolLimits {
             mcp_call_timeout_ms: 300_000,          // 5 minutes
         }
     }
+
+    /// Keep both timeout fields in the valid `1000..=max` range; the bash
+    /// tool's `clamp` panics and its schema breaks when `max < 1000`.
+    pub fn sanitize(&mut self) {
+        self.max_command_timeout_ms = self.max_command_timeout_ms.max(1000);
+        self.command_timeout_ms = self
+            .command_timeout_ms
+            .clamp(1000, self.max_command_timeout_ms);
+    }
 }
 
 impl Default for ToolLimits {
@@ -657,8 +680,9 @@ impl Default for ToolLimits {
 /// executions stays cheap while writes remain rare.
 static TOOL_LIMITS: RwLock<ToolLimits> = RwLock::new(ToolLimits::new());
 
-/// Apply tool limits from settings. Later calls replace the current value.
-pub fn init_tool_limits(limits: ToolLimits) {
+/// Apply tool limits from settings; invalid values are sanitized first.
+pub fn init_tool_limits(mut limits: ToolLimits) {
+    limits.sanitize();
     if let Ok(mut guard) = TOOL_LIMITS.write() {
         *guard = limits;
     }
@@ -951,22 +975,47 @@ pub(crate) fn set_sender_noninheritable(sender: &unnamed_pipe::Sender) -> Result
 
 // ── Incremental output forwarding ──────────────────────────────────
 
-/// Coalesce small chunks until this many bytes accumulate before flushing.
-const COALESCE_BYTES: usize = 4 * 1024;
-/// Coalesce small chunks for at most this long before flushing.
-pub const COALESCE_MS: Duration = Duration::from_millis(100);
-
 /// Lock a mutex, recovering the payload if the holder panicked (poisoned).
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Forwards raw pipe bytes to an [`OutputSink`] as text chunks: stdout and
-/// stderr merge in arrival order, `\r\n` normalizes to `\n`, and small chunks
-/// are coalesced (size/time) so tight loops cannot flood the UI. Bytes past
-/// the output cap are dropped — the final tool result stays authoritative.
+/// Timeout error message used by both bash routes.
+pub(crate) fn timeout_message(timeout: Duration) -> String {
+    format!("Command timed out after {}ms", timeout.as_millis())
+}
+
+/// Lock `m`, polling for up to `budget`; `None` if it stays held.
+pub(crate) fn try_lock_for<T>(m: &Mutex<T>, budget: Duration) -> Option<MutexGuard<'_, T>> {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match m.try_lock() {
+            Ok(guard) => return Some(guard),
+            // Poisoned still holds the payload — recover it like `lock`.
+            Err(std::sync::TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Which output stream a chunk came from, for per-stream capture.
+#[derive(Clone, Copy)]
+pub enum OutStream {
+    Stdout,
+    Stderr,
+}
+
+/// Forwards pipe bytes to an [`OutputSink`] as text chunks: stdout/stderr
+/// merged in arrival order, `\r\n` → `\n`, small chunks coalesced, past-cap
+/// bytes dropped. Per-stream windows are also captured for partial-output
+/// errors, even without a sink.
 pub struct ChunkForwarder {
-    sink: OutputSink,
+    /// Live streaming sink; `None` when only the partial capture is needed.
+    sink: Option<OutputSink>,
     /// Cap on forwarded bytes; the sink is silently muted past this.
     cap: usize,
     /// Total bytes forwarded so far.
@@ -978,23 +1027,34 @@ pub struct ChunkForwarder {
     /// Coalesced text awaiting flush.
     pending: String,
     last_flush: std::time::Instant,
+    /// Captured stdout/stderr for partial-output messages.
+    stdout_cap: BoundedCapture,
+    stderr_cap: BoundedCapture,
 }
 
 impl ChunkForwarder {
-    pub fn new(sink: OutputSink) -> Self {
+    pub fn new(sink: Option<OutputSink>) -> Self {
+        let cap = tool_limits().max_output_bytes.max(1);
+        let keep = per_stream_keep();
         Self {
             sink,
-            cap: tool_limits().max_output_bytes.max(1),
+            cap,
             forwarded: 0,
             carry: Vec::with_capacity(8),
             pending_cr: false,
             pending: String::new(),
             last_flush: std::time::Instant::now(),
+            stdout_cap: BoundedCapture::new(keep),
+            stderr_cap: BoundedCapture::new(keep),
         }
     }
 
-    /// Forward a raw chunk of stream bytes to the sink.
-    pub fn push(&mut self, bytes: &[u8]) {
+    /// Capture `bytes` on `stream`, then forward to the sink.
+    pub fn push(&mut self, stream: OutStream, bytes: &[u8]) {
+        match stream {
+            OutStream::Stdout => self.stdout_cap.push(bytes),
+            OutStream::Stderr => self.stderr_cap.push(bytes),
+        }
         if bytes.is_empty() {
             return;
         }
@@ -1043,6 +1103,11 @@ impl ChunkForwarder {
         }
     }
 
+    /// Append the captured stdout/stderr to `msg`, like [`kill_and_error`].
+    pub fn append_partial_output(&self, msg: &mut String) {
+        append_partial_output(msg, &self.stdout_cap, &self.stderr_cap);
+    }
+
     /// Normalize `\r\n` → `\n` (carrying a trailing `\r`), then coalesce.
     fn push_text(&mut self, s: &str) {
         let mut out = String::with_capacity(s.len() + 1);
@@ -1080,6 +1145,10 @@ impl ChunkForwarder {
     }
 
     fn flush(&mut self) {
+        let Some(sink) = self.sink.as_ref() else {
+            self.pending.clear(); // no sink — nothing to forward
+            return;
+        };
         if self.pending.is_empty() || self.forwarded >= self.cap {
             self.pending.clear();
             return;
@@ -1092,7 +1161,7 @@ impl ChunkForwarder {
             &s
         };
         self.forwarded += take.len();
-        (self.sink)(take);
+        (sink)(take);
         self.last_flush = std::time::Instant::now();
     }
 
@@ -1150,7 +1219,8 @@ impl WaitError {
 ///
 /// `remaining` is the budget actually waited; `timeout_total` is reported in
 /// the timeout message (they differ when the caller already spent budget).
-/// `forwarder` receives each drained chunk for live output streaming.
+/// `forwarder` also gets each drained chunk for live streaming and partial
+/// capture.
 #[allow(clippy::too_many_arguments)] // 8 params; a context struct would churn 3 call sites
 pub(crate) fn wait_with_timeout(
     mut child: std::process::Child,
@@ -1164,8 +1234,7 @@ pub(crate) fn wait_with_timeout(
 ) -> Result<std::process::Output, WaitError> {
     let pid = child.id();
 
-    // Half the output budget per stream end. Round up so an odd budget still holds its full size.
-    let keep = tool_limits().max_output_bytes.div_ceil(2);
+    let keep = per_stream_keep();
     let mut stdout_cap = BoundedCapture::new(keep);
     let mut stderr_cap = BoundedCapture::new(keep);
 
@@ -1194,12 +1263,14 @@ pub(crate) fn wait_with_timeout(
             &mut stdout_cap,
             &mut tmp,
             forwarder.as_deref_mut(),
+            OutStream::Stdout,
         );
         drain_pipe(
             stderr.as_mut(),
             &mut stderr_cap,
             &mut tmp,
             forwarder.as_deref_mut(),
+            OutStream::Stderr,
         );
 
         // Time-based flush so coalesced bytes stream while the child is quiet.
@@ -1215,7 +1286,7 @@ pub(crate) fn wait_with_timeout(
                 kill_tree,
                 &stdout_cap,
                 &stderr_cap,
-                "Cancelled by user",
+                CANCEL_REASON,
             )));
         }
 
@@ -1229,7 +1300,7 @@ pub(crate) fn wait_with_timeout(
                         kill_tree,
                         &stdout_cap,
                         &stderr_cap,
-                        &format!("Command timed out after {}ms", timeout_total.as_millis()),
+                        &timeout_message(timeout_total),
                     )));
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -1251,12 +1322,14 @@ pub(crate) fn wait_with_timeout(
             &mut stdout_cap,
             &mut tmp,
             forwarder.as_deref_mut(),
+            OutStream::Stdout,
         );
         let stderr_done = drain_pipe(
             stderr.as_mut(),
             &mut stderr_cap,
             &mut tmp,
             forwarder.as_deref_mut(),
+            OutStream::Stderr,
         );
         if (stdout_done && stderr_done) || Instant::now() >= drain_deadline {
             break;
@@ -1271,14 +1344,15 @@ pub(crate) fn wait_with_timeout(
     })
 }
 
-/// Drain all currently-available bytes from `reader` into `cap`. Returns
-/// `true` on EOF (or no reader), `false` on `WouldBlock`. Each drained chunk
-/// is also forwarded to `forwarder` for live streaming.
+/// Drain all currently-available bytes from `reader` into `cap`; `true` on
+/// EOF (or no reader), `false` on `WouldBlock`. Chunks are also pushed to
+/// `forwarder` for live streaming and partial capture.
 fn drain_pipe(
     reader: Option<&mut unnamed_pipe::Recver>,
     cap: &mut BoundedCapture,
     tmp: &mut [u8],
     mut forwarder: Option<&mut ChunkForwarder>,
+    stream: OutStream,
 ) -> bool {
     let Some(reader) = reader else {
         return true;
@@ -1289,7 +1363,7 @@ fn drain_pipe(
             Ok(n) => {
                 cap.push(&tmp[..n]);
                 if let Some(f) = forwarder.as_mut() {
-                    f.push(&tmp[..n]);
+                    f.push(stream, &tmp[..n]);
                 }
             }
             Err(ref e) if is_would_block(e) => return false,
@@ -1309,6 +1383,11 @@ pub(crate) fn is_would_block(e: &std::io::Error) -> bool {
         return true;
     }
     false
+}
+
+/// Per-stream capture window: half the output budget, rounded up.
+fn per_stream_keep() -> usize {
+    tool_limits().max_output_bytes.div_ceil(2)
 }
 
 /// Append partial stdout/stderr content to an error message.

@@ -378,7 +378,7 @@ async fn run_parallel_batch(
             Box::pin(async move {
                 let result = tokio::select! {
                     result = rx => result.unwrap_or_else(|_| Err("Task response channel closed.".into())),
-                    _ = wait_cancelled(&cancel) => Err("Cancelled by user.".into()),
+                    _ = wait_cancelled(&cancel) => Err(crate::tools::CANCEL_REASON.into()),
                 };
                 build_tool_result(&tc, result)
             })
@@ -953,7 +953,7 @@ async fn wait_for_result(
         }
         tokio::select! {
             result = receiver.recv() => return result.unwrap_or_else(|| Err("Response channel closed.".into())),
-            _ = wait_cancelled(cancel_token) => return Err("Cancelled by user.".into()),
+            _ = wait_cancelled(cancel_token) => return Err(crate::tools::CANCEL_REASON.into()),
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
         }
     }

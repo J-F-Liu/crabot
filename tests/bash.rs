@@ -673,6 +673,59 @@ fn bashkit_sleep_timeout() {
     assert!(err.contains("timed out"), "unexpected: {err}");
 }
 
+/// Partial output produced before the timeout survives into the error — the
+/// builtin-only callback route feeds the script-level capture (sink or not).
+#[test]
+fn bashkit_timeout_includes_partial_builtin_output() {
+    let err = run_bash("echo before; sleep 100", &crabot_workspace(), Some(3000)).unwrap_err();
+    assert!(err.contains("timed out"), "unexpected: {err}");
+    assert!(err.contains("--- partial stdout ---"), "unexpected: {err}");
+    assert!(err.contains("before"), "unexpected: {err}");
+}
+
+/// Host-command output drained before the timeout also survives, like the
+/// real-bash route.
+#[test]
+fn bashkit_timeout_includes_partial_host_output() {
+    let err = run_bash(
+        "git rev-parse HEAD; sleep 100",
+        &crabot_workspace(),
+        Some(3000),
+    )
+    .unwrap_err();
+    assert!(err.contains("timed out"), "unexpected: {err}");
+    assert!(err.contains("--- partial stdout ---"), "unexpected: {err}");
+    assert!(
+        err.lines()
+            .any(|l| l.len() == 40 && l.chars().all(|c| c.is_ascii_hexdigit())),
+        "host output missing from error: {err}"
+    );
+}
+
+/// Cancellation mid-script keeps output produced before the cancel.
+#[test]
+fn bashkit_cancel_includes_partial_output() {
+    let (bash, args) = bash_tool("echo before; sleep 100", None);
+    let workspace = crabot_workspace();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flipper = Arc::clone(&cancel);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        flipper.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let err = test_runtime()
+        .block_on(async {
+            await_tool(tokio::task::spawn_blocking(move || {
+                bash.execute(&args, &workspace, &cancel)
+            }))
+            .await
+        })
+        .unwrap_err();
+    assert!(err.contains("Cancelled by user"), "unexpected: {err}");
+    assert!(err.contains("--- partial stdout ---"), "unexpected: {err}");
+    assert!(err.contains("before"), "unexpected: {err}");
+}
+
 // ── streaming output ────────────────────────────────────────
 
 /// External commands (`git` → HostCommandBuiltin) stream their output live
