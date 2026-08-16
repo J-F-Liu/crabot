@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use crabot::chat::{Dialog, Turn, TurnBody};
+use crabot::chat::{Dialog, Turn, TurnBody, streaming_tool_ids, tool_items};
 use crabot::session::Session;
 use genai::chat::ChatRole;
 use iced::{
@@ -316,52 +316,11 @@ fn tool_turn_block<'a>(
     ctx: &TurnView<'_>,
     streaming_ids: &HashSet<&str>,
 ) -> Element<'a, CenterPaneEvent> {
-    // Unified (name, args, result, timestamp, streaming) items from either variant.
-    type ToolItem<'a> = (
-        &'a str,
-        &'a Value,
-        Option<&'a Result<String, String>>,
-        &'a str,
-        bool, // streaming: still running, `result` holds partial live output
-    );
-    let items: Vec<ToolItem<'a>> = match &msg.body {
-        TurnBody::Tool(trs) => {
-            if trs.is_empty() {
-                // No results yet — avoid rendering an empty bubble.
-                return Space::new().height(0).into();
-            }
-            trs.iter()
-                .map(|tr| {
-                    (
-                        tr.name.as_str(),
-                        &tr.args,
-                        Some(&tr.result),
-                        tr.timestamp.as_str(),
-                        tr.streaming,
-                    )
-                })
-                .collect()
-        }
-        TurnBody::Temp(tcs) => tcs
-            .iter()
-            // Hidden when a live streaming placeholder already renders the call.
-            .filter(|tc| {
-                tc.call_id
-                    .as_deref()
-                    .is_none_or(|id| !streaming_ids.contains(id))
-            })
-            .map(|tc| {
-                (
-                    tc.name.as_str(),
-                    &tc.args,
-                    None,
-                    msg.timestamp.as_str(),
-                    false,
-                )
-            })
-            .collect(),
-        _ => unreachable!("tool_turn_block called on non-tool turn"),
-    };
+    let items = tool_items(msg, streaming_ids);
+    if items.is_empty() {
+        // No results yet — avoid rendering an empty bubble.
+        return Space::new().height(0).into();
+    }
 
     let mut elements: Vec<Element<'a, CenterPaneEvent>> = Vec::new();
 
@@ -718,16 +677,7 @@ pub(crate) fn center_pane<'a>(
                 Vec::new()
             } else {
                 // Pending calls already rendered by a live streaming placeholder.
-                let mut streaming_ids: HashSet<&str> = HashSet::new();
-                for turn in &dialog.turns {
-                    if let TurnBody::Tool(trs) = &turn.body {
-                        streaming_ids.extend(
-                            trs.iter()
-                                .filter(|tr| tr.streaming)
-                                .filter_map(|tr| tr.call_id.as_deref()),
-                        );
-                    }
-                }
+                let streaming_ids = streaming_tool_ids(dialog);
                 dialog
                     .turns
                     .iter()
@@ -823,7 +773,7 @@ pub(crate) fn center_pane<'a>(
 
 // ── session header ──────────────────────────────────────────────────
 
-/// Header bar: prompt text or "New session", plus copy/resend icons.
+/// Header bar: prompt text or "New session", plus export/copy/resend icons.
 fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
     let header = row![
         header_container(
@@ -837,6 +787,11 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
                     }
                 }),
             200.0,
+        ),
+        icons::icon_action(
+            icons::DOWNLOAD,
+            "Export session as HTML",
+            CenterPaneEvent::Conversation(ConversationEvent::ExportSessionHtml)
         ),
         icons::icon_action(
             icons::COPY,

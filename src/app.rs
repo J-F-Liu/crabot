@@ -488,6 +488,10 @@ pub(crate) enum ConversationEvent {
     /// Close the currently-viewed tab (Ctrl+W).
     CloseCurrentTab,
     CopySessionTitle,
+    /// Export the current session to an HTML file (opens a save dialog).
+    ExportSessionHtml,
+    /// Result of the HTML export.
+    ExportSessionHtmlDone(crate::views::export::ExportOutcome),
     AppClosing,
     ToggleSelectableMode(Option<usize>),
     SearchEvent(crate::views::SearchEvent),

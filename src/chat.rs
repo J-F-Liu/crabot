@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::LazyLock;
 
@@ -302,7 +303,7 @@ static LINK_FINDER: LazyLock<LinkFinder> = LazyLock::new(|| {
 });
 
 /// Markdown parser options matching the iced renderer.
-fn markdown_options() -> Options {
+pub fn markdown_options() -> Options {
     Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
         | Options::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS
         | Options::ENABLE_TABLES
@@ -420,4 +421,67 @@ fn linkify_segment(segment: &str) -> (String, bool) {
         result.push_str(&segment[last..]);
     }
     (result, changed)
+}
+
+// ── tool-item flattening ───────────────────────────────────────────
+
+/// A flattened tool item: (name, args, result, timestamp, streaming).
+pub type ToolItem<'a> = (
+    &'a str,
+    &'a Value,
+    Option<&'a Result<String, String>>,
+    &'a str,
+    bool,
+);
+
+/// Flatten a Tool/Temp turn into renderable items, hiding pending calls already
+/// shown by a live streaming placeholder.
+pub fn tool_items<'a>(turn: &'a Turn, streaming_ids: &HashSet<&str>) -> Vec<ToolItem<'a>> {
+    match &turn.body {
+        TurnBody::Tool(trs) => trs
+            .iter()
+            .map(|tr| {
+                (
+                    tr.name.as_str(),
+                    &tr.args,
+                    Some(&tr.result),
+                    tr.timestamp.as_str(),
+                    tr.streaming,
+                )
+            })
+            .collect(),
+        TurnBody::Temp(tcs) => tcs
+            .iter()
+            .filter(|tc| {
+                tc.call_id
+                    .as_deref()
+                    .is_none_or(|id| !streaming_ids.contains(id))
+            })
+            .map(|tc| {
+                (
+                    tc.name.as_str(),
+                    &tc.args,
+                    None,
+                    turn.timestamp.as_str(),
+                    false,
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Call ids whose live output is already rendered by a streaming placeholder.
+pub fn streaming_tool_ids(dialog: &Dialog) -> HashSet<&str> {
+    dialog
+        .turns
+        .iter()
+        .filter_map(|turn| match &turn.body {
+            TurnBody::Tool(trs) => Some(trs.iter()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|tr| tr.streaming)
+        .filter_map(|tr| tr.call_id.as_deref())
+        .collect()
 }

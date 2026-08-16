@@ -19,6 +19,7 @@ use crate::app::snapshot;
 use crate::app::{App, ConversationEvent, FocusedTarget, Message, TabBarScrollState};
 use crate::llm::DialogPhase;
 use crate::tools::TASK_MODES;
+use crate::views::export;
 use crate::views::session_tabs::TAB_SCROLL_STEP;
 use crate::views::{self, ASK_INPUT, SCROLL_STEP, scroll_to_end};
 
@@ -51,6 +52,26 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::CopySessionTitle => {
             return iced::clipboard::write(app.conversation.viewing().center_pane_title.clone());
         }
+        ConversationEvent::ExportSessionHtml => {
+            return export_session_html(app);
+        }
+        ConversationEvent::ExportSessionHtmlDone(outcome) => match outcome {
+            export::ExportOutcome::Cancelled | export::ExportOutcome::Saved => {}
+            export::ExportOutcome::SavedButNotOpened(error) => {
+                rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Warning)
+                    .set_title("Export saved")
+                    .set_description(&error)
+                    .show();
+            }
+            export::ExportOutcome::Failed(error) => {
+                rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Error)
+                    .set_title("Export session failed")
+                    .set_description(&error)
+                    .show();
+            }
+        },
         ConversationEvent::AppClosing => {
             app.conversation.stop();
             app.save_settings();
@@ -195,6 +216,40 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         }
     }
     Task::none()
+}
+
+/// Open a save dialog and export the viewing session to an HTML file.
+fn export_session_html(app: &App) -> Task<Message> {
+    let tab = app.conversation.viewing();
+    let title = tab.center_pane_title.clone();
+    let file_name = export::default_export_filename(&title);
+    let session = tab.session.clone();
+    let expanded_dialogs = tab.expanded_dialogs.clone();
+    let expanded_turns = tab.expanded_turns.clone();
+
+    Task::perform(
+        async move {
+            let Some(path) = rfd::FileDialog::new().set_file_name(file_name).save_file() else {
+                return export::ExportOutcome::Cancelled;
+            };
+            let html =
+                export::render_session_html(&session, &title, &expanded_dialogs, &expanded_turns);
+            if let Err(e) = std::fs::write(&path, html) {
+                return export::ExportOutcome::Failed(format!(
+                    "Failed to write {}: {e}",
+                    path.display()
+                ));
+            }
+            match open::that(&path) {
+                Ok(()) => export::ExportOutcome::Saved,
+                Err(e) => export::ExportOutcome::SavedButNotOpened(format!(
+                    "Wrote {} but could not open it in a browser: {e}",
+                    path.display()
+                )),
+            }
+        },
+        |result| Message::Conversation(ConversationEvent::ExportSessionHtmlDone(result)),
+    )
 }
 
 /// New session tab that becomes the viewing one (user/renew tabs);

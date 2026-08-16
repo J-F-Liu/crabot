@@ -1,4 +1,5 @@
 pub mod center_pane;
+pub mod export;
 pub mod icons;
 pub mod left_pane;
 pub mod modal;

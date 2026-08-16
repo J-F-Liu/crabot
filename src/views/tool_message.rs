@@ -672,7 +672,7 @@ pub(super) fn args_rows<'a, M: Clone + 'static>(
 }
 
 /// Format a single argument value from the args map as a string.
-fn fmt_arg(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> String {
+pub(crate) fn fmt_arg(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> String {
     map.get(key)
         .map(|v| {
             v.as_str()
