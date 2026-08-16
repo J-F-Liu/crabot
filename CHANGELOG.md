@@ -1,3 +1,18 @@
+# Unreleased
+
+# Crabot v0.8.1
+
+- **Export session as HTML** — a new download icon in the session header saves the current session as a standalone HTML file and opens it in the browser. The page is script-free with a strict Content-Security-Policy.
+- **Persistent logging** — the app now writes daily-rolling logs to `~/.crabot/logs` covering LLM retries/failures, tool executions, session/MCP events, and settings errors; debug builds mirror to stderr. Filter with `RUST_LOG`.
+- **Instant, race-free Stop** — cancellation is now event-driven, so Stop takes effect immediately (previously polled with up to 100 ms delay).
+- **Bash timeout/cancel keeps partial output** — output produced before a timeout or cancel is now kept in the error message.
+- **Fix: bash panic on small max timeout** — a `bash max timeout (ms)` below 1000 no longer panics; limits are sanitized on load.
+- **LLM stream stall detection** — a silent stream now fails with a clear error after a configurable timeout (Settings → Builtin Tools, 0 disables) instead of hanging forever; Anthropic heartbeats keep long thinking alive.
+- **genai 0.7.0-beta.18** — new AtlasCloud / Qwen Cloud / Kimi providers, SSE heartbeat events, `ReasoningEffort::Zero`, tool prompt caching.
+- **bashkit 0.16.0** — byte-native stream handling; the `yaml` builtin is removed (superseded by `yq`).
+- **Wrapper-aware bash analysis** — the interpreter now sees through `timeout`/`xargs`/`find -exec` wrappers and runs the wrapped commands in-process; opaque scripts still fall back to real `bash`.
+- **Windows: all drives mounted read-only in the `bash` tool** — builtins can read any drive at `/c`, `/d`, … while writes stay confined to workspace, home, and `/tmp`.
+
 # Crabot v0.8.0
 
 - **In-process `bash` tool** — the `bash` tool now runs inside Crabot's own embedded bash interpreter (bashkit) instead of spawning a real bash process, so shell commands work natively on Windows with no bash installed. External commands (cargo/git/…) are bridged to host executables through the sandboxed virtual filesystem, and scripts the interpreter cannot faithfully handle (parse errors, dynamic command names, `eval`/`exec`/`source`) automatically fall back to real `bash -c`.
