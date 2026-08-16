@@ -100,6 +100,7 @@ pub(crate) async fn check_and_download() -> Result<PathBuf, String> {
 
 /// Download and extract it to a temp directory, then return the path of extracted executable.
 pub(crate) async fn download_and_extract(version: String) -> Result<PathBuf, String> {
+    tracing::info!(version = %version, "downloading crabot update");
     let asset_name = platform_asset_name()?;
     let url = asset_download_url(&version, &asset_name);
 
@@ -115,6 +116,7 @@ pub(crate) async fn download_and_extract(version: String) -> Result<PathBuf, Str
         .bytes()
         .await
         .map_err(|e| e.to_string())?;
+    tracing::debug!(version = %version, bytes = bytes.len(), "update downloaded");
 
     let extract_dir = std::env::temp_dir().join(format!("crabot-v{version}"));
     let asset_name_clone = asset_name.clone();

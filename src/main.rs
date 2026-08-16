@@ -25,6 +25,8 @@ pub(crate) use app::{
 use crate::views::theme::MIN_W;
 
 pub fn main() -> iced::Result {
+    let _log_guard = setup::init_logging();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "crabot starting");
     setup::ensure_default_files();
     fonts::load_system_fonts();
     let saved = crabot::settings::Settings::load();

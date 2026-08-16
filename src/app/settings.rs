@@ -170,7 +170,7 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
         }
         SettingsEvent::OpenHomepage => {
             if let Err(error) = open::that(HOMEPAGE) {
-                eprintln!("Failed to open homepage: {error}");
+                tracing::warn!("Failed to open homepage: {error}");
             }
         }
         SettingsEvent::ToggleAutoCheckUpdates(v) => {

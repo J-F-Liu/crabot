@@ -441,6 +441,13 @@ impl Session {
     /// The `Meta` header is written on the first save and re-appended whenever
     /// any meta field changes (last one wins on load).
     pub fn save(&mut self) -> Result<(), String> {
+        // All callers discard the result, so failures are logged here once.
+        self.save_inner().inspect_err(|e| {
+            tracing::warn!(session = %self.id, "failed to save session: {e}");
+        })
+    }
+
+    fn save_inner(&mut self) -> Result<(), String> {
         let path = self.save_path().ok_or("No workspace set")?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -506,12 +513,19 @@ impl Session {
                 let _ = std::fs::remove_file(&legacy);
             }
         }
+        tracing::debug!(
+            session = %self.id,
+            path = %path.display(),
+            new_messages = if new_messages { self.history.len() - start } else { 0 },
+            "session saved"
+        );
         Ok(())
     }
 
     /// Load a session from disk. Prefers the `.jsonl` sibling when given a
     /// legacy `.json` path.
     pub fn load(path: &Path) -> Result<Self, String> {
+        tracing::debug!(path = %path.display(), "loading session");
         let path = match path.extension().and_then(|e| e.to_str()) {
             Some("json") if path.with_extension("jsonl").exists() => path.with_extension("jsonl"),
             _ => path.to_path_buf(),
@@ -568,8 +582,8 @@ impl Session {
                     session.currency = currency;
                     session.updated_at = updated_at;
                 }
-                Err(e) => eprintln!(
-                    "Warning: skipping unparseable line {} in {}: {e}",
+                Err(e) => tracing::warn!(
+                    "Skipping unparseable line {} in {}: {e}",
                     line_no + 1,
                     path.display()
                 ),

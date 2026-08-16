@@ -282,7 +282,7 @@ pub(crate) fn load_prompt_file(options: &[FilepathEntry], selected: &str) -> Str
         .and_then(|e| {
             std::fs::read_to_string(&e.path)
                 .inspect_err(|err| {
-                    eprintln!("Failed to read prompt file {}: {err}", e.path.display());
+                    tracing::warn!("Failed to read prompt file {}: {err}", e.path.display());
                 })
                 .ok()
         })

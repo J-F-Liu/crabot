@@ -84,7 +84,7 @@ impl ModelDatabase {
             match serde_json::from_str::<RawDatabase>(raw) {
                 Ok(json) => Arc::new(parse_models(json)),
                 Err(e) => {
-                    eprintln!("Failed to parse embedded models.json: {e}");
+                    tracing::error!("Failed to parse embedded models.json: {e}");
                     Arc::new(HashMap::new())
                 }
             }

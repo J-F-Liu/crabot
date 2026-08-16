@@ -626,6 +626,8 @@ impl App {
             tool_list_state: ToolListState::default(),
         };
         let tools_summary = tools.summary();
+        let enabled_tools_count = tools.enabled_tools.len();
+        let enabled_mcp_count = tools.enabled_mcp_servers.len();
 
         let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
         let update_available = saved
@@ -675,6 +677,7 @@ impl App {
             recipe_dropdown_expanded: false,
         };
 
+        let models_count = models.models.len();
         let app = Self {
             settings: saved,
             layout: LayoutState {
@@ -703,6 +706,14 @@ impl App {
                 download_state: crate::views::update::UpdateDownloadState::Idle,
             },
         };
+        tracing::info!(
+            workspace = %workspace_path.display(),
+            models = models_count,
+            enabled_tools = enabled_tools_count,
+            enabled_mcp_server_count = enabled_mcp_count,
+            dark_mode,
+            "crabot boot complete"
+        );
         let session_task = conversation::refresh_session_list(workspace_path.clone());
         let workspace_task = prompt::scan_workspace_content(workspace_path, None);
         let discover_task = mcp_list
@@ -759,14 +770,24 @@ impl App {
                 self.save_settings();
                 snapshot::cleanup_all(self);
                 let workspace_path = &self.prompt.workspace.1;
-                if let Ok(exe) = std::env::current_exe() {
-                    if !workspace_path.as_os_str().is_empty() && exe.starts_with(workspace_path) {
-                        let _ = std::process::Command::new("cargo")
-                            .args(["run", "--release"])
-                            .spawn();
-                    } else {
-                        let _ = std::process::Command::new(&exe).spawn();
+                tracing::info!("restarting crabot");
+                match std::env::current_exe() {
+                    Ok(exe) => {
+                        // A workspace-local exe means a dev build — relaunch via cargo.
+                        let spawned = if !workspace_path.as_os_str().is_empty()
+                            && exe.starts_with(workspace_path)
+                        {
+                            std::process::Command::new("cargo")
+                                .args(["run", "--release"])
+                                .spawn()
+                        } else {
+                            std::process::Command::new(&exe).spawn()
+                        };
+                        if let Err(e) = spawned {
+                            tracing::error!("failed to spawn replacement process: {e}");
+                        }
                     }
+                    Err(e) => tracing::error!("cannot determine current exe for restart: {e}"),
                 }
                 iced::exit()
             }
@@ -927,8 +948,10 @@ impl App {
                     Message::Layout(LayoutEvent::SessionViewScrolled(vp))
                 }
                 CenterPaneEvent::LinkClicked(url) => {
-                    if self.layout.ctrl_held {
-                        let _ = open::that_detached(&url);
+                    if self.layout.ctrl_held
+                        && let Err(e) = open::that_detached(&url)
+                    {
+                        tracing::warn!("failed to open link '{url}': {e}");
                     }
                     Message::Conversation(ConversationEvent::DefocusSessionPicker)
                 }

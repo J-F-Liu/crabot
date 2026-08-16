@@ -263,6 +263,7 @@ fn new_session(
     let number = app.conversation.next_tab_number();
     let mut tab = SessionTab::new(number, selected_model, selected_preamble);
     tab.session.parent = parent;
+    tracing::debug!(tab = number, parent = %tab.session.parent, "new session tab opened");
     app.conversation.session_tabs.push(tab);
     app.layout.focused = None;
 
@@ -366,6 +367,7 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
     let removed_model = app.conversation.session_tabs[pos].selected_model.clone();
     let removed_preamble = app.conversation.session_tabs[pos].selected_preamble.clone();
     let removed_session = &app.conversation.session_tabs[pos].session;
+    tracing::debug!(tab = number, session = %removed_session.id, "session tab closed");
     snapshot::cleanup(&removed_session.workspace, &removed_session.id);
     app.conversation.session_tabs.remove(pos);
     // Clean up the pending-ask queue — the tab is gone.
@@ -453,7 +455,7 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
             return views::scroll_to_start().discard();
         }
         Err(error) => {
-            eprintln!("Failed to load session: {error}");
+            tracing::warn!("Failed to load session: {error}");
         }
     }
     Task::none()
@@ -588,13 +590,19 @@ fn deliver_task_report(
     call_id: String,
     result: Result<String, String>,
 ) {
-    if let Some(pos) = app.conversation.tab_pos(parent_number)
+    let delivered = if let Some(pos) = app.conversation.tab_pos(parent_number)
         && let Some(sender) = app.conversation.session_tabs[pos]
             .session_state
             .task_sender
             .as_ref()
     {
-        let _ = sender.send((call_id, result));
+        sender.send((call_id.clone(), result)).is_ok()
+    } else {
+        false
+    };
+    if !delivered {
+        // Parent tab closed or its stream ended — the report has nowhere to go.
+        tracing::warn!(parent_tab = parent_number, call_id = %call_id, "task report dropped: parent stream no longer waiting");
     }
 }
 
@@ -663,6 +671,7 @@ fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
             tab.selected_preamble.clone(),
         )
     };
+    tracing::info!(parent_tab = number, model = %model.model_id, "renew tool: spawning successor session");
     let ws = workspace.clone();
     Task::perform(
         async move {
@@ -731,6 +740,13 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
         mode,
         difficulty,
     } = request;
+    tracing::info!(
+        parent_tab = number,
+        call_id = %call_id,
+        mode = mode.as_deref().unwrap_or("default"),
+        difficulty = difficulty.as_deref().unwrap_or("medium"),
+        "task tool: spawning sub-agent"
+    );
     // Resolve the parent tab's context (cheap — no filesystem access).
     let (parent_selected, parent_selected_preamble, parent_model, workspace, need_tree) = {
         let parent = &app.conversation.session_tabs[pos];
@@ -1035,6 +1051,12 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
                 ),
             )
         };
+        tracing::info!(
+            subtask_tab = number,
+            parent_tab = parent,
+            ok = result.is_ok(),
+            "sub-agent finished, delivering report to parent"
+        );
         deliver_task_report(app, parent, call_id, result);
     }
 

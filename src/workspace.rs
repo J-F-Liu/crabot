@@ -28,11 +28,18 @@ pub fn build_files_tree(workspace: &Path) -> String {
     if !workspace.is_dir() {
         return String::new();
     }
+    let start = std::time::Instant::now();
 
     let entries = walk_entries(workspace);
     if entries.is_empty() {
         return ".".to_string();
     }
+    tracing::debug!(
+        workspace = %workspace.display(),
+        entries = entries.len(),
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "built workspace tree"
+    );
 
     // Group entries by parent directory key ("" for root children)
     let mut by_parent: BTreeMap<String, Vec<&FlatEntry>> = BTreeMap::new();

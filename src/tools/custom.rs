@@ -219,8 +219,17 @@ impl ToolList {
             return Self::default();
         }
         match std::fs::read_to_string(&path) {
-            Ok(text) => ron::from_str::<ToolList>(&text).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Ok(text) => match ron::from_str::<ToolList>(&text) {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), "failed to parse tools.ron, using empty list: {e}");
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "failed to read tools.ron: {e}");
+                Self::default()
+            }
         }
     }
 
@@ -230,8 +239,13 @@ impl ToolList {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(text) = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
-            let _ = std::fs::write(&path, text);
+        match ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&path, text) {
+                    tracing::error!(path = %path.display(), "failed to save tools.ron: {e}");
+                }
+            }
+            Err(e) => tracing::error!("failed to serialize custom tools: {e}"),
         }
     }
 

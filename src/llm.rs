@@ -161,10 +161,17 @@ async fn acquire_stream_with_retry(
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
+        tracing::debug!(attempt, model = %model.model_id, "acquiring LLM stream");
         match try_acquire_stream(client, model, chat_req, chat_options, cancel_token).await {
             Ok(Some(acquired)) => return Ok(Some(acquired)),
             Ok(None) => return Ok(None),
             Err((_, e)) if attempt < MAX_ATTEMPTS && is_retryable(&e) => {
+                tracing::warn!(
+                    attempt,
+                    model = %model.model_id,
+                    error = %e,
+                    "transient LLM failure, retrying in {RETRY_DELAY_SECS}s"
+                );
                 // Count down one second at a time, keeping Stop responsive.
                 for seconds_left in (1..=RETRY_DELAY_SECS).rev() {
                     if !on_event(SessionEvent::RetryCountdown(RetryInfo {
@@ -189,6 +196,12 @@ async fn acquire_stream_with_retry(
             }
             Err((stage, e)) => {
                 // Report where the failure surfaced and how many attempts ran.
+                tracing::error!(
+                    attempt,
+                    model = %model.model_id,
+                    error = %e,
+                    "LLM request failed"
+                );
                 let message = match stage {
                     AcquireStage::Setup => "Failed to start the LLM request",
                     AcquireStage::FirstPoll => "The LLM request failed",
@@ -228,6 +241,15 @@ async fn await_tool(
         .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
 }
 
+/// Log a finished tool execution: name, elapsed time, and outcome.
+fn log_tool_outcome(name: &str, result: &Result<String, String>, start: Instant) {
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(_) => tracing::info!(tool = name, elapsed_ms, "tool finished"),
+        Err(e) => tracing::warn!(tool = name, elapsed_ms, "tool failed: {e}"),
+    }
+}
+
 /// Execute a tool on a blocking thread; unknown tools report an error result.
 async fn exec_tool(
     tool: Option<ToolRef>,
@@ -235,7 +257,9 @@ async fn exec_tool(
     workspace: std::path::PathBuf,
     cancel_token: CancellationToken,
 ) -> Result<String, String> {
-    match tool {
+    let name = tc.fn_name.clone();
+    let start = Instant::now();
+    let result = match tool {
         Some(t) => {
             let fn_arguments = tc.fn_arguments.clone();
             await_tool(tokio::task::spawn_blocking(move || {
@@ -244,7 +268,9 @@ async fn exec_tool(
             .await
         }
         None => Err(tools::unknown_tool_message(&tc.fn_name)),
-    }
+    };
+    log_tool_outcome(&name, &result, start);
+    result
 }
 
 /// Execute a tool while forwarding its live output chunks as
@@ -267,6 +293,8 @@ async fn exec_tool_streaming(
     });
     let fn_arguments = tc.fn_arguments.clone();
     let call_id = tc.call_id.clone();
+    let name = tc.fn_name.clone();
+    let start = Instant::now();
     let handle = tokio::task::spawn_blocking(move || {
         tool.execute_streaming(&fn_arguments, &workspace, &cancel_token, &sink)
     });
@@ -283,7 +311,9 @@ async fn exec_tool_streaming(
         }
     }
 
-    await_tool(handle).await
+    let result = await_tool(handle).await;
+    log_tool_outcome(&name, &result, start);
+    result
 }
 
 /// Build genai `ToolResponse` and UI `ChatToolResult` from an execution result.
@@ -425,6 +455,7 @@ async fn run_serial_tool(
     tool_responses: &mut Vec<ToolResponse>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) {
+    let start = Instant::now();
     let result = match tc.fn_name.as_str() {
         "ask" => handle_ask_tool(tc, ask_receiver, ctx, on_event).await,
         "renew" => {
@@ -456,6 +487,11 @@ async fn run_serial_tool(
             }
         }
     };
+    if tc.fn_name == "ask" || tc.fn_name == "renew" {
+        // ask/renew don't pass through `exec_tool`, so log their outcome here.
+        let name = tc.fn_name.clone();
+        log_tool_outcome(&name, &result, start);
+    }
     let (response, result) = build_tool_result(tc, result);
     tool_responses.push(response);
     on_event(SessionEvent::ToolResult(result)).await;
@@ -593,6 +629,14 @@ pub async fn send_stream(
         ask_deadline: &ask_deadline,
     };
 
+    tracing::info!(
+        model = %model.model_id,
+        session = %session_id,
+        messages = chat_req.messages.len(),
+        tools = tools.len(),
+        "starting LLM interaction"
+    );
+
     for _ in 0..max_iterations {
         // Signal that we're connecting to the LLM.
         on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await;
@@ -614,6 +658,7 @@ pub async fn send_stream(
         {
             Ok(Some(acquired)) => (acquired.stream, acquired.first),
             Ok(None) => {
+                tracing::info!(model = %model.model_id, session = %session_id, "cancelled while connecting to LLM");
                 on_event(SessionEvent::Cancelled(genai_messages)).await;
                 return;
             }
@@ -644,11 +689,18 @@ pub async fn send_stream(
                     // Biased so ties resolve deterministically: cancel > stream data > stall timeout.
                     biased;
                     _ = cancel_token.cancelled() => {
+                        tracing::info!(model = %model.model_id, session = %session_id, "LLM stream cancelled");
                         on_event(SessionEvent::Cancelled(genai_messages)).await;
                         return;
                     }
                     ev = stream.next() => ev,
                     _ = stall_sleep(stall_deadline) => {
+                        tracing::warn!(
+                            model = %model.model_id,
+                            session = %session_id,
+                            stall_timeout_secs = stream_stall_timeout_secs,
+                            "LLM stream stalled"
+                        );
                         on_event(SessionEvent::Error(
                             format!(
                                 "LLM stream stalled: no data for {stream_stall_timeout_secs}s; the connection may have died. Please retry.",
@@ -688,6 +740,11 @@ pub async fn send_stream(
                 Ok(ChatStreamEvent::End(end)) => {
                     captured_content = end.captured_content;
                     captured_reasoning = end.captured_reasoning_content;
+                    tracing::debug!(
+                        model = %model.model_id,
+                        "LLM stream ended, usage: {:?}",
+                        end.captured_usage
+                    );
                     if !on_event(SessionEvent::TokenUsage(end.captured_usage)).await {
                         on_event(SessionEvent::Cancelled(genai_messages)).await;
                         return;
@@ -696,6 +753,7 @@ pub async fn send_stream(
                 // ignore Start, Heartbeat, ThoughtSignature, ToolCallChunk, empty chunks
                 Ok(_) => {}
                 Err(e) => {
+                    tracing::error!(model = %model.model_id, "LLM stream error: {e}");
                     on_event(SessionEvent::Error(
                         format!("stream error: {e}"),
                         genai_messages,
@@ -738,11 +796,21 @@ pub async fn send_stream(
                 None => {}
             }
             // Final assistant response — no more tool calls.
+            tracing::debug!(
+                model = %model.model_id,
+                "LLM responded without tool calls"
+            );
             finished = true;
             break;
         } else if tool_calls.len() > 1 {
             tools::move_renews_to_end(&mut tool_calls);
         }
+
+        tracing::info!(
+            model = %model.model_id,
+            tool_calls = tool_calls.len(),
+            "LLM requested tool calls"
+        );
 
         // Signal tool execution before starting, so the status bar updates even for sync tools.
         on_event(SessionEvent::PhaseChange(DialogPhase::ToolExecuting)).await;
@@ -826,12 +894,14 @@ pub async fn send_stream(
 
         // When renew was called, stop the current session — no more requests.
         if renew_executed {
+            tracing::info!(model = %model.model_id, session = %session_id, "renew called, ending session for successor");
             on_event(SessionEvent::Done(genai_messages)).await;
             return;
         }
 
         // Check cancellation after tool calls so to keep tool results match in history.
         if cancel_token.is_cancelled() {
+            tracing::info!(model = %model.model_id, session = %session_id, "cancelled after tool execution");
             on_event(SessionEvent::Cancelled(genai_messages)).await;
             return;
         }
@@ -850,8 +920,14 @@ pub async fn send_stream(
     }
 
     if finished {
+        tracing::info!(model = %model.model_id, session = %session_id, "LLM interaction complete");
         on_event(SessionEvent::Done(genai_messages)).await;
     } else {
+        tracing::error!(
+            model = %model.model_id,
+            max_iterations,
+            "exceeded maximum tool-calling iterations"
+        );
         on_event(SessionEvent::Error(
             format!("Exceeded maximum tool-calling iterations ({max_iterations})"),
             genai_messages,

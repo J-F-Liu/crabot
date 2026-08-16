@@ -83,8 +83,17 @@ impl McpList {
             return Self::default();
         }
         match std::fs::read_to_string(&path) {
-            Ok(text) => ron::from_str::<McpList>(&text).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Ok(text) => match ron::from_str::<McpList>(&text) {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), "failed to parse mcp.ron, using empty list: {e}");
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "failed to read mcp.ron: {e}");
+                Self::default()
+            }
         }
     }
 
@@ -94,11 +103,16 @@ impl McpList {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(text) = ron::ser::to_string_pretty(
+        match ron::ser::to_string_pretty(
             self,
             ron::ser::PrettyConfig::default().escape_strings(false),
         ) {
-            let _ = std::fs::write(&path, text);
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&path, text) {
+                    tracing::error!(path = %path.display(), "failed to save mcp.ron: {e}");
+                }
+            }
+            Err(e) => tracing::error!("failed to serialize MCP server list: {e}"),
         }
     }
 }
@@ -472,11 +486,13 @@ pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
     let conn = match connect_result {
         Ok(Ok(conn)) => conn,
         Ok(Err(e)) => {
-            eprintln!("Failed to connect to MCP server '{server_name}': {e}");
+            tracing::warn!("Failed to connect to MCP server '{server_name}': {e}");
             return (server_name, vec![]);
         }
         Err(_) => {
-            eprintln!("Timed out connecting to MCP server '{server_name}' after {connect_secs}s",);
+            tracing::warn!(
+                "Timed out connecting to MCP server '{server_name}' after {connect_secs}s",
+            );
             return (server_name, vec![]);
         }
     };
@@ -489,6 +505,7 @@ pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
                 .into_iter()
                 .map(|remote_tool| McpTool::new(&server_name, qualify, remote_tool, peer.clone()))
                 .collect();
+            tracing::debug!(server = %server_name, tools = mcp_tools.len(), "MCP tools discovered");
             // Keep the connection alive for the lifetime of the tools.
             // HashMap::insert drops any previous connection for this server,
             // killing its child process via RunningService's Drop.
@@ -498,11 +515,11 @@ pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
             (server_name, mcp_tools)
         }
         Ok(Err(e)) => {
-            eprintln!("Failed to list tools from MCP server '{server_name}': {e}");
+            tracing::warn!("Failed to list tools from MCP server '{server_name}': {e}");
             (server_name, vec![])
         }
         Err(_) => {
-            eprintln!(
+            tracing::warn!(
                 "Timed out listing tools from MCP server '{server_name}' after {connect_secs}s",
             );
             (server_name, vec![])

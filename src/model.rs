@@ -278,11 +278,16 @@ pub fn currency_symbol(currency: &str) -> &str {
 pub fn load_models() -> ModelList {
     let ron_exists = models_ron_path().map(|p| p.exists()).unwrap_or(false);
     if ron_exists {
-        if let Ok(list) = try_load_models_from_ron() {
-            return list;
+        match try_load_models_from_ron() {
+            Ok(list) => return list,
+            Err(e) => tracing::warn!("failed to load models.ron, using defaults: {e}"),
         }
     } else {
-        let _ = std::fs::write(models_ron_path().unwrap(), crate::setup::default_models());
+        // First boot: seed the file with the compiled-in defaults.
+        let path = models_ron_path().unwrap();
+        if let Err(e) = std::fs::write(&path, crate::setup::default_models()) {
+            tracing::warn!(path = %path.display(), "failed to seed default models.ron: {e}");
+        }
         return try_load_models_from_ron().unwrap_or_default();
     }
     ModelList::default()
@@ -348,12 +353,20 @@ fn try_load_models_from_ron() -> Result<ModelList, Box<dyn std::error::Error>> {
 fn save_models_to_ron(list: &ModelList) {
     let path = match models_ron_path() {
         Ok(p) => p,
-        Err(_) => return,
+        Err(e) => {
+            tracing::error!("cannot determine models.ron path, models not saved: {e}");
+            return;
+        }
     };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(text) = ron::ser::to_string_pretty(list, ron::ser::PrettyConfig::default()) {
-        let _ = std::fs::write(&path, text);
+    match ron::ser::to_string_pretty(list, ron::ser::PrettyConfig::default()) {
+        Ok(text) => {
+            if let Err(e) = std::fs::write(&path, text) {
+                tracing::error!(path = %path.display(), "failed to save models.ron: {e}");
+            }
+        }
+        Err(e) => tracing::error!("failed to serialize models: {e}"),
     }
 }

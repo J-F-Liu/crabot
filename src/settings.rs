@@ -107,8 +107,17 @@ impl Settings {
             return Self::default();
         }
         match std::fs::read_to_string(&path) {
-            Ok(text) => ron::from_str::<Settings>(&text).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Ok(text) => match ron::from_str::<Settings>(&text) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), "failed to parse settings, using defaults: {e}");
+                    Self::default()
+                }
+            },
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "failed to read settings, using defaults: {e}");
+                Self::default()
+            }
         }
     }
 
@@ -153,8 +162,13 @@ impl Settings {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(text) = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
-            let _ = std::fs::write(&path, text);
+        match ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&path, text) {
+                    tracing::error!(path = %path.display(), "failed to save settings: {e}");
+                }
+            }
+            Err(e) => tracing::error!("failed to serialize settings: {e}"),
         }
     }
 }

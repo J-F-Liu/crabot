@@ -18,7 +18,7 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
         }
         OverlayEvent::OpenReleaseNotes => {
             if let Err(error) = open::that(update::RELEASES_URL) {
-                eprintln!("Failed to open release notes: {error}");
+                tracing::warn!("Failed to open release notes: {error}");
             }
         }
         OverlayEvent::InstallUpdate => {
@@ -31,7 +31,7 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
             app.overlay.download_state = match result {
                 Ok(path) => UpdateDownloadState::ReadyToRestart(path),
                 Err(e) => {
-                    eprintln!("Update download failed: {e}");
+                    tracing::error!("Update download failed: {e}");
                     UpdateDownloadState::Failed
                 }
             };
@@ -44,13 +44,21 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
                 app.settings.last_update_version = None;
                 app.save_settings();
                 if let Err(e) = update::replace_current_exe(&path) {
-                    eprintln!("Failed to replace executable: {e}");
+                    tracing::error!("Failed to replace executable: {e}");
                     app.overlay.download_state = UpdateDownloadState::Failed;
                     return Task::none();
                 }
                 // Spawn the new binary (now at the original path) and exit.
-                if let Some(exe) = current_exe {
-                    let _ = std::process::Command::new(&exe).spawn();
+                match current_exe {
+                    Some(exe) => {
+                        tracing::info!(exe = %exe.display(), "restarting into updated crabot");
+                        if let Err(e) = std::process::Command::new(&exe).spawn() {
+                            tracing::error!("failed to spawn updated executable: {e}");
+                        }
+                    }
+                    None => {
+                        tracing::error!("cannot determine current exe for restart after update")
+                    }
                 }
                 return iced::exit();
             }

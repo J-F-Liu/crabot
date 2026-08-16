@@ -76,6 +76,8 @@ fn capture_into(workspace: &Path, session_id: &str, path: &str) -> bool {
         return true; // already snapshotted
     };
     let Ok(()) = f.write_all(content.as_bytes()) else {
+        // No snapshot means no Revert button — worth surfacing in the log.
+        tracing::warn!(path = %key, "failed to write snapshot, revert unavailable");
         let _ = std::fs::remove_file(&file);
         return false;
     };
@@ -142,8 +144,11 @@ fn restore(workspace: &Path, session_id: &str, path: &str) -> Result<(), String>
 
 /// Delete the session's snapshot files (tab closed).
 pub(crate) fn cleanup(workspace: &Path, session_id: &str) {
-    if !workspace.as_os_str().is_empty() {
-        let _ = std::fs::remove_dir_all(snapshot_dir(workspace, session_id));
+    if !workspace.as_os_str().is_empty()
+        && let Err(e) = std::fs::remove_dir_all(snapshot_dir(workspace, session_id))
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::debug!(session = %session_id, "failed to clean up snapshots: {e}");
     }
 }
 
