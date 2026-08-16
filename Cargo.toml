@@ -80,6 +80,8 @@ tokio-util = "0.7.19"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.5"
+# Pin get-size2 so it keeps using compact_str 0.9, matching ruff_python_ast.
+get-size2 = "=0.10.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
