@@ -1,3 +1,4 @@
+use futures::SinkExt;
 use iced::Task;
 
 use crate::app::{App, Message, OverlayEvent};
@@ -22,10 +23,38 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
             }
         }
         OverlayEvent::InstallUpdate => {
-            app.overlay.download_state = UpdateDownloadState::InProgress;
-            return Task::perform(update::check_and_download(), |result| {
-                Message::Overlay(OverlayEvent::UpdateReady(result))
-            });
+            app.overlay.download_state = UpdateDownloadState::InProgress {
+                downloaded: 0,
+                total: None,
+            };
+            return Task::stream(iced::stream::channel(64, async move |mut sender| {
+                let mut progress_sender = sender.clone();
+                // Forward progress only when the displayed value changes, so
+                // the UI isn't flooded with a message per chunk.
+                let mut last_pct: Option<u32> = None;
+                let mut last_bytes: u64 = 0;
+                let result = update::check_and_download(move |downloaded, total| {
+                    let pct = update::progress_percent(downloaded, total);
+                    let changed = match pct {
+                        Some(p) => Some(p) != last_pct,
+                        None => downloaded.saturating_sub(last_bytes) >= 512 * 1024,
+                    };
+                    if changed {
+                        last_pct = pct;
+                        last_bytes = downloaded;
+                        let _ = progress_sender.try_send(Message::Overlay(
+                            OverlayEvent::UpdateProgress { downloaded, total },
+                        ));
+                    }
+                })
+                .await;
+                let _ = sender
+                    .send(Message::Overlay(OverlayEvent::UpdateReady(result)))
+                    .await;
+            }));
+        }
+        OverlayEvent::UpdateProgress { downloaded, total } => {
+            app.overlay.download_state = UpdateDownloadState::InProgress { downloaded, total };
         }
         OverlayEvent::UpdateReady(result) => {
             app.overlay.download_state = match result {

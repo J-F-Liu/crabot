@@ -22,8 +22,8 @@ pub(crate) const RELEASES_URL: &str = "https://github.com/J-F-Liu/crabot/release
 pub(crate) enum UpdateDownloadState {
     /// Not started.
     Idle,
-    /// Download / extraction in progress.
-    InProgress,
+    /// Download in progress; `total` is `None` without a Content-Length.
+    InProgress { downloaded: u64, total: Option<u64> },
     /// Ready — button changes to "Restart to Update".
     ReadyToRestart(PathBuf),
     /// Failed — check stderr for details.
@@ -89,22 +89,35 @@ fn asset_download_url(version: &str, asset_name: &str) -> String {
     format!("{RELEASES_URL}/download/v{version}/{asset_name}")
 }
 
-/// Re-check GitHub for the latest version, then download and extract it.
-/// Used by the "Install New Version" button so the version is always fresh.
-pub(crate) async fn check_and_download() -> Result<PathBuf, String> {
+/// Download percentage when the total is known and non-zero.
+pub(crate) fn progress_percent(downloaded: u64, total: Option<u64>) -> Option<u32> {
+    total
+        .filter(|t| *t > 0)
+        .map(|t| (downloaded.saturating_mul(100) / t).min(100) as u32)
+}
+
+/// Check for a newer version, then download and extract it, calling
+/// `on_progress` with `(downloaded_bytes, total_bytes)` per body chunk.
+pub(crate) async fn check_and_download(
+    on_progress: impl FnMut(u64, Option<u64>) + Send,
+) -> Result<PathBuf, String> {
     let version = check_for_updates()
         .await
         .ok_or_else(|| "No newer version available".to_string())?;
-    download_and_extract(version).await
+    download_and_extract(version, on_progress).await
 }
 
-/// Download and extract it to a temp directory, then return the path of extracted executable.
-pub(crate) async fn download_and_extract(version: String) -> Result<PathBuf, String> {
+/// Download `version`, extract it to a temp dir, and return the executable path.
+pub(crate) async fn download_and_extract(
+    version: String,
+    mut on_progress: impl FnMut(u64, Option<u64>) + Send,
+) -> Result<PathBuf, String> {
     tracing::info!(version = %version, "downloading crabot update");
     let asset_name = platform_asset_name()?;
     let url = asset_download_url(&version, &asset_name);
 
-    let bytes = reqwest::Client::builder()
+    // Stream the body chunk-by-chunk so the UI can report download progress.
+    let mut response = reqwest::Client::builder()
         .user_agent(crabot::app_title())
         .timeout(Duration::from_secs(600))
         .build()
@@ -113,9 +126,16 @@ pub(crate) async fn download_and_extract(version: String) -> Result<PathBuf, Str
         .send()
         .await
         .map_err(|e| e.to_string())?
-        .bytes()
-        .await
+        .error_for_status()
         .map_err(|e| e.to_string())?;
+    let total = response.content_length();
+    let mut downloaded = 0;
+    let mut bytes = Vec::with_capacity(total.unwrap_or(0).min(64 * 1024 * 1024) as usize);
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        downloaded += chunk.len() as u64;
+        bytes.extend_from_slice(&chunk);
+        on_progress(downloaded, total);
+    }
     tracing::debug!(version = %version, bytes = bytes.len(), "update downloaded");
 
     let extract_dir = std::env::temp_dir().join(format!("crabot-v{version}"));
@@ -225,7 +245,13 @@ pub(crate) fn update_banner(
         UpdateDownloadState::Failed => {
             banner_button("Download Failed", 13.0, OverlayEvent::InstallUpdate)
         }
-        UpdateDownloadState::InProgress => banner_button_disabled("⏳ Installing…", 13.0),
+        UpdateDownloadState::InProgress { downloaded, total } => {
+            let label = match progress_percent(*downloaded, *total) {
+                Some(pct) => format!("⏳ Downloading… {pct}%"),
+                None => format!("⏳ Downloading… {:.1} MB", *downloaded as f64 / 1_048_576.0),
+            };
+            banner_button_disabled(label, 13.0)
+        }
         UpdateDownloadState::ReadyToRestart(_) => {
             banner_button("Restart to Update", 13.0, OverlayEvent::RestartFromUpdate)
         }
@@ -262,7 +288,7 @@ fn banner_button(
         .on_press(on_press)
 }
 
-fn banner_button_disabled(label: &'static str, size: f32) -> button::Button<'static, OverlayEvent> {
+fn banner_button_disabled(label: String, size: f32) -> button::Button<'static, OverlayEvent> {
     button(
         text(label)
             .size(size)

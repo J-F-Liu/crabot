@@ -523,6 +523,11 @@ pub(crate) enum OverlayEvent {
     DismissUpdateBanner,
     OpenReleaseNotes,
     InstallUpdate,
+    /// Streaming download progress: `(downloaded_bytes, total_bytes)`.
+    UpdateProgress {
+        downloaded: u64,
+        total: Option<u64>,
+    },
     UpdateReady(Result<PathBuf, String>),
     RestartFromUpdate,
     EmptyWorkspaceConfirm(Option<PathBuf>),
