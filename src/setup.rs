@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use include_dir::{Dir, include_dir};
 use tracing_subscriber::layer::SubscriberExt;
@@ -19,6 +20,33 @@ pub fn default_workspace_path() -> PathBuf {
     home::home_dir().unwrap_or_default().join(".crabot")
 }
 
+/// Mirror panics to `~/.crabot/logs/panic.log` so GUI crashes stay diagnosable
+/// when stderr is hidden; file-write failures are ignored.
+fn install_panic_hook(log_dir: &Path) {
+    let panic_path = log_dir.join("panic.log");
+    std::panic::set_hook(Box::new(move |info| {
+        let name = std::thread::current()
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_owned();
+        let mut record = format!("thread '{name}' {info}");
+        if std::env::var_os("RUST_BACKTRACE").is_some() {
+            record.push_str(&format!(
+                "\n{:?}",
+                std::backtrace::Backtrace::force_capture()
+            ));
+        }
+        eprintln!("{record}");
+        if let Ok(mut file) = std::fs::File::create(&panic_path) {
+            let _ = writeln!(
+                file,
+                "{} {record}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
+        }
+    }));
+}
+
 /// Initialize the tracing logger: daily-rolling files under `~/.crabot/logs/`.
 /// In debug builds output is also mirrored to stderr for development.
 ///
@@ -27,6 +55,7 @@ pub fn default_workspace_path() -> PathBuf {
 pub fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
     let log_dir = default_workspace_path().join("logs");
     let _ = std::fs::create_dir_all(&log_dir);
+    install_panic_hook(&log_dir);
 
     // Daily-rolling file appender, e.g. `crabot.log.2026-08-13`.
     let file_appender = tracing_appender::rolling::daily(&log_dir, "crabot.log");
