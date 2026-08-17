@@ -47,6 +47,19 @@ fn process_id(result: &str) -> String {
         .to_string()
 }
 
+#[cfg(unix)]
+/// Poll `logs` until it contains `needle`, panicking after ~2 s.
+fn wait_for_log(tool: &ProcessTool, id: &str, workspace: &std::path::Path, needle: &str) {
+    for _ in 0..200 {
+        let logs = execute(tool, json!({"action": "logs", "process_id": id}), workspace).unwrap();
+        if logs.contains(needle) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("logs never contained {needle:?}");
+}
+
 // ── Schema ────────────────────────────────────────────────────────
 
 #[test]
@@ -463,16 +476,17 @@ fn restart_escalates_to_kill_when_terminate_ignored() {
     let tmp = TempDir::new("restart_kill");
     let tool = ProcessTool;
 
-    // The shell ignores TERM and its background child inherits the ignored
-    // disposition, so a graceful terminate cannot stop it; restart must
-    // escalate to kill.
+    // The shell ignores TERM and loops forever, so restart must escalate to kill.
     let started = execute(
         &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"trap '' TERM; sleep 30 & wait\""}),
+        json!({"action": "start", "command": "/bin/sh -c \"trap '' TERM; echo ready; while :; do sleep 1; done\""}),
         &tmp.path,
     )
     .unwrap();
     let id = process_id(&started);
+
+    // Wait for the trap to be installed, else TERM kills the shell outright.
+    wait_for_log(&tool, &id, &tmp.path, "ready");
 
     let restarted = execute(
         &tool,

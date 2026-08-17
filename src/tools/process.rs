@@ -28,6 +28,8 @@ const MAX_RETAINED_EXITED: usize = 64;
 const STOP_GRACE: Duration = Duration::from_secs(2);
 /// Poll interval for `wait`/`logs --follow`/`stop`.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// How long non-follow `logs` waits for a fresh process's exit to be recorded.
+const SETTLE_GRACE_MS: u64 = 250;
 /// Default and maximum number of log lines returned by `logs`.
 const DEFAULT_LINES: u64 = 100;
 const MAX_LINES: u64 = 2000;
@@ -228,7 +230,11 @@ fn logs(
         .clamp(1, MAX_LINES) as usize;
     let follow = args.get("follow").and_then(Value::as_bool).unwrap_or(false);
     if !follow {
-        // Let the readers drain a just-exited process so the tail is complete.
+        // Give a fresh, just-exited process a moment to settle so the tail is complete.
+        if !e.is_done() && e.started_at.elapsed() < Duration::from_millis(SETTLE_GRACE_MS * 2) {
+            let _ = wait_for_exit(&e, false, SETTLE_GRACE_MS, cancel, None);
+        }
+        // Once the exit is recorded, let the readers drain the final bytes.
         if matches!(*lock(&e.status), ProcessStatus::Exited(_)) {
             wait_for_drain(&e);
         }

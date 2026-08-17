@@ -825,23 +825,24 @@ impl ProcessSignal {
 
 /// Send `signal` to a process and its whole descendant tree.
 ///
-/// Unix: the child must have been started with `process_group(0)` so the
-/// signal to `-pid` reaches the whole group. Windows: `interrupt` has no
-/// portable Ctrl+C equivalent and falls back to a graceful terminate; `kill`
-/// additionally uses `/F`.
+/// Unix: the child must be started with `process_group(0)`; the `kill`
+/// syscall is used directly because some `kill` binaries (e.g. util-linux ≥
+/// 2.42) misparse `-<pid>` and never deliver. Windows: `interrupt` has no
+/// portable Ctrl+C equivalent and degrades to a graceful terminate; `kill`
+/// also passes `/F`.
 pub(crate) fn signal_process_tree(pid: u32, signal: ProcessSignal) {
     #[cfg(unix)]
     {
         let sig = match signal {
-            ProcessSignal::Terminate => "TERM",
-            ProcessSignal::Kill => "KILL",
-            ProcessSignal::Interrupt => "INT",
+            ProcessSignal::Terminate => libc::SIGTERM,
+            ProcessSignal::Kill => libc::SIGKILL,
+            ProcessSignal::Interrupt => libc::SIGINT,
         };
-        let _ = std::process::Command::new("kill")
-            .args([&format!("-{sig}"), &format!("-{pid}")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        // SAFETY: sending a signal to the child's own process group is
+        // exactly this helper's purpose.
+        unsafe {
+            libc::kill(-(pid as i32), sig);
+        }
     }
     #[cfg(windows)]
     {
