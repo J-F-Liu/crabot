@@ -19,6 +19,7 @@ use crate::app::snapshot;
 use crate::app::{App, ConversationEvent, FocusedTarget, Message, TabBarScrollState};
 use crate::llm::DialogPhase;
 use crate::tools::TASK_MODES;
+use crate::tools::process;
 use crate::views::export;
 use crate::views::session_tabs::TAB_SCROLL_STEP;
 use crate::views::{self, ASK_INPUT, SCROLL_STEP, scroll_to_end};
@@ -76,6 +77,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             app.conversation.stop();
             app.save_settings();
             snapshot::cleanup_all(app);
+            process::shutdown();
             return iced::exit();
         }
         ConversationEvent::NewSession => {

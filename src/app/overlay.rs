@@ -2,6 +2,7 @@ use futures::SinkExt;
 use iced::Task;
 
 use crate::app::{App, Message, OverlayEvent};
+use crate::tools::process;
 use crate::views::update::{self, UpdateDownloadState};
 
 pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
@@ -78,6 +79,7 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
                     return Task::none();
                 }
                 // Spawn the new binary (now at the original path) and exit.
+                process::shutdown();
                 match current_exe {
                     Some(exe) => {
                         tracing::info!(exe = %exe.display(), "restarting into updated crabot");

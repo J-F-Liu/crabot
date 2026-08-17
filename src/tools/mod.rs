@@ -7,6 +7,7 @@ pub mod edit;
 pub mod fetch;
 pub mod find;
 pub mod mcp;
+pub mod process;
 mod read;
 mod renew;
 mod search;
@@ -252,7 +253,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Create a new registry pre-populated with the eleven built-in tools.
+    /// Create a new registry pre-populated with the twelve built-in tools.
     pub fn new() -> Self {
         let todo_items: todo::TodoList = todo::create_todo_list(Vec::new());
         let builtin: Vec<ToolRef> = vec![
@@ -262,6 +263,7 @@ impl ToolRegistry {
             Arc::new(find::FindTool),
             Arc::new(search::SearchTool),
             Arc::new(bash::BashTool),
+            Arc::new(process::ProcessTool),
             Arc::new(ask::AskTool),
             Arc::new(todo::TodoTool::new(Arc::clone(&todo_items))),
             Arc::new(task::TaskTool),
@@ -802,19 +804,41 @@ fn create_pipe_pair(label: &str) -> Result<(unnamed_pipe::Sender, unnamed_pipe::
     unnamed_pipe::pipe().map_err(|e| format!("Failed to create {label} pipe: {e}"))
 }
 
-/// Forcibly kill a process and its entire descendant tree.
+/// A signal to deliver to a process tree (see [`signal_process_tree`]).
+#[derive(Clone, Copy)]
+pub(crate) enum ProcessSignal {
+    Terminate,
+    Kill,
+    Interrupt,
+}
+
+impl ProcessSignal {
+    /// Schema name used by the `process` tool's `stop` action.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Terminate => "terminate",
+            Self::Kill => "kill",
+            Self::Interrupt => "interrupt",
+        }
+    }
+}
+
+/// Send `signal` to a process and its whole descendant tree.
 ///
-/// On Unix the child should have been started with `process_group(0)` so it is
-/// the leader of a new process group; sending the signal to `-pid` kills the
-/// whole group, including any grandchildren the shell spawned.
-///
-/// On Windows, `taskkill /F /T` forcibly terminates the process and its whole
-/// descendant tree.
-pub(crate) fn kill_process_tree(pid: u32) {
+/// Unix: the child must have been started with `process_group(0)` so the
+/// signal to `-pid` reaches the whole group. Windows: `interrupt` has no
+/// portable Ctrl+C equivalent and falls back to a graceful terminate; `kill`
+/// additionally uses `/F`.
+pub(crate) fn signal_process_tree(pid: u32, signal: ProcessSignal) {
     #[cfg(unix)]
     {
+        let sig = match signal {
+            ProcessSignal::Terminate => "TERM",
+            ProcessSignal::Kill => "KILL",
+            ProcessSignal::Interrupt => "INT",
+        };
         let _ = std::process::Command::new("kill")
-            .args(["-9", &format!("-{pid}")])
+            .args([&format!("-{sig}"), &format!("-{pid}")])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
@@ -822,13 +846,23 @@ pub(crate) fn kill_process_tree(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        let mut args = vec!["/T".to_string()];
+        if matches!(signal, ProcessSignal::Kill) {
+            args.push("/F".to_string());
+        }
+        args.extend(["/PID".to_string(), pid.to_string()]);
         let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .status();
     }
+}
+
+/// Forcibly kill a process and its entire descendant tree.
+pub(crate) fn kill_process_tree(pid: u32) {
+    signal_process_tree(pid, ProcessSignal::Kill);
 }
 
 /// Start the child as a process-group leader (Unix) so its whole tree can be
@@ -974,7 +1008,7 @@ pub(crate) fn set_sender_noninheritable(sender: &unnamed_pipe::Sender) -> Result
 // ── Incremental output forwarding ──────────────────────────────────
 
 /// Lock a mutex, recovering the payload if the holder panicked (poisoned).
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -1000,6 +1034,104 @@ pub(crate) fn try_lock_for<T>(m: &Mutex<T>, budget: Duration) -> Option<MutexGua
     }
 }
 
+/// Incremental byte→text decoder shared by the bash and process tools: carries
+/// incomplete UTF-8 across feeds and normalizes `\r\n` → `\n` (a trailing `\r`
+/// is held back for the next chunk).
+pub(crate) struct StreamDecoder {
+    carry: Vec<u8>,
+    pending_cr: bool,
+}
+
+impl StreamDecoder {
+    pub(crate) fn new() -> Self {
+        Self {
+            carry: Vec::new(),
+            pending_cr: false,
+        }
+    }
+
+    /// Decode `bytes`, appending normalized text chunks to `out`.
+    pub(crate) fn feed(&mut self, bytes: &[u8], out: &mut Vec<String>) {
+        if bytes.is_empty() {
+            return;
+        }
+        let mut full = std::mem::take(&mut self.carry);
+        full.extend_from_slice(bytes);
+        match std::str::from_utf8(&full) {
+            Ok(text) => self.push_normalized(text, out),
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    // SAFETY: valid_up_to() is a valid UTF-8 boundary.
+                    self.push_normalized(
+                        unsafe { std::str::from_utf8_unchecked(&full[..valid]) },
+                        out,
+                    );
+                }
+                if e.error_len().is_none() {
+                    // Incomplete trailing sequence — carry to the next feed.
+                    self.carry = full[valid..].to_vec();
+                } else {
+                    // Truly invalid bytes — lossy-replace like from_utf8_lossy.
+                    let text = String::from_utf8_lossy(&full[valid..]).into_owned();
+                    self.push_normalized(&text, out);
+                }
+            }
+        }
+    }
+
+    /// Flush a carried incomplete sequence and a pending trailing `\r`.
+    pub(crate) fn flush(&mut self, out: &mut Vec<String>) {
+        if !self.carry.is_empty() {
+            let text = String::from_utf8_lossy(&self.carry).into_owned();
+            self.carry.clear();
+            self.push_normalized(&text, out);
+        }
+        if self.pending_cr {
+            self.pending_cr = false;
+            out.push("\r".into());
+        }
+    }
+
+    /// Normalize `\r\n` → `\n` (carrying a trailing `\r`), then emit the chunk.
+    fn push_normalized(&mut self, text: &str, out: &mut Vec<String>) {
+        let mut normalized = String::with_capacity(text.len() + 1);
+        let mut chars = text.chars();
+        if self.pending_cr {
+            self.pending_cr = false;
+            match chars.next() {
+                Some('\n') => normalized.push('\n'), // `\r\n` split across chunks
+                Some(c) => {
+                    normalized.push('\r');
+                    normalized.push(c);
+                }
+                None => {
+                    self.pending_cr = true;
+                    return;
+                }
+            }
+        }
+        let mut iter = chars.peekable();
+        while let Some(c) = iter.next() {
+            if c == '\r' {
+                match iter.peek() {
+                    Some('\n') => {
+                        normalized.push('\n');
+                        iter.next();
+                    }
+                    Some(_) => normalized.push('\r'),
+                    None => self.pending_cr = true,
+                }
+            } else {
+                normalized.push(c);
+            }
+        }
+        if !normalized.is_empty() {
+            out.push(normalized);
+        }
+    }
+}
+
 /// Which output stream a chunk came from, for per-stream capture.
 #[derive(Clone, Copy)]
 pub enum OutStream {
@@ -1018,10 +1150,7 @@ pub struct ChunkForwarder {
     cap: usize,
     /// Total bytes forwarded so far.
     forwarded: usize,
-    /// Incomplete UTF-8 sequence carried between chunks.
-    carry: Vec<u8>,
-    /// A trailing `\r` held back, pending a following `\n`.
-    pending_cr: bool,
+    decoder: StreamDecoder,
     /// Coalesced text awaiting flush.
     pending: String,
     last_flush: std::time::Instant,
@@ -1038,8 +1167,7 @@ impl ChunkForwarder {
             sink,
             cap,
             forwarded: 0,
-            carry: Vec::with_capacity(8),
-            pending_cr: false,
+            decoder: StreamDecoder::new(),
             pending: String::new(),
             last_flush: std::time::Instant::now(),
             stdout_cap: BoundedCapture::new(keep),
@@ -1047,45 +1175,26 @@ impl ChunkForwarder {
         }
     }
 
-    /// Capture `bytes` on `stream`, then forward to the sink.
+    /// Capture `bytes` on `stream`, then coalesce them for the sink.
     pub fn push(&mut self, stream: OutStream, bytes: &[u8]) {
         match stream {
             OutStream::Stdout => self.stdout_cap.push(bytes),
             OutStream::Stderr => self.stderr_cap.push(bytes),
         }
-        if bytes.is_empty() {
-            return;
+        let mut texts = Vec::new();
+        self.decoder.feed(bytes, &mut texts);
+        for text in texts {
+            self.pending.push_str(&text);
         }
-        // Decode chunk + carried tail as UTF-8; keep an incomplete trailing
-        // sequence for the next chunk.
-        let mut full = std::mem::take(&mut self.carry);
-        full.extend_from_slice(bytes);
-        match std::str::from_utf8(&full) {
-            Ok(s) => self.push_text(s),
-            Err(e) => {
-                let valid = e.valid_up_to();
-                if valid > 0 {
-                    // SAFETY: valid_up_to() is a valid UTF-8 boundary.
-                    self.push_text(unsafe { std::str::from_utf8_unchecked(&full[..valid]) });
-                }
-                if e.error_len().is_none() {
-                    // Incomplete sequence at the end — carry to the next chunk.
-                    self.carry = full[valid..].to_vec();
-                } else {
-                    // Truly invalid bytes — lossy-replace like from_utf8_lossy.
-                    let tail = String::from_utf8_lossy(&full[valid..]);
-                    self.push_text(&tail);
-                }
-            }
-        }
+        self.tick();
     }
 
     /// Flush carried/coalesced bytes at the end of the stream.
     pub fn finish(&mut self) {
-        self.flush_carry();
-        if self.pending_cr {
-            self.pending_cr = false;
-            self.pending.push('\r');
+        let mut texts = Vec::new();
+        self.decoder.flush(&mut texts);
+        for text in texts {
+            self.pending.push_str(&text);
         }
         self.flush();
     }
@@ -1104,42 +1213,6 @@ impl ChunkForwarder {
     /// Append the captured stdout/stderr to `msg`, like [`kill_and_error`].
     pub fn append_partial_output(&self, msg: &mut String) {
         append_partial_output(msg, &self.stdout_cap, &self.stderr_cap);
-    }
-
-    /// Normalize `\r\n` → `\n` (carrying a trailing `\r`), then coalesce.
-    fn push_text(&mut self, s: &str) {
-        let mut out = String::with_capacity(s.len() + 1);
-        let mut chars = s.chars();
-        if self.pending_cr {
-            self.pending_cr = false;
-            match chars.next() {
-                Some('\n') => out.push('\n'), // `\r\n` split across chunks
-                Some(c) => {
-                    out.push('\r');
-                    out.push(c);
-                }
-                None => self.pending_cr = true,
-            }
-        }
-        let mut iter = chars.peekable();
-        while let Some(c) = iter.next() {
-            if c == '\r' {
-                match iter.peek() {
-                    Some('\n') => {
-                        out.push('\n');
-                        iter.next();
-                    }
-                    Some(_) => out.push('\r'),
-                    None => self.pending_cr = true,
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        if !out.is_empty() {
-            self.pending.push_str(&out);
-        }
-        self.tick();
     }
 
     fn flush(&mut self) {
@@ -1161,14 +1234,6 @@ impl ChunkForwarder {
         self.forwarded += take.len();
         (sink)(take);
         self.last_flush = std::time::Instant::now();
-    }
-
-    fn flush_carry(&mut self) {
-        if !self.carry.is_empty() {
-            let carry = std::mem::take(&mut self.carry);
-            let t = String::from_utf8_lossy(&carry);
-            self.push_text(&t);
-        }
     }
 }
 

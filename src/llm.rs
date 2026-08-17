@@ -219,7 +219,10 @@ async fn acquire_stream_with_retry(
 
 /// Tools that must run serially (interactive or state-modifying).
 fn is_serial_tool(name: &str) -> bool {
-    matches!(name, "ask" | "renew" | "write" | "edit" | "bash")
+    matches!(
+        name,
+        "ask" | "renew" | "write" | "edit" | "bash" | "process"
+    )
 }
 
 /// Look up a registered tool by name.
@@ -445,7 +448,7 @@ async fn run_parallel_batch(
     }
 }
 
-/// Run one serial tool (ask/renew/write/edit/bash) and emit its result;
+/// Run one serial tool (ask/renew/write/edit/bash/process) and emit its result;
 /// failures are recorded as tool results rather than aborting the run.
 async fn run_serial_tool(
     tc: &ToolCall,
@@ -479,8 +482,8 @@ async fn run_serial_tool(
             let tool = find_tool(ctx.tools, &tc.fn_name);
             let workspace = ctx.workspace.to_path_buf();
             let cancel = ctx.cancel_token.clone();
-            // bash streams its output live like LLM text chunks.
-            if tc.fn_name == "bash" {
+            // bash and process stream their output live like LLM text chunks.
+            if matches!(tc.fn_name.as_str(), "bash" | "process") {
                 exec_tool_streaming(tool, tc, workspace, cancel, on_event).await
             } else {
                 exec_tool(tool, tc, workspace, cancel).await
