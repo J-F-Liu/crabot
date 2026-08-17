@@ -438,6 +438,15 @@ fn build_bash(
 
     // Embedded Python (Monty) registers `python`/`python3` builtins and is
     // runtime-gated in bashkit; Must come after the host-env seeding above.
+    //
+    // Monty is a from-scratch, sandboxed Python 3.12 subset — not CPython — so
+    // its stdlib is tiny and there is no third-party import or network.
+    // Implemented modules: `sys`, `typing`, `asyncio` (gather only), `pathlib`,
+    // `os` (getenv/environ only), `math`, `json`, `datetime`, `unicodedata`.
+    // bashkit disables `re` here (regex-backtracking DoS risk); common modules
+    // like `shutil`, `random`, `hashlib`, `socket`, `subprocess`, `http`,
+    // `collections`, `functools`, `itertools`, `csv` are NOT implemented.
+    // File I/O works via `pathlib.Path` and `open()` bridged to the VFS.
     builder = builder.python().env("BASHKIT_ALLOW_INPROCESS_PYTHON", "1");
 
     for name in external_names {

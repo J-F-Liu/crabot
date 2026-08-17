@@ -101,7 +101,7 @@ fn run(
     match super::bash_kit::collect_external_names(command) {
         Ok(names) => super::bash_kit::execute(command, workspace, timeout, cancel, names, sink),
         Err(()) => {
-            tracing::info!(command = %command, "bashkit falling back to host bash");
+            tracing::info!("bashkit falling back to host bash: {}", command);
             execute_real_bash(command, workspace, timeout, cancel, sink)
         }
     }
