@@ -825,27 +825,31 @@ fn session_info<'a>(
     if model_id.is_none() && parent.is_empty() {
         return row![].into();
     }
+    let muted_selectable = |theme: &Theme| SelectionStyle {
+        color: Some(color_muted()),
+        selection: theme.extended_palette().primary.base.color,
+    };
     let mut info = row![].spacing(8).align_y(Alignment::Center);
     if let Some(model_id) = model_id {
         info = info.push(
-            text(format!("Model: {model_id}"))
+            SelectableText::new(format!("Model: {model_id}"))
                 .size(12.0 * font_scale)
-                .color(color_muted()),
+                .style(muted_selectable),
         );
     }
     if !parent.is_empty() {
         info = info.push(Space::new().width(Length::Fill)).push(
-            text(format!(
+            SelectableText::new(format!(
                 "Spawned from {}",
                 parent_label(conversation, parent)
             ))
             .size(12.0 * font_scale)
-            .color(color_muted()),
+            .style(muted_selectable),
         );
     }
-    let time_text = text(format!("Created: {}", session.created_at))
+    let time_text = SelectableText::new(format!("Created: {}", session.created_at))
         .size(12.0 * font_scale)
-        .color(color_muted());
+        .style(muted_selectable);
     container(
         info.push(Space::new().width(Length::Fill))
             .push(time_text)

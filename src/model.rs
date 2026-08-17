@@ -194,6 +194,11 @@ fn is_beijing_peak_hour() -> bool {
     matches!(hour, 9 | 10 | 11 | 14 | 15 | 16 | 17)
 }
 
+/// True when the field equals the default (`false`) and can be omitted from output.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Cost {
     pub input: f64,
@@ -203,7 +208,7 @@ pub struct Cost {
     #[serde(default)]
     pub currency: Currency,
     /// Double cost during Beijing-time peak hours (09:00–12:00, 14:00–18:00).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub double_on_peak_hour: bool,
     /// Offer source (e.g. "openrouter", "litellm", "bailian").
     #[serde(default, skip)]
