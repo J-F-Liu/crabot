@@ -1210,7 +1210,7 @@ dependencies = [
  "genai",
  "get-size2",
  "gh-emoji",
- "glob",
+ "globset",
  "grep-regex",
  "grep-searcher",
  "home",
@@ -2280,12 +2280,6 @@ name = "glam"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "151665d9be52f9bb40fc7966565d39666f2d1e69233571b71b87791c7e0528b3"
-
-[[package]]
-name = "glob"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "globset"

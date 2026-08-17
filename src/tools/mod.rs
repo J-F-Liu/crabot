@@ -5,7 +5,7 @@ pub mod bash_kit;
 pub mod custom;
 pub mod edit;
 pub mod fetch;
-mod find;
+pub mod find;
 pub mod mcp;
 mod read;
 mod renew;
