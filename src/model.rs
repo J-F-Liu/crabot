@@ -1,4 +1,5 @@
 use arrayvec::ArrayString;
+use chrono::Timelike;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -185,6 +186,14 @@ impl PartialEq for Model {
 
 pub type Currency = ArrayString<8>;
 
+/// Peak hours in Beijing time (UTC+8): 09:00–12:00 and 14:00–18:00.
+fn is_beijing_peak_hour() -> bool {
+    let now_utc = chrono::Utc::now();
+    let beijing = now_utc + chrono::Duration::hours(8);
+    let hour = beijing.hour();
+    matches!(hour, 9 | 10 | 11 | 14 | 15 | 16 | 17)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Cost {
     pub input: f64,
@@ -193,6 +202,9 @@ pub struct Cost {
     pub cache_write: f64,
     #[serde(default)]
     pub currency: Currency,
+    /// Double cost during Beijing-time peak hours (09:00–12:00, 14:00–18:00).
+    #[serde(default)]
+    pub double_on_peak_hour: bool,
     /// Offer source (e.g. "openrouter", "litellm", "bailian").
     #[serde(default, skip)]
     pub source: String,
@@ -206,7 +218,11 @@ impl Cost {
         let cached_read_cost = tokens.cache_read as f64 / 1_000_000.0 * self.cache_read;
         let cache_write_cost = tokens.cache_write as f64 / 1_000_000.0 * self.cache_write;
         let output_cost = tokens.output as f64 / 1_000_000.0 * self.output;
-        input_cost + cached_read_cost + cache_write_cost + output_cost
+        let mut total = input_cost + cached_read_cost + cache_write_cost + output_cost;
+        if self.double_on_peak_hour && is_beijing_peak_hour() {
+            total *= 2.0;
+        }
+        total
     }
 }
 

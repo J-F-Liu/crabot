@@ -160,6 +160,7 @@ fn extract_costs(offers: &[RawOffer]) -> (Cost, Vec<Cost>) {
                 cache_read: price.cache_read.as_ref().map(|a| a.amount).unwrap_or(0.0),
                 cache_write: price.cache_write.as_ref().map(|a| a.amount).unwrap_or(0.0),
                 currency: offer.currency,
+                double_on_peak_hour: false,
                 source: offer.source.clone().unwrap_or_default(),
             })
         })
