@@ -694,7 +694,7 @@ fn convert_args_for_host(args: &[String], mounts: &[RealMount]) -> Vec<String> {
 /// Identity on Unix: VFS paths are already the real host paths, so the args
 /// pass through without copying.
 #[cfg(not(windows))]
-fn convert_args_for_host(args: &[String], _mounts: &[RealMount]) -> &[String] {
+fn convert_args_for_host<'a>(args: &'a [String], _mounts: &[RealMount]) -> &'a [String] {
     args
 }
 

@@ -1016,18 +1016,19 @@ pub(crate) fn pipe_to_stdio<E: Into<std::os::windows::io::OwnedHandle>>(
 /// No-op on Windows: `PIPE_NOWAIT` fails on read handles and is undefined on
 /// write ends. Reads poll via [`peek_pipe_available`] instead, and a blocking
 /// `WriteFile` errors once the read end closes, so the feeder cannot hang.
+#[cfg(unix)]
+pub(crate) fn set_pipe_nonblocking<E: interprocess::os::unix::unnamed_pipe::UnnamedPipeExt>(
+    end: &E,
+) -> Result<(), String> {
+    end.set_nonblocking(true)
+        .map_err(|e| format!("Failed to set non-blocking mode: {e}"))
+}
+
+/// Set a pipe half to non-blocking mode; no-op on Windows.
+#[cfg(windows)]
 pub(crate) fn set_pipe_nonblocking<E>(end: &E) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use interprocess::os::unix::unnamed_pipe::UnnamedPipeExt;
-        end.set_nonblocking(true)
-            .map_err(|e| format!("Failed to set non-blocking mode: {e}"))
-    }
-    #[cfg(windows)]
-    {
-        let _ = end;
-        Ok(())
-    }
+    let _ = end;
+    Ok(())
 }
 
 /// Bytes currently buffered on a pipe read handle, or `None` when the peek
