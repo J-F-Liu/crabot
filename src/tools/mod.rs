@@ -591,19 +591,22 @@ fn candidate_path(path: &str, workspace: &std::path::Path) -> std::path::PathBuf
 #[cfg(windows)]
 pub(crate) fn convert_path_to_windows_style(path: &str) -> Option<std::path::PathBuf> {
     let stripped = path.strip_prefix('/')?;
-    let native = if let Some((drive, rest)) = stripped.split_once('/')
-        && drive.len() == 1
-        && drive.as_bytes()[0].is_ascii_alphabetic()
-    {
+    let native = drive_style_to_windows(stripped).unwrap_or_else(|| path.replace('/', "\\"));
+    Some(std::path::PathBuf::from(native))
+}
+
+/// Convert the drive-letter form `d/rest` (of a stripped `/d/rest` path) to
+/// `D:\rest`; `None` when `d` is not a single ASCII letter.
+#[cfg(windows)]
+pub(crate) fn drive_style_to_windows(stripped: &str) -> Option<String> {
+    let (drive, rest) = stripped.split_once('/')?;
+    (drive.len() == 1 && drive.as_bytes()[0].is_ascii_alphabetic()).then(|| {
         format!(
             "{}:\\{}",
             drive.to_ascii_uppercase(),
             rest.replace('/', "\\")
         )
-    } else {
-        path.replace('/', "\\")
-    };
-    Some(std::path::PathBuf::from(native))
+    })
 }
 
 pub fn resolve_path(

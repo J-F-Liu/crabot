@@ -11,6 +11,10 @@
 //! arguments. `watch`/`parallel` stubs never run commands and `env` refuses
 //! them, so scripts that would involve one fall back to real bash. Mirrors
 //! bashkit 0.16.0 — re-verify when bumping.
+//!
+//! On Windows, VFS absolute paths in arguments are rewritten to host paths
+//! before spawning ([`convert_args_for_host`]), MSYS2-style: native
+//! executables receive host paths instead of VFS forms like `/d/...`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -556,7 +560,7 @@ impl Builtin for HostCommandBuiltin {
 
         let prepared = (|| -> Result<_, String> {
             let mut cmd = std::process::Command::new(&self.name);
-            cmd.args(ctx.args);
+            cmd.args(convert_args_for_host(ctx.args, &self.mounts));
             cmd.current_dir(resolve_cwd(ctx.cwd, &self.mounts)?);
             apply_child_env(&mut cmd, ctx.env, self.home.as_ref());
             let stdin_writer = match ctx.stdin {
@@ -667,15 +671,72 @@ fn match_mount(vfs_cwd: &Path, vfs_prefix: &str, host_root: &Path) -> Option<Pat
 
 /// Translate the bashkit VFS cwd to the real host path via the mount table.
 fn resolve_cwd(vfs_cwd: &Path, mount_specs: &[RealMount]) -> Result<PathBuf, String> {
-    for m in mount_specs {
-        if let Some(host) = match_mount(vfs_cwd, &m.vfs_path.to_string_lossy(), &m.host_path) {
-            return Ok(host);
+    resolve_vfs(vfs_cwd, mount_specs)
+        .ok_or_else(|| format!("host command outside mapped cwd: {}", vfs_cwd.display()))
+}
+
+/// Resolve a VFS absolute path through the mount table; `None` when unmapped.
+fn resolve_vfs(vfs: &Path, mount_specs: &[RealMount]) -> Option<PathBuf> {
+    mount_specs
+        .iter()
+        .find_map(|m| match_mount(vfs, &m.vfs_path.to_string_lossy(), &m.host_path))
+}
+
+/// Rewrite VFS absolute paths in host-command args to native paths,
+/// MSYS2-style; identity on Unix, where VFS paths are the real paths.
+#[cfg(windows)]
+fn convert_args_for_host(args: &[String], mounts: &[RealMount]) -> Vec<String> {
+    args.iter()
+        .map(|arg| convert_arg_for_host(arg, mounts))
+        .collect()
+}
+
+/// Identity on Unix: VFS paths are already the real host paths, so the args
+/// pass through without copying.
+#[cfg(not(windows))]
+fn convert_args_for_host(args: &[String], _mounts: &[RealMount]) -> &[String] {
+    args
+}
+
+/// Convert one argument: standalone POSIX absolute paths and the value part
+/// of `--opt=<path>` forms; everything else passes through untouched.
+#[cfg(windows)]
+fn convert_arg_for_host(arg: &str, mounts: &[RealMount]) -> String {
+    // Quoted globs stay VFS-shaped: the pattern matches VFS names, not host paths.
+    if arg.contains(['*', '?']) {
+        return arg.to_string();
+    }
+    match arg.split_once('=') {
+        Some((flag, value)) if flag.starts_with("--") => {
+            format!("{flag}={}", convert_posix_arg(value, mounts))
+        }
+        _ => convert_posix_arg(arg, mounts),
+    }
+}
+
+/// Convert a POSIX absolute path to its host form; other strings unchanged.
+#[cfg(windows)]
+fn convert_posix_arg(value: &str, mounts: &[RealMount]) -> String {
+    // Drive-letter paths (`/d/...`) convert directly, MSYS2-style: a native
+    // tool never accepts `/d/...`. UNC and other absolutes follow below.
+    if let Some(win) = value
+        .strip_prefix('/')
+        .and_then(super::drive_style_to_windows)
+    {
+        return win;
+    }
+    if value.starts_with('/') {
+        if let Some(host) = resolve_vfs(Path::new(value), mounts) {
+            return host.to_string_lossy().into_owned();
+        }
+        if value.starts_with("//") {
+            // MSYS2 keeps both slashes: `//d/x` is UNC `\\d\x` (server `d`,
+            // share `x`), NOT the drive form `/d/x` — verified against the
+            // MSYS2 runtime itself (`cygpath -w //d/x` → `\\d\x`).
+            return value.replace('/', "\\");
         }
     }
-    Err(format!(
-        "host command outside mapped cwd: {}",
-        vfs_cwd.display()
-    ))
+    value.to_string()
 }
 
 /// VFS mount table in match order (specific mounts before broad ones).
@@ -970,5 +1031,44 @@ mod stderr_silencer {
                 super::drain_and_reemit(std::fs::File::from(read_end));
             }
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// Pin the MSYS2 argument-conversion rules: `/d/x` is a drive path,
+    /// `//d/x` stays UNC (server `d`, share `x`) — verified against the
+    /// MSYS2 runtime (`cygpath -w //d/x` → `\\d\x`) — mounted paths
+    /// resolve through the mount table, and unmapped absolutes pass through.
+    #[test]
+    fn convert_posix_arg_drive_unc_mount_and_pass_through() {
+        let tmp = std::env::temp_dir();
+        let mounts = [
+            RealMount::rw(std::env::temp_dir(), "/tmp"),
+            RealMount::ro("D:\\", "/d"),
+        ];
+        assert_eq!(convert_posix_arg("/d/x", &mounts), "D:\\x");
+        assert_eq!(convert_posix_arg("//d/x", &mounts), "\\\\d\\x");
+        assert_eq!(convert_posix_arg("/tmp", &mounts), tmp.to_string_lossy());
+        assert_eq!(convert_posix_arg("/foo", &mounts), "/foo");
+    }
+
+    /// Only `--opt=<path>` values convert; single-dash options and globs stay
+    /// as written (glob patterns match VFS names, not host paths).
+    #[test]
+    fn convert_arg_for_host_flag_equals_and_globs() {
+        let mounts = [RealMount::rw(std::env::temp_dir(), "/tmp")];
+        assert_eq!(
+            convert_arg_for_host("--git-dir=/d/x", &mounts),
+            "--git-dir=D:\\x"
+        );
+        assert_eq!(
+            convert_arg_for_host("--flag=plain", &mounts),
+            "--flag=plain"
+        );
+        assert_eq!(convert_arg_for_host("-C/d/x", &mounts), "-C/d/x");
+        assert_eq!(convert_arg_for_host("/d/*.rs", &mounts), "/d/*.rs");
     }
 }

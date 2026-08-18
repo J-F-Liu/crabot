@@ -610,6 +610,60 @@ fn bashkit_exit_code_reporting() {
     assert!(result.contains("Exit code: 128"), "unexpected: {result}");
 }
 
+/// `git -C <vfs-workspace>` — VFS absolute args are rewritten to host paths
+/// (MSYS2-style), so native git accepts them.
+#[test]
+fn bashkit_converts_vfs_path_args_for_host_git() {
+    if !host_command_exists("git") {
+        return;
+    }
+    let ws = crabot_workspace();
+    let vfs = crabot::tools::convert_path_to_unix_style(&ws);
+    let result = run_bash(
+        &format!("git -C '{vfs}' rev-parse --show-toplevel"),
+        &ws,
+        None,
+    )
+    .unwrap();
+    assert!(!result.contains("fatal:"), "unexpected: {result}");
+    assert!(!result.contains("cannot change"), "unexpected: {result}");
+    let name = ws.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(result.contains(&name), "unexpected: {result}");
+}
+
+/// `git --git-dir=<vfs>/.git` — the `--opt=<vfs-path>` form converts too.
+#[test]
+fn bashkit_converts_attached_vfs_path_args() {
+    if !host_command_exists("git") {
+        return;
+    }
+    let ws = crabot_workspace();
+    let vfs = crabot::tools::convert_path_to_unix_style(&ws);
+    let result = run_bash(
+        &format!("git --git-dir='{vfs}/.git' rev-parse --is-bare-repository"),
+        &ws,
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("false"), "unexpected: {result}");
+}
+
+/// `git -C /tmp` — the `/tmp` mount resolves to the host temp dir, so git
+/// reports `not a git repository` instead of `cannot change to '/tmp'`.
+#[test]
+fn bashkit_converts_tmp_vfs_path_args() {
+    if !host_command_exists("git") {
+        return;
+    }
+    let ws = crabot_workspace();
+    let result = run_bash("git -C /tmp rev-parse --show-toplevel", &ws, None).unwrap();
+    assert!(!result.contains("cannot change"), "unexpected: {result}");
+    assert!(
+        result.contains("not a git repository"),
+        "unexpected: {result}"
+    );
+}
+
 /// A builtin returning `ExecResult::err` does NOT stop the script: like real
 /// bash, the next `;`-separated command still runs and its exit code wins.
 #[test]
