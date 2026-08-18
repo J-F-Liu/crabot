@@ -14,6 +14,7 @@ use super::theme::{
 };
 use crate::app::session_state::ASK_EXTEND_SECS;
 use crate::tools::edit::EditParam;
+use crate::tools::find_char_boundary;
 use crate::tools::todo::{TodoItem, TodoStatus};
 use crate::{AskAction, AskRequest, ConversationEvent};
 use iced::widget::{button, text_input};
@@ -705,28 +706,47 @@ fn tool_box_style(background: Color, border: Color) -> container::Style {
     }
 }
 
-/// Live view of a running tool's output buffer — plain mono text, since the
-/// final selectable result replaces it when the tool completes.
+/// Live-render window; the final result replaces this view on finish.
+const STREAMING_RENDER_WINDOW: usize = 16 * 1024;
+
+/// Last `window` bytes of `s` on a UTF-8 boundary, plus the bytes skipped.
+fn tail_window(s: &str, window: usize) -> (&str, usize) {
+    if s.len() <= window {
+        return (s, 0);
+    }
+    let start = find_char_boundary(s, s.len() - window);
+    (&s[start..], start)
+}
+
+/// Live view of a running tool's output buffer (tail window only, mono text).
 pub(super) fn streaming_result_text<'a, M: Clone + 'static>(
     buffer: &'a str,
     font_scale: f32,
 ) -> Element<'a, M> {
-    container(
-        column![
-            text("Running…")
+    let (shown, skipped) = tail_window(buffer, STREAMING_RENDER_WINDOW);
+    let mut body = column![
+        text("Running…")
+            .size(11.0 * font_scale)
+            .color(CRABOT_TOOL_ACCENT)
+            .font(bold_font())
+    ]
+    .spacing(4)
+    .width(Fill);
+    if skipped > 0 {
+        body = body.push(
+            text(format!("… {skipped} bytes of earlier output hidden …"))
                 .size(11.0 * font_scale)
-                .color(CRABOT_TOOL_ACCENT)
-                .font(bold_font()),
-            text(buffer).size(13.0 * font_scale).font(mono_font()),
-        ]
-        .spacing(4)
-        .width(Fill),
-    )
-    .padding([8, 10])
-    .style(move |_theme: &Theme| {
-        tool_box_style(color_tool_content_bg(), color_tool_content_border())
-    })
-    .into()
+                .color(color_muted())
+                .font(mono_font()),
+        );
+    }
+    body = body.push(text(shown).size(13.0 * font_scale).font(mono_font()));
+    container(body)
+        .padding([8, 10])
+        .style(move |_theme: &Theme| {
+            tool_box_style(color_tool_content_bg(), color_tool_content_border())
+        })
+        .into()
 }
 
 /// Tool result text (success or error).

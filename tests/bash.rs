@@ -4,7 +4,6 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
@@ -163,8 +162,8 @@ fn run_bash_with_cancel(
     })
 }
 
-/// Like [`run_bash`] but via `execute_streaming`, forwarding every output
-/// chunk to `tx` as it is produced.
+/// Like [`run_bash`] but via `execute_streaming`, forwarding capped output
+/// chunks to `tx` as they are produced.
 fn run_bash_streaming(
     command: &str,
     workspace: &Path,
@@ -174,8 +173,9 @@ fn run_bash_streaming(
     let (bash, args) = bash_tool(command, timeout_ms);
     let workspace = workspace.to_path_buf();
     let cancel = CancellationToken::new();
-    let sink: crabot::tools::OutputSink = Arc::new(move |chunk| {
-        let _ = tx.send(chunk.to_string());
+    // Same live-output cap as the UI path (`llm.rs::exec_tool_streaming`).
+    let sink = crabot::tools::capping_sink(move |out| {
+        let _ = tx.send(out);
     });
     test_runtime().block_on(async {
         await_tool(tokio::task::spawn_blocking(move || {
@@ -793,7 +793,8 @@ fn real_bash_streaming_quiet_stretch() {
 }
 
 /// Runaway output must not flood the sink: forwarded bytes stay within the
-/// configured cap while the final result still carries the truncation marker.
+/// configured cap (plus the marker) while the final result still carries the
+/// truncation marker.
 #[test]
 fn bashkit_streaming_output_capped() {
     let tmp = TempDir::new("bash_stream_cap").unwrap();
@@ -803,7 +804,15 @@ fn bashkit_streaming_output_capped() {
     let result = result.unwrap();
     let forwarded: usize = chunks.iter().map(String::len).sum();
     let cap = crabot::tools::tool_limits().max_output_bytes;
-    assert!(forwarded <= cap, "forwarded {forwarded} > cap {cap}");
+    let marker_len = crabot::tools::streaming_truncation_marker(cap).len();
+    assert!(
+        forwarded <= cap + marker_len,
+        "forwarded {forwarded} > cap {cap} + marker {marker_len}"
+    );
+    assert!(
+        chunks.concat().contains("streaming output truncated"),
+        "expected truncation marker in live output"
+    );
     assert!(
         result.contains("truncated"),
         "expected truncation marker in: {result}"

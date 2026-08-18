@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crabot::tools::{
-    COALESCE_MS, ChunkForwarder, OutStream, OutputSink, ToolLimits, resolve_path,
-    resolve_path_partial, tool_limits,
+    COALESCE_MS, ChunkForwarder, OutStream, OutputSink, StreamingCap, ToolLimits, resolve_path,
+    resolve_path_partial, streaming_truncation_marker,
 };
 
 /// Helper: create a temp workspace dir that is cleaned up on drop.
@@ -297,12 +297,58 @@ fn tick_flushes_time_due_pending() {
 }
 
 #[test]
-fn caps_forwarded_bytes() {
+fn forwards_all_bytes() {
+    // No cap here (that lives in `StreamingCap`): the sink gets the full stream.
     let (mut f, out) = forwarder();
     push_stdout(&mut f, &vec![b'x'; 300 * 1024]);
     f.finish();
-    let total = joined(&out).len();
-    let cap = tool_limits().max_output_bytes;
-    assert!(total <= cap, "forwarded {total} > cap {cap}");
-    assert!(total > 0, "nothing forwarded");
+    assert_eq!(joined(&out).len(), 300 * 1024);
+}
+
+// ── StreamingCap ─────────────────────────────────────────────
+
+#[test]
+fn streaming_cap_cuts_and_marks_once() {
+    let mut c = StreamingCap::new(100);
+    let first = c.push(&"x".repeat(60)).unwrap();
+    assert_eq!(first.len(), 60);
+    // Straddling chunk: keep the room, append the marker, then mute.
+    let cut = c.push(&"y".repeat(80)).unwrap();
+    assert_eq!(cut.len(), 40 + streaming_truncation_marker(100).len());
+    assert!(cut.ends_with(&streaming_truncation_marker(100)));
+    assert!(c.push("z").is_none(), "cut stream must stay muted");
+}
+
+#[test]
+fn streaming_cap_exact_fill_marks_on_next_chunk() {
+    let mut c = StreamingCap::new(100);
+    assert_eq!(c.push(&"x".repeat(60)).unwrap().len(), 60);
+    // Exact fill (across chunks): nothing dropped yet → no marker.
+    let full = c.push(&"x".repeat(40)).unwrap();
+    assert_eq!(full.len(), 40);
+    assert!(!full.contains("truncated"));
+    // First chunk past the fill is dropped → marker alone, then muted.
+    let cut = c.push("y").unwrap();
+    assert_eq!(cut, streaming_truncation_marker(100));
+    assert!(c.push("z").is_none());
+}
+
+#[test]
+fn streaming_cap_cuts_on_utf8_boundary() {
+    let mut c = StreamingCap::new(5);
+    // "é" = 2 bytes; 6 bytes total → cut at 4 bytes ("éé"), never mid-char.
+    let cut = c.push("ééé").unwrap();
+    let marker = streaming_truncation_marker(5);
+    assert!(cut.ends_with(&marker));
+    assert_eq!(cut.len() - marker.len(), 4);
+    assert!(cut.starts_with("éé") && !cut.starts_with("ééé"));
+}
+
+#[test]
+fn streaming_cap_zero_still_forwards_marker() {
+    let mut c = StreamingCap::new(0);
+    let cut = c.push("ab").unwrap();
+    assert!(cut.starts_with('a')); // room = max(1)
+    assert!(cut.contains("truncated"));
+    assert!(c.push("c").is_none());
 }

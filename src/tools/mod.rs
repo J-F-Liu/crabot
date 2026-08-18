@@ -35,7 +35,7 @@ use serde_json::Value;
 // ── Constants ────────────────────────────────────────────────────────
 
 /// Coalesce small chunks until this many bytes accumulate before flushing.
-const COALESCE_BYTES: usize = 4 * 1024;
+pub const COALESCE_BYTES: usize = 4 * 1024;
 /// Coalesce small chunks for at most this long before flushing.
 pub const COALESCE_MS: Duration = Duration::from_millis(100);
 
@@ -723,6 +723,60 @@ pub(crate) fn truncate_output(s: String) -> String {
     truncated
 }
 
+/// Marker for live output cut at `cap`; the final result replaces the view on finish.
+pub fn streaming_truncation_marker(cap: usize) -> String {
+    format!(
+        "\n\n… [streaming output truncated at {cap} bytes — the final result includes the newest output] …\n"
+    )
+}
+
+/// Cap a live chunk stream: forward until `cap` bytes, then emit
+/// [`streaming_truncation_marker`] once and mute. A stream ending exactly at
+/// `cap` gets no marker. Cuts on UTF-8 boundaries.
+pub struct StreamingCap {
+    cap: usize,
+    sent: usize,
+    cut: bool,
+}
+
+impl StreamingCap {
+    pub fn new(cap: usize) -> Self {
+        Self {
+            cap: cap.max(1),
+            sent: 0,
+            cut: false,
+        }
+    }
+
+    /// The chunk to forward, or `None` once the stream has been cut.
+    pub fn push(&mut self, chunk: &str) -> Option<String> {
+        if self.cut {
+            return None;
+        }
+        let room = self.cap - self.sent;
+        if chunk.len() <= room {
+            self.sent += chunk.len();
+            return Some(chunk.to_string());
+        }
+        // Straddles the cap: keep the first `room` bytes, mark the cut, mute.
+        let mut out = chunk[..find_char_boundary(chunk, room)].to_string();
+        out.push_str(&streaming_truncation_marker(self.cap));
+        self.cut = true;
+        Some(out)
+    }
+}
+
+/// [`OutputSink`] forwarding through a [`StreamingCap`] at `max_output_bytes`
+/// — the single live-output cap shared by every streaming tool.
+pub fn capping_sink(forward: impl Fn(String) + Send + Sync + 'static) -> OutputSink {
+    let cap = Mutex::new(StreamingCap::new(tool_limits().max_output_bytes));
+    Arc::new(move |chunk| {
+        if let Some(out) = lock(&cap).push(chunk) {
+            forward(out);
+        }
+    })
+}
+
 /// Map an `ExitStatus` to a bash-style exit code (`128 + signal` for signal
 /// death). Unix reports signal death via `signal()` (no `code()`); MSYS/Cygwin
 /// encodes it as `signal << 8` (SIGTERM → 3840, which native exit codes never
@@ -781,8 +835,8 @@ pub(crate) fn combine_output(stdout: &str, stderr: &str, exit_code: i32) -> Stri
     result
 }
 
-/// Find the closest valid UTF-8 character boundary at or before `pos`.
-fn find_char_boundary(s: &str, pos: usize) -> usize {
+/// Closest valid UTF-8 character boundary at or before `pos`.
+pub fn find_char_boundary(s: &str, pos: usize) -> usize {
     let pos = pos.min(s.len());
     if s.is_char_boundary(pos) {
         pos
@@ -1141,16 +1195,12 @@ pub enum OutStream {
 }
 
 /// Forwards pipe bytes to an [`OutputSink`] as text chunks: stdout/stderr
-/// merged in arrival order, `\r\n` → `\n`, small chunks coalesced, past-cap
-/// bytes dropped. Per-stream windows are also captured for partial-output
-/// errors, even without a sink.
+/// merged in arrival order, `\r\n` → `\n`, small chunks coalesced (the
+/// live-output cap lives in [`capping_sink`]). Per-stream windows are also
+/// captured for partial-output errors, even without a sink.
 pub struct ChunkForwarder {
     /// Live streaming sink; `None` when only the partial capture is needed.
     sink: Option<OutputSink>,
-    /// Cap on forwarded bytes; the sink is silently muted past this.
-    cap: usize,
-    /// Total bytes forwarded so far.
-    forwarded: usize,
     decoder: StreamDecoder,
     /// Coalesced text awaiting flush.
     pending: String,
@@ -1162,12 +1212,9 @@ pub struct ChunkForwarder {
 
 impl ChunkForwarder {
     pub fn new(sink: Option<OutputSink>) -> Self {
-        let cap = tool_limits().max_output_bytes.max(1);
         let keep = per_stream_keep();
         Self {
             sink,
-            cap,
-            forwarded: 0,
             decoder: StreamDecoder::new(),
             pending: String::new(),
             last_flush: std::time::Instant::now(),
@@ -1221,19 +1268,11 @@ impl ChunkForwarder {
             self.pending.clear(); // no sink — nothing to forward
             return;
         };
-        if self.pending.is_empty() || self.forwarded >= self.cap {
-            self.pending.clear();
+        if self.pending.is_empty() {
             return;
         }
         let s = std::mem::take(&mut self.pending);
-        let room = self.cap - self.forwarded;
-        let take = if s.len() > room {
-            &s[..find_char_boundary(&s, room)] // drop the overflow (final result has it)
-        } else {
-            &s
-        };
-        self.forwarded += take.len();
-        (sink)(take);
+        (sink)(&s);
         self.last_flush = std::time::Instant::now();
     }
 }

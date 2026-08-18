@@ -276,10 +276,8 @@ async fn exec_tool(
     result
 }
 
-/// Execute a tool while forwarding its live output chunks as
-/// [`SessionEvent::ToolOutput`]. If the UI stops accepting events, chunks are
-/// drained silently but the tool still runs to completion, so its final result
-/// always replaces the streaming placeholder.
+/// Execute a tool, forwarding its live output as [`SessionEvent::ToolOutput`],
+/// coalesced and capped at `max_output_bytes` so noisy tools can't flood the UI.
 async fn exec_tool_streaming(
     tool: Option<ToolRef>,
     tc: &ToolCall,
@@ -291,8 +289,8 @@ async fn exec_tool_streaming(
         return Err(tools::unknown_tool_message(&tc.fn_name));
     };
     let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let sink: tools::OutputSink = Arc::new(move |chunk| {
-        let _ = chunk_tx.send(chunk.to_string());
+    let sink = tools::capping_sink(move |out| {
+        let _ = chunk_tx.send(out);
     });
     let fn_arguments = tc.fn_arguments.clone();
     let call_id = tc.call_id.clone();
@@ -302,16 +300,39 @@ async fn exec_tool_streaming(
         tool.execute_streaming(&fn_arguments, &workspace, &cancel_token, &sink)
     });
 
-    // Forward chunks until the tool finishes (its sink drop closes the channel).
+    // Coalesce chunks into batches, flushing on size or age.
     let mut forwarding = true;
-    while let Some(chunk) = chunk_rx.recv().await {
+    let mut pending = String::new();
+    let mut last_flush = Instant::now();
+    loop {
+        let chunk = if pending.is_empty() {
+            chunk_rx.recv().await
+        } else {
+            tokio::select! {
+                chunk = chunk_rx.recv() => chunk,
+                _ = tokio::time::sleep_until((last_flush + tools::COALESCE_MS).into()) => None,
+            }
+        };
+        match chunk {
+            Some(chunk) => {
+                pending.push_str(&chunk);
+                if pending.len() < tools::COALESCE_BYTES {
+                    continue;
+                }
+            }
+            None if pending.is_empty() => break, // tool finished
+            None => {}                           // batch aged out: flush
+        }
         if forwarding {
             forwarding = on_event(SessionEvent::ToolOutput {
                 call_id: Some(call_id.clone()),
-                chunk,
+                chunk: std::mem::take(&mut pending),
             })
             .await;
+        } else {
+            pending.clear();
         }
+        last_flush = Instant::now();
     }
 
     let result = await_tool(handle).await;

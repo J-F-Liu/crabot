@@ -286,7 +286,7 @@ pub(crate) fn execute(
         now_ms().saturating_add(timeout.as_millis() as u64),
     ));
 
-    // Script-level forwarder: cap and partial capture apply per script, not per command.
+    // Script-level forwarder: coalescing and partial capture apply per script, not per command.
     let forwarder = Arc::new(Mutex::new(ChunkForwarder::new(sink)));
 
     let mut bash = build_bash(
