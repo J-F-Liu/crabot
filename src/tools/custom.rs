@@ -239,7 +239,8 @@ impl ToolList {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        match ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
+        let config = ron::ser::PrettyConfig::default().new_line("\n");
+        match ron::ser::to_string_pretty(self, config) {
             Ok(text) => {
                 if let Err(e) = std::fs::write(&path, text) {
                     tracing::error!(path = %path.display(), "failed to save tools.ron: {e}");
@@ -293,7 +294,9 @@ mod tests {
             custom_tools: vec![crate_source],
         };
         let assets = Path::new("assets");
-        let text = ron::ser::to_string_pretty(&tools, ron::ser::PrettyConfig::default()).unwrap();
+        let text =
+            ron::ser::to_string_pretty(&tools, ron::ser::PrettyConfig::default().new_line("\n"))
+                .unwrap();
         std::fs::write(assets.join("tools.ron"), text).unwrap();
         println!("Saved tools to {}", assets.display());
     }
