@@ -1196,6 +1196,97 @@ fn resend_session(app: &mut App) -> Task<Message> {
 
 // ── Stream orchestration ──────────────────────────────────────────
 
+/// Decide which tab the stream runs on and apply the new model to it.
+/// Continuing a session with a different model forks it into a new tab that
+/// becomes the viewing one — the original tab keeps its session and model
+/// untouched. Returns the effective tab position and whether a fork happened.
+fn prepare_session_tab(
+    app: &mut App,
+    tab_pos: usize,
+    model_config: &ModelConfig,
+    user_prompt: Option<&UserPrompt>,
+) -> (usize, bool) {
+    let tab = &mut app.conversation.session_tabs[tab_pos];
+    let model_changed = tab
+        .session
+        .model
+        .as_ref()
+        .is_some_and(|m| m.model_id != model_config.model_id);
+    if !model_changed || tab.session.history.len() <= 1 {
+        // Same model (or nothing to fork yet): continue on this tab.
+        tab.session.model = Some(model_config.clone());
+        tab.session.workspace = app.prompt.workspace.1.clone();
+        tab.session.save().ok();
+        return (tab_pos, false);
+    }
+
+    let mut forked = tab.session.fork();
+    // Remember the original model to restore the picker label later.
+    let old_model = tab.session.model.clone();
+    if model_config.model_id.starts_with("deepseek") {
+        forked.fix_history();
+    }
+    // The unanswered user dialog added by `launch_dialog` now belongs to the
+    // fork — drop it from the original tab and restore its UI state.
+    if user_prompt.is_some() {
+        tab.session.dialogs.pop();
+        tab.center_pane_title = tab
+            .session
+            .dialogs
+            .last()
+            .map(|d| d.title.clone())
+            .unwrap_or_else(|| "New session".into());
+        tab.expanded_dialogs.clear();
+        tab.expanded_dialogs
+            .insert(tab.session.dialogs.len().saturating_sub(1));
+        tab.search.invalidate_offsets();
+    }
+    let fork_model = tab.selected_model.clone();
+    let fork_preamble = tab.selected_preamble.clone();
+    // `tab` borrow ends here — the fork tab is pushed into the same list.
+
+    forked.model = Some(model_config.clone());
+    forked.workspace = app.prompt.workspace.1.clone();
+    forked.save().ok();
+
+    // Restore the original tab's picker to the model its session still uses.
+    if let Some(old) = old_model
+        && let Some(label) = app
+            .models
+            .models
+            .iter()
+            .find(|(_, cfg)| cfg.provider_id == old.provider_id && cfg.model_id == old.model_id)
+            .map(|(label, _)| label.clone())
+    {
+        app.conversation.session_tabs[tab_pos].selected_model = label;
+    }
+
+    let mut fork_tab = SessionTab::from_session(
+        app.conversation.next_tab_number(),
+        forked,
+        fork_model,
+        fork_preamble,
+    );
+    // Mirror `launch_dialog`'s heading for the sent prompt.
+    if let Some(prompt) = user_prompt {
+        fork_tab.center_pane_title = prompt.content.clone();
+    }
+    fork_tab
+        .expanded_dialogs
+        .insert(fork_tab.session.dialogs.len().saturating_sub(1));
+    let fork_number = fork_tab.number;
+    let fork_session_id = fork_tab.session.id.clone();
+    app.conversation.session_tabs.push(fork_tab);
+    app.conversation.viewing = app.conversation.session_tabs.len() - 1;
+    app.layout.focused = None;
+    tracing::debug!(
+        tab = fork_number,
+        session = %fork_session_id,
+        "model change forked session into a new tab"
+    );
+    (app.conversation.viewing, true)
+}
+
 /// Prepare and launch an LLM dialog stream for the given tab.
 /// `system_prompt_override` replaces the configured system prompt when set
 /// (used by the task tool to inject a mode-specific sub-agent preamble).
@@ -1209,30 +1300,15 @@ pub(crate) fn start_dialog(
     let Some(model) = app.models.get_model_info(model_config) else {
         return Task::none();
     };
-    let is_viewing = tab_pos == app.conversation.viewing;
-    // When continuing with a different model, fork the session.
-    let (tab_number, session_list_entry) = {
-        let tab = &mut app.conversation.session_tabs[tab_pos];
-        let tab_number = tab.number;
-        let model_changed = tab
-            .session
-            .model
-            .as_ref()
-            .is_some_and(|m| m.model_id != model_config.model_id);
-        let session_forked = if model_changed && tab.session.history.len() > 1 {
-            tab.session = tab.session.fork();
-            if model_config.model_id.starts_with("deepseek") {
-                tab.session.fix_history();
-            }
-            true
-        } else {
-            false
-        };
-        tab.session.model = Some(model_config.clone());
-        tab.session.workspace = app.prompt.workspace.1.clone();
-        tab.session.save().ok();
 
-        let entry = if (tab.session.is_fresh() || session_forked)
+    // Continuing with a different model forks the session into a new tab.
+    let (tab_pos, session_forked) =
+        prepare_session_tab(app, tab_pos, model_config, user_prompt.as_ref());
+    let tab_number = app.conversation.session_tabs[tab_pos].number;
+
+    let session_list_entry = {
+        let tab = &app.conversation.session_tabs[tab_pos];
+        if (tab.session.is_fresh() || session_forked)
             && let Some(path) = tab.session.save_path()
         {
             let year_month = crabot::session::year_month_from_id(&tab.session.id);
@@ -1245,11 +1321,8 @@ pub(crate) fn start_dialog(
             })
         } else {
             None
-        };
-        (tab_number, entry)
+        }
     };
-
-    // Add to session list now that the tab borrow is released.
     if let Some(entry) = session_list_entry {
         app.conversation
             .session_list_cache
@@ -1258,6 +1331,8 @@ pub(crate) fn start_dialog(
             .insert(0, entry.clone());
         app.conversation.session_list.insert(0, entry);
     }
+
+    let is_viewing = tab_pos == app.conversation.viewing;
 
     // Compute the system prompt before re-borrowing the tab (needs `&app`).
     // The task tool passes an override (mode preamble); otherwise assemble

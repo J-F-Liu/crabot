@@ -4,7 +4,8 @@
 //!   cargo run --release --example jsonl_to_json -- <session.jsonl> [output.json]
 //!   cargo run --release --example jsonl_to_json -- <workspace_dir>
 //!
-//! A single `.jsonl` file is printed to stdout unless an output path is given.
+//! A single `.jsonl` file is written to a `.json` file next to the source
+//! unless an output path is given.
 //! A workspace directory converts every session found under `.agent/sessions/`
 //! and writes `{id}.json` next to each source `.jsonl`.
 //!
@@ -94,6 +95,13 @@ fn main() {
             }
             println!("{} → {}", input.display(), out.display());
         }
-        None => println!("{json}"),
+        None => {
+            let out = input.with_extension("json");
+            if let Err(e) = std::fs::write(&out, &json) {
+                eprintln!("Error writing {}: {e}", out.display());
+                std::process::exit(1);
+            }
+            println!("{} → {}", input.display(), out.display());
+        }
     }
 }
