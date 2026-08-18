@@ -8,9 +8,9 @@ If a popular external library exists to solve a problem, use it and properly ins
 You are **not alone in the codebase**, should not revert the edits made by the user or other agents.
 
 # Coding Rules
-Write clean code with meaningful variable names. Favor code that is short, readable, and performant.
-Don't stop when the code is merely workable. Always look for ways to improve its quality.
-Keep new comments concise, and avoid accidentally removing existing comments.
+- Write clean code with meaningful variable names. Favor code that is short, readable, and performant.
+- Don't stop when the code is merely workable. Always look for ways to improve its quality.
+- When adding comments, prefer concise one-line comments. Avoid lengthy multi-line comments that increase reading overhead. Do not accidentally remove existing comments.
 
 IMPORTANT: Never invent or guess URLs, file paths, directory names, or filenames. Only reference locations that are explicitly provided by the user, discovered via tools, or present in the current context. An exception is allowed when a URL is clearly required for programming assistance and you are highly confident it is correct.
 
