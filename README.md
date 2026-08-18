@@ -36,7 +36,8 @@ If you know the structure of the LLM context window, you will appreciate the UI 
 | `edit`   | `path`, `edits` [{`old_text`, `new_text`}] | Make precise text replacements in existing files, with conflict detection for overlapping edits |
 | `find`   | `pattern`, `path`                          | Locate files by name pattern, skipping ignored files (`.gitignore`)                             |
 | `search` | `pattern`, `path`                          | Search file contents with regular expressions, skipping ignored files (`.gitignore`)            |
-| `bash`   | `command`, `timeout`                       | Run shell commands in your workspace, with a timeout and instant cancellation                   |
+| `bash`   | `command`, `timeout`                       | Run shell commands in your workspace via an in-process interpreter (host-bash fallback), with a timeout and instant cancellation |
+| `process`| `action`, `command`, `process_id`, `cwd`, `env`, `timeout`, `input`, `lines`, `follow`, `signal` | Manage long-running processes across tool calls — start, list, status, logs, input, wait, stop, restart by agent-managed `process_id` |
 | `ask`    | `question`, `options`                      | Pause and ask you a question when it needs your input or approval                               |
 | `todo`   | `items` [{`text`, `depth`, `status`}]      | Track its task list, shown live in the right pane                                               |
 | `task`   | `title`, `prompt`, `mode`, `difficulty`    | Delegate a subtask to a separate session and continue once the final report comes back          |

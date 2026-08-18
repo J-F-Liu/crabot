@@ -107,7 +107,7 @@ impl Tool for ProcessTool {
                     "additionalProperties": {
                         "type": "string"
                     },
-                    "description": "Additional environment variables for the process."
+                    "description": "Additional environment variables as name-value pairs; a JSON-encoded object string in strict mode."
                 },
                 "timeout": {
                     "type": "integer",
@@ -191,7 +191,11 @@ fn start(args: &Value, workspace: &Path) -> Result<String, String> {
         }
         None => workspace.to_path_buf(),
     };
-    let env = parse_env(args)?;
+    let env = args
+        .get("env")
+        .map(parse_env)
+        .transpose()?
+        .unwrap_or_default();
     let parts = parse_command(command)?;
     let entry = start_command(command, parts, cwd, env)?;
     Ok(format!(
@@ -337,8 +341,12 @@ fn restart(args: &Value, workspace: &Path) -> Result<String, String> {
         }
         None => e.cwd.clone(),
     };
+    // Absent, null, or blank-string env inherits the entry's own: strict-mode
+    // schemas make `env` a required string, so "no override" arrives as "".
+    // An explicit object — even an empty one — replaces it.
     let env = match args.get("env") {
-        Some(_) => parse_env(args)?,
+        Some(v) if v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()) => e.env.clone(),
+        Some(v) => parse_env(v)?,
         None => e.env.clone(),
     };
     let note = stop_for_restart(&e);
@@ -360,12 +368,25 @@ fn entry_for(args: &Value) -> Result<Arc<ProcessEntry>, String> {
         .ok_or_else(|| format!("Unknown process_id: {process_id}"))
 }
 
-fn parse_env(args: &Value) -> Result<HashMap<String, String>, String> {
-    let mut env = HashMap::new();
-    let Some(env_val) = args.get("env") else {
-        return Ok(env);
+/// Parse an `env` value: an object of name-value pairs, or a JSON-encoded
+/// object string (strict-mode schemas coerce `env` to a string).
+/// Null and blank strings yield an empty map.
+pub fn parse_env(val: &Value) -> Result<HashMap<String, String>, String> {
+    const ERR: &str = "'env' must be an object or a JSON-encoded object string";
+    let decoded;
+    let val = match val {
+        Value::String(s) if s.trim().is_empty() => return Ok(HashMap::new()),
+        Value::String(s) => {
+            decoded = serde_json::from_str(s).map_err(|_| ERR.to_string())?;
+            &decoded
+        }
+        other => other,
     };
-    let obj = env_val.as_object().ok_or("'env' must be an object")?;
+    if val.is_null() {
+        return Ok(HashMap::new());
+    }
+    let obj = val.as_object().ok_or_else(|| ERR.to_string())?;
+    let mut env = HashMap::with_capacity(obj.len());
     for (key, value) in obj {
         let value = value
             .as_str()

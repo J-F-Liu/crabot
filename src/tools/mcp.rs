@@ -196,6 +196,10 @@ impl Tool for McpTool {
         _workspace: &Path,
         cancel: &CancellationToken,
     ) -> Result<String, String> {
+        // Strict-mode schemas coerce free-form objects to strings; restore
+        // them from their JSON encoding before forwarding to the server.
+        let mut args = args.clone();
+        super::decode_stringified_args(&self.schema, &mut args);
         let arguments: Map<String, Value> = args.as_object().cloned().unwrap_or_default();
 
         let params = CallToolRequestParams::new(self.remote_name.clone()).with_arguments(arguments);

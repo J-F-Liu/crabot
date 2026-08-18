@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crabot::tools::{
-    COALESCE_MS, ChunkForwarder, OutStream, OutputSink, StreamingCap, ToolLimits, resolve_path,
-    resolve_path_partial, streaming_truncation_marker,
+    COALESCE_MS, ChunkForwarder, OutStream, OutputSink, StreamingCap, ToolLimits,
+    decode_stringified_args, resolve_path, resolve_path_partial, streaming_truncation_marker,
 };
+use serde_json::json;
 
 /// Helper: create a temp workspace dir that is cleaned up on drop.
 struct TempDir {
@@ -351,4 +352,70 @@ fn streaming_cap_zero_still_forwards_marker() {
     assert!(cut.starts_with('a')); // room = max(1)
     assert!(cut.contains("truncated"));
     assert!(c.push("c").is_none());
+}
+
+// ── decode_stringified_args ─────────────────────────────────
+
+#[test]
+fn decode_stringified_args_decodes_objects_and_arrays() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "obj": { "type": "object" },
+            "arr": { "type": "array", "items": { "type": "string" } }
+        }
+    });
+    let mut args = json!({
+        "obj": r#"{"a":1}"#,
+        "arr": r#"["x","y"]"#
+    });
+    decode_stringified_args(&schema, &mut args);
+    assert_eq!(args["obj"], json!({ "a": 1 }));
+    assert_eq!(args["arr"], json!(["x", "y"]));
+}
+
+#[test]
+fn decode_stringified_args_recurses_into_properties_and_items() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "outer": {
+                "type": "object",
+                "properties": { "inner": { "type": "object" } }
+            },
+            "list": {
+                "type": "array",
+                "items": { "type": "object" }
+            }
+        }
+    });
+    let mut args = json!({
+        "outer": { "inner": r#"{"deep":true}"# },
+        "list": [r#"{"n":1}"#]
+    });
+    decode_stringified_args(&schema, &mut args);
+    assert_eq!(args["outer"]["inner"], json!({ "deep": true }));
+    assert_eq!(args["list"][0], json!({ "n": 1 }));
+}
+
+#[test]
+fn decode_stringified_args_leaves_undecodable_or_wrong_kind_strings() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "obj": { "type": "object" },
+            "arr": { "type": "array" },
+            "text": { "type": "string" }
+        }
+    });
+    let mut args = json!({
+        "obj": "not json",
+        "arr": r#"{"not":"an array"}"#,
+        "text": r#"{"a":1}"#
+    });
+    decode_stringified_args(&schema, &mut args);
+    assert_eq!(args["obj"], "not json");
+    assert_eq!(args["arr"], r#"{"not":"an array"}"#);
+    // A string field is never decoded, even when it happens to be JSON.
+    assert_eq!(args["text"], r#"{"a":1}"#);
 }

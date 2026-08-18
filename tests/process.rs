@@ -4,9 +4,11 @@ use std::path::PathBuf;
 #[cfg(unix)]
 use crabot::tools::OutputSink;
 use crabot::tools::Tool;
-use crabot::tools::process::{ProcessLogs, ProcessTool};
+use crabot::tools::make_strict_schema;
+use crabot::tools::process::{ProcessLogs, ProcessTool, parse_env};
 #[cfg(unix)]
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 #[cfg(unix)]
 use std::sync::{Arc, Mutex};
 #[cfg(unix)]
@@ -137,6 +139,81 @@ fn logs_merge_in_arrival_order() {
     logs.push("b\n".into());
     logs.push("c\n".into());
     assert_eq!(logs.tail(3), "a\nb\nc");
+}
+
+// ── Strict schema coercion ────────────────────────────────────────
+
+#[test]
+fn strict_mode_coerces_propertyless_objects_to_string() {
+    // `env` declares `additionalProperties`, not `properties`, so strict
+    // mode coerces it to a string; `parse_env` accepts that form.
+    let mut schema = ProcessTool.schema();
+    make_strict_schema(&mut schema);
+    assert_eq!(schema["properties"]["env"]["type"], "string");
+    assert!(
+        schema["properties"]["env"]
+            .get("additionalProperties")
+            .is_none()
+    );
+    let required = schema["required"].as_array().unwrap();
+    assert!(required.iter().any(|k| k.as_str() == Some("env")));
+}
+
+#[test]
+fn strict_mode_coerces_bare_objects_to_string() {
+    // MCP free-form objects stay callable under strict mode: the schema is
+    // coerced to string, and `decode_stringified_args` restores the object
+    // before forwarding to the server.
+    let mut schema = json!({
+        "type": "object",
+        "properties": { "payload": { "type": "object", "additionalProperties": true } },
+        "required": ["payload"]
+    });
+    make_strict_schema(&mut schema);
+    assert_eq!(schema["properties"]["payload"]["type"], "string");
+    assert!(
+        schema["properties"]["payload"]
+            .get("additionalProperties")
+            .is_none()
+    );
+}
+
+// ── parse_env ─────────────────────────────────────────────────────
+
+#[test]
+fn parse_env_accepts_object() {
+    let env = parse_env(&json!({ "FOO": "bar", "EMPTY": "" })).unwrap();
+    assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
+    assert_eq!(env.get("EMPTY").map(String::as_str), Some(""));
+}
+
+#[test]
+fn parse_env_accepts_json_object_string() {
+    let env = parse_env(&json!(r#"{"FOO":"bar"}"#)).unwrap();
+    assert_eq!(env.get("FOO").map(String::as_str), Some("bar"));
+}
+
+#[test]
+fn parse_env_treats_null_and_blank_string_as_no_override() {
+    for raw in [json!(null), json!(""), json!("  "), json!("null")] {
+        assert!(parse_env(&raw).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn parse_env_rejects_invalid_strings() {
+    for raw in ["not json", "[]", "42", r#""str""#] {
+        assert!(parse_env(&json!(raw)).unwrap_err().contains("JSON-encoded"));
+    }
+}
+
+#[test]
+fn parse_env_rejects_non_object_and_non_string_values() {
+    for raw in [json!(42), json!(true), json!([1, 2])] {
+        assert!(parse_env(&raw).is_err());
+    }
+    let err = parse_env(&json!({ "FOO": 1 })).unwrap_err();
+    assert!(err.contains("must be a string"));
 }
 
 // ── Process lifecycle (Unix) ──────────────────────────────────────
@@ -644,6 +721,97 @@ fn restart_honors_cwd_and_env_overrides() {
     .unwrap();
     assert!(logs.contains("cwd="), "logs: {logs}");
     assert!(logs.contains("env=hello"), "logs: {logs}");
+}
+
+#[cfg(unix)]
+#[test]
+fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
+    let tmp = TempDir::new("restart_env");
+    let tool = ProcessTool;
+
+    // Start with an env override that a strict-mode restart must preserve.
+    let started = execute(
+        &tool,
+        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\"", "env": {"MY_VAR": "kept"}}),
+        &tmp.path,
+    )
+    .unwrap();
+    let mut id = process_id(&started);
+
+    // Strict-mode schemas make `env` a required string, so "no override"
+    // arrives as null or ""; both must inherit rather than wipe MY_VAR.
+    for raw in [json!(null), json!("")] {
+        let restarted = execute(
+            &tool,
+            json!({
+                "action": "restart",
+                "process_id": id,
+                "command": "/bin/sh -c 'echo val=$MY_VAR'",
+                "env": raw
+            }),
+            &tmp.path,
+        )
+        .unwrap();
+        assert!(
+            restarted.contains("replacement started"),
+            "restart result: {restarted}"
+        );
+        id = restarted
+            .split_whitespace()
+            .find(|w| w.starts_with("proc-"))
+            .unwrap()
+            .to_string();
+        let _ = execute(
+            &tool,
+            json!({ "action": "wait", "process_id": id, "timeout": 15000 }),
+            &tmp.path,
+        )
+        .unwrap();
+        let logs = execute(
+            &tool,
+            json!({ "action": "logs", "process_id": id }),
+            &tmp.path,
+        )
+        .unwrap();
+        assert!(
+            logs.contains("val=kept"),
+            "env lost on restart with env={raw}: {logs}"
+        );
+    }
+
+    // An explicit empty object is a deliberate clear, distinct from "unset".
+    let restarted = execute(
+        &tool,
+        json!({
+            "action": "restart",
+            "process_id": id,
+            "command": "/bin/sh -c 'echo val=${MY_VAR:-unset}'",
+            "env": {}
+        }),
+        &tmp.path,
+    )
+    .unwrap();
+    id = restarted
+        .split_whitespace()
+        .find(|w| w.starts_with("proc-"))
+        .unwrap()
+        .to_string();
+    let _ = execute(
+        &tool,
+        json!({ "action": "wait", "process_id": id, "timeout": 15000 }),
+        &tmp.path,
+    )
+    .unwrap();
+    let logs = execute(
+        &tool,
+        json!({ "action": "logs", "process_id": id }),
+        &tmp.path,
+    )
+    .unwrap();
+    assert!(
+        logs.contains("val=unset"),
+        "empty env did not clear: {logs}"
+    );
 }
 
 #[cfg(unix)]
