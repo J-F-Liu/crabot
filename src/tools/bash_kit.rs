@@ -34,15 +34,34 @@ use super::{
 /// Per-stream output cap (head-only backstop; crabot's own truncation is the visible limit).
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
 
+/// Names registered for embedded Python.
+const PYTHON_NAMES: [&str; 2] = ["python", "python3"];
+
+/// Whether a working `python`/`python3` is on PATH (probed via `--version`)
+fn host_python_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        PYTHON_NAMES.iter().copied().any(|name| {
+            let mut cmd = std::process::Command::new(name);
+            cmd.arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            super::detach_child(&mut cmd);
+            cmd.status().is_ok_and(|s| s.success())
+        })
+    })
+}
+
 /// Cached set of every builtin this bashkit build can dispatch.
 pub(crate) fn builtin_names() -> &'static HashSet<String> {
     static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
     NAMES.get_or_init(|| {
         let mut names: HashSet<String> = Bash::new().builtin_names().into_iter().collect();
         // `Bash::new()` skips builder-registered builtins; `build_bash`
-        // registers these explicitly via `.python()`.
-        names.insert("python".to_string());
-        names.insert("python3".to_string());
+        // registers them via `.python()` — only when the host has none.
+        if !host_python_available() {
+            names.extend(PYTHON_NAMES.map(String::from));
+        }
         names
     })
 }
@@ -436,8 +455,9 @@ fn build_bash(
         builder = builder.env("HOME", home.vfs_path.to_string_lossy().into_owned());
     }
 
-    // Embedded Python (Monty) registers `python`/`python3` builtins and is
-    // runtime-gated in bashkit; Must come after the host-env seeding above.
+    // Embedded Python (Monty) registers `python`/`python3` builtins — only
+    // when the host has none (see `host_python_available`); otherwise those
+    // names bridge to the host interpreter (real stdlib, `pip`).
     //
     // Monty is a from-scratch, sandboxed Python 3.12 subset — not CPython — so
     // its stdlib is tiny and there is no third-party import or network.
@@ -447,7 +467,9 @@ fn build_bash(
     // like `shutil`, `random`, `hashlib`, `socket`, `subprocess`, `http`,
     // `collections`, `functools`, `itertools`, `csv` are NOT implemented.
     // File I/O works via `pathlib.Path` and `open()` bridged to the VFS.
-    builder = builder.python().env("BASHKIT_ALLOW_INPROCESS_PYTHON", "1");
+    if !host_python_available() {
+        builder = builder.python().env("BASHKIT_ALLOW_INPROCESS_PYTHON", "1");
+    }
 
     for name in external_names {
         builder = builder.builtin(

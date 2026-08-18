@@ -266,27 +266,38 @@ fn bashkit_if_control_flow() {
     assert!(result.contains("ok"), "unexpected: {result}");
 }
 
-// ── embedded python (bashkit `python` feature) ─────────────
+// ── embedded python (host python, or bashkit's Monty) ───────
 
-/// `python` dispatches to bashkit's embedded Monty interpreter, not a host binary.
+/// `python` resolves either way: to the host interpreter when one exists,
+/// otherwise to bashkit's embedded Monty.
 #[test]
 fn bashkit_python_builtin() {
     let result = run_bash("python -c 'print(1 + 2)'", &crabot_workspace(), None).unwrap();
     assert!(result.contains("3"), "unexpected: {result}");
 }
 
-/// `python3` is registered as an alias of the same embedded runtime.
+/// `python3 --version` reports the interpreter in use: host CPython when one
+/// exists, Monty otherwise (a lone `python` without `python3` fails like
+/// real bash).
 #[test]
 fn bashkit_python3_version() {
     let result = run_bash("python3 --version", &crabot_workspace(), None).unwrap();
-    assert!(result.contains("monty"), "unexpected: {result}");
+    match (
+        host_command_exists("python"),
+        host_command_exists("python3"),
+    ) {
+        (_, true) => assert!(result.contains("Python "), "unexpected: {result}"),
+        (false, false) => assert!(result.contains("monty"), "unexpected: {result}"),
+        (true, false) => assert!(!result.contains("monty"), "unexpected: {result}"),
+    }
 }
 
-/// Python `open()` is bridged to the VFS, so real workspace files are readable.
+/// Python file I/O reaches the workspace in both modes (host cwd vs Monty's
+/// VFS-bridged `open()`); `rb` keeps the assertion locale-independent.
 #[test]
 fn bashkit_python_vfs_open() {
     let result = run_bash(
-        "python -c \"print(open('README.md').readline().strip())\"",
+        "python -c \"print(open('README.md', 'rb').readline().strip())\"",
         &crabot_workspace(),
         None,
     )
@@ -294,8 +305,8 @@ fn bashkit_python_vfs_open() {
     assert!(result.contains("Crabot"), "unexpected: {result}");
 }
 
-/// Builtin-only scripts stream via the interpreter callback; python output
-/// must arrive in live chunks, not only at command end.
+/// Python output must arrive in live chunks in both modes: pipe drains for
+/// the host interpreter, the interpreter callback for Monty.
 #[test]
 fn bashkit_python_streaming() {
     let (result, chunks) = stream_and_collect(
