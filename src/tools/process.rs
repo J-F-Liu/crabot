@@ -2,14 +2,13 @@
 //!
 //! Spawns like the `bash` tool's host-command bridge (shell-words split,
 //! direct exec, host env minus secrets plus `env` overrides) and keeps the
-//! children in an app-global registry under stable ids (`proc-1`, …) instead
-//! of OS pids.
+//! children in an app-global registry keyed by their OS pid.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -51,11 +50,10 @@ const MAX_LINES: u64 = 2000;
 
 // ── Global process registry ────────────────────────────────────────
 
-/// App-global registry of agent-managed processes, keyed by `process_id`.
+/// App-global registry of agent-managed processes, keyed by OS pid.
 /// Shared across session tabs, like the MCP connection cache.
-static PROCESSES: LazyLock<Mutex<HashMap<String, Arc<ProcessEntry>>>> =
+static PROCESSES: LazyLock<Mutex<HashMap<u32, Arc<ProcessEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct ProcessTool;
 
@@ -69,7 +67,7 @@ impl Tool for ProcessTool {
     }
 
     fn instruction(&self) -> &str {
-        "Use the process tool to start, monitor, interact with, and stop long-running processes such as servers, watchers, and REPLs. `start` returns an agent-managed `process_id`; pass it to every later operation. Prefer this over the `bash` tool for anything that does not exit on its own, and remember to stop processes you no longer need."
+        "Use the process tool to start, monitor, interact with, and stop long-running processes such as servers, watchers, and REPLs. `start` returns the operating system `pid`; pass it to every later operation. Prefer this over the `bash` tool for anything that does not exit on its own, and remember to stop processes you no longer need."
     }
 
     fn schema(&self) -> Value {
@@ -90,9 +88,9 @@ impl Tool for ProcessTool {
                     ],
                     "description": "The process operation to perform."
                 },
-                "process_id": {
-                    "type": "string",
-                    "description": "The process identifier returned by start. Required for operations on an existing process."
+                "pid": {
+                    "type": "integer",
+                    "description": "The operating system process id returned by start. Required for operations on an existing process."
                 },
                 "command": {
                     "type": "string",
@@ -199,8 +197,7 @@ fn start(args: &Value, workspace: &Path) -> Result<String, String> {
     let parts = parse_command(command)?;
     let entry = start_command(command, parts, cwd, env)?;
     Ok(format!(
-        "Started process {} (os pid {}): {}\ncwd: {}",
-        entry.id,
+        "Started process {}: {}\ncwd: {}",
         entry.pid,
         entry.command,
         entry.cwd.display()
@@ -213,12 +210,12 @@ fn list() -> Result<String, String> {
         return Ok("No managed processes.".into());
     }
     let mut entries: Vec<&Arc<ProcessEntry>> = procs.values().collect();
-    entries.sort_by_key(|e| e.n);
+    entries.sort_by_key(|e| e.started_at);
     let mut lines = Vec::new();
     for e in entries {
         let (state, detail) = describe_status(e);
         let detail = detail.map(|d| format!(" ({d})")).unwrap_or_default();
-        lines.push(format!("{}: {} — {}{}", e.id, state, e.command, detail));
+        lines.push(format!("{}: {} — {}{}", e.pid, state, e.command, detail));
     }
     Ok(lines.join("\n"))
 }
@@ -228,10 +225,9 @@ fn status(args: &Value) -> Result<String, String> {
     let (state, detail) = describe_status(&e);
     let detail = detail.map(|d| format!("\ndetail: {d}")).unwrap_or_default();
     Ok(format!(
-        "process_id: {}\nstatus: {}\nos pid: {}\ncommand: {}\ncwd: {}\nlog bytes: {}{}",
-        e.id,
-        state,
+        "pid: {}\nstatus: {}\ncommand: {}\ncwd: {}\nlog bytes: {}{}",
         e.pid,
+        state,
         e.command,
         e.cwd.display(),
         e.logs.len(),
@@ -275,19 +271,25 @@ fn input(args: &Value) -> Result<String, String> {
     let mut stdin = lock(&e.stdin);
     let Some(stdin) = stdin.as_mut() else {
         return Err(format!(
-            "Process {} is not accepting input (it has exited or been stopped)",
-            e.id
+            "Process {} ({}) is not accepting input (it has exited or been stopped)",
+            e.pid, e.command
         ));
     };
     stdin
         .write_all(text.as_bytes())
         .and_then(|_| stdin.write_all(b"\n"))
         .and_then(|_| stdin.flush())
-        .map_err(|err| format!("Failed to write to stdin of process {}: {err}", e.id))?;
+        .map_err(|err| {
+            format!(
+                "Failed to write to stdin of process {} ({}): {err}",
+                e.pid, e.command
+            )
+        })?;
     Ok(format!(
-        "Sent {} bytes to process {} stdin",
+        "Sent {} bytes to process {} stdin: {}",
         text.len() + 1,
-        e.id
+        e.pid,
+        describe(&e)
     ))
 }
 
@@ -301,7 +303,7 @@ fn wait_action(
     let follow = args.get("follow").and_then(Value::as_bool).unwrap_or(false);
     match wait_for_exit(&e, follow, timeout_ms, cancel, sink.as_ref())? {
         WaitOutcome::Exited(code) => {
-            let mut msg = format!("Process {} exited with code {code}", e.id);
+            let mut msg = format!("Process {} exited with code {code}", e.pid);
             if !follow {
                 let tail = e.logs.tail(DEFAULT_LINES as usize);
                 if !tail.is_empty() {
@@ -313,7 +315,7 @@ fn wait_action(
         }
         WaitOutcome::Timeout => Ok(format!(
             "Process {} still running after {}ms",
-            e.id, timeout_ms
+            e.pid, timeout_ms
         )),
     }
 }
@@ -341,9 +343,8 @@ fn restart(args: &Value, workspace: &Path) -> Result<String, String> {
         }
         None => e.cwd.clone(),
     };
-    // Absent, null, or blank-string env inherits the entry's own: strict-mode
-    // schemas make `env` a required string, so "no override" arrives as "".
-    // An explicit object — even an empty one — replaces it.
+    // Absent/null/blank inherits the entry's env (strict mode sends "" for
+    // unset); an explicit object — even empty — replaces it.
     let env = match args.get("env") {
         Some(v) if v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()) => e.env.clone(),
         Some(v) => parse_env(v)?,
@@ -352,20 +353,34 @@ fn restart(args: &Value, workspace: &Path) -> Result<String, String> {
     let note = stop_for_restart(&e);
     let entry = start_command(&command, parts, cwd, env)?;
     Ok(format!(
-        "Process {} {note}; replacement started with process_id {} (os pid {})",
-        e.id, entry.id, entry.pid
+        "Process {} ({}) {note}; replacement started with pid {}",
+        e.pid, e.command, entry.pid
     ))
 }
 
 // ── Core helpers ───────────────────────────────────────────────────
 
 fn entry_for(args: &Value) -> Result<Arc<ProcessEntry>, String> {
-    let process_id = arg_str(args, "process_id").ok_or("Missing 'process_id' argument")?;
+    let pid = arg_pid(args)?;
     let procs = lock(&PROCESSES);
     procs
-        .get(process_id)
+        .get(&pid)
         .cloned()
-        .ok_or_else(|| format!("Unknown process_id: {process_id}"))
+        .ok_or_else(|| format!("Unknown pid: {pid}"))
+}
+
+/// Parse `pid` as an integer or numeric string (strict mode may coerce it to a string).
+/// Missing and unparseable/out-of-range values are reported separately so agent
+/// failures are easier to diagnose.
+fn arg_pid(args: &Value) -> Result<u32, String> {
+    let Some(v) = args.get("pid") else {
+        return Err("Missing 'pid' argument".into());
+    };
+    let n: u64 = v
+        .as_u64()
+        .or_else(|| v.as_str()?.trim().parse().ok())
+        .ok_or_else(|| "Invalid 'pid' argument".to_string())?;
+    u32::try_from(n).map_err(|_| "Invalid 'pid' argument".to_string())
 }
 
 /// Parse an `env` value: an object of name-value pairs, or a JSON-encoded
@@ -396,9 +411,8 @@ pub fn parse_env(val: &Value) -> Result<HashMap<String, String>, String> {
     Ok(env)
 }
 
-/// Split and validate a command string into argv (no platform shell).
-/// Separate from [`start_command`] so `restart` can reject a bad override
-/// before stopping the still-running process.
+/// Split and validate a command into argv (no platform shell), separate from
+/// [`start_command`] so `restart` can reject a bad override before stopping.
 fn parse_command(command: &str) -> Result<Vec<String>, String> {
     let parts = split(command).map_err(|e| format!("Failed to parse command: {e}"))?;
     if parts.is_empty() {
@@ -438,11 +452,7 @@ fn start_command(
     let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
     let stderr = child.stderr.take().ok_or("stderr pipe missing")?;
 
-    let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let id = format!("proc-{n}");
     let entry = Arc::new(ProcessEntry {
-        n,
-        id,
         command: command.to_string(),
         cwd,
         env,
@@ -457,7 +467,8 @@ fn start_command(
     {
         let mut procs = lock(&PROCESSES);
         prune_exited(&mut procs);
-        procs.insert(entry.id.clone(), Arc::clone(&entry));
+        // Pid reuse: the new process takes the key from any retained exited entry.
+        procs.insert(pid, Arc::clone(&entry));
     }
 
     let stdout_raw = raw_pipe(&stdout);
@@ -624,8 +635,8 @@ fn signal_and_wait(entry: &ProcessEntry, signal: ProcessSignal) -> Result<String
 
     if let ProcessStatus::Exited(code) = *lock(&entry.status) {
         return Ok(format!(
-            "Process {} already exited with code {code}",
-            entry.id
+            "Process {} ({}) already exited with code {code}",
+            entry.pid, entry.command
         ));
     }
 
@@ -635,15 +646,19 @@ fn signal_and_wait(entry: &ProcessEntry, signal: ProcessSignal) -> Result<String
     let deadline = Instant::now() + STOP_GRACE;
     while Instant::now() < deadline {
         if let ProcessStatus::Exited(code) = *lock(&entry.status) {
-            return Ok(format!("Process {} stopped (exit code {code})", entry.id));
+            return Ok(format!(
+                "Process {} ({}) stopped (exit code {code})",
+                entry.pid, entry.command
+            ));
         }
         std::thread::sleep(POLL_INTERVAL);
     }
     Ok(format!(
-        "{} signal sent to process {} (os pid {}); still running",
+        "{} signal sent to process {} ({}, up {}s); still running",
         signal.name(),
-        entry.id,
-        entry.pid
+        entry.pid,
+        entry.command,
+        entry.started_secs()
     ))
 }
 
@@ -712,18 +727,18 @@ fn follow_logs(
         WaitOutcome::Exited(code) => {
             let tail = entry.logs.tail(lines);
             if tail.is_empty() {
-                Ok(format!("Process {} exited with code {code}", entry.id))
+                Ok(format!("Process {} exited with code {code}", entry.pid))
             } else {
                 Ok(format!(
                     "Process {} exited with code {code}\n\n{tail}",
-                    entry.id
+                    entry.pid
                 ))
             }
         }
         WaitOutcome::Timeout => {
             let note = format!(
                 "[process {} still running after {}ms]",
-                entry.id, timeout_ms
+                entry.pid, timeout_ms
             );
             let tail = entry.logs.tail(lines);
             Ok(if tail.is_empty() {
@@ -735,12 +750,16 @@ fn follow_logs(
     }
 }
 
+/// Human-readable identity of a managed process: command plus uptime.
+/// Surfaced in operation results so a pid-reuse alias becomes visible to the
+/// agent (the pid alone would silently point at the new process).
+fn describe(e: &ProcessEntry) -> String {
+    format!("{} (up {}s)", e.command, e.started_secs())
+}
+
 fn describe_status(e: &ProcessEntry) -> (&'static str, Option<String>) {
     match *lock(&e.status) {
-        ProcessStatus::Running => (
-            "running",
-            Some(format!("os pid {}, up {}s", e.pid, e.started_secs())),
-        ),
+        ProcessStatus::Running => ("running", Some(format!("up {}s", e.started_secs()))),
         ProcessStatus::Exited(code) => ("exited", Some(format!("exit code {code}"))),
     }
 }
@@ -753,16 +772,16 @@ fn exit_code(e: &ProcessEntry) -> i32 {
 }
 
 /// Drop the oldest exited entries once more than [`MAX_RETAINED_EXITED`] remain.
-fn prune_exited(procs: &mut HashMap<String, Arc<ProcessEntry>>) {
-    let mut exited: Vec<(u64, String)> = procs
+fn prune_exited(procs: &mut HashMap<u32, Arc<ProcessEntry>>) {
+    let mut exited: Vec<(Instant, u32)> = procs
         .values()
         .filter(|e| matches!(*lock(&e.status), ProcessStatus::Exited(_)))
-        .map(|e| (e.n, e.id.clone()))
+        .map(|e| (e.started_at, e.pid))
         .collect();
     exited.sort_unstable();
     let excess = exited.len().saturating_sub(MAX_RETAINED_EXITED);
-    for (_, id) in exited.into_iter().take(excess) {
-        procs.remove(&id);
+    for (_, pid) in exited.into_iter().take(excess) {
+        procs.remove(&pid);
     }
 }
 
@@ -810,13 +829,11 @@ enum ProcessStatus {
 }
 
 struct ProcessEntry {
-    /// Numeric id backing the stable `process_id` (used for ordering/pruning).
-    n: u64,
-    id: String,
+    /// OS pid of the managed child (also the registry key).
+    pid: u32,
     command: String,
     cwd: PathBuf,
     env: HashMap<String, String>,
-    pid: u32,
     started_at: Instant,
     status: Mutex<ProcessStatus>,
     stdin: Mutex<Option<ChildStdin>>,

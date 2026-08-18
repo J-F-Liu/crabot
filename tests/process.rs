@@ -44,20 +44,32 @@ fn execute(tool: &ProcessTool, args: Value, workspace: &std::path::Path) -> Resu
 }
 
 #[cfg(unix)]
-fn process_id(result: &str) -> String {
-    // "Started process proc-N (os pid ...) ..." → "proc-N"
+/// Numeric tokens of a `start`/`restart` result, in order.
+fn pids(result: &str) -> impl DoubleEndedIterator<Item = u32> + '_ {
     result
         .split_whitespace()
-        .nth(2)
-        .expect("start result should name the process id")
-        .to_string()
+        .filter_map(|w| w.trim_end_matches(':').parse().ok())
+}
+
+#[cfg(unix)]
+fn pid(result: &str) -> u32 {
+    pids(result)
+        .next()
+        .expect("start result should name the pid")
+}
+
+#[cfg(unix)]
+fn last_pid(result: &str) -> u32 {
+    pids(result)
+        .next_back()
+        .expect("restart result should name the new pid")
 }
 
 #[cfg(unix)]
 /// Poll `logs` until it contains `needle`, panicking after ~2 s.
-fn wait_for_log(tool: &ProcessTool, id: &str, workspace: &std::path::Path, needle: &str) {
+fn wait_for_log(tool: &ProcessTool, id: u32, workspace: &std::path::Path, needle: &str) {
     for _ in 0..200 {
-        let logs = execute(tool, json!({"action": "logs", "process_id": id}), workspace).unwrap();
+        let logs = execute(tool, json!({"action": "logs", "pid": id}), workspace).unwrap();
         if logs.contains(needle) {
             return;
         }
@@ -95,6 +107,8 @@ fn schema_requires_action_with_full_enum() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(signals, vec!["terminate", "kill", "interrupt"]);
+
+    assert_eq!(schema["properties"]["pid"]["type"], "integer");
 }
 
 // ── ProcessLogs ───────────────────────────────────────────────────
@@ -230,11 +244,11 @@ fn start_wait_and_logs() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     let waited = execute(
         &tool,
-        json!({"action": "wait", "process_id": id, "timeout": 15000}),
+        json!({"action": "wait", "pid": id, "timeout": 15000}),
         &tmp.path,
     )
     .unwrap();
@@ -243,12 +257,7 @@ fn start_wait_and_logs() {
         "wait result: {waited}"
     );
 
-    let logs = execute(
-        &tool,
-        json!({"action": "logs", "process_id": id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
     assert!(logs.contains("hello"), "logs: {logs}");
     assert!(logs.contains("world"), "logs: {logs}");
 }
@@ -265,11 +274,11 @@ fn input_is_written_to_stdin() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     let sent = execute(
         &tool,
-        json!({"action": "input", "process_id": id, "input": "hi there"}),
+        json!({"action": "input", "pid": id, "input": "hi there"}),
         &tmp.path,
     )
     .unwrap();
@@ -277,7 +286,7 @@ fn input_is_written_to_stdin() {
 
     let waited = execute(
         &tool,
-        json!({"action": "wait", "process_id": id, "timeout": 15000}),
+        json!({"action": "wait", "pid": id, "timeout": 15000}),
         &tmp.path,
     )
     .unwrap();
@@ -286,12 +295,7 @@ fn input_is_written_to_stdin() {
         "wait result: {waited}"
     );
 
-    let logs = execute(
-        &tool,
-        json!({"action": "logs", "process_id": id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
     assert!(logs.contains("got:hi there"), "logs: {logs}");
 }
 
@@ -307,19 +311,14 @@ fn stop_terminates_process() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
-    let status = execute(
-        &tool,
-        json!({"action": "status", "process_id": id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let status = execute(&tool, json!({"action": "status", "pid": id}), &tmp.path).unwrap();
     assert!(status.contains("running"), "status: {status}");
 
     let stopped = execute(
         &tool,
-        json!({"action": "stop", "process_id": id, "signal": "terminate"}),
+        json!({"action": "stop", "pid": id, "signal": "terminate"}),
         &tmp.path,
     )
     .unwrap();
@@ -338,24 +337,19 @@ fn list_and_status_report_state() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     let list = execute(&tool, json!({"action": "list"}), &tmp.path).unwrap();
-    assert!(list.contains(&id), "list: {list}");
+    assert!(list.contains(&id.to_string()), "list: {list}");
 
-    let status = execute(
-        &tool,
-        json!({"action": "status", "process_id": id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let status = execute(&tool, json!({"action": "status", "pid": id}), &tmp.path).unwrap();
     assert!(status.contains("running"), "status: {status}");
-    assert!(status.contains("os pid"), "status: {status}");
+    assert!(status.contains("pid:"), "status: {status}");
 
     // Clean up.
     let _ = execute(
         &tool,
-        json!({"action": "stop", "process_id": id, "signal": "kill"}),
+        json!({"action": "stop", "pid": id, "signal": "kill"}),
         &tmp.path,
     );
 }
@@ -372,11 +366,11 @@ fn restart_replaces_process() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     let restarted = execute(
         &tool,
-        json!({"action": "restart", "process_id": id, "command": "/bin/sh -c \"echo again\""}),
+        json!({"action": "restart", "pid": id, "command": "/bin/sh -c \"echo again\""}),
         &tmp.path,
     )
     .unwrap();
@@ -384,16 +378,11 @@ fn restart_replaces_process() {
         restarted.contains("replacement started"),
         "restart result: {restarted}"
     );
-    let new_id = restarted
-        .split_whitespace()
-        .find(|w| w.starts_with("proc-") && *w != id)
-        .unwrap()
-        .to_string();
-    assert_ne!(id, new_id);
+    let new_id = last_pid(&restarted);
 
     let waited = execute(
         &tool,
-        json!({"action": "wait", "process_id": new_id, "timeout": 15000}),
+        json!({"action": "wait", "pid": new_id, "timeout": 15000}),
         &tmp.path,
     )
     .unwrap();
@@ -415,16 +404,11 @@ fn logs_immediately_after_exit_includes_tail() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     // Read logs right away — before the reaper has necessarily recorded the
     // exit — and still see the full output (logs waits for the reader drain).
-    let logs = execute(
-        &tool,
-        json!({"action": "logs", "process_id": id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
     assert!(logs.contains("early"), "logs: {logs}");
 }
 
@@ -440,11 +424,11 @@ fn logs_follow_reports_exit_with_tail() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     let logs = execute(
         &tool,
-        json!({"action": "logs", "process_id": id, "follow": true, "timeout": 15000}),
+        json!({"action": "logs", "pid": id, "follow": true, "timeout": 15000}),
         &tmp.path,
     )
     .unwrap();
@@ -464,11 +448,11 @@ fn logs_follow_reports_still_running_on_timeout() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     let logs = execute(
         &tool,
-        json!({"action": "logs", "process_id": id, "follow": true, "timeout": 100}),
+        json!({"action": "logs", "pid": id, "follow": true, "timeout": 100}),
         &tmp.path,
     )
     .unwrap();
@@ -476,7 +460,7 @@ fn logs_follow_reports_still_running_on_timeout() {
 
     let _ = execute(
         &tool,
-        json!({"action": "stop", "process_id": id, "signal": "kill"}),
+        json!({"action": "stop", "pid": id, "signal": "kill"}),
         &tmp.path,
     );
 }
@@ -496,11 +480,11 @@ fn wait_completes_for_daemonising_child() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     let waited = execute(
         &tool,
-        json!({"action": "wait", "process_id": id, "timeout": 5000}),
+        json!({"action": "wait", "pid": id, "timeout": 5000}),
         &tmp.path,
     )
     .unwrap();
@@ -526,7 +510,7 @@ fn logs_follow_streams_every_line_to_sink() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink: OutputSink = {
@@ -535,7 +519,7 @@ fn logs_follow_streams_every_line_to_sink() {
     };
     let result = tool
         .execute_streaming(
-            &json!({"action": "logs", "process_id": id, "follow": true, "timeout": 5000}),
+            &json!({"action": "logs", "pid": id, "follow": true, "timeout": 5000}),
             &tmp.path,
             &CancellationToken::new(),
             &sink,
@@ -559,13 +543,8 @@ fn stop_unknown_process_reports_error() {
     let tmp = TempDir::new("unknown");
     let tool = ProcessTool;
 
-    let err = execute(
-        &tool,
-        json!({"action": "stop", "process_id": "proc-999999"}),
-        &tmp.path,
-    )
-    .unwrap_err();
-    assert!(err.contains("Unknown process_id"), "err: {err}");
+    let err = execute(&tool, json!({"action": "stop", "pid": 999999}), &tmp.path).unwrap_err();
+    assert!(err.contains("Unknown pid"), "err: {err}");
 }
 
 #[cfg(unix)]
@@ -580,17 +559,17 @@ fn restart_after_exit_starts_replacement() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
     let _ = execute(
         &tool,
-        json!({"action": "wait", "process_id": id, "timeout": 15000}),
+        json!({"action": "wait", "pid": id, "timeout": 15000}),
         &tmp.path,
     )
     .unwrap();
 
     let restarted = execute(
         &tool,
-        json!({"action": "restart", "process_id": id, "command": "/bin/sh -c \"echo second\""}),
+        json!({"action": "restart", "pid": id, "command": "/bin/sh -c \"echo second\""}),
         &tmp.path,
     )
     .unwrap();
@@ -598,15 +577,11 @@ fn restart_after_exit_starts_replacement() {
         restarted.contains("had already exited"),
         "restart result: {restarted}"
     );
-    let new_id = restarted
-        .split_whitespace()
-        .find(|w| w.starts_with("proc-") && *w != id)
-        .unwrap()
-        .to_string();
+    let new_id = last_pid(&restarted);
 
     let waited = execute(
         &tool,
-        json!({"action": "wait", "process_id": new_id, "timeout": 15000}),
+        json!({"action": "wait", "pid": new_id, "timeout": 15000}),
         &tmp.path,
     )
     .unwrap();
@@ -614,12 +589,7 @@ fn restart_after_exit_starts_replacement() {
         waited.contains("exited with code 0"),
         "wait result: {waited}"
     );
-    let logs = execute(
-        &tool,
-        json!({"action": "logs", "process_id": new_id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let logs = execute(&tool, json!({"action": "logs", "pid": new_id}), &tmp.path).unwrap();
     assert!(logs.contains("second"), "logs: {logs}");
 }
 
@@ -636,30 +606,21 @@ fn restart_escalates_to_kill_when_terminate_ignored() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     // Wait for the trap to be installed, else TERM kills the shell outright.
-    wait_for_log(&tool, &id, &tmp.path, "ready");
+    wait_for_log(&tool, id, &tmp.path, "ready");
 
-    let restarted = execute(
-        &tool,
-        json!({"action": "restart", "process_id": id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let restarted = execute(&tool, json!({"action": "restart", "pid": id}), &tmp.path).unwrap();
     assert!(
         restarted.contains("kill after terminate ignored"),
         "restart result: {restarted}"
     );
 
-    let new_id = restarted
-        .split_whitespace()
-        .find(|w| w.starts_with("proc-") && *w != id)
-        .unwrap()
-        .to_string();
+    let new_id = last_pid(&restarted);
     let _ = execute(
         &tool,
-        json!({"action": "stop", "process_id": new_id, "signal": "kill"}),
+        json!({"action": "stop", "pid": new_id, "signal": "kill"}),
         &tmp.path,
     );
 }
@@ -677,14 +638,14 @@ fn restart_honors_cwd_and_env_overrides() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     // Override both cwd and env on restart; the replacement must use them.
     let restarted = execute(
         &tool,
         json!({
             "action": "restart",
-            "process_id": id,
+            "pid": id,
             "command": "/bin/sh -c 'echo cwd=$(pwd) env=$MY_VAR'",
             "cwd": "sub",
             "env": {"MY_VAR": "hello"}
@@ -696,15 +657,11 @@ fn restart_honors_cwd_and_env_overrides() {
         restarted.contains("replacement started"),
         "restart result: {restarted}"
     );
-    let new_id = restarted
-        .split_whitespace()
-        .find(|w| w.starts_with("proc-") && *w != id)
-        .unwrap()
-        .to_string();
+    let new_id = last_pid(&restarted);
 
     let waited = execute(
         &tool,
-        json!({"action": "wait", "process_id": new_id, "timeout": 15000}),
+        json!({"action": "wait", "pid": new_id, "timeout": 15000}),
         &tmp.path,
     )
     .unwrap();
@@ -713,12 +670,7 @@ fn restart_honors_cwd_and_env_overrides() {
         "wait result: {waited}"
     );
 
-    let logs = execute(
-        &tool,
-        json!({"action": "logs", "process_id": new_id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let logs = execute(&tool, json!({"action": "logs", "pid": new_id}), &tmp.path).unwrap();
     assert!(logs.contains("cwd="), "logs: {logs}");
     assert!(logs.contains("env=hello"), "logs: {logs}");
 }
@@ -736,7 +688,7 @@ fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
         &tmp.path,
     )
     .unwrap();
-    let mut id = process_id(&started);
+    let mut id = pid(&started);
 
     // Strict-mode schemas make `env` a required string, so "no override"
     // arrives as null or ""; both must inherit rather than wipe MY_VAR.
@@ -745,7 +697,7 @@ fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
             &tool,
             json!({
                 "action": "restart",
-                "process_id": id,
+                "pid": id,
                 "command": "/bin/sh -c 'echo val=$MY_VAR'",
                 "env": raw
             }),
@@ -756,23 +708,14 @@ fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
             restarted.contains("replacement started"),
             "restart result: {restarted}"
         );
-        id = restarted
-            .split_whitespace()
-            .find(|w| w.starts_with("proc-"))
-            .unwrap()
-            .to_string();
+        id = last_pid(&restarted);
         let _ = execute(
             &tool,
-            json!({ "action": "wait", "process_id": id, "timeout": 15000 }),
+            json!({ "action": "wait", "pid": id, "timeout": 15000 }),
             &tmp.path,
         )
         .unwrap();
-        let logs = execute(
-            &tool,
-            json!({ "action": "logs", "process_id": id }),
-            &tmp.path,
-        )
-        .unwrap();
+        let logs = execute(&tool, json!({ "action": "logs", "pid": id }), &tmp.path).unwrap();
         assert!(
             logs.contains("val=kept"),
             "env lost on restart with env={raw}: {logs}"
@@ -784,30 +727,21 @@ fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
         &tool,
         json!({
             "action": "restart",
-            "process_id": id,
+            "pid": id,
             "command": "/bin/sh -c 'echo val=${MY_VAR:-unset}'",
             "env": {}
         }),
         &tmp.path,
     )
     .unwrap();
-    id = restarted
-        .split_whitespace()
-        .find(|w| w.starts_with("proc-"))
-        .unwrap()
-        .to_string();
+    id = last_pid(&restarted);
     let _ = execute(
         &tool,
-        json!({ "action": "wait", "process_id": id, "timeout": 15000 }),
+        json!({ "action": "wait", "pid": id, "timeout": 15000 }),
         &tmp.path,
     )
     .unwrap();
-    let logs = execute(
-        &tool,
-        json!({ "action": "logs", "process_id": id }),
-        &tmp.path,
-    )
-    .unwrap();
+    let logs = execute(&tool, json!({ "action": "logs", "pid": id }), &tmp.path).unwrap();
     assert!(
         logs.contains("val=unset"),
         "empty env did not clear: {logs}"
@@ -826,12 +760,12 @@ fn restart_rejects_bad_command_without_stopping() {
         &tmp.path,
     )
     .unwrap();
-    let id = process_id(&started);
+    let id = pid(&started);
 
     // A bad override must fail validation before the running process is stopped.
     let err = execute(
         &tool,
-        json!({"action": "restart", "process_id": id, "command": "echo 'unterminated"}),
+        json!({"action": "restart", "pid": id, "command": "echo 'unterminated"}),
         &tmp.path,
     )
     .unwrap_err();
@@ -840,18 +774,13 @@ fn restart_rejects_bad_command_without_stopping() {
     // Same for the empty override.
     let err = execute(
         &tool,
-        json!({"action": "restart", "process_id": id, "command": ""}),
+        json!({"action": "restart", "pid": id, "command": ""}),
         &tmp.path,
     )
     .unwrap_err();
     assert!(err.contains("Empty command"), "err: {err}");
 
-    let status = execute(
-        &tool,
-        json!({"action": "status", "process_id": id}),
-        &tmp.path,
-    )
-    .unwrap();
+    let status = execute(&tool, json!({"action": "status", "pid": id}), &tmp.path).unwrap();
     assert!(
         status.contains("running"),
         "original process was stopped: {status}"
@@ -859,7 +788,7 @@ fn restart_rejects_bad_command_without_stopping() {
 
     let _ = execute(
         &tool,
-        json!({"action": "stop", "process_id": id, "signal": "kill"}),
+        json!({"action": "stop", "pid": id, "signal": "kill"}),
         &tmp.path,
     );
 }

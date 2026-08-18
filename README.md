@@ -29,20 +29,20 @@ If you know the structure of the LLM context window, you will appreciate the UI 
 
 ## Built-in Tools
 
-| Tool     | Params                                     | Description                                                                                     |
-| -------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `read`   | `path`, `offset`, `limit`                  | Read any file in your workspace, with smart truncation for large files                          |
-| `write`  | `path`, `content`                          | Create or overwrite files, creating missing parent directories automatically                    |
-| `edit`   | `path`, `edits` [{`old_text`, `new_text`}] | Make precise text replacements in existing files, with conflict detection for overlapping edits |
-| `find`   | `pattern`, `path`                          | Locate files by name pattern, skipping ignored files (`.gitignore`)                             |
-| `search` | `pattern`, `path`                          | Search file contents with regular expressions, skipping ignored files (`.gitignore`)            |
-| `bash`   | `command`, `timeout`                       | Run shell commands in your workspace via an in-process interpreter (host-bash fallback), with a timeout and instant cancellation |
-| `process`| `action`, `command`, `process_id`, `cwd`, `env`, `timeout`, `input`, `lines`, `follow`, `signal` | Manage long-running processes across tool calls — start, list, status, logs, input, wait, stop, restart by agent-managed `process_id` |
-| `ask`    | `question`, `options`                      | Pause and ask you a question when it needs your input or approval                               |
-| `todo`   | `items` [{`text`, `depth`, `status`}]      | Track its task list, shown live in the right pane                                               |
-| `task`   | `title`, `prompt`, `mode`, `difficulty`    | Delegate a subtask to a separate session and continue once the final report comes back          |
-| `renew`  | `prompt`                                   | Hand off to a fresh session seeded with a summary when the context window is nearly full        |
-| `fetch`  | `url`, `format`                            | Download web pages and convert them to clean Markdown                                           |
+| Tool      | Params                                                                                    | Description                                                                                                                      |
+| --------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `read`    | `path`, `offset`, `limit`                                                                 | Read any file in your workspace, with smart truncation for large files                                                           |
+| `write`   | `path`, `content`                                                                         | Create or overwrite files, creating missing parent directories automatically                                                     |
+| `edit`    | `path`, `edits` [{`old_text`, `new_text`}]                                                | Make precise text replacements in existing files, with conflict detection for overlapping edits                                  |
+| `find`    | `pattern`, `path`                                                                         | Locate files by name pattern, skipping ignored files (`.gitignore`)                                                              |
+| `search`  | `pattern`, `path`                                                                         | Search file contents with regular expressions, skipping ignored files (`.gitignore`)                                             |
+| `bash`    | `command`, `timeout`                                                                      | Run shell commands in your workspace via an in-process interpreter (host-bash fallback), with a timeout and instant cancellation |
+| `process` | `action`, `command`, `pid`, `cwd`, `env`, `timeout`, `input`, `lines`, `follow`, `signal` | Manage long-running processes across tool calls — start, list, status, logs, input, wait, stop, restart by OS `pid`              |
+| `ask`     | `question`, `options`                                                                     | Pause and ask you a question when it needs your input or approval                                                                |
+| `todo`    | `items` [{`text`, `depth`, `status`}]                                                     | Track its task list, shown live in the right pane                                                                                |
+| `task`    | `title`, `prompt`, `mode`, `difficulty`                                                   | Delegate a subtask to a separate session and continue once the final report comes back                                           |
+| `renew`   | `prompt`                                                                                  | Hand off to a fresh session seeded with a summary when the context window is nearly full                                         |
+| `fetch`   | `url`, `format`                                                                           | Download web pages and convert them to clean Markdown                                                                            |
 
 Beyond the built-ins, you can add your own **custom CLI tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session.
 
