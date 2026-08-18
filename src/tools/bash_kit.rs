@@ -27,7 +27,7 @@ use bashkit::{Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, async_
 
 use super::{
     CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, WaitError, create_pipe_pair,
-    is_would_block, pipe_to_stdio, set_sender_nonblocking, set_sender_noninheritable,
+    is_would_block, pipe_to_stdio, set_pipe_nonblocking, set_sender_noninheritable,
     timeout_message, wait_with_timeout,
 };
 
@@ -562,7 +562,7 @@ impl Builtin for HostCommandBuiltin {
             let stdin_writer = match ctx.stdin {
                 Some(data) => {
                     let (stdin_tx, stdin_rx) = create_pipe_pair("stdin")?;
-                    set_sender_nonblocking(&stdin_tx)?;
+                    set_pipe_nonblocking(&stdin_tx)?;
                     set_sender_noninheritable(&stdin_tx)?;
                     cmd.stdin(pipe_to_stdio(stdin_rx));
                     Some((data.as_bytes().to_vec(), stdin_tx))

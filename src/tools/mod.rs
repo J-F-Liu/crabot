@@ -1008,65 +1008,45 @@ pub(crate) fn pipe_to_stdio<E: Into<std::os::windows::io::OwnedHandle>>(
     std::process::Stdio::from(end.into())
 }
 
-/// Set a pipe receiver to non-blocking mode (a blocking pipe would deadlock
-/// the polling loop, so failure is fatal).
-fn set_recver_nonblocking(recver: &unnamed_pipe::Recver) -> Result<(), String> {
+/// Set a pipe half to non-blocking mode.
+///
+/// No-op on Windows: `PIPE_NOWAIT` fails on read handles and is undefined on
+/// write ends. Reads poll via [`peek_pipe_available`] instead, and a blocking
+/// `WriteFile` errors once the read end closes, so the feeder cannot hang.
+pub(crate) fn set_pipe_nonblocking<E>(end: &E) -> Result<(), String> {
     #[cfg(unix)]
     {
         use interprocess::os::unix::unnamed_pipe::UnnamedPipeExt;
-        recver
-            .set_nonblocking(true)
+        end.set_nonblocking(true)
             .map_err(|e| format!("Failed to set non-blocking mode: {e}"))
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle;
-        set_handle_nonblocking(recver.as_raw_handle())
+        let _ = end;
+        Ok(())
     }
 }
 
-/// Set a pipe read handle to non-blocking mode (`PIPE_NOWAIT`).
+/// Bytes currently buffered on a pipe read handle, or `None` when the peek
+/// failed (broken pipe = EOF). Uses `PeekNamedPipe`, which needs only
+/// `GENERIC_READ` — unlike `SetNamedPipeHandleState`.
 #[cfg(windows)]
-pub(crate) fn set_handle_nonblocking(
-    handle: std::os::windows::io::RawHandle,
-) -> Result<(), String> {
-    // Deprecated but fine for anonymous pipes (overlapped I/O would be a much larger refactor).
-    let mut mode = win32::PIPE_NOWAIT;
+pub(crate) fn peek_pipe_available(handle: isize) -> Option<u32> {
+    let mut bytes_avail = 0u32;
     let ok = unsafe {
-        win32::SetNamedPipeHandleState(
-            handle as isize,
-            &mut mode,
+        win32::PeekNamedPipe(
+            handle,
             std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut bytes_avail,
             std::ptr::null_mut(),
         )
     };
     if ok == 0 {
-        return Err(format!(
-            "Failed to set pipe non-blocking mode: {}",
-            std::io::Error::last_os_error()
-        ));
+        return None;
     }
-    Ok(())
-}
-
-/// Set a pipe sender to non-blocking mode (mirror of `set_recver_nonblocking`).
-///
-/// No-op on Windows: `PIPE_NOWAIT` on a write end is undefined behavior. A blocking
-/// `WriteFile` fails with `ERROR_NO_DATA` once the read end closes, so the feeder
-/// thread cannot hang.
-pub(crate) fn set_sender_nonblocking(sender: &unnamed_pipe::Sender) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use interprocess::os::unix::unnamed_pipe::UnnamedPipeExt;
-        sender
-            .set_nonblocking(true)
-            .map_err(|e| format!("Failed to set non-blocking mode: {e}"))
-    }
-    #[cfg(windows)]
-    {
-        let _ = sender;
-        Ok(())
-    }
+    Some(bytes_avail)
 }
 
 /// Prevent a pipe sender's handle from being inherited by spawned children.
@@ -1390,7 +1370,7 @@ pub(crate) fn wait_with_timeout(
     // Non-blocking pipes let the polling loop drain them without reader threads.
     // A setup failure here must not leak the already-spawned child.
     for pipe in [&stdout, &stderr].into_iter().flatten() {
-        if let Err(e) = set_recver_nonblocking(pipe) {
+        if let Err(e) = set_pipe_nonblocking(pipe) {
             return Err(WaitError::Other(kill_and_error(
                 &mut child,
                 pid,
@@ -1499,44 +1479,80 @@ pub(crate) fn wait_with_timeout(
 }
 
 /// Drain all currently-available bytes from `reader` into `cap`; `true` on
-/// EOF (or no reader), `false` on `WouldBlock`. Chunks are also pushed to
-/// `forwarder` for live streaming and partial capture.
+/// EOF (or no reader), `false` when there is no more data right now. Chunks
+/// are also pushed to `forwarder` for live streaming and partial capture.
 fn drain_pipe(
     reader: Option<&mut unnamed_pipe::Recver>,
     cap: &mut BoundedCapture,
     tmp: &mut [u8],
-    mut forwarder: Option<&mut ChunkForwarder>,
+    forwarder: Option<&mut ChunkForwarder>,
     stream: OutStream,
 ) -> bool {
     let Some(reader) = reader else {
         return true;
     };
+    drain_pipe_impl(reader, cap, tmp, forwarder, stream)
+}
+
+/// Append one chunk to `cap` and forward it for live streaming.
+fn append_chunk(
+    cap: &mut BoundedCapture,
+    forwarder: &mut Option<&mut ChunkForwarder>,
+    stream: OutStream,
+    bytes: &[u8],
+) {
+    cap.push(bytes);
+    if let Some(f) = forwarder.as_mut() {
+        f.push(stream, bytes);
+    }
+}
+
+/// Unix: the receiver is non-blocking, so read until `WouldBlock`.
+#[cfg(unix)]
+fn drain_pipe_impl(
+    reader: &mut unnamed_pipe::Recver,
+    cap: &mut BoundedCapture,
+    tmp: &mut [u8],
+    mut forwarder: Option<&mut ChunkForwarder>,
+    stream: OutStream,
+) -> bool {
     loop {
         match reader.read(tmp) {
-            Ok(0) => return true, // EOF — write end closed
-            Ok(n) => {
-                cap.push(&tmp[..n]);
-                if let Some(f) = forwarder.as_mut() {
-                    f.push(stream, &tmp[..n]);
-                }
-            }
+            Ok(0) => return true, // EOF
+            Ok(n) => append_chunk(cap, &mut forwarder, stream, &tmp[..n]),
             Err(ref e) if is_would_block(e) => return false,
-            Err(_) => return true, // treat unexpected errors as EOF
+            Err(_) => return true, // unexpected error ~ EOF
         }
     }
 }
 
-/// True if the error means "no data available right now" in non-blocking mode.
+/// Windows: peek first, then read only the bytes already buffered so a
+/// blocking `ReadFile` can never hang.
+#[cfg(windows)]
+fn drain_pipe_impl(
+    reader: &mut unnamed_pipe::Recver,
+    cap: &mut BoundedCapture,
+    tmp: &mut [u8],
+    mut forwarder: Option<&mut ChunkForwarder>,
+    stream: OutStream,
+) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    loop {
+        match peek_pipe_available(reader.as_raw_handle() as isize) {
+            Some(0) => return false, // no data right now
+            None => return true,     // broken pipe — EOF
+            Some(_) => match reader.read(tmp) {
+                Ok(0) => return true, // EOF
+                Ok(n) => append_chunk(cap, &mut forwarder, stream, &tmp[..n]),
+                Err(_) => return true, // unexpected error ~ EOF
+            },
+        }
+    }
+}
+
+/// True when `e` means "no data available right now" (`WouldBlock`).
 pub(crate) fn is_would_block(e: &std::io::Error) -> bool {
-    if e.kind() == std::io::ErrorKind::WouldBlock {
-        return true;
-    }
-    // Windows `PIPE_NOWAIT` pipes report `ERROR_NO_DATA` when empty.
-    #[cfg(windows)]
-    if e.raw_os_error() == Some(win32::ERROR_NO_DATA) {
-        return true;
-    }
-    false
+    e.kind() == std::io::ErrorKind::WouldBlock
 }
 
 /// Per-stream capture window: half the output budget, rounded up.
@@ -1590,19 +1606,17 @@ fn kill_and_error(
 #[cfg(windows)]
 mod win32 {
     unsafe extern "system" {
-        pub(crate) fn SetNamedPipeHandleState(
+        pub(crate) fn PeekNamedPipe(
             hNamedPipe: isize,
-            lpMode: *mut u32,
-            lpMaxCollectionCount: *mut u32,
-            lpCollectDataTimeout: *mut u32,
+            lpBuffer: *mut core::ffi::c_void,
+            nBufferSize: u32,
+            lpBytesRead: *mut u32,
+            lpTotalBytesAvail: *mut u32,
+            lpBytesLeftThisMessage: *mut u32,
         ) -> i32;
 
         pub(crate) fn SetHandleInformation(hObject: isize, dwMask: u32, dwFlags: u32) -> i32;
     }
 
-    pub(crate) const PIPE_NOWAIT: u32 = 0x0000_0001;
     pub(crate) const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
-
-    /// `ReadFile` on a `PIPE_NOWAIT` pipe returns this when no data is available.
-    pub(crate) const ERROR_NO_DATA: i32 = 232;
 }

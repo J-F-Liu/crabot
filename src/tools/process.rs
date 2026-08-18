@@ -36,7 +36,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// Unix reader poll timeout: lets the loop notice an exit even when EOF never arrives.
 #[cfg(unix)]
 const READER_IDLE_POLL_MS: i32 = 100;
-/// Windows reader idle sleep between non-blocking read attempts.
+/// Windows reader idle sleep between poll attempts.
 #[cfg(windows)]
 const READER_IDLE_SLEEP: Duration = Duration::from_millis(100);
 /// Drain window after an exit is first noticed: readers keep pulling final
@@ -438,18 +438,6 @@ fn start_command(
     let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
     let stderr = child.stderr.take().ok_or("stderr pipe missing")?;
 
-    // Windows: the readers depend on `PIPE_NOWAIT` (a blocking pipe would
-    // hang when a daemonised grandchild keeps the write end open), so fail —
-    // killing the child — rather than spawn unmonitorable readers.
-    #[cfg(windows)]
-    if let Err(e) = super::set_handle_nonblocking(stdout.as_raw_handle())
-        .and_then(|_| super::set_handle_nonblocking(stderr.as_raw_handle()))
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(e);
-    }
-
     let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let id = format!("proc-{n}");
     let entry = Arc::new(ProcessEntry {
@@ -472,18 +460,10 @@ fn start_command(
         procs.insert(entry.id.clone(), Arc::clone(&entry));
     }
 
-    #[cfg(unix)]
     let stdout_raw = raw_pipe(&stdout);
-    #[cfg(unix)]
     spawn_reader(Arc::clone(&entry), stdout, stdout_raw);
-    #[cfg(windows)]
-    spawn_reader(Arc::clone(&entry), stdout);
-    #[cfg(unix)]
     let stderr_raw = raw_pipe(&stderr);
-    #[cfg(unix)]
     spawn_reader(Arc::clone(&entry), stderr, stderr_raw);
-    #[cfg(windows)]
-    spawn_reader(Arc::clone(&entry), stderr);
     spawn_reaper(Arc::clone(&entry), child);
     Ok(entry)
 }
@@ -504,11 +484,17 @@ fn raw_pipe<T: AsRawFd>(r: &T) -> i32 {
     r.as_raw_fd()
 }
 
-/// Result of one read attempt on a non-blocking child pipe.
+/// Raw handle of a child pipe read end (for `PeekNamedPipe` polling).
+#[cfg(windows)]
+fn raw_pipe<T: AsRawHandle>(r: &T) -> isize {
+    r.as_raw_handle() as isize
+}
+
+/// Result of one read attempt on a child output pipe.
 enum ReadStep {
     Data(usize),
     Eof,
-    /// No data right now (poll timeout, `WouldBlock`, or `Interrupted`).
+    /// No data right now; retry after a short idle.
     Retry,
     Err,
 }
@@ -519,6 +505,7 @@ fn spawn_reader(
     entry: Arc<ProcessEntry>,
     mut reader: impl Read + Send + 'static,
     #[cfg(unix)] raw: i32,
+    #[cfg(windows)] raw: isize,
 ) {
     std::thread::spawn(move || {
         let mut decoder = StreamDecoder::new();
@@ -526,10 +513,7 @@ fn spawn_reader(
         let mut buf = [0u8; 8192];
         let mut exit_seen_at: Option<Instant> = None;
         loop {
-            #[cfg(unix)]
             let step = read_step(&mut reader, &mut buf, raw);
-            #[cfg(windows)]
-            let step = read_step(&mut reader, &mut buf);
             match step {
                 ReadStep::Data(n) => {
                     decoder.feed(&buf[..n], &mut out);
@@ -555,14 +539,9 @@ fn spawn_reader(
     });
 }
 
-/// One read attempt: poll first (unix), so an exit is noticed even when the
-/// write end stays open, then read.
-#[cfg(unix)]
-fn read_step(reader: &mut impl Read, buf: &mut [u8], fd: i32) -> ReadStep {
-    if !poll_readable(fd, READER_IDLE_POLL_MS) {
-        return ReadStep::Retry;
-    }
-    match reader.read(buf) {
+/// Map one blocking `read` result onto [`ReadStep`].
+fn classify_read(result: std::io::Result<usize>) -> ReadStep {
+    match result {
         Ok(0) => ReadStep::Eof,
         Ok(n) => ReadStep::Data(n),
         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadStep::Retry,
@@ -570,19 +549,27 @@ fn read_step(reader: &mut impl Read, buf: &mut [u8], fd: i32) -> ReadStep {
     }
 }
 
-/// One read attempt on the `PIPE_NOWAIT` pipe; "no data" becomes
-/// [`ReadStep::Retry`] after an idle sleep.
+/// One read attempt: poll first so an exit is noticed even when the write end
+/// stays open.
+#[cfg(unix)]
+fn read_step(reader: &mut impl Read, buf: &mut [u8], fd: i32) -> ReadStep {
+    if !poll_readable(fd, READER_IDLE_POLL_MS) {
+        return ReadStep::Retry;
+    }
+    classify_read(reader.read(buf))
+}
+
+/// One read attempt: peek first, then read only the bytes already buffered so
+/// a blocking `ReadFile` can never hang.
 #[cfg(windows)]
-fn read_step(reader: &mut impl Read, buf: &mut [u8]) -> ReadStep {
-    match reader.read(buf) {
-        Ok(0) => ReadStep::Eof,
-        Ok(n) => ReadStep::Data(n),
-        Err(ref e) if super::is_would_block(e) => {
+fn read_step(reader: &mut impl Read, buf: &mut [u8], raw: isize) -> ReadStep {
+    match super::peek_pipe_available(raw) {
+        Some(0) => {
             std::thread::sleep(READER_IDLE_SLEEP);
             ReadStep::Retry
         }
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadStep::Retry,
-        Err(_) => ReadStep::Err,
+        None => ReadStep::Eof, // broken pipe — EOF
+        Some(_) => classify_read(reader.read(buf)),
     }
 }
 
