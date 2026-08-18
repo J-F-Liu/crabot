@@ -17,6 +17,11 @@ use serde_json::{Value, json};
 use shell_words::split;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+
 use super::{
     CANCEL_REASON, OutputSink, ProcessSignal, StreamDecoder, Tool, arg_str, arg_u64, detach_child,
     exit_code_of, lock, resolve_path, sanitize_child_env, signal_process_tree, tool_limits,
@@ -28,6 +33,16 @@ const MAX_RETAINED_EXITED: usize = 64;
 const STOP_GRACE: Duration = Duration::from_secs(2);
 /// Poll interval for `wait`/`logs --follow`/`stop`.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// Unix reader poll timeout: lets the loop notice an exit even when EOF never arrives.
+#[cfg(unix)]
+const READER_IDLE_POLL_MS: i32 = 100;
+/// Windows reader idle sleep between non-blocking read attempts.
+#[cfg(windows)]
+const READER_IDLE_SLEEP: Duration = Duration::from_millis(100);
+/// Drain window after an exit is first noticed: readers keep pulling final
+/// output for this long and then stop, even if a daemonised grandchild still
+/// holds the write end open (output written later is dropped).
+const DRAIN_GRACE: Duration = Duration::from_millis(250);
 /// How long non-follow `logs` waits for a fresh process's exit to be recorded.
 const SETTLE_GRACE_MS: u64 = 250;
 /// Default and maximum number of log lines returned by `logs`.
@@ -177,7 +192,8 @@ fn start(args: &Value, workspace: &Path) -> Result<String, String> {
         None => workspace.to_path_buf(),
     };
     let env = parse_env(args)?;
-    let entry = start_command(command, cwd, env)?;
+    let parts = parse_command(command)?;
+    let entry = start_command(command, parts, cwd, env)?;
     Ok(format!(
         "Started process {} (os pid {}): {}\ncwd: {}",
         entry.id,
@@ -314,6 +330,7 @@ fn restart(args: &Value, workspace: &Path) -> Result<String, String> {
     // Validate command/cwd/env up front so a bad override never stops the
     // still-running process first; each falls back to the entry's own values.
     let command = arg_str(args, "command").unwrap_or(&e.command).to_string();
+    let parts = parse_command(&command)?;
     let cwd = match arg_str(args, "cwd") {
         Some(cwd) => {
             resolve_path(cwd, workspace).map_err(|err| format!("Invalid cwd '{cwd}': {err}"))?
@@ -325,7 +342,7 @@ fn restart(args: &Value, workspace: &Path) -> Result<String, String> {
         None => e.env.clone(),
     };
     let note = stop_for_restart(&e);
-    let entry = start_command(&command, cwd, env)?;
+    let entry = start_command(&command, parts, cwd, env)?;
     Ok(format!(
         "Process {} {note}; replacement started with process_id {} (os pid {})",
         e.id, entry.id, entry.pid
@@ -358,15 +375,28 @@ fn parse_env(args: &Value) -> Result<HashMap<String, String>, String> {
     Ok(env)
 }
 
-/// Spawn `command` (split like the `bash` tool's host-command bridge: no
-/// platform shell), register it, and start reader + reaper threads.
+/// Split and validate a command string into argv (no platform shell).
+/// Separate from [`start_command`] so `restart` can reject a bad override
+/// before stopping the still-running process.
+fn parse_command(command: &str) -> Result<Vec<String>, String> {
+    let parts = split(command).map_err(|e| format!("Failed to parse command: {e}"))?;
+    if parts.is_empty() {
+        return Err("Empty command".into());
+    }
+    Ok(parts)
+}
+
+/// Spawn validated argv (see [`parse_command`]), register the entry, and
+/// start reader + reaper threads.
 fn start_command(
     command: &str,
+    parts: Vec<String>,
     cwd: PathBuf,
     env: HashMap<String, String>,
 ) -> Result<Arc<ProcessEntry>, String> {
-    let parts = split(command).map_err(|e| format!("Failed to parse command: {e}"))?;
-    let (exe, exe_args) = parts.split_first().ok_or("Empty command")?;
+    let (exe, exe_args) = parts
+        .split_first()
+        .expect("command was validated non-empty");
 
     let mut cmd = Command::new(exe);
     cmd.args(exe_args).current_dir(&cwd);
@@ -386,6 +416,18 @@ fn start_command(
     let stdin = child.stdin.take();
     let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
     let stderr = child.stderr.take().ok_or("stderr pipe missing")?;
+
+    // Windows: the readers depend on `PIPE_NOWAIT` (a blocking pipe would
+    // hang when a daemonised grandchild keeps the write end open), so fail —
+    // killing the child — rather than spawn unmonitorable readers.
+    #[cfg(windows)]
+    if let Err(e) = super::set_handle_nonblocking(stdout.as_raw_handle())
+        .and_then(|_| super::set_handle_nonblocking(stderr.as_raw_handle()))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
 
     let n = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let id = format!("proc-{n}");
@@ -409,27 +451,79 @@ fn start_command(
         procs.insert(entry.id.clone(), Arc::clone(&entry));
     }
 
+    #[cfg(unix)]
+    let stdout_raw = raw_pipe(&stdout);
+    #[cfg(unix)]
+    spawn_reader(Arc::clone(&entry), stdout, stdout_raw);
+    #[cfg(windows)]
     spawn_reader(Arc::clone(&entry), stdout);
+    #[cfg(unix)]
+    let stderr_raw = raw_pipe(&stderr);
+    #[cfg(unix)]
+    spawn_reader(Arc::clone(&entry), stderr, stderr_raw);
+    #[cfg(windows)]
     spawn_reader(Arc::clone(&entry), stderr);
     spawn_reaper(Arc::clone(&entry), child);
     Ok(entry)
 }
 
-fn spawn_reader(entry: Arc<ProcessEntry>, mut reader: impl Read + Send + 'static) {
+/// True once the process has exited and [`DRAIN_GRACE`] has passed since the
+/// exit was first noticed (the window is not extended by later output).
+fn drain_should_stop(entry: &ProcessEntry, exit_seen_at: &mut Option<Instant>) -> bool {
+    if !matches!(*lock(&entry.status), ProcessStatus::Exited(_)) {
+        return false;
+    }
+    let seen = *exit_seen_at.get_or_insert_with(Instant::now);
+    seen.elapsed() >= DRAIN_GRACE
+}
+
+/// Raw fd of a child pipe read end (for polling).
+#[cfg(unix)]
+fn raw_pipe<T: AsRawFd>(r: &T) -> i32 {
+    r.as_raw_fd()
+}
+
+/// Result of one read attempt on a non-blocking child pipe.
+enum ReadStep {
+    Data(usize),
+    Eof,
+    /// No data right now (poll timeout, `WouldBlock`, or `Interrupted`).
+    Retry,
+    Err,
+}
+
+/// Drain a child output pipe into the shared log buffer: until EOF, or for
+/// [`DRAIN_GRACE`] after the process has exited (see [`drain_should_stop`]).
+fn spawn_reader(
+    entry: Arc<ProcessEntry>,
+    mut reader: impl Read + Send + 'static,
+    #[cfg(unix)] raw: i32,
+) {
     std::thread::spawn(move || {
         let mut decoder = StreamDecoder::new();
         let mut out = Vec::new();
         let mut buf = [0u8; 8192];
+        let mut exit_seen_at: Option<Instant> = None;
         loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
+            #[cfg(unix)]
+            let step = read_step(&mut reader, &mut buf, raw);
+            #[cfg(windows)]
+            let step = read_step(&mut reader, &mut buf);
+            match step {
+                ReadStep::Data(n) => {
                     decoder.feed(&buf[..n], &mut out);
                     for text in out.drain(..) {
                         entry.logs.push(text);
                     }
                 }
-                Err(_) => break,
+                // No data: stop once the process has exited and [`DRAIN_GRACE`]
+                // has passed since the exit was first noticed.
+                ReadStep::Retry => {
+                    if drain_should_stop(&entry, &mut exit_seen_at) {
+                        break;
+                    }
+                }
+                ReadStep::Eof | ReadStep::Err => break,
             }
         }
         decoder.flush(&mut out);
@@ -438,6 +532,51 @@ fn spawn_reader(entry: Arc<ProcessEntry>, mut reader: impl Read + Send + 'static
         }
         entry.pending_readers.fetch_sub(1, Ordering::SeqCst);
     });
+}
+
+/// One read attempt: poll first (unix), so an exit is noticed even when the
+/// write end stays open, then read.
+#[cfg(unix)]
+fn read_step(reader: &mut impl Read, buf: &mut [u8], fd: i32) -> ReadStep {
+    if !poll_readable(fd, READER_IDLE_POLL_MS) {
+        return ReadStep::Retry;
+    }
+    match reader.read(buf) {
+        Ok(0) => ReadStep::Eof,
+        Ok(n) => ReadStep::Data(n),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadStep::Retry,
+        Err(_) => ReadStep::Err,
+    }
+}
+
+/// One read attempt on the `PIPE_NOWAIT` pipe; "no data" becomes
+/// [`ReadStep::Retry`] after an idle sleep.
+#[cfg(windows)]
+fn read_step(reader: &mut impl Read, buf: &mut [u8]) -> ReadStep {
+    match reader.read(buf) {
+        Ok(0) => ReadStep::Eof,
+        Ok(n) => ReadStep::Data(n),
+        Err(ref e) if super::is_would_block(e) => {
+            std::thread::sleep(READER_IDLE_SLEEP);
+            ReadStep::Retry
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadStep::Retry,
+        Err(_) => ReadStep::Err,
+    }
+}
+
+/// True when a read on `fd` won't block (data, EOF, or error); false on
+/// timeout.
+#[cfg(unix)]
+fn poll_readable(fd: i32, timeout_ms: i32) -> bool {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: `fd` is the child's pipe read end; poll only observes it.
+    let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    ready > 0 && (pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0
 }
 
 fn spawn_reaper(entry: Arc<ProcessEntry>, mut child: Child) {
@@ -699,13 +838,14 @@ struct LogChunk {
 struct LogState {
     chunks: VecDeque<LogChunk>,
     bytes: usize,
+    /// Next chunk sequence; starts at 1 so `drain_since(0)` yields every chunk.
+    seq: u64,
 }
 
 /// Merged stdout/stderr log buffer in arrival order, bounded to a byte cap
 /// (drop-oldest).
 pub struct ProcessLogs {
     inner: Mutex<LogState>,
-    seq: AtomicU64,
     cap: usize,
 }
 
@@ -715,8 +855,8 @@ impl ProcessLogs {
             inner: Mutex::new(LogState {
                 chunks: VecDeque::new(),
                 bytes: 0,
+                seq: 1,
             }),
-            seq: AtomicU64::new(0),
             cap: cap.max(1),
         }
     }
@@ -726,11 +866,10 @@ impl ProcessLogs {
             return;
         }
         let mut state = lock(&self.inner);
+        let seq = state.seq;
+        state.seq += 1;
         state.bytes += text.len();
-        state.chunks.push_back(LogChunk {
-            seq: self.seq.fetch_add(1, Ordering::Relaxed),
-            text,
-        });
+        state.chunks.push_back(LogChunk { seq, text });
         while state.bytes > self.cap {
             if let Some(front) = state.chunks.pop_front() {
                 state.bytes = state.bytes.saturating_sub(front.text.len());
@@ -744,7 +883,7 @@ impl ProcessLogs {
         lock(&self.inner).bytes
     }
 
-    /// Sequence of the newest chunk in the buffer (0 when empty).
+    /// Sequence of the newest chunk (0 when empty; seqs start at 1).
     fn last_seq(&self) -> u64 {
         lock(&self.inner).chunks.back().map(|c| c.seq).unwrap_or(0)
     }

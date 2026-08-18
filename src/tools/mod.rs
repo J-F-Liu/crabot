@@ -967,9 +967,8 @@ pub(crate) fn pipe_to_stdio<E: Into<std::os::windows::io::OwnedHandle>>(
     std::process::Stdio::from(end.into())
 }
 
-/// Set a pipe receiver to non-blocking mode.
-///
-/// A blocking pipe would deadlock the polling loop, so failure is fatal.
+/// Set a pipe receiver to non-blocking mode (a blocking pipe would deadlock
+/// the polling loop, so failure is fatal).
 fn set_recver_nonblocking(recver: &unnamed_pipe::Recver) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -981,26 +980,32 @@ fn set_recver_nonblocking(recver: &unnamed_pipe::Recver) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
-        // PIPE_NOWAIT is deprecated but still works for anonymous pipes; the
-        // alternative (overlapped I/O) would be a much larger refactor.
-        let handle = recver.as_raw_handle() as isize;
-        let mut mode = win32::PIPE_NOWAIT;
-        let ok = unsafe {
-            win32::SetNamedPipeHandleState(
-                handle,
-                &mut mode,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(format!(
-                "Failed to set pipe non-blocking mode: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
+        set_handle_nonblocking(recver.as_raw_handle())
     }
+}
+
+/// Set a pipe read handle to non-blocking mode (`PIPE_NOWAIT`).
+#[cfg(windows)]
+pub(crate) fn set_handle_nonblocking(
+    handle: std::os::windows::io::RawHandle,
+) -> Result<(), String> {
+    // Deprecated but fine for anonymous pipes (overlapped I/O would be a much larger refactor).
+    let mut mode = win32::PIPE_NOWAIT;
+    let ok = unsafe {
+        win32::SetNamedPipeHandleState(
+            handle as isize,
+            &mut mode,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "Failed to set pipe non-blocking mode: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 /// Set a pipe sender to non-blocking mode (mirror of `set_recver_nonblocking`).

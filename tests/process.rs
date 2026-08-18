@@ -1,10 +1,14 @@
 #[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use crabot::tools::OutputSink;
 use crabot::tools::Tool;
 use crabot::tools::process::{ProcessLogs, ProcessTool};
 #[cfg(unix)]
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 
@@ -402,6 +406,78 @@ fn logs_follow_reports_still_running_on_timeout() {
 
 #[cfg(unix)]
 #[test]
+fn wait_completes_for_daemonising_child() {
+    // The grandchild inherits the pipes and outlives its parent, so EOF never
+    // arrives; wait must still report the exit. (The orphan exits on its own
+    // a few seconds later.)
+    let tmp = TempDir::new("daemon");
+    let tool = ProcessTool;
+
+    let started = execute(
+        &tool,
+        json!({"action": "start", "command": "/bin/sh -c \"(sleep 5 &); echo started; exit 7\""}),
+        &tmp.path,
+    )
+    .unwrap();
+    let id = process_id(&started);
+
+    let waited = execute(
+        &tool,
+        json!({"action": "wait", "process_id": id, "timeout": 5000}),
+        &tmp.path,
+    )
+    .unwrap();
+    assert!(
+        waited.contains("exited with code 7"),
+        "wait result: {waited}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn logs_follow_streams_every_line_to_sink() {
+    // The first line must reach the sink too (it used to be indistinguishable
+    // from "nothing yet" and was dropped).
+    let tmp = TempDir::new("follow_sink");
+    let tool = ProcessTool;
+
+    // Ample lead-in so the follow loop has definitely started before the
+    // first line is emitted (the sink assertion fails if it misses "first").
+    let started = execute(
+        &tool,
+        json!({"action": "start", "command": "/bin/sh -c \"sleep 1; echo first; sleep 0.3; echo second\""}),
+        &tmp.path,
+    )
+    .unwrap();
+    let id = process_id(&started);
+
+    let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink: OutputSink = {
+        let received = Arc::clone(&received);
+        Arc::new(move |text: &str| received.lock().unwrap().push(text.to_string()))
+    };
+    let result = tool
+        .execute_streaming(
+            &json!({"action": "logs", "process_id": id, "follow": true, "timeout": 5000}),
+            &tmp.path,
+            &CancellationToken::new(),
+            &sink,
+        )
+        .unwrap();
+    assert!(result.contains("exited with code 0"), "result: {result}");
+    let streamed = received.lock().unwrap().join("|");
+    assert!(
+        streamed.contains("first"),
+        "sink never received the first line: {streamed}"
+    );
+    assert!(
+        streamed.contains("second"),
+        "sink never received the second line: {streamed}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn stop_unknown_process_reports_error() {
     let tmp = TempDir::new("unknown");
     let tool = ProcessTool;
@@ -568,4 +644,54 @@ fn restart_honors_cwd_and_env_overrides() {
     .unwrap();
     assert!(logs.contains("cwd="), "logs: {logs}");
     assert!(logs.contains("env=hello"), "logs: {logs}");
+}
+
+#[cfg(unix)]
+#[test]
+fn restart_rejects_bad_command_without_stopping() {
+    let tmp = TempDir::new("restart_bad");
+    let tool = ProcessTool;
+
+    let started = execute(
+        &tool,
+        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
+        &tmp.path,
+    )
+    .unwrap();
+    let id = process_id(&started);
+
+    // A bad override must fail validation before the running process is stopped.
+    let err = execute(
+        &tool,
+        json!({"action": "restart", "process_id": id, "command": "echo 'unterminated"}),
+        &tmp.path,
+    )
+    .unwrap_err();
+    assert!(err.contains("Failed to parse command"), "err: {err}");
+
+    // Same for the empty override.
+    let err = execute(
+        &tool,
+        json!({"action": "restart", "process_id": id, "command": ""}),
+        &tmp.path,
+    )
+    .unwrap_err();
+    assert!(err.contains("Empty command"), "err: {err}");
+
+    let status = execute(
+        &tool,
+        json!({"action": "status", "process_id": id}),
+        &tmp.path,
+    )
+    .unwrap();
+    assert!(
+        status.contains("running"),
+        "original process was stopped: {status}"
+    );
+
+    let _ = execute(
+        &tool,
+        json!({"action": "stop", "process_id": id, "signal": "kill"}),
+        &tmp.path,
+    );
 }
