@@ -873,10 +873,13 @@ fn remaining_timeout(deadline_ms: u64) -> Duration {
     Duration::from_millis(deadline_ms.saturating_sub(now_ms()))
 }
 
-/// Format an `ExecResult` like `format_command_output`, surfacing bashkit's
-/// head-only truncation explicitly so the final truncation marker stays accurate.
+/// Format an `ExecResult` like `format_command_output`, using the raw bytes
+/// (`StreamData`'s `Deref` already ran `from_utf8_lossy`) and surfacing
+/// bashkit's head truncation so the final marker stays accurate.
 fn format_exec_result(result: &ExecResult) -> String {
-    let mut output = super::combine_output(&result.stdout, &result.stderr, result.exit_code);
+    let stdout = super::decode_bytes(result.stdout.as_bytes());
+    let stderr = super::decode_bytes(result.stderr.as_bytes());
+    let mut output = super::combine_output(&stdout, &stderr, result.exit_code);
     if result.stdout_truncated || result.stderr_truncated {
         if !output.is_empty() {
             output.push('\n');

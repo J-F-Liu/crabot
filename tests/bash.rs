@@ -599,6 +599,35 @@ fn bashkit_cd_root_does_not_fall_back_to_workspace() {
     );
 }
 
+/// GBK output (a Chinese-locale console program) is decoded, not mangled.
+/// `eval` forces the real-`bash -c` route; `printf` octal escapes emit the
+/// raw GBK bytes for 中文 (\326\320\316\304).
+#[test]
+fn gbk_output_is_decoded_not_garbled() {
+    let result = run_bash(
+        "eval \"printf '\\326\\320\\316\\304'\"",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("中文"), "unexpected: {result}");
+    assert!(!result.contains('\u{FFFD}'), "unexpected: {result}");
+}
+
+/// The streaming route decodes GBK too: live chunks pin the encoding in
+/// `StreamDecoder` instead of emitting raw lossy bytes.
+#[test]
+fn gbk_streaming_is_decoded() {
+    let (result, chunks) = stream_and_collect(
+        "eval \"printf '\\326\\320\\316\\304'\"",
+        &crabot_workspace(),
+        None,
+    );
+    result.unwrap();
+    let streamed: String = chunks.concat();
+    assert!(streamed.contains("中文"), "unexpected stream: {streamed:?}");
+}
+
 // ── exit codes & timeouts ───────────────────────────────────
 
 /// Non-zero exit codes are reported like the bash -c path.

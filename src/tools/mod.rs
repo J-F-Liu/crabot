@@ -2,6 +2,7 @@ mod ask;
 mod bash;
 /// In-process bashkit interpreter; `pub` for `tests/bash.rs`.
 pub mod bash_kit;
+mod charset;
 pub mod custom;
 pub mod edit;
 pub mod fetch;
@@ -17,6 +18,8 @@ mod write;
 
 pub use renew::move_renews_to_end;
 pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
+
+pub(crate) use charset::{StreamDecoder, decode_bytes};
 
 use crate::BoundedCapture;
 use std::collections::HashSet;
@@ -846,9 +849,10 @@ pub(crate) fn exit_code_of(status: &std::process::ExitStatus) -> i32 {
 }
 
 /// Combine stdout, stderr, and exit code into one string, then truncate.
+/// Output is decoded with charset detection (see [`decode_bytes`]).
 pub(crate) fn format_command_output(output: &std::process::Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = decode_bytes(&output.stdout);
+    let stderr = decode_bytes(&output.stderr);
     truncate_output(combine_output(
         &stdout,
         &stderr,
@@ -1116,104 +1120,6 @@ pub(crate) fn try_lock_for<T>(m: &Mutex<T>, budget: Duration) -> Option<MutexGua
             return None;
         }
         std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Incremental byte→text decoder shared by the bash and process tools: carries
-/// incomplete UTF-8 across feeds and normalizes `\r\n` → `\n` (a trailing `\r`
-/// is held back for the next chunk).
-pub(crate) struct StreamDecoder {
-    carry: Vec<u8>,
-    pending_cr: bool,
-}
-
-impl StreamDecoder {
-    pub(crate) fn new() -> Self {
-        Self {
-            carry: Vec::new(),
-            pending_cr: false,
-        }
-    }
-
-    /// Decode `bytes`, appending normalized text chunks to `out`.
-    pub(crate) fn feed(&mut self, bytes: &[u8], out: &mut Vec<String>) {
-        if bytes.is_empty() {
-            return;
-        }
-        let mut full = std::mem::take(&mut self.carry);
-        full.extend_from_slice(bytes);
-        match std::str::from_utf8(&full) {
-            Ok(text) => self.push_normalized(text, out),
-            Err(e) => {
-                let valid = e.valid_up_to();
-                if valid > 0 {
-                    // SAFETY: valid_up_to() is a valid UTF-8 boundary.
-                    self.push_normalized(
-                        unsafe { std::str::from_utf8_unchecked(&full[..valid]) },
-                        out,
-                    );
-                }
-                if e.error_len().is_none() {
-                    // Incomplete trailing sequence — carry to the next feed.
-                    self.carry = full[valid..].to_vec();
-                } else {
-                    // Truly invalid bytes — lossy-replace like from_utf8_lossy.
-                    let text = String::from_utf8_lossy(&full[valid..]).into_owned();
-                    self.push_normalized(&text, out);
-                }
-            }
-        }
-    }
-
-    /// Flush a carried incomplete sequence and a pending trailing `\r`.
-    pub(crate) fn flush(&mut self, out: &mut Vec<String>) {
-        if !self.carry.is_empty() {
-            let text = String::from_utf8_lossy(&self.carry).into_owned();
-            self.carry.clear();
-            self.push_normalized(&text, out);
-        }
-        if self.pending_cr {
-            self.pending_cr = false;
-            out.push("\r".into());
-        }
-    }
-
-    /// Normalize `\r\n` → `\n` (carrying a trailing `\r`), then emit the chunk.
-    fn push_normalized(&mut self, text: &str, out: &mut Vec<String>) {
-        let mut normalized = String::with_capacity(text.len() + 1);
-        let mut chars = text.chars();
-        if self.pending_cr {
-            self.pending_cr = false;
-            match chars.next() {
-                Some('\n') => normalized.push('\n'), // `\r\n` split across chunks
-                Some(c) => {
-                    normalized.push('\r');
-                    normalized.push(c);
-                }
-                None => {
-                    self.pending_cr = true;
-                    return;
-                }
-            }
-        }
-        let mut iter = chars.peekable();
-        while let Some(c) = iter.next() {
-            if c == '\r' {
-                match iter.peek() {
-                    Some('\n') => {
-                        normalized.push('\n');
-                        iter.next();
-                    }
-                    Some(_) => normalized.push('\r'),
-                    None => self.pending_cr = true,
-                }
-            } else {
-                normalized.push(c);
-            }
-        }
-        if !normalized.is_empty() {
-            out.push(normalized);
-        }
     }
 }
 
@@ -1575,7 +1481,7 @@ fn append_stream(msg: &mut String, name: &str, cap: &BoundedCapture) {
         return;
     }
     msg.push_str(&format!("\n--- partial {name} ---\n"));
-    msg.push_str(&String::from_utf8_lossy(&cap.materialize()));
+    msg.push_str(&decode_bytes(&cap.materialize()));
     let skipped = cap.skipped();
     if skipped > 0 {
         msg.push_str(&format!(
