@@ -36,6 +36,12 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
         Event::Window(window::Event::Moved(pos)) => {
             Some(Message::Layout(LayoutEvent::WindowMoved(pos)))
         }
+        Event::Window(window::Event::Focused) => {
+            Some(Message::Layout(LayoutEvent::WindowFocusChanged(true)))
+        }
+        Event::Window(window::Event::Unfocused) => {
+            Some(Message::Layout(LayoutEvent::WindowFocusChanged(false)))
+        }
         // Always handle Escape regardless of capture status so that
         // selectable-text mode can be exited in a single keypress.
         Event::Keyboard(keyboard::Event::KeyPressed {

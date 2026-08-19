@@ -25,6 +25,7 @@ use crate::views::{
 };
 use crate::widgets::textarea::{self, TextArea};
 
+mod attention;
 pub(crate) mod conversation;
 mod layout;
 mod overlay;
@@ -66,6 +67,8 @@ pub(crate) struct LayoutState {
     pub(crate) ctrl_held: bool,
     pub(crate) scroll_viewport_height: f32,
     pub(crate) focused: Option<FocusedTarget>,
+    /// Whether the window has OS focus (gates taskbar attention).
+    pub(crate) window_focused: bool,
 }
 
 /// Collapsible text-editor field with enable/expand state.
@@ -411,6 +414,7 @@ pub(crate) enum LayoutEvent {
     LeftReleased,
     WindowResized(Size),
     WindowMoved(Point),
+    WindowFocusChanged(bool),
     ShiftHeld(bool),
     CtrlHeld(bool),
     SessionViewScrolled(Viewport),
@@ -696,6 +700,7 @@ impl App {
                 ctrl_held: false,
                 scroll_viewport_height: 0.0,
                 focused: None,
+                window_focused: true,
             },
             prompt,
             tools,

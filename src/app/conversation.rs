@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::app::attention;
 use crate::app::session_state::{self, AskAction, SessionEvent, TaskRequest};
 use crate::app::session_tab::SessionTab;
 use crate::app::snapshot;
@@ -985,6 +986,7 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
     let context_window = model_config.as_ref().map(|cfg| cfg.context_window);
 
     let finished = matches!(event, SessionEvent::Done(_));
+    let asked = matches!(event, SessionEvent::AskRequest(_));
     let is_cancelled = matches!(event, SessionEvent::Cancelled(_));
     let task_error = match &event {
         SessionEvent::Error(err, _) => Some(err.clone()),
@@ -1062,10 +1064,27 @@ fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Mess
         deliver_task_report(app, parent, call_id, result);
     }
 
+    // A stale ask flash (resolved while unfocused, no other asks left) is
+    // dropped; Done/AskRequest otherwise raises attention.
+    let attention_task = if !finished
+        && !app.layout.window_focused
+        && had_ask
+        && app
+            .conversation
+            .session_tabs
+            .iter()
+            .all(|t| t.session_state.ask_request.is_none())
+    {
+        attention::clear()
+    } else {
+        attention::raise(app.layout.window_focused, finished, asked)
+    };
+
     switch_task
         .chain(update_task.discard())
         .chain(dispatch_task)
         .chain(queue_task)
+        .chain(attention_task)
 }
 
 /// Handle search-bar events on the viewing tab.
