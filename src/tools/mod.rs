@@ -818,9 +818,10 @@ impl StreamingCap {
 pub fn capping_sink(forward: impl Fn(String) + Send + Sync + 'static) -> OutputSink {
     let cap = Mutex::new(StreamingCap::new(tool_limits().max_output_bytes));
     Arc::new(move |chunk| {
-        if let Some(out) = lock(&cap).push(chunk) {
-            forward(out);
-        }
+        let Some(out) = lock(&cap).push(chunk) else {
+            return;
+        };
+        forward(out);
     })
 }
 

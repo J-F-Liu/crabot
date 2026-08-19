@@ -78,6 +78,81 @@ fn wait_for_log(tool: &ProcessTool, id: u32, workspace: &std::path::Path, needle
     panic!("logs never contained {needle:?}");
 }
 
+#[cfg(unix)]
+#[test]
+fn input_cancel_unblocks_and_stop_still_works() {
+    let tmp = TempDir::new("input_cancel");
+    let tool = ProcessTool;
+
+    let started = execute(
+        &tool,
+        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
+        &tmp.path,
+    )
+    .unwrap();
+    let id = pid(&started);
+
+    // `sleep 30` never reads stdin, so a large write fills the pipe and blocks.
+    let cancel = CancellationToken::new();
+    let cancel_for_thread = cancel.clone();
+    let path = tmp.path.clone();
+    let handle = std::thread::spawn(move || {
+        let thread_tool = ProcessTool; // ZST: fresh handle for this thread
+        thread_tool.execute(
+            &json!({"action": "input", "pid": id, "input": "x".repeat(1024 * 1024)}),
+            &path,
+            &cancel_for_thread,
+        )
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300)); // let the write start blocking
+    cancel.cancel();
+    let result = handle.join().unwrap().unwrap_err();
+    assert_eq!(result, "Cancelled by user", "input result: {result}");
+
+    // The stdin mutex must be free: stop (which takes stdin) must not hang.
+    let stopped = execute(
+        &tool,
+        json!({"action": "stop", "pid": id, "signal": "kill"}),
+        &tmp.path,
+    )
+    .unwrap();
+    assert!(stopped.contains("stopped"), "stop result: {stopped}");
+}
+
+#[cfg(unix)]
+#[test]
+fn wait_completes_when_daemon_grandchild_keeps_writing() {
+    let tmp = TempDir::new("daemon_write");
+    let tool = ProcessTool;
+
+    // The parent exits immediately; a grandchild keeps the pipe open and writes
+    // continuously, so readers must stop after the drain grace (EOF never comes).
+    let started = execute(
+        &tool,
+        json!({"action": "start", "command": "/bin/sh -c \"(i=0; while [ $i -lt 100000 ]; do echo noise; i=$((i+1)); done) & echo started; exit 7\""}),
+        &tmp.path,
+    )
+    .unwrap();
+    let id = pid(&started);
+
+    let waited = execute(
+        &tool,
+        json!({"action": "wait", "pid": id, "timeout": 10000}),
+        &tmp.path,
+    )
+    .unwrap();
+    assert!(
+        waited.contains("exited with code 7"),
+        "wait result: {waited}"
+    );
+
+    let _ = execute(
+        &tool,
+        json!({"action": "stop", "pid": id, "signal": "kill"}),
+        &tmp.path,
+    );
+}
+
 // ── Schema ────────────────────────────────────────────────────────
 
 #[test]
@@ -691,8 +766,8 @@ fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
     let mut id = pid(&started);
 
     // Strict-mode schemas make `env` a required string, so "no override"
-    // arrives as null or ""; both must inherit rather than wipe MY_VAR.
-    for raw in [json!(null), json!("")] {
+    // arrives as null, "", or "null"; all inherit rather than wipe MY_VAR.
+    for raw in [json!(null), json!(""), json!("null")] {
         let restarted = execute(
             &tool,
             json!({

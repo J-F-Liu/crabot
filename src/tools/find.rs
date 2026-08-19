@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use globset::{GlobBuilder, GlobMatcher};
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, resolve_path, tool_limits};
+use super::{Tool, arg_str, lock, resolve_path, tool_limits};
 
 pub struct FindTool;
 
@@ -129,7 +129,7 @@ pub(super) fn execute(
                     // unreliable, so surface it instead of "No files matched.".
                     Err(err) => {
                         if err.depth() == Some(0) && !err.is_partial() {
-                            *root_error.lock().unwrap() = Some(err.to_string());
+                            *lock(root_error) = Some(err.to_string());
                             return ignore::WalkState::Quit;
                         }
                         tracing::debug!(%err, "skipping unreadable entry while walking");
@@ -151,7 +151,8 @@ pub(super) fn execute(
     if cancel.is_cancelled() {
         return Err(super::CANCEL_REASON.into());
     }
-    if let Some(err) = root_error.lock().unwrap().take() {
+    let root_err = lock(root_error).take();
+    if let Some(err) = root_err {
         return Err(format!("Walk error: {err}"));
     }
 

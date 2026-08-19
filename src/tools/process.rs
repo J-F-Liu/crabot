@@ -8,8 +8,8 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -44,6 +44,10 @@ const READER_IDLE_SLEEP: Duration = Duration::from_millis(100);
 const DRAIN_GRACE: Duration = Duration::from_millis(250);
 /// How long non-follow `logs` waits for a fresh process's exit to be recorded.
 const SETTLE_GRACE_MS: u64 = 250;
+/// Timeout for `input` when the child stops reading (pipe full); cancel aborts sooner.
+const INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Chunk size for stdin writes: a cancelled input stops within one chunk.
+const INPUT_CHUNK: usize = 16 * 1024;
 /// Default and maximum number of log lines returned by `logs`.
 const DEFAULT_LINES: u64 = 100;
 const MAX_LINES: u64 = 2000;
@@ -173,7 +177,7 @@ fn run(
         "list" => list(),
         "status" => status(args),
         "logs" => logs(args, cancel, sink),
-        "input" => input(args),
+        "input" => input(args, cancel),
         "wait" => wait_action(args, cancel, sink),
         "stop" => stop(args),
         "restart" => restart(args, workspace),
@@ -251,7 +255,7 @@ fn logs(
             let _ = wait_for_exit(&e, false, SETTLE_GRACE_MS, cancel, None);
         }
         // Once the exit is recorded, let the readers drain the final bytes.
-        if matches!(*lock(&e.status), ProcessStatus::Exited(_)) {
+        if e.has_exited() {
             wait_for_drain(&e);
         }
         return Ok(e.logs.tail(lines));
@@ -265,32 +269,103 @@ fn logs(
     )
 }
 
-fn input(args: &Value) -> Result<String, String> {
+fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     let e = entry_for(args)?;
     let text = arg_str(args, "input").ok_or("Missing 'input' argument")?;
-    let mut stdin = lock(&e.stdin);
-    let Some(stdin) = stdin.as_mut() else {
-        return Err(format!(
-            "Process {} ({}) is not accepting input (it has exited or been stopped)",
-            e.pid, e.command
+
+    if e.has_exited() {
+        return Err(not_accepting_input(&e, "it has exited or been stopped"));
+    }
+    if e.writing.swap(true, Ordering::SeqCst) {
+        return Err(not_accepting_input(
+            &e,
+            "an earlier input is still being written",
         ));
+    }
+    let Some(mut stdin) = lock(&e.stdin).take() else {
+        e.writing.store(false, Ordering::SeqCst);
+        return Err(not_accepting_input(&e, "it has exited or been stopped"));
     };
-    stdin
-        .write_all(text.as_bytes())
-        .and_then(|_| stdin.write_all(b"\n"))
-        .and_then(|_| stdin.flush())
-        .map_err(|err| {
-            format!(
-                "Failed to write to stdin of process {} ({}): {err}",
-                e.pid, e.command
-            )
-        })?;
-    Ok(format!(
-        "Sent {} bytes to process {} stdin: {}",
-        text.len() + 1,
-        e.pid,
-        describe(&e)
-    ))
+
+    // Write on a helper thread so a full pipe cannot block this call; stdin
+    // is taken out of the mutex, so `stop` never waits on the write.
+    let payload = [text.as_bytes(), b"\n"].concat();
+    let sent = payload.len();
+    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+    let entry = Arc::clone(&e);
+    let cancel_for_write = cancel.clone();
+    std::thread::spawn(move || {
+        let res = write_payload(&entry, &mut stdin, &payload, &cancel_for_write);
+        // Return stdin for later input, or drop it on exit (closing the pipe).
+        if !entry.has_exited() {
+            *lock(&entry.stdin) = Some(stdin);
+        }
+        entry.writing.store(false, Ordering::SeqCst);
+        let _ = tx.send(res); // the caller may have given up (cancel/timeout)
+    });
+
+    let deadline = Instant::now() + INPUT_WRITE_TIMEOUT;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(CANCEL_REASON.into());
+        }
+        match rx.recv_timeout(POLL_INTERVAL) {
+            Ok(res) => {
+                res?;
+                return Ok(format!(
+                    "Sent {} bytes to process {} stdin: {}",
+                    sent,
+                    e.pid,
+                    describe(&e)
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "Timed out writing to stdin of process {} ({}): pipe full; \
+                         the input may still be delivered once the process reads",
+                        e.pid, e.command
+                    ));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(format!(
+                    "Stdin writer for process {} ({}) failed unexpectedly",
+                    e.pid, e.command
+                ));
+            }
+        }
+    }
+}
+
+/// Write in chunks, checking `cancel` between chunks so a cancelled input
+/// stops within one chunk; bytes already in the pipe may still be delivered.
+fn write_payload(
+    entry: &ProcessEntry,
+    stdin: &mut ChildStdin,
+    payload: &[u8],
+    cancel: &CancellationToken,
+) -> Result<(), String> {
+    let io_err = |err: std::io::Error| {
+        format!(
+            "Failed to write to stdin of process {} ({}): {err}",
+            entry.pid, entry.command
+        )
+    };
+    for chunk in payload.chunks(INPUT_CHUNK) {
+        if cancel.is_cancelled() {
+            return Err(CANCEL_REASON.into());
+        }
+        stdin.write_all(chunk).map_err(io_err)?;
+    }
+    stdin.flush().map_err(io_err)
+}
+
+fn not_accepting_input(e: &ProcessEntry, why: &str) -> String {
+    format!(
+        "Process {} ({}) is not accepting input ({why})",
+        e.pid, e.command
+    )
 }
 
 fn wait_action(
@@ -343,10 +418,10 @@ fn restart(args: &Value, workspace: &Path) -> Result<String, String> {
         }
         None => e.cwd.clone(),
     };
-    // Absent/null/blank inherits the entry's env (strict mode sends "" for
-    // unset); an explicit object — even empty — replaces it.
+    // "No override" (null/blank/"null"; strict mode sends "" for unset)
+    // inherits the entry's env; an explicit object — even empty — replaces it.
     let env = match args.get("env") {
-        Some(v) if v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()) => e.env.clone(),
+        Some(v) if env_is_no_override(v) => e.env.clone(),
         Some(v) => parse_env(v)?,
         None => e.env.clone(),
     };
@@ -381,6 +456,14 @@ fn arg_pid(args: &Value) -> Result<u32, String> {
         .or_else(|| v.as_str()?.trim().parse().ok())
         .ok_or_else(|| "Invalid 'pid' argument".to_string())?;
     u32::try_from(n).map_err(|_| "Invalid 'pid' argument".to_string())
+}
+
+/// True for "no override" env values: null, blank, or the string "null".
+fn env_is_no_override(val: &Value) -> bool {
+    val.is_null()
+        || val
+            .as_str()
+            .is_some_and(|s| matches!(s.trim(), "" | "null"))
 }
 
 /// Parse an `env` value: an object of name-value pairs, or a JSON-encoded
@@ -460,6 +543,7 @@ fn start_command(
         started_at: Instant::now(),
         status: Mutex::new(ProcessStatus::Running),
         stdin: Mutex::new(stdin),
+        writing: AtomicBool::new(false),
         logs: ProcessLogs::new(tool_limits().max_output_bytes),
         pending_readers: AtomicUsize::new(2),
     });
@@ -482,7 +566,7 @@ fn start_command(
 /// True once the process has exited and [`DRAIN_GRACE`] has passed since the
 /// exit was first noticed (the window is not extended by later output).
 fn drain_should_stop(entry: &ProcessEntry, exit_seen_at: &mut Option<Instant>) -> bool {
-    if !matches!(*lock(&entry.status), ProcessStatus::Exited(_)) {
+    if !entry.has_exited() {
         return false;
     }
     let seen = *exit_seen_at.get_or_insert_with(Instant::now);
@@ -525,21 +609,21 @@ fn spawn_reader(
         let mut exit_seen_at: Option<Instant> = None;
         loop {
             let step = read_step(&mut reader, &mut buf, raw);
-            match step {
-                ReadStep::Data(n) => {
-                    decoder.feed(&buf[..n], &mut out);
-                    for text in out.drain(..) {
-                        entry.logs.push(text);
-                    }
-                }
-                // No data: stop once the process has exited and [`DRAIN_GRACE`]
-                // has passed since the exit was first noticed.
-                ReadStep::Retry => {
-                    if drain_should_stop(&entry, &mut exit_seen_at) {
-                        break;
-                    }
-                }
+            let data = match step {
+                ReadStep::Data(n) => Some(n),
                 ReadStep::Eof | ReadStep::Err => break,
+                ReadStep::Retry => None,
+            };
+            if let Some(n) = data {
+                decoder.feed(&buf[..n], &mut out);
+                for text in out.drain(..) {
+                    entry.logs.push(text);
+                }
+            }
+            // Stop after the drain grace even without EOF: a daemonised
+            // grandchild may keep the pipe open and write forever.
+            if drain_should_stop(&entry, &mut exit_seen_at) {
+                break;
             }
         }
         decoder.flush(&mut out);
@@ -613,15 +697,15 @@ fn spawn_reaper(entry: Arc<ProcessEntry>, mut child: Child) {
 /// Stop a process for `restart`, escalating terminate → kill; returns the
 /// note describing what happened.
 fn stop_for_restart(e: &ProcessEntry) -> String {
-    if let ProcessStatus::Exited(code) = *lock(&e.status) {
+    if let Some(code) = e.exit_code_opt() {
         return format!("had already exited (code {code})");
     }
     let _ = signal_and_wait(e, ProcessSignal::Terminate);
-    if matches!(*lock(&e.status), ProcessStatus::Exited(_)) {
+    if e.has_exited() {
         return "stopped".into();
     }
     let _ = signal_and_wait(e, ProcessSignal::Kill);
-    if matches!(*lock(&e.status), ProcessStatus::Exited(_)) {
+    if e.has_exited() {
         "stopped (kill after terminate ignored)".into()
     } else {
         "still running (kill sent)".into()
@@ -633,7 +717,7 @@ fn stop_for_restart(e: &ProcessEntry) -> String {
 fn signal_and_wait(entry: &ProcessEntry, signal: ProcessSignal) -> Result<String, String> {
     entry.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
 
-    if let ProcessStatus::Exited(code) = *lock(&entry.status) {
+    if let Some(code) = entry.exit_code_opt() {
         return Ok(format!(
             "Process {} ({}) already exited with code {code}",
             entry.pid, entry.command
@@ -645,7 +729,7 @@ fn signal_and_wait(entry: &ProcessEntry, signal: ProcessSignal) -> Result<String
     signal_process_tree(entry.pid, signal);
     let deadline = Instant::now() + STOP_GRACE;
     while Instant::now() < deadline {
-        if let ProcessStatus::Exited(code) = *lock(&entry.status) {
+        if let Some(code) = entry.exit_code_opt() {
             return Ok(format!(
                 "Process {} ({}) stopped (exit code {code})",
                 entry.pid, entry.command
@@ -758,24 +842,22 @@ fn describe(e: &ProcessEntry) -> String {
 }
 
 fn describe_status(e: &ProcessEntry) -> (&'static str, Option<String>) {
-    match *lock(&e.status) {
+    let status = *lock(&e.status);
+    match status {
         ProcessStatus::Running => ("running", Some(format!("up {}s", e.started_secs()))),
         ProcessStatus::Exited(code) => ("exited", Some(format!("exit code {code}"))),
     }
 }
 
 fn exit_code(e: &ProcessEntry) -> i32 {
-    match *lock(&e.status) {
-        ProcessStatus::Exited(code) => code,
-        ProcessStatus::Running => -1,
-    }
+    e.exit_code_opt().unwrap_or(-1)
 }
 
 /// Drop the oldest exited entries once more than [`MAX_RETAINED_EXITED`] remain.
 fn prune_exited(procs: &mut HashMap<u32, Arc<ProcessEntry>>) {
     let mut exited: Vec<(Instant, u32)> = procs
         .values()
-        .filter(|e| matches!(*lock(&e.status), ProcessStatus::Exited(_)))
+        .filter(|e| e.has_exited())
         .map(|e| (e.started_at, e.pid))
         .collect();
     exited.sort_unstable();
@@ -797,7 +879,7 @@ pub fn shutdown() {
         return;
     }
     for e in &entries {
-        if matches!(*lock(&e.status), ProcessStatus::Exited(_)) {
+        if e.has_exited() {
             continue;
         }
         // Close stdin so well-behaved children exit on EOF.
@@ -806,15 +888,11 @@ pub fn shutdown() {
     }
     // Give them a short grace period to exit, then force-kill stragglers.
     let deadline = Instant::now() + STOP_GRACE;
-    while Instant::now() < deadline
-        && entries
-            .iter()
-            .any(|e| !matches!(*lock(&e.status), ProcessStatus::Exited(_)))
-    {
+    while Instant::now() < deadline && entries.iter().any(|e| !e.has_exited()) {
         std::thread::sleep(POLL_INTERVAL);
     }
     for e in entries {
-        if !matches!(*lock(&e.status), ProcessStatus::Exited(_)) {
+        if !e.has_exited() {
             signal_process_tree(e.pid, ProcessSignal::Kill);
         }
     }
@@ -837,6 +915,8 @@ struct ProcessEntry {
     started_at: Instant,
     status: Mutex<ProcessStatus>,
     stdin: Mutex<Option<ChildStdin>>,
+    /// Set while an `input` write is in flight; guards against concurrent writes.
+    writing: AtomicBool,
     logs: ProcessLogs,
     /// Reader threads still draining stdout/stderr.
     pending_readers: AtomicUsize,
@@ -847,9 +927,20 @@ impl ProcessEntry {
         self.started_at.elapsed().as_secs()
     }
 
+    fn has_exited(&self) -> bool {
+        self.exit_code_opt().is_some()
+    }
+
+    fn exit_code_opt(&self) -> Option<i32> {
+        let status = *lock(&self.status);
+        match status {
+            ProcessStatus::Exited(code) => Some(code),
+            ProcessStatus::Running => None,
+        }
+    }
+
     fn is_done(&self) -> bool {
-        matches!(*lock(&self.status), ProcessStatus::Exited(_))
-            && self.pending_readers.load(Ordering::SeqCst) == 0
+        self.has_exited() && self.pending_readers.load(Ordering::SeqCst) == 0
     }
 }
 
