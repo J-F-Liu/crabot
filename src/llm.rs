@@ -22,7 +22,7 @@ use crabot::user::UserPrompt;
 
 /// Seconds to wait between auto-retry attempts after a transient failure.
 const RETRY_DELAY_SECS: u32 = 60;
-/// Total number of connection attempts (initial request + retries).
+/// Max request attempts per turn (initial request + retries).
 const MAX_ATTEMPTS: u32 = 5;
 
 // ── DialogPhase: tracks the current phase of an LLM interaction ────
@@ -74,15 +74,13 @@ fn is_retryable_status(status: StatusCode) -> bool {
     status.as_u16() == 429 || (500..600).contains(&status.as_u16())
 }
 
-/// Whether a reqwest error is a connection-level failure worth retrying.
-/// Note: reqwest classifies TLS handshake failures as connect-phase errors, so
-/// they are retried too — harmless, since attempts are bounded by `MAX_ATTEMPTS`.
+/// Whether a reqwest error is a transport-level failure worth retrying.
+/// Even deterministic failures (request-build, decode) share this bounded retry path.
 fn is_retryable_reqwest(e: &reqwest::Error) -> bool {
-    e.is_connect() || e.is_timeout()
+    e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() || e.is_decode()
 }
 
-/// Classify a genai error as transient (429 / 5xx / connection failure).
-/// Only pre-first-event failures are retried; mid-stream errors surface as-is.
+/// Classify a genai error as transient (429 / 5xx / transport failure).
 /// Statuses buried in `ChatResponseGeneration`/`ChatResponse` bodies aren't classified.
 fn is_retryable(e: &genai::Error) -> bool {
     match e {
@@ -111,7 +109,7 @@ fn is_retryable(e: &genai::Error) -> bool {
 /// Returns `Ok(None)` if cancelled, `Err((stage, e))` on failure.
 async fn try_acquire_stream(
     client: &Client,
-    model: &crabot::model::ModelInfo,
+    model: &ModelInfo,
     chat_req: &ChatRequest,
     chat_options: &ChatOptions,
     cancel_token: &CancellationToken,
@@ -148,73 +146,185 @@ async fn try_acquire_stream(
     }))
 }
 
-/// Establish the stream, auto-retrying transient failures (429/5xx/connect)
-/// with a per-second countdown. Returns `Ok(None)` if cancelled, `Err(msg)` on failure.
-async fn acquire_stream_with_retry(
+/// Outcome of one streaming attempt.
+enum AttemptOutcome {
+    /// Stream finished; captured content (text + tool calls) and reasoning.
+    Finished {
+        content: Option<MessageContent>,
+        reasoning: Option<String>,
+    },
+    /// Cancelled by the user or the UI channel closing.
+    Cancelled,
+    /// Failure; `stage` is `None` for mid-stream errors.
+    Failed {
+        stage: Option<AcquireStage>,
+        error: genai::Error,
+    },
+    /// Stall watchdog fired; retried by the caller like a transient failure.
+    Stalled,
+}
+
+/// Terminal error message for a failed attempt, labeled by where it surfaced.
+fn failure_message(stage: Option<AcquireStage>, error: &genai::Error, attempt: u32) -> String {
+    let attempts = format!("{attempt} attempt{}", if attempt == 1 { "" } else { "s" });
+    match stage {
+        Some(AcquireStage::Setup) => {
+            format!("Failed to start the LLM request after {attempts}: {error}")
+        }
+        Some(AcquireStage::FirstPoll) => {
+            format!("The LLM request failed after {attempts}: {error}")
+        }
+        // Mid-stream failures keep the bare format.
+        None => format!("stream error: {error}"),
+    }
+}
+
+/// Run one streaming attempt: acquire, then forward events until End, failure,
+/// or cancellation. The caller owns the session history and terminal events.
+async fn stream_attempt(
     client: &Client,
-    model: &crabot::model::ModelInfo,
+    model: &ModelInfo,
     chat_req: &ChatRequest,
     chat_options: &ChatOptions,
     cancel_token: &CancellationToken,
+    stall_timeout_secs: u64,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-) -> Result<Option<AcquiredStream>, String> {
-    let mut attempt: u32 = 0;
-    loop {
-        attempt += 1;
-        tracing::debug!(attempt, model = %model.model_id, "acquiring LLM stream");
-        match try_acquire_stream(client, model, chat_req, chat_options, cancel_token).await {
-            Ok(Some(acquired)) => return Ok(Some(acquired)),
-            Ok(None) => return Ok(None),
-            Err((_, e)) if attempt < MAX_ATTEMPTS && is_retryable(&e) => {
-                tracing::warn!(
-                    attempt,
-                    model = %model.model_id,
-                    error = %e,
-                    "transient LLM failure, retrying in {RETRY_DELAY_SECS}s"
-                );
-                // Count down one second at a time, keeping Stop responsive.
-                for seconds_left in (1..=RETRY_DELAY_SECS).rev() {
-                    if !on_event(SessionEvent::RetryCountdown(RetryInfo {
-                        attempt: attempt + 1,
-                        max_attempts: MAX_ATTEMPTS,
-                        seconds_left,
-                    }))
-                    .await
-                    {
-                        return Ok(None);
-                    }
-                    tokio::select! {
-                        biased;
-                        _ = cancel_token.cancelled() => return Ok(None),
-                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-                    }
-                }
-                // Countdown finished — clear the stale countdown status before the next attempt.
-                if !on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await {
-                    return Ok(None);
-                }
-            }
-            Err((stage, e)) => {
-                // Report where the failure surfaced and how many attempts ran.
-                tracing::error!(
-                    attempt,
-                    model = %model.model_id,
-                    error = %e,
-                    "LLM request failed"
-                );
-                let message = match stage {
-                    AcquireStage::Setup => "Failed to start the LLM request",
-                    AcquireStage::FirstPoll => "The LLM request failed",
-                };
-                let attempts = if attempt == 1 {
-                    "1 attempt".to_string()
-                } else {
-                    format!("{attempt} attempts")
-                };
-                return Err(format!("{message} after {attempts}: {e}"));
+) -> AttemptOutcome {
+    /// Emit the thinking phase once, then `event`; false = cancelled.
+    async fn emit_chunk(
+        on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+        thinking_signaled: &mut bool,
+        event: SessionEvent,
+    ) -> bool {
+        if !*thinking_signaled {
+            *thinking_signaled = true;
+            if !on_event(SessionEvent::PhaseChange(DialogPhase::LlmThinking)).await {
+                return false;
             }
         }
+        on_event(event).await
     }
+
+    /// Sleep until `deadline`, or wait forever when the stall watchdog is off.
+    async fn stall_sleep(deadline: Option<Instant>) {
+        match deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+
+    let (mut stream, mut pending_event) =
+        match try_acquire_stream(client, model, chat_req, chat_options, cancel_token).await {
+            Ok(Some(acquired)) => (acquired.stream, acquired.first),
+            Ok(None) => return AttemptOutcome::Cancelled,
+            Err((stage, error)) => {
+                return AttemptOutcome::Failed {
+                    stage: Some(stage),
+                    error,
+                };
+            }
+        };
+
+    // Stall watchdog: Anthropic heartbeats every ~15-30s, so silence past
+    // the window means the stream died. Any event resets the deadline.
+    let stall_timeout = Duration::from_secs(stall_timeout_secs);
+    let mut stall_deadline =
+        (stall_timeout > Duration::ZERO).then(|| Instant::now() + stall_timeout);
+    let mut thinking_signaled = false;
+
+    // First event was already pulled; race the rest against cancellation
+    // and the stall watchdog.
+    loop {
+        let event = match pending_event.take() {
+            Some(event) => Some(Ok(event)),
+            None => tokio::select! {
+                // Biased so ties resolve deterministically: cancel > stream data > stall timeout.
+                biased;
+                _ = cancel_token.cancelled() => return AttemptOutcome::Cancelled,
+                ev = stream.next() => ev,
+                _ = stall_sleep(stall_deadline) => return AttemptOutcome::Stalled,
+            },
+        };
+        let Some(event) = event else { break };
+        // Any event is proof of life — reset the stall deadline.
+        stall_deadline = stall_deadline.map(|_| Instant::now() + stall_timeout);
+
+        // Forward content/reasoning chunks; End returns the captured content.
+        let session_event = match event {
+            // Skip empty chunks, so a UI placeholder isn't created for them.
+            Ok(ChatStreamEvent::Chunk(chunk)) if !chunk.content.is_empty() => {
+                Some(SessionEvent::Content(chunk.content))
+            }
+            Ok(ChatStreamEvent::ReasoningChunk(chunk)) if !chunk.content.is_empty() => {
+                Some(SessionEvent::Reasoning(chunk.content))
+            }
+            Ok(ChatStreamEvent::End(end)) => {
+                tracing::debug!(
+                    model = %model.model_id,
+                    "LLM stream ended, usage: {:?}",
+                    end.captured_usage
+                );
+                if !on_event(SessionEvent::TokenUsage(end.captured_usage)).await {
+                    return AttemptOutcome::Cancelled;
+                }
+                return AttemptOutcome::Finished {
+                    content: end.captured_content,
+                    reasoning: end.captured_reasoning_content,
+                };
+            }
+            // Ignore Start, Heartbeat, ThoughtSignature, ToolCallChunk, empty chunks.
+            Ok(_) => None,
+            Err(error) => {
+                return AttemptOutcome::Failed { stage: None, error };
+            }
+        };
+        let Some(session_event) = session_event else {
+            continue;
+        };
+        if !emit_chunk(on_event, &mut thinking_signaled, session_event).await {
+            return AttemptOutcome::Cancelled;
+        }
+    }
+    // Stream closed without an End event — nothing was captured.
+    AttemptOutcome::Finished {
+        content: None,
+        reasoning: None,
+    }
+}
+
+/// Warn, then count down `RETRY_DELAY_SECS` one second at a time so Stop
+/// stays responsive. False = cancelled.
+async fn pause_before_retry(
+    attempt: u32,
+    model_id: &str,
+    reason: &str,
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+    cancel_token: &CancellationToken,
+) -> bool {
+    tracing::warn!(
+        attempt,
+        model = %model_id,
+        error = %reason,
+        "transient LLM failure, retrying in {RETRY_DELAY_SECS}s"
+    );
+    for seconds_left in (1..=RETRY_DELAY_SECS).rev() {
+        if !on_event(SessionEvent::RetryCountdown(RetryInfo {
+            attempt: attempt + 1,
+            max_attempts: MAX_ATTEMPTS,
+            seconds_left,
+        }))
+        .await
+        {
+            return false;
+        }
+        tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => return false,
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+    }
+    // Countdown finished — clear the stale countdown status before the next attempt.
+    on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await
 }
 
 /// Tools that must run serially (interactive or state-modifying).
@@ -637,14 +747,6 @@ pub async fn send_stream(
         Some(true)
     }
 
-    /// Sleep until `deadline`, or wait forever when the stall watchdog is off.
-    async fn stall_sleep(deadline: Option<Instant>) {
-        match deadline {
-            Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
-            None => std::future::pending::<()>().await,
-        }
-    }
-
     // Execution context for the tool loop below (loop-invariant).
     let exec_ctx = ExecutionCtx {
         tools: &tools,
@@ -669,124 +771,76 @@ pub async fn send_stream(
         // (Anthropic limit: 4 breakpoints; system prompt uses 1 for Ephemeral1h).
         mark_cache_tail(&mut chat_req.messages);
 
-        // Establish the stream, auto-retrying transient failures with a countdown.
-        let (mut stream, first_event) = match acquire_stream_with_retry(
-            &client,
-            &model,
-            &chat_req,
-            &chat_options,
-            &cancel_token,
-            on_event,
-        )
-        .await
-        {
-            Ok(Some(acquired)) => (acquired.stream, acquired.first),
-            Ok(None) => {
-                tracing::info!(model = %model.model_id, session = %session_id, "cancelled while connecting to LLM");
-                on_event(SessionEvent::Cancelled(genai_messages)).await;
-                return;
-            }
-            Err(msg) => {
-                on_event(SessionEvent::Error(msg, genai_messages)).await;
-                return;
-            }
-        };
+        // Retry transient failures (setup, first poll, mid-stream, stall)
+        // by re-sending the same request; `attempt` counts requests this turn.
+        let mut attempt: u32 = 0;
+        let (captured_content, captured_reasoning) = loop {
+            attempt += 1;
+            let outcome = stream_attempt(
+                &client,
+                &model,
+                &chat_req,
+                &chat_options,
+                &cancel_token,
+                stream_stall_timeout_secs,
+                on_event,
+            )
+            .await;
 
-        // Accumulate reasoning from chunks (captured_content covers text + tool calls).
-        let mut captured_content: Option<MessageContent> = None;
-        let mut captured_reasoning: Option<String> = None;
-        let mut thinking_signaled = false;
-
-        // Stall watchdog: Anthropic heartbeats every ~15-30s, so silence past
-        // the window means the stream died. Any event resets the deadline.
-        let stall_timeout = Duration::from_secs(stream_stall_timeout_secs);
-        let mut stall_deadline =
-            (stall_timeout > Duration::ZERO).then(|| Instant::now() + stall_timeout);
-
-        // First event was already pulled; race the rest against cancellation
-        // and the stall watchdog.
-        let mut pending_event = first_event;
-        loop {
-            let event = match pending_event.take() {
-                Some(event) => Some(Ok(event)),
-                None => tokio::select! {
-                    // Biased so ties resolve deterministically: cancel > stream data > stall timeout.
-                    biased;
-                    _ = cancel_token.cancelled() => {
-                        tracing::info!(model = %model.model_id, session = %session_id, "LLM stream cancelled");
-                        on_event(SessionEvent::Cancelled(genai_messages)).await;
+            // Terminal outcomes break or return; transient ones yield a retry reason.
+            let reason = match outcome {
+                AttemptOutcome::Finished { content, reasoning } => break (content, reasoning),
+                AttemptOutcome::Cancelled => {
+                    tracing::info!(
+                        model = %model.model_id,
+                        session = %session_id,
+                        "LLM request cancelled"
+                    );
+                    on_event(SessionEvent::Cancelled(genai_messages)).await;
+                    return;
+                }
+                AttemptOutcome::Failed { stage, error } => {
+                    if attempt >= MAX_ATTEMPTS || !is_retryable(&error) {
+                        tracing::error!(
+                            attempt,
+                            model = %model.model_id,
+                            error = %error,
+                            "LLM request failed"
+                        );
+                        let message = failure_message(stage, &error, attempt);
+                        on_event(SessionEvent::Error(message, genai_messages)).await;
                         return;
                     }
-                    ev = stream.next() => ev,
-                    _ = stall_sleep(stall_deadline) => {
+                    error.to_string()
+                }
+                AttemptOutcome::Stalled => {
+                    let stalled =
+                        format!("stream stalled: no data for {stream_stall_timeout_secs}s");
+                    if attempt >= MAX_ATTEMPTS {
                         tracing::warn!(
+                            attempt,
                             model = %model.model_id,
                             session = %session_id,
                             stall_timeout_secs = stream_stall_timeout_secs,
                             "LLM stream stalled"
                         );
                         on_event(SessionEvent::Error(
-                            format!(
-                                "LLM stream stalled: no data for {stream_stall_timeout_secs}s; the connection may have died. Please retry.",
-                            ),
+                            format!("LLM {stalled}; the connection may have died. Please retry."),
                             genai_messages,
                         ))
                         .await;
                         return;
                     }
-                },
+                    stalled
+                }
             };
-            let Some(event) = event else { break };
-            // Any event is proof of life — reset the stall deadline.
-            stall_deadline = stall_deadline.map(|_| Instant::now() + stall_timeout);
-            match event {
-                // Skip empty chunk, so a UI placeholder isn't created for it.
-                Ok(ChatStreamEvent::Chunk(chunk)) if !chunk.content.is_empty() => {
-                    if !thinking_signaled {
-                        thinking_signaled = true;
-                        on_event(SessionEvent::PhaseChange(DialogPhase::LlmThinking)).await;
-                    }
-                    if !on_event(SessionEvent::Content(chunk.content)).await {
-                        on_event(SessionEvent::Cancelled(genai_messages)).await;
-                        return;
-                    }
-                }
-                Ok(ChatStreamEvent::ReasoningChunk(chunk)) if !chunk.content.is_empty() => {
-                    if !thinking_signaled {
-                        thinking_signaled = true;
-                        on_event(SessionEvent::PhaseChange(DialogPhase::LlmThinking)).await;
-                    }
-                    if !on_event(SessionEvent::Reasoning(chunk.content)).await {
-                        on_event(SessionEvent::Cancelled(genai_messages)).await;
-                        return;
-                    }
-                }
-                Ok(ChatStreamEvent::End(end)) => {
-                    captured_content = end.captured_content;
-                    captured_reasoning = end.captured_reasoning_content;
-                    tracing::debug!(
-                        model = %model.model_id,
-                        "LLM stream ended, usage: {:?}",
-                        end.captured_usage
-                    );
-                    if !on_event(SessionEvent::TokenUsage(end.captured_usage)).await {
-                        on_event(SessionEvent::Cancelled(genai_messages)).await;
-                        return;
-                    }
-                }
-                // ignore Start, Heartbeat, ThoughtSignature, ToolCallChunk, empty chunks
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!(model = %model.model_id, "LLM stream error: {e}");
-                    on_event(SessionEvent::Error(
-                        format!("stream error: {e}"),
-                        genai_messages,
-                    ))
-                    .await;
-                    return;
-                }
+
+            if !pause_before_retry(attempt, &model.model_id, &reason, on_event, &cancel_token).await
+            {
+                on_event(SessionEvent::Cancelled(genai_messages)).await;
+                return;
             }
-        }
+        };
 
         // captured_content has full text + tool calls thanks to ChatOptions.
         let assistant_content =
