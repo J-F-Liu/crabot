@@ -5,7 +5,7 @@ use iced::keyboard;
 use iced::mouse;
 use iced::time;
 use iced::window;
-use iced::{Event, Subscription};
+use iced::{Event, Point, Subscription};
 
 use crate::widgets::textarea;
 
@@ -15,6 +15,9 @@ use super::{App, ConversationEvent, LayoutEvent, Message};
 /// `layout.ctrl_held` via messages.
 static CTRL_HELD: AtomicBool = AtomicBool::new(false);
 
+/// Last `CursorMoved` position, kept off `App` (non-capturing closure) to drop duplicates before they flood the subscription channel.
+static LAST_CURSOR: std::sync::Mutex<Option<Point>> = std::sync::Mutex::new(None);
+
 /// Interval between auto-repeat scroll ticks while an arrow is held.
 const SCROLL_REPEAT_MS: u64 = 50;
 
@@ -22,7 +25,9 @@ const SCROLL_REPEAT_MS: u64 = 50;
 pub(crate) fn subscription(state: &App) -> Subscription<Message> {
     let event_sub = event::listen_with(|event, status, _window| match event {
         Event::Mouse(mouse::Event::CursorMoved { position }) => {
-            Some(Message::Layout(LayoutEvent::CursorMoved(position)))
+            let mut last = LAST_CURSOR.lock().unwrap_or_else(|e| e.into_inner());
+            (last.replace(position) != Some(position))
+                .then_some(Message::Layout(LayoutEvent::CursorMoved(position)))
         }
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
             Some(Message::Layout(LayoutEvent::LeftPressed))
