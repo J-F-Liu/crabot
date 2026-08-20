@@ -116,9 +116,9 @@ fn left_pressed(app: &mut App) -> Task<Message> {
 
     if app.settings_dialog.open && app.settings_dialog.is_adding_label() {
         return iced::widget::operation::is_focused(views::NEW_LABEL_INPUT_ID).map(|focused| {
-            Message::ModelSettings(ModelSettingsEvent::Settings(
-                views::SettingsEvent::LabelInputFocus(focused),
-            ))
+            Message::ModelSettings(ModelSettingsEvent::Settings(views::SettingsEvent::Models(
+                views::settings::ai_models::ModelsEvent::LabelInputFocus(focused),
+            )))
         });
     }
 
@@ -130,8 +130,9 @@ fn left_released(app: &mut App) {
     app.layout.right_divider.dragging = false;
     app.conversation.tab_bar_held_direction = None;
     if app.settings_dialog.is_label_dragging() {
-        app.settings_dialog
-            .update(views::SettingsEvent::LabelDragEnd);
+        app.settings_dialog.update(views::SettingsEvent::Models(
+            views::settings::ai_models::ModelsEvent::LabelDragEnd,
+        ));
     }
 }
 

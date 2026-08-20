@@ -224,17 +224,11 @@ pub(crate) fn update(
             let Some(m) = p.models.first() else {
                 return false;
             };
-            // prepare values to avoid borrowing m
-            let model_id = m.id.clone();
-            let thinking = m.thinking;
-            let thinking_level = m.thinking_levels.first().cloned().unwrap_or_default();
-            let context_window = m.context_window;
+            // Clone the defaults first — `m` borrows `provided_models`.
+            let defaults = m.clone();
             if let Some(cfg) = provided_models.get_config_mut(selected_model) {
                 cfg.provider_id = id;
-                cfg.model_id = model_id;
-                cfg.thinking = thinking;
-                cfg.thinking_level = thinking_level;
-                cfg.context_window = context_window;
+                cfg.apply_model(&defaults);
                 return true;
             }
         }
@@ -243,14 +237,11 @@ pub(crate) fn update(
             if let Some(provider) = provided_models.get_provider(selected_model)
                 && let Some(m) = provider.models.iter().find(|m| m.id == *id)
             {
-                let thinking = m.thinking;
-                let thinking_level = m.thinking_levels.first().cloned().unwrap_or_default();
-                let context_window = m.context_window;
+                // Clone the defaults first — `m` borrows `provided_models`.
+                let defaults = m.clone();
                 if let Some(cfg) = provided_models.get_config_mut(selected_model) {
                     cfg.model_id = id;
-                    cfg.thinking = thinking;
-                    cfg.thinking_level = thinking_level;
-                    cfg.context_window = context_window;
+                    cfg.apply_model(&defaults);
                     return true;
                 }
             }

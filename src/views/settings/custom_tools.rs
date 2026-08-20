@@ -2,49 +2,69 @@
 //! shown as a collapsible card; expanding a card reveals its edit form.
 
 use super::{
-    SettingsEvent, SettingsState, SettingsTab, ToolTextField, card_rule, delete_button_style,
-    field_row, form_card_style, sub_card_style, textarea_field_row,
+    SettingsEvent, SettingsState, SettingsTab, add_section, card_rule, collapsible_header,
+    count_label, delete_button_style, empty_hint, field_row, form_card_style, numbered_name,
+    remove_expanded, section_header, sub_card_style, textarea_field_row, toggle_expanded,
+    unique_name,
 };
-use crate::views::theme::{CRABOT_PRIMARY, color_muted};
+use crate::views::theme::color_muted;
 use crate::widgets::textarea::TextArea;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolParameter};
 use iced::{
     Alignment, Element, Length,
-    widget::{button, checkbox, column, container, mouse_area, pick_list, row, text, text_input},
+    widget::{button, checkbox, column, container, pick_list, row, text, text_input},
 };
 
 /// Simple parameter kinds offered by the type picker. Complex kinds
 /// (array / object / union) are preserved but cannot be edited here.
 const PARAM_KINDS: &[&str] = &["string", "integer", "number", "boolean"];
 
+// ── Events ──────────────────────────────────────────────────────────
+
+/// Identifies which text field in the custom-tool form is being edited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolTextField {
+    Description,
+    Instruction,
+}
+
+/// Events for the Custom Tools tab.
+#[derive(Debug, Clone)]
+pub(crate) enum CustomToolsEvent {
+    /// Expand/collapse the tool card at the given index.
+    ToggleTool(usize),
+    /// Append a new blank tool and expand its card.
+    NewTool,
+    DeleteTool(usize),
+    EditToolName(usize, String),
+    EditToolCommand(usize, String),
+    AddToolParam(usize),
+    DeleteToolParam(usize, usize),
+    EditParamName(usize, usize, String),
+    EditParamKind(usize, usize, String),
+    EditParamDescription(usize, usize, String),
+    ToggleParamRequired(usize, usize, bool),
+    /// A [`TextArea`] edit in the custom-tool form.
+    ToolTextArea(ToolTextField, crate::widgets::textarea::Message),
+    /// Persist custom tools to disk.
+    SaveTools,
+}
+
 // ── Page ───────────────────────────────────────────────────────────
 
 pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let header = row![
-        text("Custom Tools")
-            .size(13)
-            .font(iced::Font {
-                weight: iced::font::Weight::Bold,
-                ..iced::Font::DEFAULT
-            })
-            .color(CRABOT_PRIMARY),
+        section_header("Custom Tools"),
         iced::widget::Space::new().width(Length::Fill),
         button(text("+ New Tool").size(12))
             .padding([4, 10])
             .style(crate::views::styles::primary_button)
-            .on_press(SettingsEvent::NewTool),
+            .on_press(SettingsEvent::CustomTools(CustomToolsEvent::NewTool)),
     ]
     .align_y(Alignment::Center);
 
     let body: Element<'a, SettingsEvent> = if state.working_tools.custom_tools.is_empty() {
-        container(
-            text("No custom tools yet. Click + New Tool to define a command-line tool.")
-                .size(12)
-                .color(color_muted()),
-        )
-        .padding(16)
-        .center_x(Length::Fill)
-        .into()
+        empty_hint("No custom tools yet. Click + New Tool to define a command-line tool.")
     } else {
         let cards: Vec<Element<'a, SettingsEvent>> = state
             .working_tools
@@ -65,8 +85,11 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Set
         column(cards).spacing(8).into()
     };
 
-    let action_row =
-        super::save_action_row(state, SettingsTab::CustomTools, SettingsEvent::SaveTools);
+    let action_row = super::save_action_row(
+        state,
+        SettingsTab::CustomTools,
+        SettingsEvent::CustomTools(CustomToolsEvent::SaveTools),
+    );
 
     column![header, body, action_row].spacing(12).into()
 }
@@ -82,33 +105,26 @@ fn tool_card<'a>(
     desc_area: &'a TextArea,
     instr_area: &'a TextArea,
 ) -> Element<'a, SettingsEvent> {
-    let arrow = if expanded { "▼" } else { "⯈" };
-    let named = !tool.name.trim().is_empty();
-    let display_name = if named { &tool.name } else { "untitled" };
-    let count = tool.parameters.len();
-    let summary = format!("{count} parameter{}", if count == 1 { "" } else { "s" });
+    let display_name = if tool.name.trim().is_empty() {
+        "untitled"
+    } else {
+        &tool.name
+    };
+    let summary = count_label(tool.parameters.len(), "parameter");
 
-    let title = mouse_area(
-        container(
-            row![
-                text(arrow).size(10).color(color_muted()).width(14),
-                text(display_name).size(13).font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::DEFAULT
-                }),
-                text(summary).size(11).color(color_muted()),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-        )
-        .width(Length::Fill),
-    )
-    .on_press(SettingsEvent::ToggleTool(index));
+    let title = collapsible_header(
+        expanded,
+        display_name.to_string(),
+        summary,
+        SettingsEvent::CustomTools(CustomToolsEvent::ToggleTool(index)),
+    );
 
     let delete = button(text("✕").size(11))
         .padding([2, 6])
         .style(delete_button_style)
-        .on_press(SettingsEvent::DeleteTool(index));
+        .on_press(SettingsEvent::CustomTools(CustomToolsEvent::DeleteTool(
+            index,
+        )));
 
     let header_row = row![title, delete].spacing(4).align_y(Alignment::Center);
 
@@ -142,26 +158,40 @@ fn tool_form<'a>(
             &tool.name,
             "snake_case name used by the model",
             false,
-            move |v| SettingsEvent::EditToolName(index, v)
+            None,
+            None,
+            move |v| SettingsEvent::CustomTools(CustomToolsEvent::EditToolName(index, v))
         ),
         textarea_field_row(
             "Description",
             desc_area,
             "What the tool does — shown to the model",
-            move |msg| SettingsEvent::ToolTextArea(ToolTextField::Description, msg,),
+            move |msg| {
+                SettingsEvent::CustomTools(CustomToolsEvent::ToolTextArea(
+                    ToolTextField::Description,
+                    msg,
+                ))
+            },
         ),
         textarea_field_row(
             "Instruction",
             instr_area,
             "When and how the model should use this tool",
-            move |msg| SettingsEvent::ToolTextArea(ToolTextField::Instruction, msg,),
+            move |msg| {
+                SettingsEvent::CustomTools(CustomToolsEvent::ToolTextArea(
+                    ToolTextField::Instruction,
+                    msg,
+                ))
+            },
         ),
         field_row(
             "Command",
             &tool.command,
             "Command template, e.g. git log {args}",
             true,
-            move |v| SettingsEvent::EditToolCommand(index, v),
+            None,
+            None,
+            move |v| SettingsEvent::CustomTools(CustomToolsEvent::EditToolCommand(index, v)),
         ),
         params_section(index, tool),
         text(
@@ -178,22 +208,6 @@ fn tool_form<'a>(
 // ── Parameters ────────────────────────────────────────────────────
 
 fn params_section<'a>(tool_index: usize, tool: &'a CustomTool) -> Element<'a, SettingsEvent> {
-    let header = row![
-        container(text("Parameters").size(14))
-            .width(90)
-            .align_x(Alignment::End),
-        button(text("+ Add").size(12))
-            .padding([4, 10])
-            .style(crate::views::styles::secondary_button)
-            .on_press(SettingsEvent::AddToolParam(tool_index)),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center);
-
-    if tool.parameters.is_empty() {
-        return column![header].spacing(6).into();
-    }
-
     let cards: Vec<Element<'a, SettingsEvent>> = tool
         .parameters
         .iter()
@@ -201,16 +215,11 @@ fn params_section<'a>(tool_index: usize, tool: &'a CustomTool) -> Element<'a, Se
         .map(|(i, param)| param_card(tool_index, i, param))
         .collect();
 
-    // Indent param cards so they align with the field inputs above.
-    column![
-        header,
-        row![
-            iced::widget::Space::new().width(100),
-            column(cards).spacing(6).width(Length::Fill),
-        ],
-    ]
-    .spacing(6)
-    .into()
+    add_section(
+        "Parameters",
+        SettingsEvent::CustomTools(CustomToolsEvent::AddToolParam(tool_index)),
+        cards,
+    )
 }
 
 /// Two-row editor for one parameter: name + type + required + remove on the
@@ -221,7 +230,11 @@ fn param_card<'a>(
     param: &'a ToolParameter,
 ) -> Element<'a, SettingsEvent> {
     let kind_picker = pick_list(PARAM_KINDS, simple_kind(&param.kind), move |kind| {
-        SettingsEvent::EditParamKind(tool_index, index, kind.to_string())
+        SettingsEvent::CustomTools(CustomToolsEvent::EditParamKind(
+            tool_index,
+            index,
+            kind.to_string(),
+        ))
     })
     .text_size(12)
     .placeholder(kind_name(&param.kind))
@@ -230,19 +243,27 @@ fn param_card<'a>(
     let required = checkbox(param.required)
         .label("required")
         .text_size(12)
-        .on_toggle(move |v| SettingsEvent::ToggleParamRequired(tool_index, index, v))
+        .on_toggle(move |v| {
+            SettingsEvent::CustomTools(CustomToolsEvent::ToggleParamRequired(tool_index, index, v))
+        })
         .style(crate::views::primary_checkbox);
 
     let remove = button(text("✕").size(10))
         .padding([2, 6])
         .style(delete_button_style)
-        .on_press(SettingsEvent::DeleteToolParam(tool_index, index));
+        .on_press(SettingsEvent::CustomTools(
+            CustomToolsEvent::DeleteToolParam(tool_index, index),
+        ));
 
     container(
         column![
             row![
                 text_input("Parameter name", &param.name)
-                    .on_input(move |v| { SettingsEvent::EditParamName(tool_index, index, v) })
+                    .on_input(move |v| {
+                        SettingsEvent::CustomTools(CustomToolsEvent::EditParamName(
+                            tool_index, index, v,
+                        ))
+                    })
                     .padding(4)
                     .size(13)
                     .width(Length::Fill),
@@ -256,7 +277,11 @@ fn param_card<'a>(
                 "Parameter description — shown to the model",
                 &param.description
             )
-            .on_input(move |v| { SettingsEvent::EditParamDescription(tool_index, index, v) })
+            .on_input(move |v| {
+                SettingsEvent::CustomTools(CustomToolsEvent::EditParamDescription(
+                    tool_index, index, v,
+                ))
+            })
             .padding(4)
             .size(13)
             .width(Length::Fill),
@@ -294,5 +319,114 @@ fn kind_name(kind: &ParameterType) -> &'static str {
         ParameterType::Array(_) => "array",
         ParameterType::Object(_) => "object",
         ParameterType::Union(_) => "union",
+    }
+}
+
+// ── Update ─────────────────────────────────────────────────────────
+
+/// Handle a Custom Tools tab event, mutating `state.working_tools`.
+pub(super) fn update(state: &mut SettingsState, event: CustomToolsEvent) {
+    match event {
+        CustomToolsEvent::ToggleTool(index) => {
+            state.flush_tool_text_areas();
+            toggle_expanded(&mut state.expanded_tool, index);
+            state.init_tool_text_areas();
+        }
+        CustomToolsEvent::NewTool => {
+            state.flush_tool_text_areas();
+            let name = unique_name("new_tool", |n| {
+                state.working_tools.custom_tools.iter().any(|t| t.name == n)
+            });
+            state.working_tools.custom_tools.push(CustomTool {
+                name,
+                description: String::new(),
+                instruction: String::new(),
+                parameters: vec![],
+                command: String::new(),
+            });
+            state.expanded_tool = Some(state.working_tools.custom_tools.len() - 1);
+            state.init_tool_text_areas();
+        }
+        CustomToolsEvent::DeleteTool(index) => {
+            state.flush_tool_text_areas();
+            if index < state.working_tools.custom_tools.len() {
+                state.working_tools.custom_tools.remove(index);
+            }
+            state.expanded_tool = remove_expanded(state.expanded_tool, index);
+            state.init_tool_text_areas();
+        }
+        CustomToolsEvent::EditToolName(index, v) => {
+            if let Some(t) = state.tool_mut(index) {
+                t.name = v;
+            }
+        }
+        CustomToolsEvent::EditToolCommand(index, v) => {
+            if let Some(t) = state.tool_mut(index) {
+                t.command = v;
+            }
+        }
+        CustomToolsEvent::AddToolParam(index) => {
+            if let Some(t) = state.tool_mut(index) {
+                let name = numbered_name("param", t.parameters.len() + 1, |n| {
+                    t.parameters.iter().any(|p| p.name == n)
+                });
+                t.parameters.push(ToolParameter {
+                    name,
+                    kind: ParameterType::String,
+                    description: String::new(),
+                    required: true,
+                });
+            }
+        }
+        CustomToolsEvent::DeleteToolParam(tool_index, index) => {
+            if let Some(t) = state.tool_mut(tool_index)
+                && index < t.parameters.len()
+            {
+                t.parameters.remove(index);
+            }
+        }
+        CustomToolsEvent::EditParamName(tool_index, index, v) => {
+            if let Some(p) = state.param_mut(tool_index, index) {
+                p.name = v;
+            }
+        }
+        CustomToolsEvent::EditParamKind(tool_index, index, kind) => {
+            if let Some(p) = state.param_mut(tool_index, index) {
+                p.kind = match kind.as_str() {
+                    "integer" => ParameterType::Integer,
+                    "number" => ParameterType::Number,
+                    "boolean" => ParameterType::Boolean,
+                    _ => ParameterType::String,
+                };
+            }
+        }
+        CustomToolsEvent::EditParamDescription(tool_index, index, v) => {
+            if let Some(p) = state.param_mut(tool_index, index) {
+                p.description = v;
+            }
+        }
+        CustomToolsEvent::ToggleParamRequired(tool_index, index, v) => {
+            if let Some(p) = state.param_mut(tool_index, index) {
+                p.required = v;
+            }
+        }
+        CustomToolsEvent::ToolTextArea(field, msg) => match field {
+            ToolTextField::Description => state.tool_desc_area.update(msg, false),
+            ToolTextField::Instruction => state.tool_instr_area.update(msg, false),
+        },
+        CustomToolsEvent::SaveTools => {
+            // Flush any pending TextArea edits to tool structs.
+            state.flush_tool_text_areas();
+            // Drop custom tools left with a blank name — they cannot be invoked.
+            state
+                .working_tools
+                .custom_tools
+                .retain(|t| !t.name.trim().is_empty());
+            // Trim leading/trailing whitespace from remaining tool names.
+            for t in &mut state.working_tools.custom_tools {
+                t.name = t.name.trim().to_string();
+            }
+            state.save_feedback = Some(SettingsTab::CustomTools);
+        }
     }
 }

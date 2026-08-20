@@ -3,11 +3,34 @@ use iced::{
     widget::{column, container, pick_list, row, text, text_input, toggler},
 };
 
-use super::{SettingsEvent, SettingsState, SettingsTab, form_card_style};
+use super::{BOLD, SettingsEvent, SettingsState, SettingsTab, form_card_style, section_header};
 use crate::views::model_config::ProviderEntry;
-use crate::views::theme::{CRABOT_PRIMARY, color_muted};
-use crabot::model::Model;
+use crate::views::theme::color_muted;
+use crabot::model::{Model, ModelConfig};
 use crabot::tools::ToolLimits;
+
+// ── Events ──────────────────────────────────────────────────────────
+
+/// Events for the Builtin Tools tab: agent limits, tool limits, task models.
+#[derive(Debug, Clone)]
+pub(crate) enum BuiltinToolsEvent {
+    /// Edit the max agent-loop iterations field (raw text).
+    EditMaxIterations(String),
+    /// Edit the context-fill renew threshold field (raw text).
+    EditFillRatioThreshold(String),
+    /// Edit the stream stall timeout field (s, raw text; 0 disables).
+    EditStreamStallTimeout(String),
+    /// Edit one built-in tool limit field (raw text).
+    EditToolLimit(ToolLimitField, String),
+    /// Pick a provider for a task sub-agent difficulty tier.
+    TaskModelSelectProvider(&'static str, String),
+    /// Pick a model for a task sub-agent difficulty tier.
+    TaskModelSelectModel(&'static str, String),
+    /// Toggle "inherit the parent session's model" for a tier.
+    TaskModelInherit(&'static str, bool),
+    /// Persist agent limits, tool limits, and task models.
+    SaveBuiltinTools,
+}
 
 // ── Tool-limit fields ──────────────────────────────────────────────
 
@@ -189,13 +212,7 @@ where
 const TIERS: [(&str, &str); 3] = [("easy", "Easy"), ("medium", "Medium"), ("hard", "Hard")];
 
 pub(super) fn builtin_tools_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
-    let header = text("Builtin Tools")
-        .size(13)
-        .font(iced::Font {
-            weight: iced::font::Weight::Bold,
-            ..iced::Font::DEFAULT
-        })
-        .color(CRABOT_PRIMARY);
+    let header = section_header("Builtin Tools");
 
     column![
         header,
@@ -205,7 +222,7 @@ pub(super) fn builtin_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Se
         super::save_action_row(
             state,
             SettingsTab::BuiltinTools,
-            SettingsEvent::SaveBuiltinTools,
+            SettingsEvent::BuiltinTools(BuiltinToolsEvent::SaveBuiltinTools),
         ),
     ]
     .spacing(12)
@@ -250,29 +267,23 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
             section_title("Agent"),
             setting_row(
                 "Max iterations",
-                num_input(
-                    "100",
-                    &state.working_max_iterations,
-                    SettingsEvent::EditMaxIterations
-                ),
+                num_input("100", &state.working_max_iterations, move |v| {
+                    SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditMaxIterations(v))
+                },),
                 "Tool-calling rounds before the agent gives up.",
             ),
             setting_row(
                 "Renew threshold (%)",
-                num_input(
-                    "25",
-                    &state.working_fill_ratio_threshold,
-                    SettingsEvent::EditFillRatioThreshold
-                ),
+                num_input("25", &state.working_fill_ratio_threshold, move |v| {
+                    SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditFillRatioThreshold(v))
+                },),
                 "Context fill ratio at which the agent is reminded to consider renewing.",
             ),
             setting_row(
                 "Stream stall timeout (s)",
-                num_input(
-                    "120",
-                    &state.working_stream_stall_timeout,
-                    SettingsEvent::EditStreamStallTimeout
-                ),
+                num_input("120", &state.working_stream_stall_timeout, move |v| {
+                    SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditStreamStallTimeout(v))
+                },),
                 "Seconds with no stream data before giving up. 0 = off.",
             ),
         ]
@@ -288,7 +299,9 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
 
 fn limit_row(state: &SettingsState, field: ToolLimitField) -> Element<'_, SettingsEvent> {
     let value = state.working_tool_limits.get(field);
-    let input = num_input("", value, move |v| SettingsEvent::EditToolLimit(field, v));
+    let input = num_input("", value, move |v| {
+        SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditToolLimit(field, v))
+    });
     row![text(field.label()).size(13).width(180.0), input,]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -378,11 +391,11 @@ fn tier_row<'a>(
         let selected_model = state.working_models.get_model(cfg).cloned();
         row![
             pick_list(providers, selected_provider, move |e| {
-                SettingsEvent::TaskModelSelectProvider(tier, e.id)
+                SettingsEvent::BuiltinTools(BuiltinToolsEvent::TaskModelSelectProvider(tier, e.id))
             })
             .width(Length::Fill),
             pick_list(models, selected_model, move |m: Model| {
-                SettingsEvent::TaskModelSelectModel(tier, m.id)
+                SettingsEvent::BuiltinTools(BuiltinToolsEvent::TaskModelSelectModel(tier, m.id))
             })
             .width(Length::Fill),
         ]
@@ -392,8 +405,7 @@ fn tier_row<'a>(
     };
 
     let toggle: Element<'a, SettingsEvent> = if no_providers {
-        // Without at least one provider there is nothing to pick — lock
-        // the toggle ON so the user can't flip into a broken state.
+        // Nothing to pick without a provider — lock the toggle ON.
         toggler(true)
             .label("Inherit")
             .text_size(12)
@@ -403,7 +415,9 @@ fn tier_row<'a>(
         toggler(inherit)
             .label("Inherit")
             .text_size(12)
-            .on_toggle(move |v| SettingsEvent::TaskModelInherit(tier, v))
+            .on_toggle(move |v| {
+                SettingsEvent::BuiltinTools(BuiltinToolsEvent::TaskModelInherit(tier, v))
+            })
             .style(crate::views::primary_toggler)
             .into()
     };
@@ -421,12 +435,72 @@ fn tier_row<'a>(
 // ── Shared ─────────────────────────────────────────────────────────
 
 fn section_title(title: &'static str) -> Element<'static, SettingsEvent> {
-    text(title)
-        .size(12)
-        .font(iced::Font {
-            weight: iced::font::Weight::Bold,
-            ..iced::Font::DEFAULT
-        })
-        .color(color_muted())
-        .into()
+    text(title).size(12).font(BOLD).color(color_muted()).into()
+}
+
+// ── Update ─────────────────────────────────────────────────────────
+
+/// Handle a Builtin Tools tab event, mutating the working copies.
+pub(super) fn update(state: &mut SettingsState, event: BuiltinToolsEvent) {
+    match event {
+        BuiltinToolsEvent::EditMaxIterations(v) => state.working_max_iterations = v,
+        BuiltinToolsEvent::EditFillRatioThreshold(v) => state.working_fill_ratio_threshold = v,
+        BuiltinToolsEvent::EditStreamStallTimeout(v) => state.working_stream_stall_timeout = v,
+        BuiltinToolsEvent::EditToolLimit(field, v) => {
+            *state.working_tool_limits.get_mut(field) = v;
+        }
+        BuiltinToolsEvent::TaskModelSelectProvider(tier, id) => {
+            if let Some(model) = state
+                .working_models
+                .providers
+                .get(&id)
+                .and_then(|p| p.models.first())
+            {
+                let mut cfg = state.working_task_models.get_config(tier).clone();
+                cfg.provider_id = id;
+                cfg.apply_model(model);
+                state.working_task_models.set_config(tier, cfg);
+            }
+        }
+        BuiltinToolsEvent::TaskModelSelectModel(tier, id) => {
+            let cfg = state.working_task_models.get_config(tier).clone();
+            if let Some(model) = state
+                .working_models
+                .providers
+                .get(&cfg.provider_id)
+                .and_then(|p| p.models.iter().find(|m| m.id == id))
+            {
+                let mut cfg = cfg;
+                cfg.apply_model(model);
+                state.working_task_models.set_config(tier, cfg);
+            }
+        }
+        BuiltinToolsEvent::TaskModelInherit(tier, inherit) => {
+            if inherit {
+                state
+                    .working_task_models
+                    .set_config(tier, ModelConfig::default());
+            } else if state.working_task_models.get_config(tier).is_empty() {
+                // Pre-fill with the first provider/model so the pickers
+                // have a concrete starting point.
+                if let Some(provider_id) = state.working_models.providers.keys().next().cloned() {
+                    state.update(SettingsEvent::BuiltinTools(
+                        BuiltinToolsEvent::TaskModelSelectProvider(tier, provider_id),
+                    ));
+                }
+            }
+        }
+        BuiltinToolsEvent::SaveBuiltinTools => {
+            // Normalize fields to their parsed values, falling back to the defaults.
+            let max_iters = state.parsed_max_iterations();
+            state.working_max_iterations = max_iters.to_string();
+            let fill_ratio = state.parsed_fill_ratio_threshold();
+            state.working_fill_ratio_threshold = fill_ratio.to_string();
+            let stall = state.parsed_stream_stall_timeout();
+            state.working_stream_stall_timeout = stall.to_string();
+            let limits = state.parsed_tool_limits();
+            state.working_tool_limits = ToolLimitStrings::from_limits(&limits);
+            state.save_feedback = Some(SettingsTab::BuiltinTools);
+        }
+    }
 }

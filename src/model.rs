@@ -86,6 +86,14 @@ impl ModelConfig {
     pub fn is_empty(&self) -> bool {
         self.provider_id.is_empty() || self.model_id.is_empty()
     }
+
+    /// Overlay `model`'s defaults (id, thinking, level, context window).
+    pub fn apply_model(&mut self, model: &Model) {
+        self.model_id = model.id.clone();
+        self.thinking = model.thinking;
+        self.thinking_level = model.thinking_levels.first().cloned().unwrap_or_default();
+        self.context_window = model.context_window;
+    }
 }
 
 /// Model configurations used by the `task` tool to pick a sub-agent model per

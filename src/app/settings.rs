@@ -5,7 +5,16 @@ use iced::Task;
 use crate::app::{App, Message, ModelSettingsEvent};
 use crate::tools;
 use crate::views::model_config;
-use crate::views::settings::{self, SettingsTab, UpdateCheck, about::HOMEPAGE};
+use crate::views::settings::{
+    self, SettingsTab,
+    about::{AboutEvent, HOMEPAGE, UpdateCheck},
+    ai_models::ModelsEvent,
+    builtin_tools::BuiltinToolsEvent,
+    custom_tools::CustomToolsEvent,
+    mcp_servers::McpEvent,
+    prompt_recipes::RecipesEvent,
+    tool_playground::PlaygroundEvent,
+};
 use crate::views::update;
 use crate::views::{NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState};
 
@@ -53,7 +62,7 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             app.settings.auto_check_updates = app.settings_dialog.auto_check_updates;
             app.settings_dialog.open = false;
         }
-        SettingsEvent::SaveModels => {
+        SettingsEvent::Models(ModelsEvent::SaveModels) => {
             app.settings_dialog.update(event);
             app.models = app.settings_dialog.working_models.clone();
             app.models.save();
@@ -67,19 +76,19 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
                 tab.selected_model = app.models.ensure_valid_name(&tab.selected_model);
             }
         }
-        SettingsEvent::SavePromptRecipes => {
+        SettingsEvent::Recipes(RecipesEvent::SavePromptRecipes) => {
             app.settings_dialog.update(event);
             app.settings.prompt_recipes = app.settings_dialog.working_prompt_recipes.clone();
             app.settings.save();
         }
-        SettingsEvent::SaveBuiltinTools => {
+        SettingsEvent::BuiltinTools(BuiltinToolsEvent::SaveBuiltinTools) => {
             app.settings_dialog.update(event);
             // Apply parsed values, then persist + hot-swap tool limits.
             app.settings_dialog.apply_builtin_tools(&mut app.settings);
             app.settings.save();
             tools::init_tool_limits(app.settings.tool_limits);
         }
-        SettingsEvent::SaveTools => {
+        SettingsEvent::CustomTools(CustomToolsEvent::SaveTools) => {
             app.settings_dialog.update(event);
             // Persist custom tools and sync the tool registry.
             let old_names: HashSet<String> =
@@ -99,7 +108,7 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             }
             app.refresh_tools_summary();
         }
-        SettingsEvent::SaveMcp => {
+        SettingsEvent::Mcp(McpEvent::SaveMcp) => {
             // Snapshot current servers to detect removals / reconfigurations.
             let old_servers = app.tools.tool_registry.mcp_servers.clone();
             app.settings_dialog.update(event);
@@ -133,17 +142,20 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             }
             app.refresh_tools_summary();
         }
-        SettingsEvent::SelectProvider(_) | SettingsEvent::RefreshModels => {
+        SettingsEvent::Models(ModelsEvent::SelectProvider(_))
+        | SettingsEvent::Models(ModelsEvent::RefreshModels) => {
             app.settings_dialog.update(event);
 
             return maybe_fetch_models(&app.settings_dialog).unwrap_or(Task::none());
         }
-        SettingsEvent::ExecutePlaygroundTool => {
+        SettingsEvent::Playground(PlaygroundEvent::ExecutePlaygroundTool) => {
             return execute_playground_tool(app, event);
         }
-        SettingsEvent::PlaygroundToolResult(generation, _, is_todo) => {
+        SettingsEvent::Playground(
+            e @ PlaygroundEvent::PlaygroundToolResult(generation, _, is_todo),
+        ) => {
             if app.settings_dialog.playground_generation == generation {
-                app.settings_dialog.update(event);
+                app.settings_dialog.update(SettingsEvent::Playground(e));
                 if is_todo {
                     let snapshot = app.tools.tool_registry.snapshot_todo();
                     if let Ok(mut items) = app.conversation.viewing_mut().todo_items.lock() {
@@ -160,26 +172,28 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
                 );
             }
         }
-        SettingsEvent::CheckForUpdate => {
+        SettingsEvent::About(AboutEvent::CheckForUpdate) => {
             app.settings_dialog.update(event);
             return Task::perform(update::check_for_updates(), |result| {
-                Message::ModelSettings(ModelSettingsEvent::Settings(
-                    SettingsEvent::UpdateCheckResult(result),
-                ))
+                Message::ModelSettings(ModelSettingsEvent::Settings(SettingsEvent::About(
+                    AboutEvent::UpdateCheckResult(result),
+                )))
             });
         }
-        SettingsEvent::OpenHomepage => {
+        SettingsEvent::About(AboutEvent::OpenHomepage) => {
             if let Err(error) = open::that(HOMEPAGE) {
                 tracing::warn!("Failed to open homepage: {error}");
             }
         }
-        SettingsEvent::ToggleAutoCheckUpdates(v) => {
+        SettingsEvent::About(AboutEvent::ToggleAutoCheckUpdates(v)) => {
             app.settings_dialog.update(event);
             app.settings.auto_check_updates = v;
         }
-        SettingsEvent::UpdateCheckResult(latest) => {
+        SettingsEvent::About(AboutEvent::UpdateCheckResult(latest)) => {
             app.settings_dialog
-                .update(SettingsEvent::UpdateCheckResult(latest.clone()));
+                .update(SettingsEvent::About(AboutEvent::UpdateCheckResult(
+                    latest.clone(),
+                )));
             if let Some(version) = latest {
                 app.settings.last_update_version = Some(version.clone());
                 app.save_settings();
@@ -187,8 +201,10 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             }
         }
         _ => {
-            let focus_new_label = matches!(event, SettingsEvent::StartAddLabel);
-            let focus_new_provider_name = matches!(event, SettingsEvent::NewProvider);
+            let focus_new_label =
+                matches!(event, SettingsEvent::Models(ModelsEvent::StartAddLabel));
+            let focus_new_provider_name =
+                matches!(event, SettingsEvent::Models(ModelsEvent::NewProvider));
             app.settings_dialog.update(event);
             if focus_new_label {
                 return iced::widget::operation::focus(NEW_LABEL_INPUT_ID);
@@ -214,11 +230,11 @@ fn execute_playground_tool(app: &mut App, event: SettingsEvent) -> Task<Message>
     };
     let Some(tool) = app.tools.tool_registry.find_tool(&info.name) else {
         return Task::done(Message::ModelSettings(ModelSettingsEvent::Settings(
-            SettingsEvent::PlaygroundToolResult(
+            SettingsEvent::Playground(PlaygroundEvent::PlaygroundToolResult(
                 0,
                 Err(format!("Tool '{}' not found in registry", info.name)),
                 false,
-            ),
+            )),
         )));
     };
 
@@ -237,9 +253,9 @@ fn execute_playground_tool(app: &mut App, event: SettingsEvent) -> Task<Message>
                 .unwrap_or_else(|e| Err(format!("Tool panicked: {e}")))
         },
         move |result| {
-            Message::ModelSettings(ModelSettingsEvent::Settings(
-                SettingsEvent::PlaygroundToolResult(generation, result, is_todo),
-            ))
+            Message::ModelSettings(ModelSettingsEvent::Settings(SettingsEvent::Playground(
+                PlaygroundEvent::PlaygroundToolResult(generation, result, is_todo),
+            )))
         },
     )
 }
@@ -247,7 +263,8 @@ fn execute_playground_tool(app: &mut App, event: SettingsEvent) -> Task<Message>
 /// Confirm a pending new-label input (Enter or focus loss).
 pub(crate) fn confirm_pending_label(app: &mut App) {
     if app.settings_dialog.is_adding_label() {
-        app.settings_dialog.update(SettingsEvent::AddLabel);
+        app.settings_dialog
+            .update(SettingsEvent::Models(ModelsEvent::AddLabel));
     }
 }
 
@@ -268,9 +285,8 @@ fn maybe_fetch_models(state: &SettingsState) -> Option<Task<Message>> {
             (provider_id, models)
         },
         |(provider_id, result)| {
-            Message::ModelSettings(ModelSettingsEvent::Settings(SettingsEvent::ModelsFetched(
-                provider_id,
-                result,
+            Message::ModelSettings(ModelSettingsEvent::Settings(SettingsEvent::Models(
+                ModelsEvent::ModelsFetched(provider_id, result),
             )))
         },
     ))

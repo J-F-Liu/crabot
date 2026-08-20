@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -9,17 +10,19 @@ use iced::widget::scrollable::Viewport;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::app::{SessionEndStatus, SessionTab};
+use crate::app::attention;
+use crate::app::conversation::{dispatch_pending, switch_tab};
+use crate::app::{App, ConversationEvent, Message, SessionEndStatus, SessionTab};
 use crate::llm::DialogPhase;
-use crate::model::Cost;
-use crate::model::TokenAmount;
+use crate::model::{Cost, ModelConfig, TokenAmount};
+use crate::tools::TASK_MODES;
 use crate::views::ASK_INPUT;
 use crate::views::scroll_to_end;
 use crabot::HashSetExt;
 use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use crabot::lock;
 use crabot::session::Session;
-use crabot::user::UserPrompt;
+use crabot::user::{UserPrompt, WorkMode};
 use genai::chat::{ChatMessage, ChatRole};
 
 /// Minimum context-window size (tokens) for which the auto-injected renew hint is eligible.
@@ -431,9 +434,9 @@ pub(crate) fn update(
         SessionEvent::Stop => {
             state.stop();
         }
-        // RenewRequest / TaskRequest are intercepted in conversation.rs before reaching here.
+        // RenewRequest / TaskRequest are intercepted earlier in session_event.
         SessionEvent::RenewRequest(_) | SessionEvent::TaskRequest(_) => {
-            unreachable!("handled in conversation::session_event")
+            unreachable!("intercepted in session_event")
         }
     }
     Task::none()
@@ -564,4 +567,463 @@ fn handle_stream_error(
         session.push_turn(Turn::assistant(error_msg, None));
     }
     clear_pending_with_notice(state, session);
+}
+
+// ── App-level stream-event routing ─────────────────────────────────
+
+/// The tab's effective model config: the session's model, or tab's selected model label.
+fn tab_model_config(app: &App, tab: &SessionTab) -> Option<ModelConfig> {
+    tab.session
+        .model
+        .clone()
+        .or_else(|| app.models.get_config(&tab.selected_model).cloned())
+}
+
+/// The workspace a tab's session actually runs in: the session's stored
+/// workspace, falling back to the current prompt workspace.
+fn tab_workspace(app: &App, tab: &SessionTab) -> PathBuf {
+    let ws = &tab.session.workspace;
+    if ws.as_os_str().is_empty() || !ws.is_dir() {
+        app.prompt.workspace.1.clone()
+    } else {
+        ws.clone()
+    }
+}
+
+/// Whether the session started with a workspace layout — a successor session
+/// should then receive a freshly rebuilt tree. Cheap: no filesystem access.
+fn session_started_with_tree(tab: &SessionTab) -> bool {
+    tab.session.history.first().is_some_and(|m| {
+        m.role == ChatRole::User
+            && m.content.parts().iter().any(|p| {
+                p.as_text()
+                    .is_some_and(|t| t.starts_with("Working directory layout"))
+            })
+    })
+}
+
+/// Send the task-tool result, tagged with its call_id, to the parent tab's
+/// waiting stream (if still open).
+fn deliver_task_report(
+    app: &mut App,
+    parent_number: usize,
+    call_id: String,
+    result: Result<String, String>,
+) {
+    let delivered = if let Some(pos) = app.conversation.tab_pos(parent_number)
+        && let Some(sender) = app.conversation.session_tabs[pos]
+            .session_state
+            .task_sender
+            .as_ref()
+    {
+        sender.send((call_id.clone(), result)).is_ok()
+    } else {
+        false
+    };
+    if !delivered {
+        // Parent tab closed or its stream ended — the report has nowhere to go.
+        tracing::warn!(parent_tab = parent_number, call_id = %call_id, "task report dropped: parent stream no longer waiting");
+    }
+}
+
+/// Deliver a failure report for a task spawn and stop.
+fn fail_task_spawn(
+    app: &mut App,
+    number: usize,
+    call_id: String,
+    message: String,
+) -> Task<Message> {
+    deliver_task_report(app, number, call_id, Err(message));
+    Task::none()
+}
+
+/// Which tool triggered this successor spawn — each carries its own payload.
+#[derive(Debug, Clone)]
+pub(crate) enum SpawnKind {
+    Renew {
+        mode: Option<WorkMode>,
+    },
+    Task {
+        call_id: String,
+        title: Option<String>,
+        preamble: Option<String>,
+    },
+}
+
+/// Prepared successor-session spawn (renew/task tool) whose blocking workspace
+/// scan has completed off the UI thread; the continuation message completes the spawn.
+#[derive(Debug, Clone)]
+pub(crate) struct SuccessorSpawn {
+    /// Origin/parent tab number.
+    pub(crate) number: usize,
+    pub(crate) selected_model: String,
+    pub(crate) selected_preamble: String,
+    pub(crate) model: ModelConfig,
+    pub(crate) workspace: PathBuf,
+    /// Rebuilt "Working directory layout" tree (None when the origin session
+    /// didn't start with one).
+    pub(crate) workspace_tree: Option<String>,
+    /// Which tool triggered the spawn and its mode-specific data.
+    pub(crate) kind: SpawnKind,
+    /// Prompt to launch in the new session.
+    pub(crate) prompt: String,
+}
+
+/// Handle a renew-tool request: create a new session tab and launch the
+/// continuation prompt on it, using the same model and work mode as the
+/// originating session. The workspace tree is rebuilt off the UI thread; the
+/// spawn itself happens in [`super::conversation::continue_renew_spawn`] once the scan lands.
+fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
+    let (model, work_mode, workspace, need_tree, selected_model, selected_preamble) = {
+        let Some(pos) = app.conversation.tab_pos(number) else {
+            return Task::none();
+        };
+        let tab = &app.conversation.session_tabs[pos];
+        let Some(model) = tab_model_config(app, tab) else {
+            return Task::none();
+        };
+        (
+            model,
+            tab.session.dialogs.last().and_then(|d| d.mode),
+            tab_workspace(app, tab),
+            session_started_with_tree(tab),
+            tab.selected_model.clone(),
+            tab.selected_preamble.clone(),
+        )
+    };
+    tracing::info!(parent_tab = number, model = %model.model_id, "renew tool: spawning successor session");
+    let ws = workspace.clone();
+    Task::perform(
+        async move {
+            if need_tree {
+                tokio::task::spawn_blocking(move || crabot::workspace::build_files_tree(&ws))
+                    .await
+                    .ok()
+            } else {
+                None
+            }
+        },
+        move |workspace_tree| {
+            Message::Conversation(ConversationEvent::RenewSpawnReady(Box::new(
+                SuccessorSpawn {
+                    number,
+                    selected_model,
+                    selected_preamble,
+                    model,
+                    workspace,
+                    workspace_tree,
+                    kind: SpawnKind::Renew { mode: work_mode },
+                    prompt,
+                },
+            )))
+        },
+    )
+}
+
+/// Handle a task-tool request: spawn a sub-agent session tab with a mode
+/// preamble and difficulty-selected model, delivering its final report to the
+/// parent on completion. The workspace scan runs off the UI thread; the spawn
+/// itself happens in [`super::conversation::continue_task_spawn`].
+fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Task<Message> {
+    let Some(pos) = app.conversation.tab_pos(number) else {
+        return Task::none();
+    };
+    let TaskRequest {
+        call_id,
+        title,
+        prompt,
+        mode,
+        difficulty,
+    } = request;
+    tracing::info!(
+        parent_tab = number,
+        call_id = %call_id,
+        mode = mode.as_deref().unwrap_or("default"),
+        difficulty = difficulty.as_deref().unwrap_or("medium"),
+        "task tool: spawning sub-agent"
+    );
+    // Resolve the parent tab's context (cheap — no filesystem access).
+    let (parent_selected, parent_selected_preamble, parent_model, workspace, need_tree) = {
+        let parent = &app.conversation.session_tabs[pos];
+        (
+            parent.selected_model.clone(),
+            parent.selected_preamble.clone(),
+            tab_model_config(app, parent),
+            tab_workspace(app, parent),
+            session_started_with_tree(parent),
+        )
+    };
+
+    // Difficulty → configured subtask model (fallback: the parent's model).
+    let difficulty = difficulty.as_deref().unwrap_or("medium");
+    let configured = app.settings.task_models.get_config(difficulty);
+    let (selected_model, model) = if configured.is_empty() {
+        // Empty config means "inherit the parent session's model".
+        match parent_model {
+            Some(cfg) => (parent_selected, cfg),
+            None => {
+                return fail_task_spawn(
+                    app,
+                    number,
+                    call_id.clone(),
+                    "No model available for the subtask.".into(),
+                );
+            }
+        }
+    } else {
+        (app.find_model_label(configured), configured.clone())
+    };
+    // Stale config would silently no-op `start_dialog` and strand the parent.
+    if app.models.get_model_info(&model).is_none() {
+        return fail_task_spawn(
+            app,
+            number,
+            call_id,
+            format!(
+                "Subtask model is no longer resolvable: '{}' (provider '{}' / model '{}').",
+                selected_model, model.provider_id, model.model_id
+            ),
+        );
+    }
+
+    // The sub-agent inherits the parent's workspace; the tree and mode
+    // preamble are scanned off the UI thread.
+    let ws = workspace.clone();
+    Task::perform(
+        async move {
+            let tree = if need_tree {
+                tokio::task::spawn_blocking(move || crabot::workspace::build_files_tree(&ws))
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            // Load the mode preamble; record the mode name only when a preamble file exists.
+            let (preamble, preamble_name) = tokio::task::spawn_blocking(move || {
+                let name = mode.as_deref().map(str::to_ascii_lowercase);
+                let content = task_mode_preamble(name.as_deref());
+                let name_used = name.filter(|_| content.is_some());
+                (content, name_used)
+            })
+            .await
+            .ok()
+            .unwrap_or((None, None));
+            (tree, preamble, preamble_name)
+        },
+        move |(workspace_tree, preamble, preamble_name)| {
+            Message::Conversation(ConversationEvent::TaskSpawnReady(Box::new(
+                SuccessorSpawn {
+                    number,
+                    selected_model,
+                    selected_preamble: preamble_name.unwrap_or(parent_selected_preamble),
+                    model,
+                    workspace,
+                    workspace_tree,
+                    kind: SpawnKind::Task {
+                        call_id,
+                        title,
+                        preamble,
+                    },
+                    prompt,
+                },
+            )))
+        },
+    )
+}
+
+/// Load the mode-specific sub-agent preamble (`~/.crabot/preamble/{mode}.md`).
+/// Only the modes from the task schema are recognized; anything else
+/// (including path-traversal attempts) falls back to the default prompt.
+fn task_mode_preamble(mode: Option<&str>) -> Option<String> {
+    let mode = mode?.to_ascii_lowercase();
+    if !TASK_MODES.contains(&mode.as_str()) {
+        return None;
+    }
+    let path = crabot::setup::default_workspace_path()
+        .join("preamble")
+        .join(format!("{mode}.md"));
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// Extract the last non-empty assistant text from a finished session — the
+/// sub-agent's final report returned to the parent as the task tool result.
+fn final_assistant_text(session: &Session) -> Option<String> {
+    session
+        .history
+        .iter()
+        .rev()
+        .filter(|m| m.role == ChatRole::Assistant)
+        .find_map(|m| {
+            let text = m.content.joined_texts().unwrap_or_default();
+            (!text.trim().is_empty()).then_some(text)
+        })
+}
+
+/// Pop the next pending ask from the queue and switch to that tab.
+pub(super) fn process_pending_ask_queue(app: &mut App) -> Task<Message> {
+    while let Some(number) = app.conversation.pending_ask_queue.pop_front() {
+        // Skip closed tabs or asks already resolved (e.g. by timeout).
+        if let Some(pos) = app.conversation.tab_pos(number)
+            && app.conversation.session_tabs[pos]
+                .session_state
+                .ask_request
+                .is_some()
+        {
+            if pos == app.conversation.viewing {
+                // Already viewing — request is visible, nothing to do.
+                break;
+            }
+            return switch_tab(app, number);
+        }
+    }
+    Task::none()
+}
+
+/// Route a tagged stream event to the owning tab.
+pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Message> {
+    // Renew/task requests are intercepted here — they spawn successor sessions.
+    match &event {
+        SessionEvent::RenewRequest(prompt) => return handle_renew(app, number, prompt.clone()),
+        SessionEvent::TaskRequest(request) => {
+            return handle_task_request(app, number, request.clone());
+        }
+        _ => {}
+    }
+
+    let Some(pos) = app.conversation.tab_pos(number) else {
+        // Tab was closed while the stream was still running — drop the event.
+        return Task::none();
+    };
+
+    let switch_task =
+        if pos != app.conversation.viewing && matches!(event, SessionEvent::AskRequest(_)) {
+            if app
+                .conversation
+                .viewing()
+                .session_state
+                .ask_request
+                .is_some()
+            {
+                // Queue it — the user answers the current ask first.
+                app.conversation.pending_ask_queue.push_back(number);
+                Task::none()
+            } else {
+                // Auto-switch to a background tab that issues an ask.
+                switch_tab(app, number)
+            }
+        } else {
+            Task::none()
+        };
+    // `switch_tab` only changes `viewing`, never reorders tabs, so `pos` stays valid.
+    let viewing = pos == app.conversation.viewing;
+
+    // Compute cost and context window from the tab's session model BEFORE mutably borrowing the tab.
+    let model_config = tab_model_config(app, &app.conversation.session_tabs[pos]);
+    let cost = model_config
+        .as_ref()
+        .and_then(|cfg| app.models.get_model(cfg))
+        .map(|m| m.cost.clone());
+    let context_window = model_config.as_ref().map(|cfg| cfg.context_window);
+
+    let finished = matches!(event, SessionEvent::Done(_));
+    let asked = matches!(event, SessionEvent::AskRequest(_));
+    let is_cancelled = matches!(event, SessionEvent::Cancelled(_));
+    let task_error = match &event {
+        SessionEvent::Error(err, _) => Some(err.clone()),
+        _ => None,
+    };
+
+    // Remember whether this tab had an active ask so we can detect a clear.
+    let had_ask = app.conversation.session_tabs[pos]
+        .session_state
+        .ask_request
+        .is_some();
+
+    let tab = &mut app.conversation.session_tabs[pos];
+    let fill_ratio_threshold = app.settings.fill_ratio_threshold;
+    let update_task = update(
+        event,
+        tab,
+        cost,
+        context_window,
+        fill_ratio_threshold,
+        viewing,
+    );
+
+    // If this tab's ask was just resolved (user answer, timeout, Done, …),
+    // remove it from the queue and, when the viewing tab has no active ask,
+    // process remaining pending asks.
+    let ask_cleared = had_ask
+        && app.conversation.session_tabs[pos]
+            .session_state
+            .ask_request
+            .is_none();
+    let mut queue_task = Task::none();
+    if ask_cleared {
+        app.conversation.pending_ask_queue.retain(|&n| n != number);
+        if app
+            .conversation
+            .viewing()
+            .session_state
+            .ask_request
+            .is_none()
+        {
+            queue_task = process_pending_ask_queue(app);
+        }
+    }
+
+    // Auto-dispatch a prompt injected too late for the just-ended stream.
+    let dispatch_task = if finished {
+        dispatch_pending(app, pos)
+    } else {
+        Task::none()
+    };
+
+    // Task sub-agent that just terminated — deliver its final report to the parent.
+    if let Some(parent) = app.conversation.session_tabs[pos].task_parent()
+        && (finished || is_cancelled || task_error.is_some())
+        && let Some(call_id) = app.conversation.session_tabs[pos].task_call_id.take()
+    {
+        let result = if let Some(err) = task_error {
+            Err(format!("Subtask failed: {err}"))
+        } else if is_cancelled {
+            Err("Subtask was cancelled.".into())
+        } else {
+            Ok(
+                final_assistant_text(&app.conversation.session_tabs[pos].session).unwrap_or_else(
+                    || "Subtask completed without a final text response.".to_string(),
+                ),
+            )
+        };
+        tracing::info!(
+            subtask_tab = number,
+            parent_tab = parent,
+            ok = result.is_ok(),
+            "sub-agent finished, delivering report to parent"
+        );
+        deliver_task_report(app, parent, call_id, result);
+    }
+
+    // Drop stale ask flashes; Done/AskRequest otherwise raises attention.
+    let attention_task = if !finished
+        && !app.layout.window_focused
+        && had_ask
+        && app
+            .conversation
+            .session_tabs
+            .iter()
+            .all(|t| t.session_state.ask_request.is_none())
+    {
+        attention::clear()
+    } else {
+        attention::raise(app.layout.window_focused, finished, asked)
+    };
+
+    switch_task
+        .chain(update_task.discard())
+        .chain(dispatch_task)
+        .chain(queue_task)
+        .chain(attention_task)
 }

@@ -4,35 +4,37 @@ use iced::{
 };
 
 use super::{
-    SettingsEvent, SettingsState, SettingsTab, card_rule, delete_button_style, form_card_style,
+    SettingsEvent, SettingsState, SettingsTab, card_rule, collapsible_header, count_label,
+    delete_button_style, empty_hint, form_card_style, section_header, toggle_expanded,
 };
-use crate::views::theme::{CRABOT_PRIMARY, color_muted};
+use crate::views::theme::color_muted;
 use crabot::user::WorkMode;
+
+// ── Events ──────────────────────────────────────────────────────────
+
+/// Events for the Prompt Recipes tab.
+#[derive(Debug, Clone)]
+pub(crate) enum RecipesEvent {
+    /// Expand/collapse the work-mode recipe card at the given index.
+    ToggleRecipeMode(usize),
+    /// Append a new blank recipe to a work mode.
+    NewRecipe(String),
+    /// Delete a recipe from a work mode by index.
+    DeleteRecipe(String, usize),
+    /// Edit a recipe text at the given index within a work mode.
+    EditRecipe(String, usize, String),
+    /// Persist working recipes to disk.
+    SavePromptRecipes,
+}
 
 // ── Page ───────────────────────────────────────────────────────────
 
 pub(super) fn prompt_recipes_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
-    let header = row![
-        text("Prompt Recipes")
-            .size(13)
-            .font(iced::Font {
-                weight: iced::font::Weight::Bold,
-                ..iced::Font::DEFAULT
-            })
-            .color(CRABOT_PRIMARY),
-    ]
-    .align_y(Alignment::Center);
+    let header = section_header("Prompt Recipes");
 
     let work_modes = WorkMode::all();
     let body: Element<'a, SettingsEvent> = if work_modes.is_empty() {
-        container(
-            text("No work modes found. Ensure workmode.md is configured.")
-                .size(12)
-                .color(color_muted()),
-        )
-        .padding(16)
-        .center_x(Length::Fill)
-        .into()
+        empty_hint("No work modes found. Ensure workmode.md is configured.")
     } else {
         let cards: Vec<Element<'a, SettingsEvent>> = work_modes
             .iter()
@@ -54,7 +56,7 @@ pub(super) fn prompt_recipes_page<'a>(state: &'a SettingsState) -> Element<'a, S
     let action_row = super::save_action_row(
         state,
         SettingsTab::PromptRecipes,
-        SettingsEvent::SavePromptRecipes,
+        SettingsEvent::Recipes(RecipesEvent::SavePromptRecipes),
     );
 
     column![header, body, action_row].spacing(12).into()
@@ -71,26 +73,12 @@ fn mode_card<'a>(
     recipes: &'a [String],
     expanded: bool,
 ) -> Element<'a, SettingsEvent> {
-    let arrow = if expanded { "▼" } else { "⯈" };
-    let count = recipes.len();
-    let summary = format!("{count} recipe{}", if count == 1 { "" } else { "s" });
-
-    let title = iced::widget::mouse_area(
-        container(
-            row![
-                text(arrow).size(10).color(color_muted()).width(14),
-                text(display_name).size(13).font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::DEFAULT
-                }),
-                text(summary).size(11).color(color_muted()),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-        )
-        .width(Length::Fill),
-    )
-    .on_press(SettingsEvent::ToggleRecipeMode(index));
+    let title = collapsible_header(
+        expanded,
+        display_name,
+        count_label(recipes.len(), "recipe"),
+        SettingsEvent::Recipes(RecipesEvent::ToggleRecipeMode(index)),
+    );
 
     let header_row = row![title].spacing(4).align_y(Alignment::Center);
 
@@ -136,7 +124,7 @@ fn add_recipe_button(mode_key: String) -> Element<'static, SettingsEvent> {
     button(text("+ Add Recipe").size(12))
         .padding([4, 10])
         .style(crate::views::styles::primary_button)
-        .on_press(SettingsEvent::NewRecipe(mode_key))
+        .on_press(SettingsEvent::Recipes(RecipesEvent::NewRecipe(mode_key)))
         .into()
 }
 
@@ -155,10 +143,14 @@ fn recipe_row<'a>(mode_key: String, index: usize, recipe: &'a str) -> Element<'a
     let delete = button(text("✕").size(11))
         .padding([2, 6])
         .style(delete_button_style)
-        .on_press(SettingsEvent::DeleteRecipe(mk_del, index));
+        .on_press(SettingsEvent::Recipes(RecipesEvent::DeleteRecipe(
+            mk_del, index,
+        )));
 
     let input: Element<'a, SettingsEvent> = text_input("Enter recipe prompt...", recipe)
-        .on_input(move |v| SettingsEvent::EditRecipe(mk_edit.clone(), index, v))
+        .on_input(move |v| {
+            SettingsEvent::Recipes(RecipesEvent::EditRecipe(mk_edit.clone(), index, v))
+        })
         .width(Length::Fill)
         .padding(4)
         .size(13)
@@ -171,4 +163,50 @@ fn recipe_row<'a>(mode_key: String, index: usize, recipe: &'a str) -> Element<'a
     )
     .width(Length::Fill)
     .into()
+}
+
+// ── Update ─────────────────────────────────────────────────────────
+
+/// Handle a Prompt Recipes tab event, mutating `state.working_prompt_recipes`.
+pub(super) fn update(state: &mut SettingsState, event: RecipesEvent) {
+    match event {
+        RecipesEvent::ToggleRecipeMode(index) => {
+            toggle_expanded(&mut state.expanded_recipe_mode, index);
+        }
+        RecipesEvent::NewRecipe(mode_key) => {
+            state
+                .working_prompt_recipes
+                .entry(mode_key)
+                .or_default()
+                .push(String::new());
+        }
+        RecipesEvent::DeleteRecipe(mode_key, index) => {
+            if let Some(recipes) = state.working_prompt_recipes.get_mut(&mode_key)
+                && index < recipes.len()
+            {
+                recipes.remove(index);
+            }
+        }
+        RecipesEvent::EditRecipe(mode_key, index, v) => {
+            if let Some(recipes) = state.working_prompt_recipes.get_mut(&mode_key)
+                && index < recipes.len()
+            {
+                recipes[index] = v;
+            }
+        }
+        RecipesEvent::SavePromptRecipes => {
+            // Trim leading/trailing whitespace from recipes.
+            for recipes in state.working_prompt_recipes.values_mut() {
+                for recipe in recipes.iter_mut() {
+                    *recipe = recipe.trim().to_string();
+                }
+                recipes.retain(|r| !r.is_empty());
+            }
+            // Remove work modes with zero recipes.
+            state
+                .working_prompt_recipes
+                .retain(|_, recipes| !recipes.is_empty());
+            state.save_feedback = Some(SettingsTab::PromptRecipes);
+        }
+    }
 }

@@ -4,14 +4,14 @@ use super::theme::{
     color_muted, color_surface, color_text_strong,
 };
 use crate::widgets::textarea::TextArea;
-use crabot::model::{Model, ModelConfig, ModelList, Provider, TaskModels};
+use crabot::model::{ModelConfig, ModelList, Provider, TaskModels};
 use crabot::model_database::ModelDatabase;
-use crabot::tools::custom::{CustomTool, ParameterType, ToolList, ToolParameter};
+use crabot::tools::custom::{CustomTool, ToolList, ToolParameter};
 use crabot::tools::mcp::{McpList, McpServer, McpTransport};
 use iced::padding;
 use iced::{
     Alignment, Border, Color, Element, Length,
-    widget::{button, column, container, row, rule, scrollable, svg, text, text_input},
+    widget::{button, column, container, mouse_area, row, rule, scrollable, svg, text, text_input},
 };
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -30,6 +30,12 @@ pub(crate) const NEW_LABEL_INPUT_ID: &str = "settings-new-label-input";
 /// Widget id of the new-provider name input — used to focus it.
 pub(crate) const NEW_PROVIDER_NAME_INPUT_ID: &str = "settings-new-provider-name-input";
 
+/// Bold font for headings.
+pub(super) const BOLD: iced::Font = iced::Font {
+    weight: iced::font::Weight::Bold,
+    ..iced::Font::DEFAULT
+};
+
 // ── Tabs ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
@@ -46,161 +52,28 @@ pub(crate) enum SettingsTab {
     About,
 }
 
-/// Tracks the state of the update check on the About tab.
-#[derive(Debug, Clone)]
-pub(crate) enum UpdateCheck {
-    /// No check has been performed and no cached result is known.
-    Idle,
-    /// An update check is in progress.
-    Checking,
-    /// The latest check found no newer version.
-    UpToDate,
-    /// A newer version is available.
-    Available(String),
-}
-
-/// Identifies which text field in the custom-tool form is being edited.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToolTextField {
-    Description,
-    Instruction,
-}
-
 // ── Events ──────────────────────────────────────────────────────────
 
+/// Top-level settings-dialog event: tab navigation plus one sub-event per
+/// tab, each defined in its own tab module.
 #[derive(Debug, Clone)]
 pub(crate) enum SettingsEvent {
     SelectTab(SettingsTab),
     Close,
-    // Provider actions
-    SelectProvider(String),
-    EditProviderName(String),
-    EditProviderBaseUrl(String),
-    EditProviderApiType(String),
-    EditProviderAuth(String),
-    EditProviderApiKey(String),
-    ToggleProviderStrictMode(bool),
-    NewProvider,
-    DeleteProvider(String),
-    CancelNewProvider,
-    ModelsFetched(String, Result<Vec<String>, String>),
-    /// Manually refresh the available-model list for the current provider.
-    RefreshModels,
-    ToggleModel(String, bool),
-    SelectModelDetail(String),
-    /// Choose which pricing offer to display / use when adding a model.
-    SelectOfferSource(String),
-    // Label actions
-    DeleteLabel(String),
-    /// Show the blank new-label capsule and focus its input.
-    StartAddLabel,
-    NewLabelName(String),
-    /// Confirm the new-label input (Enter or focus loss).
-    AddLabel,
-    /// Begin dragging the label capsule at the given index.
-    LabelDragStart(usize),
-    /// Cursor entered the capsule at the given index mid-drag.
-    LabelDragEnter(usize),
-    /// End the capsule drag, saving if the order changed.
-    LabelDragEnd,
-    // ── Prompt Recipe actions ───────────────────────────────
-    /// Expand/collapse the work-mode recipe card at the given index.
-    ToggleRecipeMode(usize),
-    /// Append a new blank recipe to a work mode.
-    NewRecipe(String),
-    /// Delete a recipe from a work mode by index.
-    DeleteRecipe(String, usize),
-    /// Edit a recipe text at the given index within a work mode.
-    EditRecipe(String, usize, String),
-    /// Persist working recipes to disk.
-    SavePromptRecipes,
-    // ── Builtin Tools actions ─────────────────────────────
-    /// Edit the max agent-loop iterations field (raw text).
-    EditMaxIterations(String),
-    /// Edit the context-fill renew threshold field (raw text).
-    EditFillRatioThreshold(String),
-    /// Edit the stream stall timeout field (s, raw text; 0 disables).
-    EditStreamStallTimeout(String),
-    /// Edit one built-in tool limit field (raw text).
-    EditToolLimit(builtin_tools::ToolLimitField, String),
-    /// Pick a provider for a task sub-agent difficulty tier.
-    TaskModelSelectProvider(&'static str, String),
-    /// Pick a model for a task sub-agent difficulty tier.
-    TaskModelSelectModel(&'static str, String),
-    /// Toggle "inherit the parent session's model" for a tier.
-    TaskModelInherit(&'static str, bool),
-    /// Persist agent limits, tool limits, and task models.
-    SaveBuiltinTools,
-    // Custom tool actions
-    /// Expand/collapse the tool card at the given index.
-    ToggleTool(usize),
-    /// Append a new blank tool and expand its card.
-    NewTool,
-    DeleteTool(usize),
-    EditToolName(usize, String),
-    EditToolCommand(usize, String),
-    AddToolParam(usize),
-    DeleteToolParam(usize, usize),
-    EditParamName(usize, usize, String),
-    EditParamKind(usize, usize, String),
-    EditParamDescription(usize, usize, String),
-    ToggleParamRequired(usize, usize, bool),
-    SaveModels,
-    SaveTools,
-    /// A [`TextArea`] edit in the custom-tool form.
-    ToolTextArea(ToolTextField, crate::widgets::textarea::Message),
-    // MCP server actions
-    /// Expand/collapse the MCP server card at the given index.
-    ToggleMcp(usize),
-    /// Append a new blank MCP server and expand its card.
-    NewMcp,
-    DeleteMcp(usize),
-    EditMcpName(usize, String),
-    /// Switch a server's transport kind ("stdio" or "http").
-    EditMcpTransport(usize, String),
-    /// Edit the spawn command of a stdio server.
-    EditMcpCmd(usize, String),
-    /// Edit the URL of an HTTP server.
-    EditMcpUrl(usize, String),
-    ToggleMcpQualify(usize, bool),
-    /// Add a key/value entry to the active transport's option map
-    /// (env vars for stdio servers, HTTP headers for http servers).
-    AddMcpMapEntry(usize),
-    DeleteMcpMapEntry(usize, usize),
-    EditMcpMapKey(usize, usize, String),
-    EditMcpMapValue(usize, usize, String),
-    SaveMcp,
-    /// A [`TextArea`] edit in the MCP server prompt form.
-    McpTextArea(crate::widgets::textarea::Message),
-    // ── Tool Playground actions ───────────────────────────────
-    /// Select a tool by index in the playground list.  `None` clears the selection.
-    SelectPlaygroundTool(Option<usize>),
-    /// Edit a parameter value in the playground form.
-    EditPlaygroundParam(String, String),
-    /// Add an empty item to an array parameter (param name, optional item type).
-    AddPlaygroundArrayItem(String, Option<String>),
-    /// Remove an item from an array parameter by index.
-    RemovePlaygroundArrayItem(String, usize),
-    /// Edit an item of an array parameter (name, index, value, items_type).
-    EditPlaygroundArrayItem(String, usize, String, Option<String>),
-    /// Execute the selected playground tool with the given JSON args.
-    ExecutePlaygroundTool,
-    /// Cancel the in-flight playground execution.
-    CancelPlaygroundTool,
-    /// Result of a playground tool execution (generation, result, is_todo).
-    PlaygroundToolResult(u64, Result<String, String>, bool),
-    /// Result of a focus check on the new-label input; `false` means the
-    /// input lost focus and the pending label should be confirmed.
-    LabelInputFocus(bool),
-    // ── About page actions ─────────────────────────────────
-    /// User manually requested an update check.
-    CheckForUpdate,
-    /// Result of a manual update check.
-    UpdateCheckResult(Option<String>),
-    /// Open the project homepage in the browser.
-    OpenHomepage,
-    /// Toggle auto-check-updates preference.
-    ToggleAutoCheckUpdates(bool),
+    /// Events for the AI Models tab (providers, models, labels).
+    Models(ai_models::ModelsEvent),
+    /// Events for the Prompt Recipes tab.
+    Recipes(prompt_recipes::RecipesEvent),
+    /// Events for the Builtin Tools tab (agent limits, tool limits, task models).
+    BuiltinTools(builtin_tools::BuiltinToolsEvent),
+    /// Events for the Custom Tools tab.
+    CustomTools(custom_tools::CustomToolsEvent),
+    /// Events for the MCP Servers tab.
+    Mcp(mcp_servers::McpEvent),
+    /// Events for the Tool Playground tab.
+    Playground(tool_playground::PlaygroundEvent),
+    /// Events for the About tab.
+    About(about::AboutEvent),
 }
 
 // ── State ─────────────────────────────────────────────────────────────
@@ -290,7 +163,7 @@ pub(crate) struct SettingsState {
     pub(crate) playground_generation: u64,
     // ── About state ────────────────────────────────────────
     /// Current state of the update check.
-    pub(crate) update_check: UpdateCheck,
+    pub(crate) update_check: about::UpdateCheck,
     /// Whether auto-check-updates is enabled.
     pub(crate) auto_check_updates: bool,
 }
@@ -335,7 +208,7 @@ impl Default for SettingsState {
             expanded_mcp: None,
             mcp_prompt_area: TextArea::new(),
             save_feedback: None,
-            update_check: UpdateCheck::Idle,
+            update_check: about::UpdateCheck::Idle,
             auto_check_updates: true,
             playground_tools: Vec::new(),
             playground_selected_index: None,
@@ -493,7 +366,7 @@ impl SettingsState {
 
     // ── Update ──────────────────────────────────────────────────────
 
-    /// Handle a `SettingsEvent`, mutating `self.working_models`.
+    /// Handle a `SettingsEvent`, dispatching it to the active tab's handler.
     pub(crate) fn update(&mut self, event: SettingsEvent) {
         self.save_feedback = None;
         match event {
@@ -505,665 +378,13 @@ impl SettingsState {
                 self.adding_label = false;
                 self.drag_label = None;
             }
-            SettingsEvent::SaveModels => {
-                self.adding_label = false;
-                self.drag_label = None;
-                self.flush_current_provider();
-                // Also confirm any pending label input.
-                self.commit_new_label();
-                self.save_feedback = Some(SettingsTab::AiModels);
-            }
-            SettingsEvent::SaveTools => {
-                // Flush any pending TextArea edits to tool structs.
-                self.flush_tool_text_areas();
-                // Drop custom tools left with a blank name — they cannot be invoked.
-                self.working_tools
-                    .custom_tools
-                    .retain(|t| !t.name.trim().is_empty());
-                // Trim leading/trailing whitespace from remaining tool names.
-                for t in &mut self.working_tools.custom_tools {
-                    t.name = t.name.trim().to_string();
-                }
-                self.save_feedback = Some(SettingsTab::CustomTools);
-            }
-            SettingsEvent::SaveMcp => {
-                // Flush any pending TextArea edits to server structs.
-                self.flush_mcp_text_area();
-                // Drop servers left with a blank name — they cannot be connected.
-                self.working_mcp
-                    .servers
-                    .retain(|s| !s.name.trim().is_empty());
-                for s in &mut self.working_mcp.servers {
-                    s.name = s.name.trim().to_string();
-                    // Drop key/value entries with a blank key.
-                    match &mut s.transport {
-                        McpTransport::Stdio { env_vars, .. } => {
-                            env_vars.retain(|k, _| !k.trim().is_empty());
-                        }
-                        McpTransport::Http { headers, .. } => {
-                            headers.retain(|k, _| !k.trim().is_empty());
-                        }
-                    }
-                }
-                // Deduplicate server names — keep the first occurrence of each name.
-                // Duplicate names would corrupt the connection map and enable state.
-                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-                self.working_mcp
-                    .servers
-                    .retain(|s| seen.insert(s.name.clone()));
-                // Collapse the card — indices may have shifted after pruning.
-                self.expanded_mcp = None;
-                self.save_feedback = Some(SettingsTab::McpServers);
-            }
-            // ── Provider actions ──────────────────────────────────
-            SettingsEvent::SelectProvider(id) => {
-                self.flush_current_provider();
-                self.selected_provider_id = id.clone();
-                if let Some(p) = self.working_models.providers.get(&id).cloned() {
-                    self.load_provider(&p);
-                }
-            }
-            SettingsEvent::EditProviderName(v) => self.provider_name = v,
-            SettingsEvent::EditProviderBaseUrl(v) => {
-                // Clear cached models — the URL changed, old list is stale.
-                self.cached_model_ids.remove(&self.selected_provider_id);
-                self.available_model_ids.clear();
-                self.models_fetch_error = None;
-                self.provider_base_url = v;
-            }
-            SettingsEvent::EditProviderApiType(v) => self.provider_api_type = v,
-            SettingsEvent::EditProviderAuth(v) => self.provider_auth = v,
-            SettingsEvent::EditProviderApiKey(v) => self.provider_api_key = v,
-            SettingsEvent::ToggleProviderStrictMode(v) => self.provider_strict_mode = v,
-            SettingsEvent::RefreshModels => {
-                self.cached_model_ids.remove(&self.selected_provider_id);
-                self.available_model_ids.clear();
-                self.models_fetch_error = None;
-                self.fetching_models = true;
-            }
-            SettingsEvent::ModelsFetched(provider_id, result) => {
-                self.fetching_models = false;
-                match result {
-                    Ok(ids) => {
-                        if !provider_id.is_empty() {
-                            self.cached_model_ids
-                                .insert(provider_id.clone(), ids.clone());
-                        }
-                        // Only update display if we're still looking at this provider.
-                        if provider_id == self.selected_provider_id {
-                            self.available_model_ids = ids;
-                        }
-                    }
-                    Err(e) => {
-                        if provider_id == self.selected_provider_id {
-                            self.models_fetch_error = Some(e);
-                        }
-                    }
-                }
-            }
-            SettingsEvent::ToggleModel(id, checked) => {
-                // Auto-flush new provider so it exists in working_models.
-                if self.is_new_provider {
-                    // create provider id and set is_new_provider to false
-                    self.flush_current_provider();
-                }
-                if let Some(provider) = self
-                    .working_models
-                    .providers
-                    .get_mut(&self.selected_provider_id)
-                {
-                    if checked {
-                        if !provider.models.iter().any(|m| m.id == id) {
-                            let model = if let Some(db_model) = self.model_db.get(&id) {
-                                let cost = self
-                                    .selected_offer_source
-                                    .as_deref()
-                                    .and_then(|src| {
-                                        db_model.offers.iter().find(|o| o.source == src)
-                                    })
-                                    .cloned()
-                                    .unwrap_or_else(|| db_model.cost.clone());
-                                Model {
-                                    id,
-                                    name: db_model.name.clone(),
-                                    thinking: db_model.thinking,
-                                    thinking_levels: db_model.thinking_levels.clone(),
-                                    input: db_model.input.clone(),
-                                    context_window: db_model.context_window,
-                                    max_tokens: db_model.max_tokens,
-                                    cost,
-                                    offers: db_model.offers.clone(),
-                                }
-                            } else {
-                                let name = id.clone();
-                                Model {
-                                    id,
-                                    name,
-                                    ..Default::default()
-                                }
-                            };
-                            provider.models.push(model);
-                        }
-                    } else {
-                        provider.models.retain(|m| m.id != id);
-                    }
-                }
-            }
-            SettingsEvent::SelectModelDetail(id) => {
-                if self.selected_model_id.as_deref() == Some(&id) {
-                    self.selected_model_id = None;
-                    self.selected_offer_source = None;
-                } else {
-                    self.selected_model_id = Some(id);
-                    self.selected_offer_source = None;
-                }
-            }
-            SettingsEvent::SelectOfferSource(source) => {
-                self.selected_offer_source = Some(source);
-            }
-            SettingsEvent::NewProvider => {
-                self.flush_current_provider();
-                self.reset_provider_fields();
-                self.selected_model_id = None;
-                self.selected_offer_source = None;
-                self.available_model_ids.clear();
-                self.selected_provider_id.clear();
-                self.models_fetch_error = None;
-            }
-            SettingsEvent::CancelNewProvider => {
-                self.is_new_provider = false;
-                self.select_first_provider();
-            }
-            SettingsEvent::DeleteProvider(id) => {
-                self.working_models.providers.shift_remove(&id);
-                // Remove any labels referencing this provider
-                self.working_models
-                    .models
-                    .retain(|_, cfg| cfg.provider_id != id);
-                if self.selected_provider_id == id {
-                    self.selected_provider_id.clear();
-                    self.select_first_provider();
-                }
-            }
-            // ── Label actions ─────────────────────────────────────
-            SettingsEvent::DeleteLabel(name) => {
-                self.working_models.models.shift_remove(&name);
-            }
-            SettingsEvent::StartAddLabel => {
-                self.adding_label = true;
-                self.new_label_name.clear();
-            }
-            SettingsEvent::NewLabelName(v) => self.new_label_name = v,
-            SettingsEvent::AddLabel => {
-                self.adding_label = false;
-                self.commit_new_label();
-            }
-            SettingsEvent::LabelDragStart(index) => {
-                self.drag_label = Some(index);
-                self.drag_reordered = false;
-            }
-            SettingsEvent::LabelDragEnter(index) => {
-                if let Some(from) = self.drag_label
-                    && from != index
-                    && index < self.working_models.models.len()
-                {
-                    self.working_models.models.move_index(from, index);
-                    self.drag_label = Some(index);
-                    self.drag_reordered = true;
-                }
-            }
-            SettingsEvent::LabelDragEnd => {
-                self.drag_label = None;
-                self.drag_reordered = false;
-            }
-            // ── Prompt Recipe actions ───────────────────────
-            SettingsEvent::ToggleRecipeMode(index) => {
-                self.expanded_recipe_mode = if self.expanded_recipe_mode == Some(index) {
-                    None
-                } else {
-                    Some(index)
-                };
-            }
-            SettingsEvent::NewRecipe(mode_key) => {
-                self.working_prompt_recipes
-                    .entry(mode_key)
-                    .or_default()
-                    .push(String::new());
-            }
-            SettingsEvent::DeleteRecipe(mode_key, index) => {
-                if let Some(recipes) = self.working_prompt_recipes.get_mut(&mode_key)
-                    && index < recipes.len()
-                {
-                    recipes.remove(index);
-                }
-            }
-            SettingsEvent::EditRecipe(mode_key, index, v) => {
-                if let Some(recipes) = self.working_prompt_recipes.get_mut(&mode_key)
-                    && index < recipes.len()
-                {
-                    recipes[index] = v;
-                }
-            }
-            SettingsEvent::SavePromptRecipes => {
-                // Trim leading/trailing whitespace from recipes.
-                for recipes in self.working_prompt_recipes.values_mut() {
-                    for recipe in recipes.iter_mut() {
-                        *recipe = recipe.trim().to_string();
-                    }
-                    recipes.retain(|r| !r.is_empty());
-                }
-                // Remove work modes with zero recipes.
-                self.working_prompt_recipes
-                    .retain(|_, recipes| !recipes.is_empty());
-                self.save_feedback = Some(SettingsTab::PromptRecipes);
-            }
-            // ── Builtin Tools actions ─────────────────────────
-            SettingsEvent::EditMaxIterations(v) => self.working_max_iterations = v,
-            SettingsEvent::EditFillRatioThreshold(v) => self.working_fill_ratio_threshold = v,
-            SettingsEvent::EditStreamStallTimeout(v) => self.working_stream_stall_timeout = v,
-            SettingsEvent::EditToolLimit(field, v) => {
-                *self.working_tool_limits.get_mut(field) = v;
-            }
-            SettingsEvent::TaskModelSelectProvider(tier, id) => {
-                let defaults = self.working_models.providers.get(&id).and_then(|p| {
-                    p.models.first().map(|m| {
-                        (
-                            m.id.clone(),
-                            m.thinking,
-                            m.thinking_levels.first().cloned().unwrap_or_default(),
-                            m.context_window,
-                        )
-                    })
-                });
-                if let Some((model_id, thinking, thinking_level, context_window)) = defaults {
-                    let mut cfg = self.working_task_models.get_config(tier).clone();
-                    cfg.provider_id = id;
-                    cfg.model_id = model_id;
-                    cfg.thinking = thinking;
-                    cfg.thinking_level = thinking_level;
-                    cfg.context_window = context_window;
-                    self.working_task_models.set_config(tier, cfg);
-                }
-            }
-            SettingsEvent::TaskModelSelectModel(tier, id) => {
-                let cfg = self.working_task_models.get_config(tier).clone();
-                let defaults = self
-                    .working_models
-                    .providers
-                    .get(&cfg.provider_id)
-                    .and_then(|p| {
-                        p.models.iter().find(|m| m.id == id).map(|m| {
-                            (
-                                m.thinking,
-                                m.thinking_levels.first().cloned().unwrap_or_default(),
-                                m.context_window,
-                            )
-                        })
-                    });
-                if let Some((thinking, thinking_level, context_window)) = defaults {
-                    let mut cfg = cfg;
-                    cfg.model_id = id;
-                    cfg.thinking = thinking;
-                    cfg.thinking_level = thinking_level;
-                    cfg.context_window = context_window;
-                    self.working_task_models.set_config(tier, cfg);
-                }
-            }
-            SettingsEvent::TaskModelInherit(tier, inherit) => {
-                if inherit {
-                    self.working_task_models
-                        .set_config(tier, crabot::model::ModelConfig::default());
-                } else if self.working_task_models.get_config(tier).is_empty() {
-                    // Pre-fill with the first provider/model so the pickers
-                    // have a concrete starting point.
-                    if let Some(provider_id) = self.working_models.providers.keys().next().cloned()
-                    {
-                        self.update(SettingsEvent::TaskModelSelectProvider(tier, provider_id));
-                    }
-                }
-            }
-            SettingsEvent::SaveBuiltinTools => {
-                // Normalize fields to their parsed values, fall back to the defaults.
-                let max_iters = self.parsed_max_iterations();
-                self.working_max_iterations = max_iters.to_string();
-                let fill_ratio = self.parsed_fill_ratio_threshold();
-                self.working_fill_ratio_threshold = fill_ratio.to_string();
-                let stall = self.parsed_stream_stall_timeout();
-                self.working_stream_stall_timeout = stall.to_string();
-                let limits = self.parsed_tool_limits();
-                self.working_tool_limits = builtin_tools::ToolLimitStrings::from_limits(&limits);
-                self.save_feedback = Some(SettingsTab::BuiltinTools);
-            }
-            // ── Custom tool actions ────────────────────────────────
-            SettingsEvent::ToggleTool(index) => {
-                self.flush_tool_text_areas();
-                self.expanded_tool = if self.expanded_tool == Some(index) {
-                    None
-                } else {
-                    Some(index)
-                };
-                self.init_tool_text_areas();
-            }
-            SettingsEvent::NewTool => {
-                self.flush_tool_text_areas();
-                let base = "new_tool";
-                let mut name = base.to_string();
-                let mut suffix = 2;
-                while self
-                    .working_tools
-                    .custom_tools
-                    .iter()
-                    .any(|t| t.name == name)
-                {
-                    name = format!("{base}_{suffix}");
-                    suffix += 1;
-                }
-                self.working_tools.custom_tools.push(CustomTool {
-                    name,
-                    description: String::new(),
-                    instruction: String::new(),
-                    parameters: vec![],
-                    command: String::new(),
-                });
-                self.expanded_tool = Some(self.working_tools.custom_tools.len() - 1);
-                self.init_tool_text_areas();
-            }
-            SettingsEvent::DeleteTool(index) => {
-                self.flush_tool_text_areas();
-                if index < self.working_tools.custom_tools.len() {
-                    self.working_tools.custom_tools.remove(index);
-                }
-                self.expanded_tool = match self.expanded_tool {
-                    Some(i) if i == index => None,
-                    Some(i) if i > index => Some(i - 1),
-                    other => other,
-                };
-                self.init_tool_text_areas();
-            }
-            SettingsEvent::EditToolName(index, v) => {
-                if let Some(t) = self.tool_mut(index) {
-                    t.name = v;
-                }
-            }
-            SettingsEvent::EditToolCommand(index, v) => {
-                if let Some(t) = self.tool_mut(index) {
-                    t.command = v;
-                }
-            }
-            SettingsEvent::AddToolParam(index) => {
-                if let Some(t) = self.tool_mut(index) {
-                    let mut n = t.parameters.len() + 1;
-                    let mut name = format!("param{n}");
-                    while t.parameters.iter().any(|p| p.name == name) {
-                        n += 1;
-                        name = format!("param{n}");
-                    }
-                    t.parameters.push(ToolParameter {
-                        name,
-                        kind: ParameterType::String,
-                        description: String::new(),
-                        required: true,
-                    });
-                }
-            }
-            SettingsEvent::DeleteToolParam(tool_index, index) => {
-                if let Some(t) = self.tool_mut(tool_index)
-                    && index < t.parameters.len()
-                {
-                    t.parameters.remove(index);
-                }
-            }
-            SettingsEvent::EditParamName(tool_index, index, v) => {
-                if let Some(p) = self.param_mut(tool_index, index) {
-                    p.name = v;
-                }
-            }
-            SettingsEvent::EditParamKind(tool_index, index, kind) => {
-                if let Some(p) = self.param_mut(tool_index, index) {
-                    p.kind = match kind.as_str() {
-                        "integer" => ParameterType::Integer,
-                        "number" => ParameterType::Number,
-                        "boolean" => ParameterType::Boolean,
-                        _ => ParameterType::String,
-                    };
-                }
-            }
-            SettingsEvent::EditParamDescription(tool_index, index, v) => {
-                if let Some(p) = self.param_mut(tool_index, index) {
-                    p.description = v;
-                }
-            }
-            SettingsEvent::ToggleParamRequired(tool_index, index, v) => {
-                if let Some(p) = self.param_mut(tool_index, index) {
-                    p.required = v;
-                }
-            }
-            SettingsEvent::ToolTextArea(field, msg) => match field {
-                ToolTextField::Description => self.tool_desc_area.update(msg, false),
-                ToolTextField::Instruction => self.tool_instr_area.update(msg, false),
-            },
-            // ── MCP server actions ────────────────────────────────
-            SettingsEvent::ToggleMcp(index) => {
-                self.flush_mcp_text_area();
-                self.expanded_mcp = if self.expanded_mcp == Some(index) {
-                    None
-                } else {
-                    Some(index)
-                };
-                self.init_mcp_text_area();
-            }
-            SettingsEvent::NewMcp => {
-                self.flush_mcp_text_area();
-                let base = "new_server";
-                let mut name = base.to_string();
-                let mut suffix = 2;
-                while self.working_mcp.servers.iter().any(|s| s.name == name) {
-                    name = format!("{base}_{suffix}");
-                    suffix += 1;
-                }
-                self.working_mcp.servers.push(McpServer {
-                    name,
-                    transport: McpTransport::Stdio {
-                        cmd: String::new(),
-                        env_vars: IndexMap::new(),
-                    },
-                    qualify_tool_names: false,
-                    prompt: String::new(),
-                });
-                self.expanded_mcp = Some(self.working_mcp.servers.len() - 1);
-                self.init_mcp_text_area();
-            }
-            SettingsEvent::DeleteMcp(index) => {
-                self.flush_mcp_text_area();
-                if index < self.working_mcp.servers.len() {
-                    self.working_mcp.servers.remove(index);
-                }
-                self.expanded_mcp = match self.expanded_mcp {
-                    Some(i) if i == index => None,
-                    Some(i) if i > index => Some(i - 1),
-                    other => other,
-                };
-                self.init_mcp_text_area();
-            }
-            SettingsEvent::EditMcpName(index, v) => {
-                if let Some(s) = self.mcp_mut(index) {
-                    s.name = v;
-                }
-            }
-            SettingsEvent::EditMcpTransport(index, kind) => {
-                if let Some(s) = self.mcp_mut(index) {
-                    let new_transport = match (kind.as_str(), &s.transport) {
-                        ("http", McpTransport::Stdio { .. }) => Some(McpTransport::Http {
-                            url: String::new(),
-                            headers: IndexMap::new(),
-                        }),
-                        ("stdio", McpTransport::Http { .. }) => Some(McpTransport::Stdio {
-                            cmd: String::new(),
-                            env_vars: IndexMap::new(),
-                        }),
-                        _ => None,
-                    };
-                    if let Some(transport) = new_transport {
-                        s.transport = transport;
-                    }
-                }
-            }
-            SettingsEvent::EditMcpCmd(index, v) => {
-                if let Some(s) = self.mcp_mut(index)
-                    && let McpTransport::Stdio { cmd, .. } = &mut s.transport
-                {
-                    *cmd = v;
-                }
-            }
-            SettingsEvent::EditMcpUrl(index, v) => {
-                if let Some(s) = self.mcp_mut(index)
-                    && let McpTransport::Http { url, .. } = &mut s.transport
-                {
-                    *url = v;
-                }
-            }
-            SettingsEvent::ToggleMcpQualify(index, v) => {
-                if let Some(s) = self.mcp_mut(index) {
-                    s.qualify_tool_names = v;
-                }
-            }
-            SettingsEvent::AddMcpMapEntry(index) => {
-                if let Some(s) = self.mcp_mut(index) {
-                    let (map, base) = match &mut s.transport {
-                        McpTransport::Stdio { env_vars, .. } => (env_vars, "KEY"),
-                        McpTransport::Http { headers, .. } => (headers, "HEADER"),
-                    };
-                    let mut n = map.len() + 1;
-                    let mut key = format!("{base}{n}");
-                    while map.contains_key(&key) {
-                        n += 1;
-                        key = format!("{base}{n}");
-                    }
-                    map.insert(key, String::new());
-                }
-            }
-            SettingsEvent::DeleteMcpMapEntry(server_index, index) => {
-                if let Some(map) = self.mcp_map_mut(server_index) {
-                    map.shift_remove_index(index);
-                }
-            }
-            SettingsEvent::EditMcpMapKey(server_index, index, new_key) => {
-                // Rename the key in place, keeping the entry's position so
-                // the row (and its input focus) doesn't jump while typing.
-                // Renames that would collide with an existing key are ignored.
-                if let Some(map) = self.mcp_map_mut(server_index)
-                    && index < map.len()
-                    && !map.contains_key(&new_key)
-                    && let Some((_, value)) = map.shift_remove_index(index)
-                {
-                    let last = map.len();
-                    map.insert(new_key, value);
-                    map.move_index(last, index);
-                }
-            }
-            SettingsEvent::EditMcpMapValue(server_index, index, v) => {
-                if let Some(map) = self.mcp_map_mut(server_index)
-                    && let Some((_, value)) = map.get_index_mut(index)
-                {
-                    *value = v;
-                }
-            }
-            SettingsEvent::McpTextArea(msg) => self.mcp_prompt_area.update(msg, false),
-            // ── Tool Playground actions ───────────────────────
-            SettingsEvent::SelectPlaygroundTool(selected) => {
-                if let Some(index) = selected
-                    && index < self.playground_tools.len()
-                {
-                    self.playground_selected_index = Some(index);
-                    // Reset param values when switching tools.
-                    self.playground_param_values.clear();
-                    self.playground_result = None;
-                    self.playground_running = false;
-                }
-            }
-            SettingsEvent::EditPlaygroundParam(name, value) => {
-                self.playground_param_values.insert(name, value);
-            }
-            SettingsEvent::AddPlaygroundArrayItem(name, items_type) => {
-                let mut items: Vec<serde_json::Value> = self
-                    .playground_param_values
-                    .get(&name)
-                    .and_then(|v| serde_json::from_str(v).ok())
-                    .unwrap_or_default();
-                let default = match items_type.as_deref() {
-                    Some("object") => serde_json::Value::Object(serde_json::Map::new()),
-                    Some("boolean") => serde_json::Value::Bool(false),
-                    Some("number") | Some("integer") => serde_json::Value::Number(0_i32.into()),
-                    _ => serde_json::Value::String(String::new()),
-                };
-                items.push(default);
-                if let Ok(json) = serde_json::to_string(&items) {
-                    self.playground_param_values.insert(name, json);
-                }
-            }
-            SettingsEvent::RemovePlaygroundArrayItem(name, index) => {
-                let mut items: Vec<serde_json::Value> = self
-                    .playground_param_values
-                    .get(&name)
-                    .and_then(|v| serde_json::from_str(v).ok())
-                    .unwrap_or_default();
-                if index < items.len() {
-                    items.remove(index);
-                }
-                if let Ok(json) = serde_json::to_string(&items) {
-                    self.playground_param_values.insert(name, json);
-                }
-            }
-            SettingsEvent::EditPlaygroundArrayItem(name, index, value, items_type) => {
-                let mut items: Vec<serde_json::Value> = self
-                    .playground_param_values
-                    .get(&name)
-                    .and_then(|v| serde_json::from_str(v).ok())
-                    .unwrap_or_default();
-                if index < items.len() {
-                    let type_str = items_type.as_deref().unwrap_or("string");
-                    items[index] = tool_playground::coerce_value(&value, type_str);
-                }
-                if let Ok(json) = serde_json::to_string(&items) {
-                    self.playground_param_values.insert(name, json);
-                }
-            }
-            SettingsEvent::ExecutePlaygroundTool => {
-                // Cancel any in-flight execution before starting a new one.
-                self.reset_playground_cancel();
-                self.playground_running = true;
-                self.playground_result = None;
-                // Bump generation so stale results from previous runs are ignored.
-                self.playground_generation = self.playground_generation.wrapping_add(1);
-            }
-            SettingsEvent::CancelPlaygroundTool => {
-                self.playground_cancel.cancel();
-            }
-            SettingsEvent::PlaygroundToolResult(generation, result, _is_todo) => {
-                if self.playground_generation == generation {
-                    self.playground_running = false;
-                    self.playground_result = Some(result);
-                }
-            }
-            SettingsEvent::LabelInputFocus(focused) => {
-                if !focused && self.adding_label {
-                    self.update(SettingsEvent::AddLabel);
-                }
-            }
-            // ── About page actions ────────────────────────────
-            SettingsEvent::CheckForUpdate => {
-                self.update_check = UpdateCheck::Checking;
-            }
-            SettingsEvent::UpdateCheckResult(latest) => {
-                self.update_check = match latest {
-                    Some(version) => UpdateCheck::Available(version),
-                    None => UpdateCheck::UpToDate,
-                };
-            }
-            SettingsEvent::ToggleAutoCheckUpdates(v) => {
-                self.auto_check_updates = v;
-            }
-            SettingsEvent::OpenHomepage => {} // handled in app/settings.rs
+            SettingsEvent::Models(e) => ai_models::update(self, e),
+            SettingsEvent::Recipes(e) => prompt_recipes::update(self, e),
+            SettingsEvent::BuiltinTools(e) => builtin_tools::update(self, e),
+            SettingsEvent::CustomTools(e) => custom_tools::update(self, e),
+            SettingsEvent::Mcp(e) => mcp_servers::update(self, e),
+            SettingsEvent::Playground(e) => tool_playground::update(self, e),
+            SettingsEvent::About(e) => about::update(self, e),
         }
     }
 
@@ -1324,13 +545,7 @@ impl SettingsState {
 pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let header = container(
         row![
-            text("Settings")
-                .size(18)
-                .font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::DEFAULT
-                })
-                .color(CRABOT_PRIMARY),
+            text("Settings").size(18).font(BOLD).color(CRABOT_PRIMARY),
             iced::widget::Space::new().width(Length::Fill),
             button(
                 svg(svg::Handle::from_memory(icons::CLOSE))
@@ -1475,11 +690,10 @@ pub(super) fn field_row<'a>(
     value: &'a str,
     placeholder: &'a str,
     mono: bool,
+    id: Option<&'static str>,
+    on_submit: Option<SettingsEvent>,
     on_input: impl Fn(String) -> SettingsEvent + 'a,
 ) -> Element<'a, SettingsEvent> {
-    let label_col = container(text(label).size(14))
-        .width(90)
-        .align_x(Alignment::End);
     let mut input = text_input(placeholder, value)
         .on_input(on_input)
         .width(Length::Fill)
@@ -1488,6 +702,15 @@ pub(super) fn field_row<'a>(
     if mono {
         input = input.font(iced::Font::MONOSPACE);
     }
+    if let Some(id) = id {
+        input = input.id(id);
+    }
+    if let Some(msg) = on_submit {
+        input = input.on_submit(msg);
+    }
+    let label_col = container(text(label).size(14))
+        .width(90)
+        .align_x(Alignment::End);
     row![label_col, input]
         .spacing(10)
         .align_y(Alignment::Center)
@@ -1545,6 +768,123 @@ pub(super) fn delete_button_style(_theme: &iced::Theme, status: button::Status) 
             _ => color_muted(),
         },
         ..button::Style::default()
+    }
+}
+
+/// Bold primary-colored section heading.
+pub(super) fn section_header(title: &'static str) -> Element<'static, SettingsEvent> {
+    text(title).size(13).font(BOLD).color(CRABOT_PRIMARY).into()
+}
+
+/// Muted hint paragraph for an empty list.
+pub(super) fn empty_hint(message: &'static str) -> Element<'static, SettingsEvent> {
+    container(text(message).size(12).color(color_muted()))
+        .padding(16)
+        .center_x(Length::Fill)
+        .into()
+}
+
+/// Clickable card header: expand arrow, bold title, muted summary.
+pub(super) fn collapsible_header<'a>(
+    expanded: bool,
+    title: String,
+    summary: String,
+    on_toggle: SettingsEvent,
+) -> Element<'a, SettingsEvent> {
+    mouse_area(
+        container(
+            row![
+                text(if expanded { "▼" } else { "⯈" })
+                    .size(10)
+                    .color(color_muted())
+                    .width(14),
+                text(title).size(13).font(BOLD),
+                text(summary).size(11).color(color_muted()),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill),
+    )
+    .on_press(on_toggle)
+    .into()
+}
+
+/// Section with a right-aligned label, a "+ Add" button, and optional
+/// indented sub-cards beneath.
+pub(super) fn add_section<'a>(
+    label: &'static str,
+    on_add: SettingsEvent,
+    cards: Vec<Element<'a, SettingsEvent>>,
+) -> Element<'a, SettingsEvent> {
+    let header = row![
+        container(text(label).size(14))
+            .width(90)
+            .align_x(Alignment::End),
+        button(text("+ Add").size(12))
+            .padding([4, 10])
+            .style(crate::views::styles::secondary_button)
+            .on_press(on_add),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
+    if cards.is_empty() {
+        return column![header].spacing(6).into();
+    }
+    column![
+        header,
+        row![
+            iced::widget::Space::new().width(100),
+            column(cards).spacing(6).width(Length::Fill),
+        ],
+    ]
+    .spacing(6)
+    .into()
+}
+
+/// `{n} {word}` with an `s` plural when `n != 1`.
+pub(super) fn count_label(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
+/// First `{base}`, `{base}_2`, `{base}_3`, … name not already `taken`.
+pub(super) fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    let mut name = base.to_string();
+    let mut suffix = 2;
+    while taken(&name) {
+        name = format!("{base}_{suffix}");
+        suffix += 1;
+    }
+    name
+}
+
+/// First `{prefix}{n}` name (n from `start` up) not already `taken`.
+pub(super) fn numbered_name(prefix: &str, start: usize, taken: impl Fn(&str) -> bool) -> String {
+    let mut n = start;
+    loop {
+        let name = format!("{prefix}{n}");
+        if !taken(&name) {
+            return name;
+        }
+        n += 1;
+    }
+}
+
+/// Toggle an expanded-card index: `Some(index)` ↔ `None`.
+pub(super) fn toggle_expanded(expanded: &mut Option<usize>, index: usize) {
+    *expanded = if *expanded == Some(index) {
+        None
+    } else {
+        Some(index)
+    };
+}
+
+/// Shift the expanded index after removing `index`; `None` when it was removed.
+pub(super) fn remove_expanded(expanded: Option<usize>, index: usize) -> Option<usize> {
+    match expanded {
+        Some(i) if i == index => None,
+        Some(i) if i > index => Some(i - 1),
+        other => other,
     }
 }
 

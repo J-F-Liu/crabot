@@ -18,6 +18,29 @@ use crate::widgets::dropdown::DropDown;
 
 use super::{SettingsEvent, SettingsState, form_card_style};
 
+// ── Events ──────────────────────────────────────────────────────────
+
+/// Events for the Tool Playground tab.
+#[derive(Debug, Clone)]
+pub(crate) enum PlaygroundEvent {
+    /// Select a tool by index in the playground list.  `None` clears the selection.
+    SelectPlaygroundTool(Option<usize>),
+    /// Edit a parameter value in the playground form.
+    EditPlaygroundParam(String, String),
+    /// Add an empty item to an array parameter (param name, optional item type).
+    AddPlaygroundArrayItem(String, Option<String>),
+    /// Remove an item from an array parameter by index.
+    RemovePlaygroundArrayItem(String, usize),
+    /// Edit an item of an array parameter (name, index, value, items_type).
+    EditPlaygroundArrayItem(String, usize, String, Option<String>),
+    /// Execute the selected playground tool with the given JSON args.
+    ExecutePlaygroundTool,
+    /// Cancel the in-flight playground execution.
+    CancelPlaygroundTool,
+    /// Result of a playground tool execution (generation, result, is_todo).
+    PlaygroundToolResult(u64, Result<String, String>, bool),
+}
+
 /// Snapshot of a tool for display in the playground picker.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolInfo {
@@ -261,7 +284,12 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Sett
             checkbox(checked)
                 .label(p.name.clone())
                 .text_size(13)
-                .on_toggle(move |v| SettingsEvent::EditPlaygroundParam(name.clone(), v.to_string()))
+                .on_toggle(move |v| {
+                    SettingsEvent::Playground(PlaygroundEvent::EditPlaygroundParam(
+                        name.clone(),
+                        v.to_string(),
+                    ))
+                })
                 .into()
         }
         "array" => {
@@ -290,12 +318,12 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Sett
                 let edit_itype = items_type.clone();
                 let mut input = text_input("", item_text)
                     .on_input(move |v| {
-                        SettingsEvent::EditPlaygroundArrayItem(
+                        SettingsEvent::Playground(PlaygroundEvent::EditPlaygroundArrayItem(
                             edit_name.clone(),
                             i,
                             v,
                             edit_itype.clone(),
-                        )
+                        ))
                     })
                     .padding(4)
                     .size(13)
@@ -306,12 +334,11 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Sett
                 item_rows.push(
                     row![
                         input,
-                        button(text("×").size(13).color(CRABOT_DANGER).font(BOLD_FONT),)
+                        button(text("×").size(13).color(CRABOT_DANGER).font(super::BOLD),)
                             .style(secondary_button)
                             .padding([2, 6])
-                            .on_press(SettingsEvent::RemovePlaygroundArrayItem(
-                                del_name.clone(),
-                                i
+                            .on_press(SettingsEvent::Playground(
+                                PlaygroundEvent::RemovePlaygroundArrayItem(del_name.clone(), i,),
                             )),
                     ]
                     .spacing(4)
@@ -324,7 +351,9 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Sett
             let add_btn = button(text("＋ Add item").size(12).color(color_muted()))
                 .style(secondary_button)
                 .padding([2, 8])
-                .on_press(SettingsEvent::AddPlaygroundArrayItem(add_name, items_type));
+                .on_press(SettingsEvent::Playground(
+                    PlaygroundEvent::AddPlaygroundArrayItem(add_name, items_type),
+                ));
 
             column(item_rows).spacing(4).push(add_btn).into()
         }
@@ -333,7 +362,9 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Sett
             let name = p.name.clone();
             let is_mono = p.param_type == "object";
             let mut input = text_input(placeholder, current_value)
-                .on_input(move |v| SettingsEvent::EditPlaygroundParam(name.clone(), v))
+                .on_input(move |v| {
+                    SettingsEvent::Playground(PlaygroundEvent::EditPlaygroundParam(name.clone(), v))
+                })
                 .padding(4)
                 .size(13)
                 .width(Length::Fill);
@@ -347,95 +378,67 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Sett
 
 // ── Result widget ───────────────────────────────────────────────
 
+/// Monospace scrollable result text.
+fn result_text(output: String) -> Element<'static, SettingsEvent> {
+    scrollable(
+        SelectableText::new(output)
+            .size(12)
+            .font(iced::Font::MONOSPACE)
+            .style(sel_default),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(160.0))
+    .into()
+}
+
+/// Box with a colored border and a theme-aware background.
+fn result_box<'a>(
+    content: impl Into<Element<'a, SettingsEvent>>,
+    border: Color,
+    dark: Color,
+    light: Color,
+) -> Element<'a, SettingsEvent> {
+    container(content)
+        .style(move |_: &iced::Theme| container::Style {
+            background: Some(if is_dark() { dark } else { light }.into()),
+            border: Border::default().rounded(6).width(1).color(border),
+            ..container::Style::default()
+        })
+        .padding(8)
+        .width(Length::Fill)
+        .into()
+}
+
 fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     match &state.playground_result {
-        Some(Ok(output)) => container(
-            scrollable(
-                SelectableText::new(pretty_json_or_raw(output))
-                    .size(12)
-                    .font(iced::Font::MONOSPACE)
-                    .style(sel_default),
-            )
-            .width(Length::Fill)
-            .height(Length::Fixed(160.0)),
-        )
-        .style(|_: &iced::Theme| container::Style {
-            background: Some(
-                if is_dark() {
-                    Color::from_rgb8(0x1B, 0x2E, 0x24)
-                } else {
-                    Color::from_rgb8(0xF0, 0xFF, 0xF0)
-                }
-                .into(),
-            ),
-            border: Border::default()
-                .rounded(6)
-                .width(1)
-                .color(Color::from_rgb8(0x4C, 0xAF, 0x50)),
-            ..container::Style::default()
-        })
-        .padding(8)
-        .width(Length::Fill)
-        .into(),
-        Some(Err(err)) => container(
-            scrollable(
-                SelectableText::new(err.clone())
-                    .size(12)
-                    .font(iced::Font::MONOSPACE)
-                    .style(sel_default),
-            )
-            .width(Length::Fill)
-            .height(Length::Fixed(160.0)),
-        )
-        .style(|_: &iced::Theme| container::Style {
-            background: Some(
-                if is_dark() {
-                    Color::from_rgb8(0x33, 0x20, 0x20)
-                } else {
-                    Color::from_rgb8(0xFF, 0xF0, 0xF0)
-                }
-                .into(),
-            ),
-            border: Border::default().rounded(6).width(1).color(CRABOT_DANGER),
-            ..container::Style::default()
-        })
-        .padding(8)
-        .width(Length::Fill)
-        .into(),
-        None if state.playground_running => {
-            container(text("Executing…").size(13).color(color_muted()))
-                .style(|_: &iced::Theme| container::Style {
-                    background: Some(color_card().into()),
-                    border: Border::default().rounded(6).width(1).color(color_border()),
-                    ..container::Style::default()
-                })
-                .padding(8)
-                .width(Length::Fill)
-                .into()
-        }
-        None => container(
-            text("Result will appear here.")
-                .size(13)
-                .color(color_muted()),
-        )
-        .style(|_: &iced::Theme| container::Style {
-            background: Some(color_card().into()),
-            border: Border::default().rounded(6).width(1).color(color_border()),
-            ..container::Style::default()
-        })
-        .padding(8)
-        .width(Length::Fill)
-        .into(),
+        Some(Ok(output)) => result_box(
+            result_text(pretty_json_or_raw(output)),
+            Color::from_rgb8(0x4C, 0xAF, 0x50),
+            Color::from_rgb8(0x1B, 0x2E, 0x24),
+            Color::from_rgb8(0xF0, 0xFF, 0xF0),
+        ),
+        Some(Err(err)) => result_box(
+            result_text(err.clone()),
+            CRABOT_DANGER,
+            Color::from_rgb8(0x33, 0x20, 0x20),
+            Color::from_rgb8(0xFF, 0xF0, 0xF0),
+        ),
+        None => result_box(
+            text(if state.playground_running {
+                "Executing…"
+            } else {
+                "Result will appear here."
+            })
+            .size(13)
+            .color(color_muted()),
+            color_border(),
+            color_card(),
+            color_card(),
+        ),
     }
 }
 
 // ── View ────────────────────────────────────────────────────────────
-
-/// Bold font for category headers in the dropdown.
-const BOLD_FONT: iced::Font = iced::Font {
-    weight: iced::font::Weight::Bold,
-    ..iced::Font::DEFAULT
-};
 
 pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     // Build selector entries with group headers.
@@ -457,10 +460,10 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
     // Tool selector dropdown with treeview-style overlay.
     let selector: Element<_> = DropDown::new(entries, selected_entry, move |entry| {
         if let SelectorEntry::Tool(idx, _) = entry {
-            SettingsEvent::SelectPlaygroundTool(Some(idx))
+            SettingsEvent::Playground(PlaygroundEvent::SelectPlaygroundTool(Some(idx)))
         } else {
             // Headers are never selectable, this branch is a defensive fallback.
-            SettingsEvent::SelectPlaygroundTool(None)
+            SettingsEvent::Playground(PlaygroundEvent::SelectPlaygroundTool(None))
         }
     })
     .width(Length::Fill)
@@ -469,7 +472,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
     .menu_width(300.0)
     .item_is_header(move |i| header_flags.get(i).copied().unwrap_or(false))
     .item_indent(16.0)
-    .header_font(BOLD_FONT)
+    .header_font(super::BOLD)
     .into();
 
     let selected_tool = state
@@ -569,7 +572,9 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
                 button(text("⏳ Running…").size(13)).style(secondary_button),
                 button(text("✕ Cancel").size(13))
                     .style(secondary_button)
-                    .on_press(SettingsEvent::CancelPlaygroundTool),
+                    .on_press(SettingsEvent::Playground(
+                        PlaygroundEvent::CancelPlaygroundTool,
+                    )),
             ]
             .spacing(8)
             .into()
@@ -577,7 +582,9 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
             row![
                 button(text("▶ Execute").size(13))
                     .style(primary_button)
-                    .on_press(SettingsEvent::ExecutePlaygroundTool),
+                    .on_press(SettingsEvent::Playground(
+                        PlaygroundEvent::ExecutePlaygroundTool,
+                    )),
                 iced::widget::Space::new().width(Length::Fill),
             ]
             .width(Length::Fill)
@@ -614,7 +621,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
     column![
         text("Tool Playground")
             .size(16)
-            .font(BOLD_FONT)
+            .font(super::BOLD)
             .color(CRABOT_PRIMARY),
         text("Select a tool, fill in parameters, and execute it directly.")
             .size(12)
@@ -678,4 +685,83 @@ pub(crate) fn build_playground_tools(registry: &ToolRegistry) -> Vec<ToolInfo> {
     });
 
     list
+}
+
+// ── Update ─────────────────────────────────────────────────────────
+
+/// Handle a Tool Playground tab event, mutating the playground state.
+pub(super) fn update(state: &mut SettingsState, event: PlaygroundEvent) {
+    match event {
+        PlaygroundEvent::SelectPlaygroundTool(selected) => {
+            if let Some(index) = selected
+                && index < state.playground_tools.len()
+            {
+                state.playground_selected_index = Some(index);
+                // Reset param values when switching tools.
+                state.playground_param_values.clear();
+                state.playground_result = None;
+                state.playground_running = false;
+            }
+        }
+        PlaygroundEvent::EditPlaygroundParam(name, value) => {
+            state.playground_param_values.insert(name, value);
+        }
+        PlaygroundEvent::AddPlaygroundArrayItem(name, items_type) => {
+            let default = match items_type.as_deref() {
+                Some("object") => serde_json::Value::Object(serde_json::Map::new()),
+                Some("boolean") => serde_json::Value::Bool(false),
+                Some("number") | Some("integer") => serde_json::Value::Number(0_i32.into()),
+                _ => serde_json::Value::String(String::new()),
+            };
+            edit_array_items(state, &name, |items| items.push(default));
+        }
+        PlaygroundEvent::RemovePlaygroundArrayItem(name, index) => {
+            edit_array_items(state, &name, |items| {
+                if index < items.len() {
+                    items.remove(index);
+                }
+            });
+        }
+        PlaygroundEvent::EditPlaygroundArrayItem(name, index, value, items_type) => {
+            edit_array_items(state, &name, |items| {
+                if index < items.len() {
+                    items[index] = coerce_value(&value, items_type.as_deref().unwrap_or("string"));
+                }
+            });
+        }
+        PlaygroundEvent::ExecutePlaygroundTool => {
+            // Cancel any in-flight execution before starting a new one.
+            state.reset_playground_cancel();
+            state.playground_running = true;
+            state.playground_result = None;
+            // Bump generation so stale results from previous runs are ignored.
+            state.playground_generation = state.playground_generation.wrapping_add(1);
+        }
+        PlaygroundEvent::CancelPlaygroundTool => {
+            state.playground_cancel.cancel();
+        }
+        PlaygroundEvent::PlaygroundToolResult(generation, result, _is_todo) => {
+            if state.playground_generation == generation {
+                state.playground_running = false;
+                state.playground_result = Some(result);
+            }
+        }
+    }
+}
+
+/// Load the JSON array stored under `name`, mutate it, and write it back.
+fn edit_array_items(
+    state: &mut SettingsState,
+    name: &str,
+    f: impl FnOnce(&mut Vec<serde_json::Value>),
+) {
+    let mut items: Vec<serde_json::Value> = state
+        .playground_param_values
+        .get(name)
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default();
+    f(&mut items);
+    if let Ok(json) = serde_json::to_string(&items) {
+        state.playground_param_values.insert(name.to_string(), json);
+    }
 }

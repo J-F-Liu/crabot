@@ -466,10 +466,10 @@ pub(crate) enum ConversationEvent {
     WorkspaceContentReady(Box<prompt::WorkspaceScan>),
     /// A prepared task-tool spawn whose blocking workspace scan finished — the
     /// sub-agent session can now be launched.
-    TaskSpawnReady(Box<conversation::SuccessorSpawn>),
+    TaskSpawnReady(Box<session_state::SuccessorSpawn>),
     /// A prepared renew spawn whose blocking workspace scan finished — the
     /// continuation session can now be launched.
-    RenewSpawnReady(Box<conversation::SuccessorSpawn>),
+    RenewSpawnReady(Box<session_state::SuccessorSpawn>),
     ToggleTurnExpand(usize, usize),
     ToggleDialogExpand(usize),
     ToggleAllDialogsExpand,

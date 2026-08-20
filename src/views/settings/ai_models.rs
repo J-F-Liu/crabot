@@ -1,12 +1,12 @@
 use super::{
     NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState, SettingsTab,
-    form_card_style,
+    delete_button_style, field_row, form_card_style, section_header,
 };
 use crate::views::theme::{
     CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_surface,
     color_text_strong,
 };
-use crabot::model::{ModelList, currency_symbol};
+use crabot::model::{Model, ModelList, currency_symbol};
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
@@ -14,6 +14,49 @@ use iced::{
         text_input,
     },
 };
+
+// ── Events ──────────────────────────────────────────────────────────
+
+/// Events for the AI Models tab: provider, model, and label editing.
+#[derive(Debug, Clone)]
+pub(crate) enum ModelsEvent {
+    // Provider actions
+    SelectProvider(String),
+    EditProviderName(String),
+    EditProviderBaseUrl(String),
+    EditProviderApiType(String),
+    EditProviderAuth(String),
+    EditProviderApiKey(String),
+    ToggleProviderStrictMode(bool),
+    NewProvider,
+    DeleteProvider(String),
+    CancelNewProvider,
+    ModelsFetched(String, Result<Vec<String>, String>),
+    /// Manually refresh the available-model list for the current provider.
+    RefreshModels,
+    ToggleModel(String, bool),
+    SelectModelDetail(String),
+    /// Choose which pricing offer to display / use when adding a model.
+    SelectOfferSource(String),
+    // Label actions
+    DeleteLabel(String),
+    /// Show the blank new-label capsule and focus its input.
+    StartAddLabel,
+    NewLabelName(String),
+    /// Confirm the new-label input (Enter or focus loss).
+    AddLabel,
+    /// Begin dragging the label capsule at the given index.
+    LabelDragStart(usize),
+    /// Cursor entered the capsule at the given index mid-drag.
+    LabelDragEnter(usize),
+    /// End the capsule drag, saving if the order changed.
+    LabelDragEnd,
+    /// Result of a focus check on the new-label input; `false` means the
+    /// input lost focus and the pending label should be confirmed.
+    LabelInputFocus(bool),
+    /// Persist the working model list to disk.
+    SaveModels,
+}
 
 // ── Provider entry for pick list ──────────────────────────────────
 
@@ -48,7 +91,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
         .cloned();
 
     let picker = pick_list(entries, selected, |e: ProviderPickEntry| {
-        SettingsEvent::SelectProvider(e.id)
+        SettingsEvent::Models(ModelsEvent::SelectProvider(e.id))
     })
     .width(Length::Fill);
 
@@ -79,18 +122,20 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             field_row(
                 "Name",
                 &state.provider_name,
-                SettingsEvent::EditProviderName,
                 "Provider name",
+                false,
                 Some(NEW_PROVIDER_NAME_INPUT_ID),
                 None,
+                move |v| SettingsEvent::Models(ModelsEvent::EditProviderName(v)),
             ),
             field_row(
                 "Base URL",
                 &state.provider_base_url,
-                SettingsEvent::EditProviderBaseUrl,
                 "Base URL of the provider, press Enter to fetch model list",
+                false,
                 None,
-                Some(SettingsEvent::RefreshModels),
+                Some(SettingsEvent::Models(ModelsEvent::RefreshModels)),
+                move |v| SettingsEvent::Models(ModelsEvent::EditProviderBaseUrl(v)),
             ),
             {
                 let label_col = |label: &'static str| {
@@ -101,12 +146,12 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                 row![
                     label_col("API Type"),
                     pick_list(API_TYPES, selected_api_type, |v| {
-                        SettingsEvent::EditProviderApiType(v.to_string())
+                        SettingsEvent::Models(ModelsEvent::EditProviderApiType(v.to_string()))
                     })
                     .width(Length::Fill),
                     label_col("Auth Type"),
                     pick_list(AUTH_TYPES, selected_auth, |v| {
-                        SettingsEvent::EditProviderAuth(v.to_string())
+                        SettingsEvent::Models(ModelsEvent::EditProviderAuth(v.to_string()))
                     })
                     .width(Length::Fill),
                 ]
@@ -116,13 +161,14 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             field_row(
                 "API Key",
                 &state.provider_api_key,
-                SettingsEvent::EditProviderApiKey,
                 "API Key or its enviroment variable name",
+                false,
                 None,
                 None,
+                move |v| SettingsEvent::Models(ModelsEvent::EditProviderApiKey(v)),
             ),
             checkbox_row("Strict Mode", state.provider_strict_mode, |v| {
-                SettingsEvent::ToggleProviderStrictMode(v)
+                SettingsEvent::Models(ModelsEvent::ToggleProviderStrictMode(v))
             },),
             models_section_view(state, &state.working_models),
         ]
@@ -141,7 +187,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             iced::widget::Space::new().height(Length::Fill),
             button(text("New"))
                 .style(crate::views::styles::primary_button)
-                .on_press(SettingsEvent::NewProvider),
+                .on_press(SettingsEvent::Models(ModelsEvent::NewProvider)),
         ]
         .spacing(12)
         .align_x(Alignment::Center)
@@ -152,7 +198,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
     let action_button: Element<'_, SettingsEvent> = if state.is_new_provider {
         button(text("Cancel"))
             .style(crate::views::styles::secondary_button)
-            .on_press(SettingsEvent::CancelNewProvider)
+            .on_press(SettingsEvent::Models(ModelsEvent::CancelNewProvider))
             .into()
     } else if !state.selected_provider_id.is_empty() {
         button(text("Delete"))
@@ -161,9 +207,9 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                 s.text_color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
                 s
             })
-            .on_press(SettingsEvent::DeleteProvider(
+            .on_press(SettingsEvent::Models(ModelsEvent::DeleteProvider(
                 state.selected_provider_id.clone(),
-            ))
+            )))
             .into()
     } else {
         iced::widget::Space::new().width(0).into()
@@ -171,18 +217,12 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
 
     column![
         row![
-            text("Model Providers")
-                .size(13)
-                .font(iced::Font {
-                    weight: iced::font::Weight::Bold,
-                    ..iced::Font::DEFAULT
-                })
-                .color(CRABOT_PRIMARY),
+            section_header("Model Providers"),
             picker,
             row![
                 button(text("New"))
                     .style(crate::views::styles::primary_button)
-                    .on_press(SettingsEvent::NewProvider),
+                    .on_press(SettingsEvent::Models(ModelsEvent::NewProvider)),
                 action_button,
             ]
             .spacing(8),
@@ -201,13 +241,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
 /// The trailing "+" capsule opens a blank input capsule; the new label is
 /// confirmed with Enter or when the input loses focus.
 pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
-    let section_header = text("Model Labels")
-        .size(13)
-        .font(iced::Font {
-            weight: iced::font::Weight::Bold,
-            ..iced::Font::DEFAULT
-        })
-        .color(CRABOT_PRIMARY);
+    let header = section_header("Model Labels");
 
     let dragging = state.dragging_label();
 
@@ -222,8 +256,10 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
                     text(name).size(13),
                     button(text("✕").size(10))
                         .padding(0)
-                        .style(chip_close_style)
-                        .on_press(SettingsEvent::DeleteLabel(name.clone(),)),
+                        .style(delete_button_style)
+                        .on_press(SettingsEvent::Models(ModelsEvent::DeleteLabel(
+                            name.clone(),
+                        ))),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -232,8 +268,8 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
             .style(chip_style(dragging == Some(i)));
 
             mouse_area(chip)
-                .on_press(SettingsEvent::LabelDragStart(i))
-                .on_enter(SettingsEvent::LabelDragEnter(i))
+                .on_press(SettingsEvent::Models(ModelsEvent::LabelDragStart(i)))
+                .on_enter(SettingsEvent::Models(ModelsEvent::LabelDragEnter(i)))
                 .interaction(if dragging.is_some() {
                     mouse::Interaction::Grabbing
                 } else {
@@ -256,8 +292,8 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
         chips.push(
             text_input("Label name", &state.new_label_name)
                 .id(NEW_LABEL_INPUT_ID)
-                .on_input(SettingsEvent::NewLabelName)
-                .on_submit(SettingsEvent::AddLabel)
+                .on_input(move |v| SettingsEvent::Models(ModelsEvent::NewLabelName(v)))
+                .on_submit(SettingsEvent::Models(ModelsEvent::AddLabel))
                 .size(13)
                 .padding([5, 12])
                 .width(140)
@@ -271,7 +307,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
                     .padding([5, 12])
                     .style(add_chip_style),
             )
-            .on_press(SettingsEvent::StartAddLabel)
+            .on_press(SettingsEvent::Models(ModelsEvent::StartAddLabel))
             .into(),
         );
     }
@@ -286,7 +322,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
         .size(12)
         .color(color_muted());
     column![
-        section_header,
+        header,
         container(column![labels_section, super::section_rule(), hint].spacing(10))
             .padding(16)
             .style(form_card_style)
@@ -323,17 +359,6 @@ fn add_chip_style(_: &iced::Theme) -> container::Style {
     }
 }
 
-/// Borderless "✕" button inside a capsule; red on hover.
-fn chip_close_style(_theme: &iced::Theme, status: button::Status) -> button::Style {
-    button::Style {
-        text_color: match status {
-            button::Status::Hovered | button::Status::Pressed => CRABOT_DANGER,
-            _ => color_muted(),
-        },
-        ..button::Style::default()
-    }
-}
-
 /// Capsule-shaped style for the new-label text input.
 fn chip_input_style(_theme: &iced::Theme, _status: text_input::Status) -> text_input::Style {
     text_input::Style {
@@ -350,33 +375,6 @@ fn chip_input_style(_theme: &iced::Theme, _status: text_input::Status) -> text_i
 }
 
 // ── Form helpers ──────────────────────────────────────────────────
-
-fn field_row<'a>(
-    label: &'static str,
-    value: &str,
-    on_input: impl Fn(String) -> SettingsEvent + 'a,
-    placeholder: &'a str,
-    id: Option<&'static str>,
-    on_submit: Option<SettingsEvent>,
-) -> Element<'a, SettingsEvent> {
-    let mut input = text_input(placeholder, value)
-        .on_input(on_input)
-        .width(Length::Fill)
-        .padding(4);
-    if let Some(input_id) = id {
-        input = input.id(input_id);
-    }
-    if let Some(msg) = on_submit {
-        input = input.on_submit(msg);
-    }
-    let label_col = container(text(label).size(14))
-        .width(90)
-        .align_x(Alignment::End);
-    row![label_col, input]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
-}
 
 fn checkbox_row<'a>(
     label: &'static str,
@@ -426,17 +424,18 @@ fn models_section_view<'a>(
     let body: Element<'_, SettingsEvent> = if state.fetching_models {
         text("Loading models…").size(12).color(color_muted()).into()
     } else if display_ids.is_empty() {
-        let mut btn =
-            button(text("Fetch Models").size(12)).style(crate::views::styles::primary_button);
-        if !state.provider_base_url.trim().is_empty() {
-            btn = btn.on_press(SettingsEvent::RefreshModels);
-        }
+        let fetch = button(text("Fetch Models").size(12))
+            .style(crate::views::styles::primary_button)
+            .on_press_maybe(
+                (!state.provider_base_url.trim().is_empty())
+                    .then_some(SettingsEvent::Models(ModelsEvent::RefreshModels)),
+            );
         if let Some(err) = &state.models_fetch_error {
-            column![btn, text(err).size(11).color(CRABOT_DANGER),]
+            column![fetch, text(err).size(11).color(CRABOT_DANGER),]
                 .spacing(4)
                 .into()
         } else {
-            btn.into()
+            fetch.into()
         }
     } else {
         // ── Table column ──────────────────────────────────────────
@@ -444,45 +443,44 @@ fn models_section_view<'a>(
             .iter()
             .map(|&id| {
                 let checked = provider_model_ids.contains(&id);
-                let id_string = id.to_string();
-                let id_string2 = id.to_string();
                 let is_selected = state.selected_model_id.as_deref() == Some(id);
 
                 // Disable checkbox when the new provider hasn't been named yet.
                 let can_toggle = !(state.is_new_provider && state.provider_name.trim().is_empty());
-                let cb = if can_toggle {
-                    checkbox(checked)
-                        .on_toggle(move |v| SettingsEvent::ToggleModel(id_string.clone(), v))
-                        .style(crate::views::primary_checkbox)
-                } else {
-                    checkbox(checked).style(crate::views::primary_checkbox)
-                };
+                let mut cb = checkbox(checked).style(crate::views::primary_checkbox);
+                if can_toggle {
+                    cb = cb.on_toggle(move |v| {
+                        SettingsEvent::Models(ModelsEvent::ToggleModel(id.to_string(), v))
+                    });
+                }
 
-                let id_text = text(id.to_string()).size(12);
-                let id_inner = container(id_text).padding([2, 4]);
-                let id_cell = mouse_area(container(id_inner).style(move |_: &iced::Theme| {
-                    if is_selected {
-                        container::Style {
-                            background: Some(
-                                Color::from_rgb8(0x3B, 0x82, 0xF6).scale_alpha(0.12).into(),
-                            ),
-                            border: Border::default()
-                                .rounded(4)
-                                .width(1)
-                                .color(Color::from_rgb8(0x3B, 0x82, 0xF6).scale_alpha(0.3)),
-                            ..container::Style::default()
-                        }
-                    } else {
-                        container::Style::default()
-                    }
-                }))
-                .on_press(SettingsEvent::SelectModelDetail(id_string2));
+                let id_cell = mouse_area(
+                    container(container(text(id.to_string()).size(12)).padding([2, 4])).style(
+                        move |_: &iced::Theme| {
+                            if is_selected {
+                                container::Style {
+                                    background: Some(
+                                        Color::from_rgb8(0x3B, 0x82, 0xF6).scale_alpha(0.12).into(),
+                                    ),
+                                    border: Border::default()
+                                        .rounded(4)
+                                        .width(1)
+                                        .color(Color::from_rgb8(0x3B, 0x82, 0xF6).scale_alpha(0.3)),
+                                    ..container::Style::default()
+                                }
+                            } else {
+                                container::Style::default()
+                            }
+                        },
+                    ),
+                )
+                .on_press(SettingsEvent::Models(ModelsEvent::SelectModelDetail(
+                    id.to_string(),
+                )));
 
-                let row_bg: Element<_> =
-                    container(row![cb, id_cell].spacing(8).align_y(Alignment::Center))
-                        .padding(1)
-                        .into();
-                row_bg
+                container(row![cb, id_cell].spacing(8).align_y(Alignment::Center))
+                    .padding(1)
+                    .into()
             })
             .collect();
 
@@ -571,7 +569,7 @@ fn models_section_view<'a>(
                             .clone()
                             .unwrap_or_else(|| active_cost.source.clone());
                         let picker = pick_list(sources, Some(selected_source), |src| {
-                            SettingsEvent::SelectOfferSource(src)
+                            SettingsEvent::Models(ModelsEvent::SelectOfferSource(src))
                         })
                         .text_size(12);
                         column![
@@ -688,10 +686,194 @@ pub(super) fn ai_models_page<'a>(state: &'a SettingsState) -> Element<'a, Settin
     let providers_section = provider_tab_view(state);
     let labels_section = label_tab_view(state);
 
-    let action_row =
-        super::save_action_row(state, SettingsTab::AiModels, SettingsEvent::SaveModels);
+    let action_row = super::save_action_row(
+        state,
+        SettingsTab::AiModels,
+        SettingsEvent::Models(ModelsEvent::SaveModels),
+    );
 
     column![providers_section, labels_section, action_row]
         .spacing(16)
         .into()
+}
+
+// ── Update ─────────────────────────────────────────────────────────
+
+/// Handle an AI Models tab event, mutating `state.working_models`.
+pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
+    match event {
+        ModelsEvent::SaveModels => {
+            state.adding_label = false;
+            state.drag_label = None;
+            state.flush_current_provider();
+            // Also confirm any pending label input.
+            state.commit_new_label();
+            state.save_feedback = Some(SettingsTab::AiModels);
+        }
+        // ── Provider actions ──────────────────────────────────
+        ModelsEvent::SelectProvider(id) => {
+            state.flush_current_provider();
+            state.selected_provider_id = id.clone();
+            if let Some(p) = state.working_models.providers.get(&id).cloned() {
+                state.load_provider(&p);
+            }
+        }
+        ModelsEvent::EditProviderName(v) => state.provider_name = v,
+        ModelsEvent::EditProviderBaseUrl(v) => {
+            // Clear cached models — the URL changed, old list is stale.
+            state.cached_model_ids.remove(&state.selected_provider_id);
+            state.available_model_ids.clear();
+            state.models_fetch_error = None;
+            state.provider_base_url = v;
+        }
+        ModelsEvent::EditProviderApiType(v) => state.provider_api_type = v,
+        ModelsEvent::EditProviderAuth(v) => state.provider_auth = v,
+        ModelsEvent::EditProviderApiKey(v) => state.provider_api_key = v,
+        ModelsEvent::ToggleProviderStrictMode(v) => state.provider_strict_mode = v,
+        ModelsEvent::RefreshModels => {
+            state.cached_model_ids.remove(&state.selected_provider_id);
+            state.available_model_ids.clear();
+            state.models_fetch_error = None;
+            state.fetching_models = true;
+        }
+        ModelsEvent::ModelsFetched(provider_id, result) => {
+            state.fetching_models = false;
+            match result {
+                Ok(ids) => {
+                    if !provider_id.is_empty() {
+                        state
+                            .cached_model_ids
+                            .insert(provider_id.clone(), ids.clone());
+                    }
+                    // Only update display if we're still looking at this provider.
+                    if provider_id == state.selected_provider_id {
+                        state.available_model_ids = ids;
+                    }
+                }
+                Err(e) => {
+                    if provider_id == state.selected_provider_id {
+                        state.models_fetch_error = Some(e);
+                    }
+                }
+            }
+        }
+        ModelsEvent::ToggleModel(id, checked) => {
+            // Auto-flush new provider so it exists in working_models.
+            if state.is_new_provider {
+                state.flush_current_provider();
+            }
+            if let Some(provider) = state
+                .working_models
+                .providers
+                .get_mut(&state.selected_provider_id)
+            {
+                if checked {
+                    if !provider.models.iter().any(|m| m.id == id) {
+                        let model = if let Some(db_model) = state.model_db.get(&id) {
+                            let cost = state
+                                .selected_offer_source
+                                .as_deref()
+                                .and_then(|src| db_model.offers.iter().find(|o| o.source == src))
+                                .cloned()
+                                .unwrap_or_else(|| db_model.cost.clone());
+                            Model {
+                                id,
+                                name: db_model.name.clone(),
+                                thinking: db_model.thinking,
+                                thinking_levels: db_model.thinking_levels.clone(),
+                                input: db_model.input.clone(),
+                                context_window: db_model.context_window,
+                                max_tokens: db_model.max_tokens,
+                                cost,
+                                offers: db_model.offers.clone(),
+                            }
+                        } else {
+                            let name = id.clone();
+                            Model {
+                                id,
+                                name,
+                                ..Default::default()
+                            }
+                        };
+                        provider.models.push(model);
+                    }
+                } else {
+                    provider.models.retain(|m| m.id != id);
+                }
+            }
+        }
+        ModelsEvent::SelectModelDetail(id) => {
+            if state.selected_model_id.as_deref() == Some(&id) {
+                state.selected_model_id = None;
+                state.selected_offer_source = None;
+            } else {
+                state.selected_model_id = Some(id);
+                state.selected_offer_source = None;
+            }
+        }
+        ModelsEvent::SelectOfferSource(source) => {
+            state.selected_offer_source = Some(source);
+        }
+        ModelsEvent::NewProvider => {
+            state.flush_current_provider();
+            state.reset_provider_fields();
+            state.selected_model_id = None;
+            state.selected_offer_source = None;
+            state.available_model_ids.clear();
+            state.selected_provider_id.clear();
+            state.models_fetch_error = None;
+        }
+        ModelsEvent::CancelNewProvider => {
+            state.is_new_provider = false;
+            state.select_first_provider();
+        }
+        ModelsEvent::DeleteProvider(id) => {
+            state.working_models.providers.shift_remove(&id);
+            // Remove any labels referencing this provider
+            state
+                .working_models
+                .models
+                .retain(|_, cfg| cfg.provider_id != id);
+            if state.selected_provider_id == id {
+                state.selected_provider_id.clear();
+                state.select_first_provider();
+            }
+        }
+        // ── Label actions ─────────────────────────────────────
+        ModelsEvent::DeleteLabel(name) => {
+            state.working_models.models.shift_remove(&name);
+        }
+        ModelsEvent::StartAddLabel => {
+            state.adding_label = true;
+            state.new_label_name.clear();
+        }
+        ModelsEvent::NewLabelName(v) => state.new_label_name = v,
+        ModelsEvent::AddLabel => {
+            state.adding_label = false;
+            state.commit_new_label();
+        }
+        ModelsEvent::LabelDragStart(index) => {
+            state.drag_label = Some(index);
+            state.drag_reordered = false;
+        }
+        ModelsEvent::LabelDragEnter(index) => {
+            if let Some(from) = state.drag_label
+                && from != index
+                && index < state.working_models.models.len()
+            {
+                state.working_models.models.move_index(from, index);
+                state.drag_label = Some(index);
+                state.drag_reordered = true;
+            }
+        }
+        ModelsEvent::LabelDragEnd => {
+            state.drag_label = None;
+            state.drag_reordered = false;
+        }
+        ModelsEvent::LabelInputFocus(focused) => {
+            if !focused && state.adding_label {
+                state.update(SettingsEvent::Models(ModelsEvent::AddLabel));
+            }
+        }
+    }
 }
