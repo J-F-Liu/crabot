@@ -70,10 +70,7 @@ pub struct McpList {
 impl McpList {
     /// Path to `~/.crabot/mcp.ron`.
     pub fn path() -> PathBuf {
-        home::home_dir()
-            .unwrap_or_default()
-            .join(".crabot")
-            .join("mcp.ron")
+        crate::setup::config_dir().join("mcp.ron")
     }
 
     /// Load from disk, returning empty list if missing or malformed.

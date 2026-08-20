@@ -32,29 +32,18 @@ pub(crate) const NEW_PROVIDER_NAME_INPUT_ID: &str = "settings-new-provider-name-
 
 // ── Tabs ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[strum(serialize_all = "title_case")]
 pub(crate) enum SettingsTab {
+    #[strum(serialize = "AI Models")]
     AiModels,
     PromptRecipes,
     BuiltinTools,
     CustomTools,
+    #[strum(serialize = "MCP Servers")]
     McpServers,
     ToolPlayground,
     About,
-}
-
-impl SettingsTab {
-    fn label(&self) -> &'static str {
-        match self {
-            SettingsTab::AiModels => "AI Models",
-            SettingsTab::PromptRecipes => "Prompt Recipes",
-            SettingsTab::BuiltinTools => "Builtin Tools",
-            SettingsTab::CustomTools => "Custom Tools",
-            SettingsTab::McpServers => "MCP Servers",
-            SettingsTab::ToolPlayground => "Tool Playground",
-            SettingsTab::About => "About",
-        }
-    }
 }
 
 /// Tracks the state of the update check on the About tab.
@@ -1372,7 +1361,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
         .iter()
         .map(|&tab| {
             let is_active = state.selected_tab == tab;
-            button(text(tab.label()).size(13))
+            button(text(tab.to_string()).size(13))
                 .width(Length::Fill)
                 .style(sidebar_tab_style(is_active))
                 .on_press(SettingsEvent::SelectTab(tab))

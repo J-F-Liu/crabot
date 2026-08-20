@@ -10,13 +10,14 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::app::{SessionEndStatus, SessionTab};
-use crate::llm::{DialogPhase, lock};
+use crate::llm::DialogPhase;
 use crate::model::Cost;
 use crate::model::TokenAmount;
 use crate::views::ASK_INPUT;
 use crate::views::scroll_to_end;
 use crabot::HashSetExt;
 use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
+use crabot::lock;
 use crabot::session::Session;
 use crabot::user::UserPrompt;
 use genai::chat::{ChatMessage, ChatRole};

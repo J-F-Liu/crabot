@@ -211,9 +211,7 @@ impl ToolState {
                 && !server.prompt.is_empty()
                 && self
                     .tool_registry
-                    .get_mcp_tool_names(&server.name)
-                    .iter()
-                    .any(|name| self.enabled_tools.contains(name))
+                    .mcp_server_has_enabled_tool(&server.name, &self.enabled_tools)
             {
                 result.push_str(&server.prompt);
             }

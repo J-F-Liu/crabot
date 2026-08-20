@@ -206,10 +206,7 @@ pub struct ToolList {
 impl ToolList {
     /// Path to `~/.crabot/tools.ron`.
     pub fn path() -> PathBuf {
-        home::home_dir()
-            .unwrap_or_default()
-            .join(".crabot")
-            .join("tools.ron")
+        crate::setup::config_dir().join("tools.ron")
     }
 
     /// Load custom tools from disk, returning empty list if missing or malformed.

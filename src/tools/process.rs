@@ -5,7 +5,7 @@
 //! children in an app-global registry keyed by their OS pid.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -19,12 +19,14 @@ use tokio_util::sync::CancellationToken;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 #[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, RawHandle};
 
 use super::{
-    CANCEL_REASON, OutputSink, ProcessSignal, StreamDecoder, Tool, arg_str, arg_u64, detach_child,
-    exit_code_of, lock, resolve_path, sanitize_child_env, signal_process_tree, tool_limits,
+    CANCEL_REASON, OutputSink, ProcessSignal, StdinWriteError, StreamDecoder, Tool, arg_str,
+    arg_u64, detach_child, exit_code_of, resolve_path, sanitize_child_env, signal_process_tree,
+    tool_limits, write_stdin_bounded,
 };
+use crate::lock;
 
 /// Cap on retained exited process entries; the oldest are dropped on `start`.
 const MAX_RETAINED_EXITED: usize = 64;
@@ -46,8 +48,6 @@ const DRAIN_GRACE: Duration = Duration::from_millis(250);
 const SETTLE_GRACE_MS: u64 = 250;
 /// Timeout for `input` when the child stops reading (pipe full); cancel aborts sooner.
 const INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Chunk size for stdin writes: a cancelled input stops within one chunk.
-const INPUT_CHUNK: usize = 16 * 1024;
 /// Default and maximum number of log lines returned by `logs`.
 const DEFAULT_LINES: u64 = 100;
 const MAX_LINES: u64 = 2000;
@@ -291,11 +291,12 @@ fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     // is taken out of the mutex, so `stop` never waits on the write.
     let payload = [text.as_bytes(), b"\n"].concat();
     let sent = payload.len();
+    let deadline = Instant::now() + INPUT_WRITE_TIMEOUT;
     let (tx, rx) = mpsc::channel::<Result<(), String>>();
     let entry = Arc::clone(&e);
     let cancel_for_write = cancel.clone();
     std::thread::spawn(move || {
-        let res = write_payload(&entry, &mut stdin, &payload, &cancel_for_write);
+        let res = write_payload(&entry, &mut stdin, &payload, &cancel_for_write, deadline);
         // Return stdin for later input, or drop it on exit (closing the pipe).
         if !entry.has_exited() {
             *lock(&entry.stdin) = Some(stdin);
@@ -304,7 +305,8 @@ fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
         let _ = tx.send(res); // the caller may have given up (cancel/timeout)
     });
 
-    let deadline = Instant::now() + INPUT_WRITE_TIMEOUT;
+    // Poll so cancel/timeout return promptly even if the thread is stuck in
+    // a blocking `write` the child never drains.
     loop {
         if cancel.is_cancelled() {
             return Err(CANCEL_REASON.into());
@@ -319,15 +321,10 @@ fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
                     describe(&e)
                 ));
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if Instant::now() >= deadline {
-                    return Err(format!(
-                        "Timed out writing to stdin of process {} ({}): pipe full; \
-                         the input may still be delivered once the process reads",
-                        e.pid, e.command
-                    ));
-                }
+            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() >= deadline => {
+                return Err(stdin_timeout_err(&e));
             }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(format!(
                     "Stdin writer for process {} ({}) failed unexpectedly",
@@ -338,13 +335,24 @@ fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     }
 }
 
-/// Write in chunks, checking `cancel` between chunks so a cancelled input
-/// stops within one chunk; bytes already in the pipe may still be delivered.
+/// Timeout message shared by `input`'s wait loop and [`write_payload`].
+fn stdin_timeout_err(e: &ProcessEntry) -> String {
+    format!(
+        "Timed out writing to stdin of process {} ({}): pipe full; \
+         the input may still be delivered once the process reads",
+        e.pid, e.command
+    )
+}
+
+/// Write `payload` to the process's stdin via [`write_stdin_bounded`],
+/// formatting failures with process context. Bytes already in the pipe may
+/// still be delivered on cancel/timeout.
 fn write_payload(
     entry: &ProcessEntry,
     stdin: &mut ChildStdin,
     payload: &[u8],
     cancel: &CancellationToken,
+    deadline: Instant,
 ) -> Result<(), String> {
     let io_err = |err: std::io::Error| {
         format!(
@@ -352,13 +360,12 @@ fn write_payload(
             entry.pid, entry.command
         )
     };
-    for chunk in payload.chunks(INPUT_CHUNK) {
-        if cancel.is_cancelled() {
-            return Err(CANCEL_REASON.into());
-        }
-        stdin.write_all(chunk).map_err(io_err)?;
+    match write_stdin_bounded(stdin, payload, cancel, deadline) {
+        Ok(()) => Ok(()),
+        Err(StdinWriteError::Cancelled) => Err(CANCEL_REASON.into()),
+        Err(StdinWriteError::TimedOut) => Err(stdin_timeout_err(entry)),
+        Err(StdinWriteError::Io(e)) => Err(io_err(e)),
     }
-    stdin.flush().map_err(io_err)
 }
 
 fn not_accepting_input(e: &ProcessEntry, why: &str) -> String {
@@ -581,8 +588,8 @@ fn raw_pipe<T: AsRawFd>(r: &T) -> i32 {
 
 /// Raw handle of a child pipe read end (for `PeekNamedPipe` polling).
 #[cfg(windows)]
-fn raw_pipe<T: AsRawHandle>(r: &T) -> isize {
-    r.as_raw_handle() as isize
+fn raw_pipe<T: AsRawHandle>(r: &T) -> RawHandle {
+    r.as_raw_handle()
 }
 
 /// Result of one read attempt on a child output pipe.
@@ -600,8 +607,10 @@ fn spawn_reader(
     entry: Arc<ProcessEntry>,
     mut reader: impl Read + Send + 'static,
     #[cfg(unix)] raw: i32,
-    #[cfg(windows)] raw: isize,
+    #[cfg(windows)] raw: RawHandle,
 ) {
+    #[cfg(windows)]
+    let raw = raw as isize; // RawHandle is !Send; the handle stays owned by `reader`.
     std::thread::spawn(move || {
         let mut decoder = StreamDecoder::new();
         let mut out = Vec::new();
@@ -658,7 +667,7 @@ fn read_step(reader: &mut impl Read, buf: &mut [u8], fd: i32) -> ReadStep {
 /// a blocking `ReadFile` can never hang.
 #[cfg(windows)]
 fn read_step(reader: &mut impl Read, buf: &mut [u8], raw: isize) -> ReadStep {
-    match super::peek_pipe_available(raw) {
+    match super::peek_pipe_available(raw as RawHandle) {
         Some(0) => {
             std::thread::sleep(READER_IDLE_SLEEP);
             ReadStep::Retry
@@ -690,7 +699,7 @@ fn spawn_reaper(entry: Arc<ProcessEntry>, mut child: Child) {
         };
         *lock(&entry.status) = ProcessStatus::Exited(code);
         // Close stdin so a later `input` fails cleanly.
-        entry.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
+        lock(&entry.stdin).take();
     });
 }
 
@@ -715,7 +724,7 @@ fn stop_for_restart(e: &ProcessEntry) -> String {
 /// Close stdin, send `signal` to the process tree, and wait up to
 /// [`STOP_GRACE`] for the reaper to record the exit.
 fn signal_and_wait(entry: &ProcessEntry, signal: ProcessSignal) -> Result<String, String> {
-    entry.stdin.lock().unwrap_or_else(|e| e.into_inner()).take();
+    lock(&entry.stdin).take();
 
     if let Some(code) = entry.exit_code_opt() {
         return Ok(format!(
@@ -738,8 +747,7 @@ fn signal_and_wait(entry: &ProcessEntry, signal: ProcessSignal) -> Result<String
         std::thread::sleep(POLL_INTERVAL);
     }
     Ok(format!(
-        "{} signal sent to process {} ({}, up {}s); still running",
-        signal.name(),
+        "{signal} signal sent to process {} ({}, up {}s); still running",
         entry.pid,
         entry.command,
         entry.started_secs()
@@ -883,7 +891,7 @@ pub fn shutdown() {
             continue;
         }
         // Close stdin so well-behaved children exit on EOF.
-        e.stdin.lock().unwrap_or_else(|p| p.into_inner()).take();
+        lock(&e.stdin).take();
         signal_process_tree(e.pid, ProcessSignal::Terminate);
     }
     // Give them a short grace period to exit, then force-kill stragglers.

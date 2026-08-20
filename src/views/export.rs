@@ -640,12 +640,11 @@ fn is_safe_image_dest(url: &str) -> bool {
     is_safe_link_dest(url) || url.starts_with("data:")
 }
 
+/// Escape `& < > " '` for HTML text and quoted attributes.
 fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    let mut escaped = String::with_capacity(text.len());
+    let _ = pulldown_cmark_escape::escape_html(&mut escaped, text);
+    escaped
 }
 
 // ── styles ────────────────────────────────────────────────────────

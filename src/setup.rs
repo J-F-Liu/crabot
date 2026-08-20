@@ -15,9 +15,15 @@ pub fn default_models() -> &'static str {
         .unwrap_or("")
 }
 
+/// The crabot config directory (`~/.crabot`), falling back to a cwd-relative
+/// `.crabot` when no home directory is available.
+pub fn config_dir() -> PathBuf {
+    home::home_dir().unwrap_or_default().join(".crabot")
+}
+
 /// The default workspace path (`~/.crabot`) used when no workspace is set.
 pub fn default_workspace_path() -> PathBuf {
-    home::home_dir().unwrap_or_default().join(".crabot")
+    config_dir()
 }
 
 /// Mirror panics to `~/.crabot/logs/panic.log` so GUI crashes stay diagnosable

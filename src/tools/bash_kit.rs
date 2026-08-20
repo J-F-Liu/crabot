@@ -34,9 +34,10 @@ use bashkit::{
 
 use super::{
     CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, WaitError, create_pipe_pair,
-    is_would_block, pipe_to_stdio, set_pipe_nonblocking, set_sender_noninheritable,
-    timeout_message, wait_with_timeout,
+    pipe_to_stdio, set_pipe_nonblocking, set_sender_noninheritable, timeout_message,
+    wait_with_timeout, write_stdin_bounded,
 };
+use crate::lock;
 
 /// Per-stream output cap (head-only backstop; crabot's own truncation is the visible limit).
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
@@ -381,7 +382,7 @@ async fn run_script(
         bash.exec_streaming(
             command,
             Box::new(move |stdout, stderr| {
-                let mut guard = super::lock(&forwarder);
+                let mut guard = lock(&forwarder);
                 guard.push(OutStream::Stdout, stdout.as_bytes());
                 guard.push(OutStream::Stderr, stderr.as_bytes());
             }),
@@ -396,7 +397,7 @@ async fn run_script(
 async fn flush_ticker(forwarder: Arc<Mutex<ChunkForwarder>>) {
     loop {
         tokio::time::sleep(super::COALESCE_MS).await;
-        super::lock(&forwarder).tick();
+        lock(&forwarder).tick();
     }
 }
 
@@ -519,7 +520,7 @@ fn build_bash(
     }
     // bashkit warns on stderr per read-write mount; silence stderr while
     // building (locked so concurrent builds can't swap each other's handles).
-    let _lock = SILENCER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _lock = lock(&SILENCER_LOCK);
     let _silence = stderr_silencer::StderrSilencer::new();
     builder.build()
 }
@@ -623,23 +624,17 @@ impl Builtin for HostCommandBuiltin {
             Err(e) => return Ok(ExecResult::err(format!("bash: {}: {e}", self.name), 127)),
         };
 
-        // Feed stdin in a side thread: non-blocking writes with a 5s deadline,
-        // so a surviving grandchild holding the pipe open can't hang the script.
+        // Feed stdin in a side thread: bounded writes (cancel + 5s), so a
+        // surviving grandchild holding the pipe open can't hang the script.
         if let Some((data, mut stdin_tx)) = stdin_writer {
+            let cancel = self.cancel.clone();
             std::thread::spawn(move || {
-                use std::io::Write;
-                let deadline = Instant::now() + Duration::from_secs(5);
-                let mut written = 0;
-                while written < data.len() && Instant::now() < deadline {
-                    match stdin_tx.write(&data[written..]) {
-                        Ok(0) => break,
-                        Ok(n) => written += n,
-                        Err(e) if is_would_block(&e) => {
-                            std::thread::sleep(Duration::from_millis(10))
-                        }
-                        Err(_) => break, // EPIPE — reader gone
-                    }
-                }
+                let _ = write_stdin_bounded(
+                    &mut stdin_tx,
+                    &data,
+                    &cancel,
+                    Instant::now() + Duration::from_secs(5),
+                );
             });
         }
 
@@ -650,7 +645,7 @@ impl Builtin for HostCommandBuiltin {
         let result = tokio::task::spawn_blocking(move || {
             // No contention: callback/ticker routes never coexist with host
             // commands, so holding the script-level lock is safe.
-            let mut guard = super::lock(&forwarder);
+            let mut guard = lock(&forwarder);
             wait_with_timeout(
                 child,
                 Some(stdout_rx),
@@ -810,12 +805,10 @@ fn readonly_roots() -> Vec<RealMount> {
 /// build-time canonicalize.
 #[cfg(windows)]
 fn present_drive_letters() -> Vec<char> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+
     const DRIVE_UNKNOWN: u32 = 0;
     const DRIVE_NO_ROOT_DIR: u32 = 1;
-    unsafe extern "system" {
-        fn GetLogicalDrives() -> u32;
-        fn GetDriveTypeW(lp_root_path_name: *const u16) -> u32;
-    }
     // SAFETY: GetLogicalDrives takes no arguments; bit i is drive 'A' + i.
     let mask = unsafe { GetLogicalDrives() };
     (0..26)
@@ -1031,21 +1024,12 @@ mod stderr_silencer {
 #[cfg(windows)]
 mod stderr_silencer {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-
-    unsafe extern "system" {
-        fn CreatePipe(
-            hreadpipe: *mut isize,
-            hwritepipe: *mut isize,
-            lppipeattributes: *mut std::ffi::c_void,
-            nsize: u32,
-        ) -> i32;
-        fn GetStdHandle(n_std_handle: u32) -> isize;
-        fn SetStdHandle(n_std_handle: u32, handle: isize) -> i32;
-    }
-    const STD_ERROR_HANDLE: u32 = (-12i32) as u32;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, SetStdHandle};
+    use windows_sys::Win32::System::Pipes::CreatePipe;
 
     pub(super) struct StderrSilencer {
-        saved: Option<isize>,
+        saved: Option<HANDLE>,
         read_end: Option<OwnedHandle>,
         /// Held open during `build()`; closed on drop before reading the pipe.
         write_end: Option<OwnedHandle>,
@@ -1053,10 +1037,10 @@ mod stderr_silencer {
 
     impl StderrSilencer {
         pub(super) fn new() -> Self {
-            let mut read = 0isize;
-            let mut write = 0isize;
+            let mut read: HANDLE = std::ptr::null_mut();
+            let mut write: HANDLE = std::ptr::null_mut();
             // SAFETY: CreatePipe with valid out-pointers; null attrs → defaults.
-            if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null_mut(), 0) } == 0 {
+            if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) } == 0 {
                 return Self {
                     saved: None,
                     read_end: None,
@@ -1064,11 +1048,11 @@ mod stderr_silencer {
                 };
             }
             // SAFETY: handles are freshly created, wrapped in OwnedHandle.
-            let read_end = unsafe { OwnedHandle::from_raw_handle(read as *mut _) };
-            let write_end = unsafe { OwnedHandle::from_raw_handle(write as *mut _) };
+            let read_end = unsafe { OwnedHandle::from_raw_handle(read) };
+            let write_end = unsafe { OwnedHandle::from_raw_handle(write) };
             // SAFETY: GetStdHandle/SetStdHandle with valid constants.
             let saved = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
-            unsafe { SetStdHandle(STD_ERROR_HANDLE, write_end.as_raw_handle() as isize) };
+            unsafe { SetStdHandle(STD_ERROR_HANDLE, write_end.as_raw_handle()) };
             Self {
                 saved: Some(saved),
                 read_end: Some(read_end),

@@ -131,10 +131,7 @@ pub(crate) fn workspace_field_view<'a>(
 /// Build picker options for a prompt file directory (preamble / rules).
 /// Each entry's display name is the file stem (extension omitted).
 pub fn build_md_file_options(subdir: &str) -> Vec<FilepathEntry> {
-    let dir = home::home_dir()
-        .unwrap_or_default()
-        .join(".crabot")
-        .join(subdir);
+    let dir = crabot::setup::config_dir().join(subdir);
     let mut entries = Vec::new();
     if let Ok(read_dir) = std::fs::read_dir(dir) {
         for entry in read_dir.flatten() {

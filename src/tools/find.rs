@@ -5,7 +5,8 @@ use tokio_util::sync::CancellationToken;
 use globset::{GlobBuilder, GlobMatcher};
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, lock, resolve_path, tool_limits};
+use super::{Tool, arg_str, resolve_path, tool_limits};
+use crate::lock;
 
 pub struct FindTool;
 

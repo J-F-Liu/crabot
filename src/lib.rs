@@ -12,11 +12,12 @@ pub mod user;
 pub mod workspace;
 
 use std::collections::HashSet;
+use std::hash::Hash;
+use std::sync::{Mutex, MutexGuard};
 
 pub fn app_title() -> &'static str {
     concat!("Crabot v", env!("CARGO_PKG_VERSION"))
 }
-use std::hash::Hash;
 
 pub trait HashSetExt<T> {
     fn set(&mut self, value: T, enabled: bool);
@@ -30,6 +31,11 @@ impl<T: Eq + Hash> HashSetExt<T> for HashSet<T> {
             self.remove(&value);
         }
     }
+}
+
+/// Lock a mutex, recovering the payload if the holder panicked.
+pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // ── Bounded output capture ─────────────────────────────────────────
@@ -95,15 +101,25 @@ impl BoundedCapture {
         if skipped == 0 {
             return self.materialize();
         }
-        let marker = format!(
-            "\n\n... [{skipped} bytes truncated ({total} total, cap {keep})] ...\n\n",
-            total = self.total,
-            keep = self.keep,
-        );
+        let marker = crate::truncation_marker(skipped, self.total, Some(("cap", self.keep)));
         let mut out = Vec::with_capacity(self.head.len() + self.tail.len() + marker.len());
         out.extend_from_slice(&self.head);
         out.extend_from_slice(marker.as_bytes());
         out.extend_from_slice(&self.tail);
         out
     }
+}
+
+// ── Truncation notice marker ────────────────────────────────────────
+
+/// Head+tail truncation notice: `... [N bytes truncated (T total, L V)] ...`,
+/// with an optional `, {label} {value}` limit suffix. The live-stream marker
+/// is deliberately separate (`streaming_truncation_marker`).
+pub(crate) fn truncation_marker(
+    skipped: usize,
+    total: usize,
+    limit: Option<(&str, usize)>,
+) -> String {
+    let limit = limit.map_or(String::new(), |(label, value)| format!(", {label} {value}"));
+    format!("\n\n... [{skipped} bytes truncated ({total} total{limit})] ...\n\n")
 }

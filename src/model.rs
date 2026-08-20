@@ -297,21 +297,22 @@ pub fn currency_symbol(currency: &str) -> &str {
 
 /// Loads providers from `~/.crabot/models.ron`.
 pub fn load_models() -> ModelList {
-    let ron_exists = models_ron_path().map(|p| p.exists()).unwrap_or(false);
-    if ron_exists {
+    if models_ron_path().exists() {
         match try_load_models_from_ron() {
-            Ok(list) => return list,
-            Err(e) => tracing::warn!("failed to load models.ron, using defaults: {e}"),
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("failed to load models.ron, using defaults: {e}");
+                ModelList::default()
+            }
         }
     } else {
         // First boot: seed the file with the compiled-in defaults.
-        let path = models_ron_path().unwrap();
+        let path = models_ron_path();
         if let Err(e) = std::fs::write(&path, crate::setup::default_models()) {
             tracing::warn!(path = %path.display(), "failed to seed default models.ron: {e}");
         }
-        return try_load_models_from_ron().unwrap_or_default();
+        try_load_models_from_ron().unwrap_or_default()
     }
-    ModelList::default()
 }
 
 /// If `api_key` is an environment variable name, resolve it to the actual value.
@@ -359,26 +360,17 @@ pub async fn fetch_available_models(base_url: &str, api_key: &str) -> Result<Vec
 
 // ── RON load / save ─────────────────────────────────────────────────
 
-fn models_ron_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = home::home_dir().ok_or("cannot determine home directory")?;
-    Ok(home.join(".crabot").join("models.ron"))
+fn models_ron_path() -> PathBuf {
+    crate::setup::config_dir().join("models.ron")
 }
 
 fn try_load_models_from_ron() -> Result<ModelList, Box<dyn std::error::Error>> {
-    let path = models_ron_path()?;
-    let text = std::fs::read_to_string(&path)?;
-    let list: ModelList = ron::from_str(&text)?;
-    Ok(list)
+    let text = std::fs::read_to_string(models_ron_path())?;
+    Ok(ron::from_str(&text)?)
 }
 
 fn save_models_to_ron(list: &ModelList) {
-    let path = match models_ron_path() {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("cannot determine models.ron path, models not saved: {e}");
-            return;
-        }
-    };
+    let path = models_ron_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

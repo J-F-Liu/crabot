@@ -172,11 +172,8 @@ pub fn truncate_body(s: String, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s;
     }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
     let mut truncated = s;
+    let end = truncated.floor_char_boundary(max_bytes);
     truncated.truncate(end);
     truncated
 }

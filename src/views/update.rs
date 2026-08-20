@@ -2,6 +2,7 @@
 //! release is available on GitHub.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use iced::{
@@ -16,6 +17,10 @@ use crate::OverlayEvent;
 pub(crate) const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// GitHub releases page opened from the banner.
 pub(crate) const RELEASES_URL: &str = "https://github.com/J-F-Liu/crabot/releases";
+
+/// Latest update-extraction dir: keeps the returned exe path alive until
+/// restart; replaced (and cleaned up) by the next update.
+static EXTRACT_DIR: Mutex<Option<tempfile::TempDir>> = Mutex::new(None);
 
 /// Download state machine for the "Install New Version" button.
 #[derive(Clone)]
@@ -138,27 +143,30 @@ pub(crate) async fn download_and_extract(
     }
     tracing::debug!(version = %version, bytes = bytes.len(), "update downloaded");
 
-    let extract_dir = std::env::temp_dir().join(format!("crabot-v{version}"));
-    let asset_name_clone = asset_name.clone();
-    let extract_dir_clone = extract_dir.clone();
-
-    // Extraction is blocking; run it on the blocking thread pool.
-    tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&extract_dir_clone).map_err(|e| e.to_string())?;
-        let archive_path = extract_dir_clone.join(&asset_name_clone);
+    // Extraction is blocking; the unique temp dir auto-cleans on failure
+    // and when the next update replaces it.
+    let extract_dir = tokio::task::spawn_blocking(move || {
+        let dir = tempfile::Builder::new()
+            .prefix("crabot-update-")
+            .tempdir()
+            .map_err(|e| e.to_string())?;
+        let archive_path = dir.path().join(&asset_name);
         std::fs::write(&archive_path, &bytes).map_err(|e| e.to_string())?;
-        if asset_name_clone.ends_with(".zip") {
-            extract_zip(&archive_path, &extract_dir_clone)?;
+        if asset_name.ends_with(".zip") {
+            extract_zip(&archive_path, dir.path())?;
         } else {
-            extract_tar_gz(&archive_path, &extract_dir_clone)?;
+            extract_tar_gz(&archive_path, dir.path())?;
         }
         let _ = std::fs::remove_file(&archive_path);
-        Ok::<(), String>(())
+        Ok::<_, String>(dir)
     })
     .await
     .map_err(|e| e.to_string())??;
 
-    find_executable(&extract_dir)
+    // Keep the dir alive: the exe path must stay valid until restart.
+    let exe = find_executable(extract_dir.path())?;
+    *crabot::lock(&EXTRACT_DIR) = Some(extract_dir);
+    Ok(exe)
 }
 
 fn extract_zip(archive: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {

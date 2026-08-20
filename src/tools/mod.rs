@@ -21,9 +21,9 @@ pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
 
 pub(crate) use charset::{StreamDecoder, decode_bytes};
 
-use crate::BoundedCapture;
+use crate::{BoundedCapture, lock};
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
@@ -48,6 +48,12 @@ pub const CANCEL_REASON: &str = "Cancelled by user";
 /// How long timeout/cancel errors wait for a detached host command's final
 /// drain (the forwarder lock) before reporting without partial output.
 pub(crate) const CAPTURE_GRACE: Duration = Duration::from_secs(2);
+
+/// Stdin chunk size for [`write_stdin_bounded`]: a cancelled/timed-out input
+/// stops within one chunk.
+pub(crate) const STDIN_CHUNK: usize = 16 * 1024;
+/// Sleep between `WouldBlock` retries on non-blocking stdin pipes.
+pub(crate) const STDIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 // ── Tool trait ──────────────────────────────────────────────────────
 
@@ -290,8 +296,6 @@ pub struct ToolRegistry {
     pub builtin_names: Vec<String>,
     pub custom_names: Vec<String>,
     pub mcp_servers: Vec<mcp::McpServer>,
-    /// MCP tool names grouped by server name: `(server_name, tool_names)`.
-    pub mcp_groups: Vec<(String, Vec<String>)>,
     /// Shared todo list — written by the `todo` tool, read by the right pane.
     pub todo_items: todo::TodoList,
 }
@@ -321,7 +325,6 @@ impl ToolRegistry {
             mcp: Vec::new(),
             custom_names: Vec::new(),
             mcp_servers: Vec::new(),
-            mcp_groups: Vec::new(),
             todo_items,
         }
     }
@@ -336,31 +339,18 @@ impl ToolRegistry {
         self.custom = tool_list.custom_tools;
     }
 
-    /// Add one MCP server's tools to the registry (incremental).
-    /// If a group with the same server name already exists, it is replaced.
+    /// Add or replace one MCP server's tools in the registry.
     pub fn register_mcp_group(&mut self, server_name: String, tools: Vec<mcp::McpTool>) {
-        let names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
-
-        // Replace existing group with the same server name, or append.
-        if let Some(pos) = self.mcp_groups.iter().position(|(n, _)| n == &server_name) {
-            self.mcp_groups[pos] = (server_name.clone(), names);
-            self.mcp[pos] = (server_name, tools);
-        } else {
-            self.mcp_groups.push((server_name.clone(), names));
-            self.mcp.push((server_name, tools));
-        }
+        upsert_group(&mut self.mcp, server_name, tools);
     }
 
-    /// Remove a server's tools from the registry, returning the tool names
-    /// that were removed. Used when a server is deleted or reconfigured.
+    /// Remove a server's tools from the registry, returning the removed tool names.
     pub fn unregister_mcp_group(&mut self, server_name: &str) -> Vec<String> {
-        if let Some(pos) = self.mcp_groups.iter().position(|(n, _)| n == server_name) {
-            let (_, names) = self.mcp_groups.remove(pos);
-            self.mcp.remove(pos);
-            names
-        } else {
-            Vec::new()
-        }
+        remove_group(&mut self.mcp, server_name)
+            .into_iter()
+            .flatten()
+            .map(|t| t.name)
+            .collect()
     }
 
     /// Look up an MCP server config by name.
@@ -378,7 +368,18 @@ impl ToolRegistry {
         self.builtin_names
             .iter()
             .chain(self.custom_names.iter())
-            .chain(self.mcp_groups.iter().flat_map(|(_s, names)| names.iter()))
+            .chain(
+                self.mcp
+                    .iter()
+                    .flat_map(|(_s, tools)| tools.iter().map(|t| &t.name)),
+            )
+    }
+
+    /// Whether any enabled tool belongs to the given MCP server.
+    pub fn mcp_server_has_enabled_tool(&self, server: &str, enabled: &HashSet<String>) -> bool {
+        self.mcp
+            .iter()
+            .any(|(s, tools)| s == server && tools.iter().any(|t| enabled.contains(&t.name)))
     }
 
     /// Return a snapshot of the current todo list.
@@ -394,15 +395,6 @@ impl ToolRegistry {
         if let Ok(mut items) = self.todo_items.lock() {
             items.clear();
         }
-    }
-
-    /// Get the list of MCP tool names for a specific server.
-    pub fn get_mcp_tool_names(&self, server: &str) -> &[String] {
-        self.mcp_groups
-            .iter()
-            .find(|(s, _)| s == server)
-            .map(|(_, tools)| tools.as_slice())
-            .unwrap_or_default()
     }
 
     /// Collect every tool whose name appears in `enabled`.
@@ -466,6 +458,20 @@ impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Replace the group named `name` in `groups`, or append it.
+fn upsert_group<T>(groups: &mut Vec<(String, Vec<T>)>, name: String, items: Vec<T>) {
+    match groups.iter_mut().find(|(n, _)| *n == name) {
+        Some(existing) => *existing = (name, items),
+        None => groups.push((name, items)),
+    }
+}
+
+/// Remove the group named `name` from `groups`, returning its items.
+fn remove_group<T>(groups: &mut Vec<(String, Vec<T>)>, name: &str) -> Option<Vec<T>> {
+    let pos = groups.iter().position(|(n, _)| n == name)?;
+    Some(groups.remove(pos).1)
 }
 
 /// Build the genai tools list from a set of tool refs.
@@ -753,19 +759,19 @@ pub(crate) fn truncate_output(s: String) -> String {
     let head_tail = limits.head_tail_bytes.min(max / 2);
     let skipped = total - head_tail * 2;
 
-    // Find valid UTF-8 boundaries near the split points
-    let head_end = find_char_boundary(&s, head_tail);
-    let tail_start = find_char_boundary(&s, total - head_tail);
+    let head_end = s.floor_char_boundary(head_tail);
+    let tail_start = s.floor_char_boundary(total - head_tail);
 
     let head = &s[..head_end];
     let tail = &s[tail_start..];
 
     let mut truncated = String::with_capacity(head_tail * 2 + 128);
     truncated.push_str(head);
-    let _ = std::fmt::Write::write_fmt(
-        &mut truncated,
-        format_args!("\n\n... [{skipped} bytes truncated ({total} total, max {max})] ...\n\n"),
-    );
+    truncated.push_str(&crate::truncation_marker(
+        skipped,
+        total,
+        Some(("max", max)),
+    ));
     truncated.push_str(tail);
     truncated
 }
@@ -806,7 +812,7 @@ impl StreamingCap {
             return Some(chunk.to_string());
         }
         // Straddles the cap: keep the first `room` bytes, mark the cut, mute.
-        let mut out = chunk[..find_char_boundary(chunk, room)].to_string();
+        let mut out = chunk[..chunk.floor_char_boundary(room)].to_string();
         out.push_str(&streaming_truncation_marker(self.cap));
         self.cut = true;
         Some(out)
@@ -884,20 +890,6 @@ pub(crate) fn combine_output(stdout: &str, stderr: &str, exit_code: i32) -> Stri
     result
 }
 
-/// Closest valid UTF-8 character boundary at or before `pos`.
-pub fn find_char_boundary(s: &str, pos: usize) -> usize {
-    let pos = pos.min(s.len());
-    if s.is_char_boundary(pos) {
-        pos
-    } else {
-        // Step back until we hit a valid boundary (at most 3 bytes for UTF-8)
-        (pos.saturating_sub(3)..pos)
-            .rev()
-            .find(|&i| s.is_char_boundary(i))
-            .unwrap_or(0)
-    }
-}
-
 // ── Process execution helpers ──────────────────────────────────────
 
 /// Create an unnamed pipe pair for capturing child process output.
@@ -907,23 +899,60 @@ fn create_pipe_pair(label: &str) -> Result<(unnamed_pipe::Sender, unnamed_pipe::
     unnamed_pipe::pipe().map_err(|e| format!("Failed to create {label} pipe: {e}"))
 }
 
+/// Outcome of a bounded stdin write ([`write_stdin_bounded`]).
+#[derive(Debug)]
+pub(crate) enum StdinWriteError {
+    /// `cancel` fired before all bytes were written.
+    Cancelled,
+    /// `deadline` passed before all bytes were written (pipe full).
+    TimedOut,
+    /// I/O failure writing or flushing (reader closed the pipe, ...).
+    Io(std::io::Error),
+}
+
+/// Write `payload` to a child's stdin in [`STDIN_CHUNK`] chunks, bounded by
+/// `cancel` and `deadline`; retries `WouldBlock`/`Interrupted` and flushes at
+/// the end. Only a non-blocking pipe (see [`set_pipe_nonblocking`]) is truly
+/// bounded — a blocking stream may block inside a single `write`.
+pub(crate) fn write_stdin_bounded(
+    stream: &mut impl Write,
+    payload: &[u8],
+    cancel: &CancellationToken,
+    deadline: Instant,
+) -> Result<(), StdinWriteError> {
+    let mut written = 0;
+    while written < payload.len() {
+        if cancel.is_cancelled() {
+            return Err(StdinWriteError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(StdinWriteError::TimedOut);
+        }
+        let end = (written + STDIN_CHUNK).min(payload.len());
+        match stream.write(&payload[written..end]) {
+            Ok(0) => {
+                return Err(StdinWriteError::Io(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "stdin pipe closed",
+                )));
+            }
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if is_would_block(&e) => std::thread::sleep(STDIN_POLL_INTERVAL),
+            Err(e) => return Err(StdinWriteError::Io(e)),
+        }
+    }
+    stream.flush().map_err(StdinWriteError::Io)
+}
+
 /// A signal to deliver to a process tree (see [`signal_process_tree`]).
-#[derive(Clone, Copy)]
+/// `Display` yields the schema name used by the `process` tool's `stop` action.
+#[derive(Clone, Copy, strum::Display)]
+#[strum(serialize_all = "snake_case")]
 pub(crate) enum ProcessSignal {
     Terminate,
     Kill,
     Interrupt,
-}
-
-impl ProcessSignal {
-    /// Schema name used by the `process` tool's `stop` action.
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Terminate => "terminate",
-            Self::Kill => "kill",
-            Self::Interrupt => "interrupt",
-        }
-    }
 }
 
 /// Send `signal` to a process and its whole descendant tree.
@@ -1040,10 +1069,12 @@ pub(crate) fn set_pipe_nonblocking<E>(end: &E) -> Result<(), String> {
 /// failed (broken pipe = EOF). Uses `PeekNamedPipe`, which needs only
 /// `GENERIC_READ` — unlike `SetNamedPipeHandleState`.
 #[cfg(windows)]
-pub(crate) fn peek_pipe_available(handle: isize) -> Option<u32> {
+pub(crate) fn peek_pipe_available(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<u32> {
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     let mut bytes_avail = 0u32;
+    // SAFETY: `handle` is a live pipe read end; the out-pointers are valid.
     let ok = unsafe {
-        win32::PeekNamedPipe(
+        PeekNamedPipe(
             handle,
             std::ptr::null_mut(),
             0,
@@ -1078,13 +1109,9 @@ pub(crate) fn set_sender_noninheritable(sender: &unnamed_pipe::Sender) -> Result
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
-        let ok = unsafe {
-            win32::SetHandleInformation(
-                sender.as_raw_handle() as isize,
-                win32::HANDLE_FLAG_INHERIT,
-                0,
-            )
-        };
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        // SAFETY: `sender`'s handle is live; clears its inherit flag.
+        let ok = unsafe { SetHandleInformation(sender.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) };
         if ok == 0 {
             return Err(format!(
                 "Failed to clear handle inheritance: {}",
@@ -1096,11 +1123,6 @@ pub(crate) fn set_sender_noninheritable(sender: &unnamed_pipe::Sender) -> Result
 }
 
 // ── Incremental output forwarding ──────────────────────────────────
-
-/// Lock a mutex, recovering the payload if the holder panicked (poisoned).
-pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 /// Timeout error message used by both bash routes.
 pub(crate) fn timeout_message(timeout: Duration) -> String {
@@ -1449,7 +1471,7 @@ fn drain_pipe_impl(
 ) -> bool {
     use std::os::windows::io::AsRawHandle;
     loop {
-        match peek_pipe_available(reader.as_raw_handle() as isize) {
+        match peek_pipe_available(reader.as_raw_handle()) {
             Some(0) => return false, // no data right now
             None => return true,     // broken pipe — EOF
             Some(_) => match reader.read(tmp) {
@@ -1485,10 +1507,7 @@ fn append_stream(msg: &mut String, name: &str, cap: &BoundedCapture) {
     msg.push_str(&decode_bytes(&cap.materialize()));
     let skipped = cap.skipped();
     if skipped > 0 {
-        msg.push_str(&format!(
-            "\n\n... [{skipped} bytes truncated ({} total)] ...\n",
-            cap.total()
-        ));
+        msg.push_str(&crate::truncation_marker(skipped, cap.total(), None));
     }
 }
 
@@ -1511,23 +1530,4 @@ fn kill_and_error(
     let mut msg = reason.to_string();
     append_partial_output(&mut msg, stdout, stderr);
     msg
-}
-
-/// Minimal Win32 constants and FFI for pipe handle management.
-#[cfg(windows)]
-mod win32 {
-    unsafe extern "system" {
-        pub(crate) fn PeekNamedPipe(
-            hNamedPipe: isize,
-            lpBuffer: *mut core::ffi::c_void,
-            nBufferSize: u32,
-            lpBytesRead: *mut u32,
-            lpTotalBytesAvail: *mut u32,
-            lpBytesLeftThisMessage: *mut u32,
-        ) -> i32;
-
-        pub(crate) fn SetHandleInformation(hObject: isize, dwMask: u32, dwFlags: u32) -> i32;
-    }
-
-    pub(crate) const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
 }

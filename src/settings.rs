@@ -94,10 +94,7 @@ impl Default for Settings {
 impl Settings {
     /// Path to `~/.crabot/settings.ron`.
     pub fn path() -> PathBuf {
-        home::home_dir()
-            .unwrap_or_default()
-            .join(".crabot")
-            .join("settings.ron")
+        crate::setup::config_dir().join("settings.ron")
     }
 
     /// Load settings from disk, returning defaults if file is missing or malformed.

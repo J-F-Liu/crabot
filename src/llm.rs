@@ -17,6 +17,7 @@ use reqwest::StatusCode;
 use crate::app::session_state::{ASK_TIMEOUT_SECS, AskRequest, RetryInfo, SessionEvent};
 use crate::tools::{self, ToolRef};
 use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult, envelope_error};
+use crabot::lock;
 use crabot::model::ModelInfo;
 use crabot::user::UserPrompt;
 
@@ -338,11 +339,6 @@ fn is_serial_tool(name: &str) -> bool {
 /// Look up a registered tool by name.
 fn find_tool(tools: &[ToolRef], name: &str) -> Option<ToolRef> {
     tools.iter().find(|t| t.name() == name).cloned()
-}
-
-/// Lock a mutex, recovering from poisoning (a panicked holder).
-pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Join a spawned tool task, mapping panics to an error result.

@@ -14,7 +14,6 @@ use super::theme::{
 };
 use crate::app::session_state::ASK_EXTEND_SECS;
 use crate::tools::edit::EditParam;
-use crate::tools::find_char_boundary;
 use crate::tools::todo::{TodoItem, TodoStatus};
 use crate::{AskAction, AskRequest, ConversationEvent};
 use iced::widget::{button, text_input};
@@ -714,7 +713,7 @@ fn tail_window(s: &str, window: usize) -> (&str, usize) {
     if s.len() <= window {
         return (s, 0);
     }
-    let start = find_char_boundary(s, s.len() - window);
+    let start = s.floor_char_boundary(s.len() - window);
     (&s[start..], start)
 }
 
