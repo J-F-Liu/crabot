@@ -1,8 +1,4 @@
-//! A text area component wrapping `iced::widget::text_editor` with undo/redo support.
-//!
-//! The component follows Iced's widget pattern: `TextArea` holds the editor state
-//! and history stacks, `Message` defines its actions, and `update` processes them.
-//! `view` renders the component as an `Element`.
+//! A text-area widget wrapping `iced::widget::text_editor` with undo/redo support.
 
 use iced::advanced::text::highlighter::PlainText;
 use iced::widget::text_editor;
@@ -84,11 +80,8 @@ struct LastEdit {
     word_boundary: bool,
 }
 
-/// A multi-line text input component with undo/redo history.
-///
-/// Wraps [`text_editor::Content`] and maintains bounded undo/redo stacks.
-/// Consecutive edits of the same kind (typing, backspacing, …) coalesce
-/// into one undo unit, so undo reverts a run rather than a single keystroke.
+/// A multi-line text input with undo/redo; consecutive same-kind edits
+/// coalesce into a single undo unit.
 #[derive(Debug, Clone)]
 pub struct TextArea {
     content: text_editor::Content,
@@ -101,18 +94,20 @@ pub struct TextArea {
 impl TextArea {
     /// Creates a new empty `TextArea`.
     pub fn new() -> Self {
+        Self::with_text("")
+    }
+
+    /// Creates a new `TextArea` seeded with the given text.
+    pub fn with_text(text: &str) -> Self {
         Self {
-            content: text_editor::Content::new(),
+            content: text_editor::Content::with_text(text),
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
             last_edit: None,
         }
     }
 
-    /// Processes a [`Message`] and updates internal state accordingly.
-    ///
-    /// `shift_held` should be `true` when the Shift key is pressed during
-    /// the action — this enables Shift+Click selection extension.
+    /// Processes a [`Message`]; `shift_held` enables Shift+Click selection.
     pub fn update(&mut self, message: Message, shift_held: bool) {
         match message {
             Message::Edit(action) => {
@@ -134,12 +129,8 @@ impl TextArea {
         }
     }
 
-    /// Renders the text area as a [`text_editor`] widget.
-    ///
-    /// Text editor [`Action`](text_editor::Action)s are wrapped into
-    /// [`Message::Edit`] and forwarded via the provided `on_action` callback.
-    /// Callers can chain widget methods (e.g. `.height()`) before converting
-    /// to [`Element`] via `.into()`.
+    /// Renders the text area as a [`text_editor`] widget, wrapping actions
+    /// in [`Message::Edit`] via the `on_action` callback.
     pub fn view<'a, AppMessage: Clone>(
         &'a self,
         on_action: impl Fn(Message) -> AppMessage + 'a,
@@ -178,10 +169,7 @@ impl TextArea {
         self.last_edit = None;
     }
 
-    /// Replaces all text content while preserving undo history.
-    ///
-    /// The previous content is pushed onto the undo stack so the user can
-    /// revert via undo, unlike [`set_text`](Self::set_text) which wipes history.
+    /// Replaces all text content, preserving undo history (unlike [`set_text`](Self::set_text)).
     pub fn replace_text(&mut self, text: &str) {
         self.push_undo();
         self.redo_stack.clear();
@@ -194,9 +182,8 @@ impl TextArea {
     fn perform(&mut self, action: text_editor::Action) {
         if let text_editor::Action::Edit(edit) = &action {
             let kind = EditKind::of(edit);
-            // Continue the current undo unit only when the same kind of edit
-            // follows within the coalescing window (and, for typing, doesn't
-            // cross a word boundary); otherwise start a new unit.
+            // Coalesce only same-kind edits within the window; typing stops at
+            // a word boundary. Otherwise start a new undo unit.
             let coalesces = self.last_edit.is_some_and(|last| {
                 last.kind == kind
                     && kind != EditKind::Atomic

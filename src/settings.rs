@@ -35,10 +35,11 @@ pub struct Settings {
     pub mcp_servers: IndexMap<String, bool>,
     /// Enabled agent tools: tool name → enabled.
     pub agent_tools: IndexMap<String, bool>,
+    /// Leftover text in the user prompt input box, restored on startup.
+    pub user_prompt: String,
     /// Prompt recipes: work-mode name (lowercase) → list of prompt templates.
     pub prompt_recipes: IndexMap<String, Vec<String>>,
-    /// Context-window fill ratio threshold (percentage) at which the
-    /// LLM is reminded to consider renewing the session.
+    /// Context-window fill ratio threshold (%) that triggers a renew reminder.
     pub fill_ratio_threshold: f32,
     /// Max agent-loop iterations (tool-calling rounds) before giving up.
     pub max_iterations: usize,
@@ -77,6 +78,7 @@ impl Default for Settings {
             font_scale: 1.0,
             mcp_servers: IndexMap::new(),
             agent_tools: IndexMap::new(),
+            user_prompt: String::new(),
             prompt_recipes: IndexMap::new(),
             fill_ratio_threshold: 25.0,
             max_iterations: 100,

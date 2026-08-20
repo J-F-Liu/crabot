@@ -874,6 +874,12 @@ pub async fn send_stream(
                 on_event(SessionEvent::Cancelled).await;
                 return;
             }
+        } else {
+            tracing::info!(
+                model = %model.model_id,
+                session = %session_id,
+                "received empty assistant message, skipping record in session"
+            );
         }
 
         if tool_calls.is_empty() {

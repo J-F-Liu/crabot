@@ -20,7 +20,7 @@ use prompt::{FilepathEntry, TOOLS, WORKSPACE_TREE};
 use crate::views::{
     DividerState, center_pane, divider, left_pane, right_pane,
     session_list::SessionEntry,
-    theme::{CRABOT_MODAL_SCRIM, set_dark_mode, theme_for},
+    theme::{self, CRABOT_MODAL_SCRIM},
     tool_list::ToolListState,
 };
 use crate::widgets::textarea::{self, TextArea};
@@ -648,7 +648,7 @@ impl App {
         let window_pos = Point::new(saved.window_pos.0, saved.window_pos.1);
         let tools_enabled = saved.tools_enabled;
         let dark_mode = saved.dark_mode;
-        set_dark_mode(dark_mode);
+        theme::set_dark_mode(dark_mode);
 
         let initial_selected_model = saved.selected_model.clone();
         let initial_selected_preamble = if preamble_options.iter().any(|e| e.display == "crabot") {
@@ -678,7 +678,7 @@ impl App {
                 enabled: tools_enabled,
                 content: text_editor::Content::with_text(&tools_summary),
             },
-            user_prompt: TextArea::new(),
+            user_prompt: TextArea::with_text(&saved.user_prompt),
             workmode: WorkMode::default_mode(),
             workmode_enabled: true,
             recipe_dropdown_expanded: false,
@@ -693,7 +693,7 @@ impl App {
                 cursor: Point::ORIGIN,
                 left_divider: DividerState::default(),
                 right_divider: DividerState::default(),
-                theme: theme_for(dark_mode),
+                theme: theme::theme_for(dark_mode),
                 shift_held: false,
                 ctrl_held: false,
                 scroll_viewport_height: 0.0,
@@ -843,6 +843,8 @@ impl App {
             &self.tools.enabled_tools,
             &self.tools.enabled_mcp_servers,
         );
+        self.settings.user_prompt = self.prompt.user_prompt.text();
+        self.settings.dark_mode = theme::is_dark();
         self.settings.save();
     }
 
