@@ -19,6 +19,7 @@ use crate::app::{App, ConversationEvent, FocusedTarget, Message, TabBarScrollSta
 use crate::llm::DialogPhase;
 use crate::tools::process;
 use crate::views::export;
+use crate::views::session_list::{SessionEntry, insert_listed_entry};
 use crate::views::session_tabs::TAB_SCROLL_STEP;
 use crate::views::{self, ASK_INPUT, SCROLL_STEP, scroll_to_end};
 
@@ -731,10 +732,8 @@ pub(super) fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
 }
 
 fn resend_session(app: &mut App) -> Task<Message> {
-    let viewing_is_streaming = app.conversation.viewing_is_streaming();
-    let is_new = app.conversation.viewing().center_pane_title == "New session";
-
-    if viewing_is_streaming || is_new {
+    // Empty sessions have nothing to resend — guard on content, not the UI title.
+    if app.conversation.viewing_is_streaming() || app.conversation.viewing().session.is_empty() {
         return Task::none();
     }
     let Some(model) = app.selected_model_config() else {
@@ -752,16 +751,14 @@ fn resend_session(app: &mut App) -> Task<Message> {
 
 // ── Stream orchestration ──────────────────────────────────────────
 
-/// Decide which tab the stream runs on and apply the new model to it.
-/// Continuing a session with a different model forks it into a new tab that
-/// becomes the viewing one — the original tab keeps its session and model
-/// untouched. Returns the effective tab position and whether a fork happened.
+/// Apply the model to the tab, forking the session into a new viewing tab
+/// when the model changes. Returns the effective tab position.
 fn prepare_session_tab(
     app: &mut App,
     tab_pos: usize,
     model_config: &ModelConfig,
     user_prompt: Option<&UserPrompt>,
-) -> (usize, bool) {
+) -> usize {
     let tab = &mut app.conversation.session_tabs[tab_pos];
     let model_changed = tab
         .session
@@ -773,7 +770,7 @@ fn prepare_session_tab(
         tab.session.model = Some(model_config.clone());
         tab.session.workspace = app.prompt.workspace.1.clone();
         tab.session.save().ok();
-        return (tab_pos, false);
+        return tab_pos;
     }
 
     let mut forked = tab.session.fork();
@@ -840,7 +837,32 @@ fn prepare_session_tab(
         session = %fork_session_id,
         "model change forked session into a new tab"
     );
-    (app.conversation.viewing, true)
+    app.conversation.viewing
+}
+
+/// Record the session in its workspace's list cache once, and surface it in
+/// the active session list when its workspace matches the prompt's.
+fn surface_session_in_list(app: &mut App, tab_pos: usize) {
+    let Some(entry) = SessionEntry::from_session(&app.conversation.session_tabs[tab_pos].session)
+    else {
+        return;
+    };
+    let ws = app.conversation.session_tabs[tab_pos]
+        .session
+        .workspace
+        .clone();
+    let cached = app
+        .conversation
+        .session_list_cache
+        .entry(ws.clone())
+        .or_default();
+    if cached.contains(&entry) {
+        return;
+    }
+    insert_listed_entry(cached, entry.clone());
+    if ws == app.prompt.workspace.1 && !app.conversation.session_list.contains(&entry) {
+        insert_listed_entry(&mut app.conversation.session_list, entry);
+    }
 }
 
 /// Prepare and launch an LLM dialog stream for the given tab.
@@ -858,35 +880,9 @@ pub(crate) fn start_dialog(
     };
 
     // Continuing with a different model forks the session into a new tab.
-    let (tab_pos, session_forked) =
-        prepare_session_tab(app, tab_pos, model_config, user_prompt.as_ref());
+    let tab_pos = prepare_session_tab(app, tab_pos, model_config, user_prompt.as_ref());
     let tab_number = app.conversation.session_tabs[tab_pos].number;
-
-    let session_list_entry = {
-        let tab = &app.conversation.session_tabs[tab_pos];
-        if (tab.session.is_fresh() || session_forked)
-            && let Some(path) = tab.session.save_path()
-        {
-            let year_month = crabot::session::year_month_from_id(&tab.session.id);
-            Some(crate::views::session_list::SessionEntry {
-                id: tab.session.id.clone(),
-                title: tab.session.title.clone(),
-                path,
-                year_month,
-                is_header: false,
-            })
-        } else {
-            None
-        }
-    };
-    if let Some(entry) = session_list_entry {
-        app.conversation
-            .session_list_cache
-            .entry(app.prompt.workspace.1.clone())
-            .or_default()
-            .insert(0, entry.clone());
-        app.conversation.session_list.insert(0, entry);
-    }
+    surface_session_in_list(app, tab_pos);
 
     let is_viewing = tab_pos == app.conversation.viewing;
 
@@ -903,7 +899,8 @@ pub(crate) fn start_dialog(
 
     // Re-borrow for the remaining setup.
     let tab = &mut app.conversation.session_tabs[tab_pos];
-    tab.session_state.start_index = tab.session.total_turns();
+    // Backfill placeholders from this stream's first turn.
+    tab.session_state.backfill_from = tab.session.total_turns();
     tab.session_state.auto_scroll.store(true, Ordering::Relaxed);
 
     // Fresh ask-response / task-report channels and a fresh ask deadline for this stream.

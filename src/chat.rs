@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::LazyLock;
 
-use genai::chat::ChatRole;
+use genai::chat::{ChatMessage, ChatRole};
 use gh_emoji::Replacer;
 use linkify::{LinkFinder, LinkKind};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -290,6 +290,14 @@ impl Turn {
             timestamp: String::new(),
         }
     }
+}
+
+/// An assistant message with no text, reasoning, or tool calls is meaningless — never persist or resend it.
+pub fn assistant_msg_is_empty(msg: &ChatMessage) -> bool {
+    msg.role == ChatRole::Assistant
+        && msg.content.joined_texts().is_none_or(|t| t.is_empty())
+        && msg.content.first_reasoning_content().is_none()
+        && msg.content.tool_calls().is_empty()
 }
 
 /// Static emoji replacer — compiled once and reused.

@@ -61,7 +61,7 @@ fn incremental_append() {
     session.tokens.prompt = 10;
     session.tokens.output = 20;
     session.updated_at = "2026-08-05 12:00:00".into();
-    session.save().expect("second save");
+    session.save_with_tally().expect("second save");
 
     let loaded2 = Session::load(&path).expect("load 2");
     assert_eq!(loaded2.history.len(), 1);
@@ -92,7 +92,7 @@ fn migrate_legacy_json() {
     assert_eq!(loaded.title, "Legacy");
 
     // Save → creates jsonl with full content; the legacy .json is removed.
-    loaded.save().expect("first jsonl save");
+    loaded.save_with_tally().expect("first jsonl save");
     let jsonl_path = loaded.save_path().unwrap();
     assert!(jsonl_path.extension().is_some_and(|e| e == "jsonl"));
     assert!(jsonl_path.exists());
@@ -144,7 +144,29 @@ fn meta_update_appends_new_line() {
 }
 
 #[test]
-fn tally_skipped_when_unchanged() {
+fn pop_last_turn_removes_trailing_turn_and_empty_dialog() {
+    use crabot::chat::{Turn, TurnBody};
+    let mut session = Session::new();
+    session.add_dialog("test".into(), None);
+    session.push_turn(Turn::user("hello"));
+    session.push_turn(Turn::assistant("hi", None));
+
+    let popped = session.pop_last_turn().expect("assistant turn");
+    assert_eq!(popped.role, genai::chat::ChatRole::Assistant);
+    let TurnBody::Text(tc) = &popped.body else {
+        panic!("expected text turn");
+    };
+    assert_eq!(tc.content, "hi");
+    assert_eq!(session.total_turns(), 1);
+
+    // Popping the user turn empties the dialog and drops it.
+    assert!(session.pop_last_turn().is_some());
+    assert!(session.pop_last_turn().is_none());
+    assert!(session.is_empty());
+}
+
+#[test]
+fn tally_written_only_by_save_with_tally() {
     let ws = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
@@ -156,14 +178,20 @@ fn tally_skipped_when_unchanged() {
     let lines = std::fs::read_to_string(&path).unwrap();
     assert_eq!(lines.lines().count(), 1);
 
-    // Counter change alone appends nothing — the tally follows new history.
+    // Counter change alone appends nothing — plain saves never write a Tally.
     session.requests = 5;
     session.save().expect("counter-only save");
     assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
 
-    // A new message persists the updated counters in a fresh Tally line.
+    // A new message persists without a Tally line.
     session.history.push(ChatMessage::user("second prompt"));
     session.save().expect("message save");
+    let loaded = Session::load(&path).expect("reload");
+    assert_eq!(loaded.requests, 0);
+    assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+
+    // save_with_tally appends the cumulative Tally even without new history.
+    session.save_with_tally().expect("tally save");
     let loaded = Session::load(&path).expect("reload");
     assert_eq!(loaded.requests, 5);
     assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);

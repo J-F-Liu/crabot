@@ -18,6 +18,7 @@ use crate::model::{Cost, ModelConfig, TokenAmount};
 use crate::tools::TASK_MODES;
 use crate::views::ASK_INPUT;
 use crate::views::scroll_to_end;
+use crate::views::search_bar::SearchState;
 use crabot::HashSetExt;
 use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
 use crabot::lock;
@@ -37,8 +38,8 @@ pub(crate) const ASK_EXTEND_SECS: u64 = 300;
 pub(crate) struct SessionState {
     /// Current phase of the LLM interaction.
     pub(crate) phase: DialogPhase,
-    /// Index (flat turn count) where the current stream's placeholders begin.
-    pub(crate) start_index: usize,
+    /// Flat turn index of the next assistant placeholder to backfill.
+    pub(crate) backfill_from: usize,
     /// Cancellation token to stop an in-progress stream early.
     pub(crate) cancel_token: CancellationToken,
     /// Shared slot for a raw user prompt injected during streaming.
@@ -74,7 +75,7 @@ impl SessionState {
     pub(crate) fn new() -> Self {
         Self {
             phase: DialogPhase::Idle,
-            start_index: 0,
+            backfill_from: 0,
             cancel_token: CancellationToken::new(),
             injected_prompt: Arc::new(Mutex::new(None)),
             pending_prompt: None,
@@ -201,12 +202,14 @@ pub(crate) enum SessionEvent {
     },
     /// A user prompt injected during streaming (consumed by `send_stream`).
     UserPrompt(String),
+    /// A complete genai message — recorded in history and persisted immediately.
+    MessageReady(ChatMessage),
     TokenUsage(Option<genai::chat::Usage>),
     /// Auto-retry countdown after a transient failure (429/5xx/connection).
     RetryCountdown(RetryInfo),
-    Done(Vec<ChatMessage>),
-    Error(String, Vec<ChatMessage>),
-    Cancelled(Vec<ChatMessage>),
+    Done,
+    Error(String),
+    Cancelled,
     PhaseChange(DialogPhase),
     Stop,
 }
@@ -350,6 +353,12 @@ pub(crate) fn update(
                 Task::none()
             };
         }
+        SessionEvent::MessageReady(msg) => {
+            // Only non-empty assistant messages are emitted, so record as-is.
+            backfill_assistant_turn(state, session, &msg);
+            session.history.push(msg);
+            let _ = session.save();
+        }
         SessionEvent::TokenUsage(usage) => {
             let u = usage.unwrap_or_default();
             let tokens = TokenAmount::from_genai(&u);
@@ -362,44 +371,46 @@ pub(crate) fn update(
                 tc.refresh_md_cache();
             }
         }
-        SessionEvent::Done(genai_messages) => {
-            state.ask_request = None;
-            *end_status = Some(SessionEndStatus::Done);
-            handle_stream_done(state, session, genai_messages);
-            search.invalidate_offsets();
+        SessionEvent::Done => {
+            session.stamp_response();
+            end_stream(state, session, end_status, search, SessionEndStatus::Done);
             return if viewing {
                 maybe_scroll_to_end(&state.auto_scroll)
             } else {
                 Task::none()
             };
         }
-        SessionEvent::Error(err, genai_messages) => {
-            state.ask_request = None;
-            *end_status = Some(SessionEndStatus::Error);
-            handle_stream_error(state, session, err, genai_messages);
-            search.invalidate_offsets();
-            return if viewing {
-                maybe_scroll_to_end(&state.auto_scroll)
-            } else {
-                Task::none()
-            };
-        }
-        SessionEvent::Cancelled(genai_messages) => {
-            state.ask_request = None;
-            *end_status = Some(SessionEndStatus::Cancelled);
-            state.phase = DialogPhase::Idle;
+        SessionEvent::Error(err) => {
+            record_error_turn(session, &err);
+            // Stamp after the error turn so the Tally's updated_at covers it.
             clear_pending_with_notice(state, session);
-            session.history.extend(genai_messages);
+            session.stamp_response();
+            end_stream(state, session, end_status, search, SessionEndStatus::Error);
+            return if viewing {
+                maybe_scroll_to_end(&state.auto_scroll)
+            } else {
+                Task::none()
+            };
+        }
+        SessionEvent::Cancelled => {
+            clear_pending_with_notice(state, session);
             if let Some(last) = session.last_turn_mut()
                 && let TurnBody::Text(tc) = &mut last.body
             {
                 tc.refresh_md_cache();
             }
-            search.invalidate_offsets();
-            let _ = session.save();
+            end_stream(
+                state,
+                session,
+                end_status,
+                search,
+                SessionEndStatus::Cancelled,
+            );
         }
         SessionEvent::PhaseChange(phase) => {
             if phase == DialogPhase::LlmThinking {
+                // A retry re-emits LlmThinking — replace the failed attempt's placeholder.
+                replace_stale_placeholder(session, state.backfill_from);
                 session.push_turn(Turn::assistant(String::new(), None));
                 search.invalidate_offsets();
                 // Back-date so the first content chunk scrolls immediately.
@@ -454,6 +465,21 @@ pub(crate) fn handle_scroll(state: &SessionState, viewport: Viewport) {
 
 // ── private helpers ───────────────────────────────────────────────
 
+/// Wrap up a stream: clear the ask, set end status, persist, refresh search.
+fn end_stream(
+    state: &mut SessionState,
+    session: &mut Session,
+    end_status: &mut Option<SessionEndStatus>,
+    search: &mut SearchState,
+    status: SessionEndStatus,
+) {
+    state.ask_request = None;
+    *end_status = Some(status);
+    state.phase = DialogPhase::Idle;
+    let _ = session.save_with_tally();
+    search.invalidate_offsets();
+}
+
 /// Clear and report injected prompt after a stream ended without consuming it.
 fn clear_pending_with_notice(state: &mut SessionState, session: &mut Session) {
     if let Ok(mut pending) = state.injected_prompt.lock()
@@ -492,66 +518,9 @@ fn maybe_scroll_to_end_throttled(auto_scroll: &AtomicBool, last: &Cell<Instant>)
     scroll_to_end()
 }
 
-/// Backfill streaming placeholders with captured content from genai,
-/// extend session history, and persist the session.
-fn handle_stream_done(
-    state: &mut SessionState,
-    session: &mut Session,
-    genai_messages: Vec<ChatMessage>,
-) {
-    state.phase = DialogPhase::Idle;
-
-    let mut genai_asst_iter = genai_messages
-        .iter()
-        .filter(|m| m.role == ChatRole::Assistant)
-        .filter_map(|m| {
-            let text = m.content.joined_texts().unwrap_or_default();
-            let reasoning = m.content.first_reasoning_content().map(|s| s.to_string());
-            if !text.is_empty() || reasoning.is_some() {
-                Some((text, reasoning))
-            } else {
-                None
-            }
-        });
-
-    for turn in session.turns_from_mut(state.start_index) {
-        if turn.role != ChatRole::Assistant {
-            continue;
-        }
-        if let TurnBody::Text(tc) = &mut turn.body
-            && let Some((joined_text, reasoning)) = genai_asst_iter.next()
-        {
-            if !joined_text.is_empty() {
-                tc.content = replace_emoji(&joined_text);
-            }
-            // Some providers omit ReasoningChunk events and only expose
-            // reasoning via captured_reasoning_content at stream end.
-            if tc.reasoning.is_none() {
-                tc.reasoning = reasoning;
-            }
-            tc.refresh_md_cache();
-        }
-    }
-
-    session.history.extend(genai_messages);
-    session.stamp_response();
-    let _ = session.save();
-}
-
-/// Replace the last-message empty assistant placeholder with this error,
-/// or push a new error message if no placeholder exists.
-fn handle_stream_error(
-    state: &mut SessionState,
-    session: &mut Session,
-    err: String,
-    genai_messages: Vec<ChatMessage>,
-) {
-    state.phase = DialogPhase::Idle;
-    session.history.extend(genai_messages);
-    session.stamp_response();
-    let _ = session.save();
-
-    let error_msg = format!("Error: {err}");
+/// Put the error into the stream's empty assistant placeholder, or push it fresh.
+fn record_error_turn(session: &mut Session, err: &str) {
+    let msg = format!("Error: {err}");
     if let Some(turn) = session.last_turn_mut()
         && turn.role == ChatRole::Assistant
         && matches!(
@@ -560,13 +529,55 @@ fn handle_stream_error(
         )
     {
         turn.body = TurnBody::Text(TextContent {
-            content: error_msg,
+            content: msg,
             ..Default::default()
         });
-    } else {
-        session.push_turn(Turn::assistant(error_msg, None));
+        return;
     }
-    clear_pending_with_notice(state, session);
+    session.push_turn(Turn::assistant(msg, None));
+}
+
+/// Fill the next stream placeholder with the captured assistant text/reasoning.
+/// The slot is claimed even when empty so the next message targets the next one.
+fn backfill_assistant_turn(state: &mut SessionState, session: &mut Session, msg: &ChatMessage) {
+    if msg.role != ChatRole::Assistant {
+        return;
+    }
+    let Some((offset, turn)) = session
+        .turns_from_mut(state.backfill_from)
+        .enumerate()
+        .find(|(_, t)| t.role == ChatRole::Assistant)
+    else {
+        return;
+    };
+    state.backfill_from += offset + 1;
+    let text = msg.content.joined_texts().unwrap_or_default();
+    let reasoning = msg.content.first_reasoning_content().map(str::to_string);
+    if text.is_empty() && reasoning.is_none() {
+        return;
+    }
+    let TurnBody::Text(tc) = &mut turn.body else {
+        return;
+    };
+    if !text.is_empty() {
+        tc.content = replace_emoji(&text);
+    }
+    if tc.reasoning.is_none() {
+        tc.reasoning = reasoning;
+    }
+    tc.refresh_md_cache();
+}
+
+/// Drop the failed attempt's stale placeholder so the retried response
+/// backfills it. Stream turns only — a resend's last reply must stay put.
+fn replace_stale_placeholder(session: &mut Session, backfill_from: usize) {
+    if session.total_turns() > backfill_from
+        && let Some(last) = session.last_turn_mut()
+        && last.role == ChatRole::Assistant
+        && matches!(&last.body, TurnBody::Text(_))
+    {
+        session.pop_last_turn();
+    }
 }
 
 // ── App-level stream-event routing ─────────────────────────────────
@@ -927,11 +938,11 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
         .map(|m| m.cost.clone());
     let context_window = model_config.as_ref().map(|cfg| cfg.context_window);
 
-    let finished = matches!(event, SessionEvent::Done(_));
+    let finished = matches!(event, SessionEvent::Done);
     let asked = matches!(event, SessionEvent::AskRequest(_));
-    let is_cancelled = matches!(event, SessionEvent::Cancelled(_));
+    let is_cancelled = matches!(event, SessionEvent::Cancelled);
     let task_error = match &event {
-        SessionEvent::Error(err, _) => Some(err.clone()),
+        SessionEvent::Error(err) => Some(err.clone()),
         _ => None,
     };
 

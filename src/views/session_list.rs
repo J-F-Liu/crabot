@@ -33,6 +33,26 @@ impl SessionEntry {
             is_header: true,
         }
     }
+
+    /// Create a session entry for a session file; the year-month derives from the id.
+    pub(crate) fn session(id: String, title: String, path: PathBuf) -> Self {
+        Self {
+            year_month: crabot::session::year_month_from_id(&id),
+            id,
+            title,
+            path,
+            is_header: false,
+        }
+    }
+
+    /// Build an entry from a session; `None` when it has no save path yet.
+    pub(crate) fn from_session(session: &crabot::session::Session) -> Option<Self> {
+        Some(Self::session(
+            session.id.clone(),
+            session.title.clone(),
+            session.save_path()?,
+        ))
+    }
 }
 
 impl std::fmt::Display for SessionEntry {
@@ -139,14 +159,7 @@ pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String
         .into_iter()
         .filter_map(|path| {
             let meta = read_meta(&path)?;
-            let year_month = crabot::session::year_month_from_id(&meta.id);
-            Some(SessionEntry {
-                id: meta.id,
-                title: meta.title,
-                year_month,
-                path,
-                is_header: false,
-            })
+            Some(SessionEntry::session(meta.id, meta.title, path))
         })
         .collect();
 
@@ -164,4 +177,25 @@ pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String
     }
 
     Ok(grouped)
+}
+
+/// Insert an entry into its year-month group (as built by [`list_entries`]),
+/// keeping ids newest-first; insert at the top when the group is missing.
+pub(crate) fn insert_listed_entry(list: &mut Vec<SessionEntry>, entry: SessionEntry) {
+    let Some(header) = list
+        .iter()
+        .position(|e| e.is_header && e.year_month == entry.year_month)
+    else {
+        list.insert(0, entry);
+        return;
+    };
+    let end = list[header + 1..]
+        .iter()
+        .position(|e| e.is_header)
+        .map_or(list.len(), |off| header + 1 + off);
+    let pos = list[header + 1..end]
+        .iter()
+        .position(|e| e.id < entry.id)
+        .map_or(end, |off| header + 1 + off);
+    list.insert(pos, entry);
 }

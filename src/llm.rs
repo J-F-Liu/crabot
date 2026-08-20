@@ -16,7 +16,9 @@ use reqwest::StatusCode;
 
 use crate::app::session_state::{ASK_TIMEOUT_SECS, AskRequest, RetryInfo, SessionEvent};
 use crate::tools::{self, ToolRef};
-use crabot::chat::{ToolCall as ChatToolCall, ToolResult as ChatToolResult, envelope_error};
+use crabot::chat::{
+    ToolCall as ChatToolCall, ToolResult as ChatToolResult, assistant_msg_is_empty, envelope_error,
+};
 use crabot::lock;
 use crabot::model::ModelInfo;
 use crabot::user::UserPrompt;
@@ -690,12 +692,12 @@ pub async fn send_stream(
     chat_req = chat_req.append_messages(history);
 
     // Optionally add a new user message (None when resending history as-is).
-    let mut genai_messages: Vec<ChatMessage> = Vec::new();
     if let Some(prompt) = &user_prompt {
-        let parts = prompt.to_content_parts();
-        let user_msg = ChatMessage::user(MessageContent::from_parts(parts));
-        chat_req.messages.push(user_msg.clone());
-        genai_messages.push(user_msg);
+        let user_msg = ChatMessage::user(MessageContent::from_parts(prompt.to_content_parts()));
+        // Record it immediately so the prompt survives a failed stream.
+        if !record_user_msg(&mut chat_req, user_msg, on_event).await {
+            return;
+        }
     }
 
     // Chat options: capture content for tool-call extraction, normalize reasoning.
@@ -724,23 +726,38 @@ pub async fn send_stream(
     // Agent loop: keep calling the LLM until it responds without tool calls.
     let mut finished = false;
 
-    /// Check for and inject a user prompt stashed during streaming.
+    /// Push a user message into the request and record it in history.
+    async fn record_user_msg(
+        chat_req: &mut ChatRequest,
+        user_msg: ChatMessage,
+        on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+    ) -> bool {
+        chat_req.messages.push(user_msg.clone());
+        if !on_event(SessionEvent::MessageReady(user_msg)).await {
+            // Stopped mid-record — end the stream so the tab returns to Idle.
+            on_event(SessionEvent::Cancelled).await;
+            return false;
+        }
+        true
+    }
+
+    /// Inject a user prompt stashed during streaming; `false` stops the stream.
     async fn inject_user_prompt(
         pending: &Mutex<Option<String>>,
         chat_req: &mut ChatRequest,
-        genai_messages: &mut Vec<ChatMessage>,
         on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-    ) -> Option<bool> {
-        let prompt = lock(pending).take()?;
-        let user_msg = ChatMessage::user(prompt.clone());
-        chat_req.messages.push(user_msg.clone());
-        genai_messages.push(user_msg);
-        if !on_event(SessionEvent::UserPrompt(prompt)).await {
-            let drained = std::mem::take(genai_messages);
-            on_event(SessionEvent::Cancelled(drained)).await;
-            return Some(false);
+    ) -> bool {
+        let Some(prompt) = lock(pending).take() else {
+            return true;
+        };
+        if !record_user_msg(chat_req, ChatMessage::user(prompt.clone()), on_event).await {
+            return false;
         }
-        Some(true)
+        if !on_event(SessionEvent::UserPrompt(prompt)).await {
+            on_event(SessionEvent::Cancelled).await;
+            return false;
+        }
+        true
     }
 
     // Execution context for the tool loop below (loop-invariant).
@@ -792,7 +809,7 @@ pub async fn send_stream(
                         session = %session_id,
                         "LLM request cancelled"
                     );
-                    on_event(SessionEvent::Cancelled(genai_messages)).await;
+                    on_event(SessionEvent::Cancelled).await;
                     return;
                 }
                 AttemptOutcome::Failed { stage, error } => {
@@ -804,7 +821,7 @@ pub async fn send_stream(
                             "LLM request failed"
                         );
                         let message = failure_message(stage, &error, attempt);
-                        on_event(SessionEvent::Error(message, genai_messages)).await;
+                        on_event(SessionEvent::Error(message)).await;
                         return;
                     }
                     error.to_string()
@@ -820,10 +837,9 @@ pub async fn send_stream(
                             stall_timeout_secs = stream_stall_timeout_secs,
                             "LLM stream stalled"
                         );
-                        on_event(SessionEvent::Error(
-                            format!("LLM {stalled}; the connection may have died. Please retry."),
-                            genai_messages,
-                        ))
+                        on_event(SessionEvent::Error(format!(
+                            "LLM {stalled}; the connection may have died. Please retry."
+                        )))
                         .await;
                         return;
                     }
@@ -833,7 +849,7 @@ pub async fn send_stream(
 
             if !pause_before_retry(attempt, &model.model_id, &reason, on_event, &cancel_token).await
             {
-                on_event(SessionEvent::Cancelled(genai_messages)).await;
+                on_event(SessionEvent::Cancelled).await;
                 return;
             }
         };
@@ -851,23 +867,19 @@ pub async fn send_stream(
         let assistant_msg = ChatMessage::assistant(assistant_content)
             .with_reasoning_content(captured_reasoning.filter(|r| !r.is_empty()));
 
-        // Append assistant message to request + genai history.
-        chat_req = chat_req.append_message(assistant_msg.clone());
-        genai_messages.push(assistant_msg);
+        // Skip empty assistant messages — nothing to resend or persist.
+        if !assistant_msg_is_empty(&assistant_msg) {
+            chat_req = chat_req.append_message(assistant_msg.clone());
+            if !on_event(SessionEvent::MessageReady(assistant_msg)).await {
+                on_event(SessionEvent::Cancelled).await;
+                return;
+            }
+        }
 
         if tool_calls.is_empty() {
             // Check for a user prompt sent during LlmLoading / LlmThinking.
-            let result = inject_user_prompt(
-                &injected_prompt,
-                &mut chat_req,
-                &mut genai_messages,
-                on_event,
-            )
-            .await;
-            match result {
-                Some(true) => continue,
-                Some(false) => return,
-                None => {}
+            if !inject_user_prompt(&injected_prompt, &mut chat_req, on_event).await {
+                return;
             }
             // Final assistant response — no more tool calls.
             tracing::debug!(
@@ -902,7 +914,7 @@ pub async fn send_stream(
             })
             .collect();
         if !on_event(SessionEvent::ToolCalls(calls.clone())).await {
-            on_event(SessionEvent::Cancelled(genai_messages)).await;
+            on_event(SessionEvent::Cancelled).await;
             return;
         }
 
@@ -916,7 +928,7 @@ pub async fn send_stream(
         .await;
         if !snapshotted.is_empty() && !on_event(SessionEvent::SnapshotsCaptured(snapshotted)).await
         {
-            on_event(SessionEvent::Cancelled(genai_messages)).await;
+            on_event(SessionEvent::Cancelled).await;
             return;
         }
 
@@ -962,50 +974,48 @@ pub async fn send_stream(
         )
         .await;
 
-        // Append tool responses to the request and genai history.
-        chat_req = chat_req.append_message(tool_responses.clone());
-        genai_messages.push(ChatMessage::from(tool_responses));
+        // Append tool responses to the request and record them.
+        let tool_msg = ChatMessage::from(tool_responses);
+        chat_req = chat_req.append_message(tool_msg.clone());
+        if !on_event(SessionEvent::MessageReady(tool_msg)).await {
+            // Cancelled while recording — `MessageReady` already persisted the
+            // results, so history keeps them either way.
+            on_event(SessionEvent::Cancelled).await;
+            return;
+        }
 
         // When renew was called, stop the current session — no more requests.
         if renew_executed {
             tracing::info!(model = %model.model_id, session = %session_id, "renew called, ending session for successor");
-            on_event(SessionEvent::Done(genai_messages)).await;
+            on_event(SessionEvent::Done).await;
             return;
         }
 
         // Check cancellation after tool calls so to keep tool results match in history.
         if cancel_token.is_cancelled() {
             tracing::info!(model = %model.model_id, session = %session_id, "cancelled after tool execution");
-            on_event(SessionEvent::Cancelled(genai_messages)).await;
+            on_event(SessionEvent::Cancelled).await;
             return;
         }
 
         // Inject any user prompt sent during tool execution.
-        let result = inject_user_prompt(
-            &injected_prompt,
-            &mut chat_req,
-            &mut genai_messages,
-            on_event,
-        )
-        .await;
-        if let Some(false) = result {
+        if !inject_user_prompt(&injected_prompt, &mut chat_req, on_event).await {
             return;
         }
     }
 
     if finished {
         tracing::info!(model = %model.model_id, session = %session_id, "LLM interaction complete");
-        on_event(SessionEvent::Done(genai_messages)).await;
+        on_event(SessionEvent::Done).await;
     } else {
         tracing::error!(
             model = %model.model_id,
             max_iterations,
             "exceeded maximum tool-calling iterations"
         );
-        on_event(SessionEvent::Error(
-            format!("Exceeded maximum tool-calling iterations ({max_iterations})"),
-            genai_messages,
-        ))
+        on_event(SessionEvent::Error(format!(
+            "Exceeded maximum tool-calling iterations ({max_iterations})"
+        )))
         .await;
     }
 }

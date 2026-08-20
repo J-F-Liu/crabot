@@ -145,10 +145,6 @@ impl Session {
         session
     }
 
-    pub fn is_fresh(&self) -> bool {
-        self.dialogs.len() == 1 && self.dialogs[0].turns.len() == 1
-    }
-
     // ── Dialog / turn helpers ────────────────────────────────────────
 
     /// Add a new empty dialog with the given title and optional work mode.
@@ -182,6 +178,17 @@ impl Session {
     /// Mutable reference to the last turn across all dialogs.
     pub fn last_turn_mut(&mut self) -> Option<&mut Turn> {
         self.dialogs.last_mut().and_then(|d| d.turns.last_mut())
+    }
+
+    /// Remove and return the last turn, dropping any dialog it empties.
+    pub fn pop_last_turn(&mut self) -> Option<Turn> {
+        while let Some(dialog) = self.dialogs.last_mut() {
+            if let Some(turn) = dialog.turns.pop() {
+                return Some(turn);
+            }
+            self.dialogs.pop();
+        }
+        None
     }
 
     /// Total number of turns across all dialogs.
@@ -437,17 +444,24 @@ impl Session {
         Some(base.join(&year_month).join(format!("{}.jsonl", self.id)))
     }
 
-    /// Save incrementally: append new `Message` lines and a cumulative `Tally`.
-    /// The `Meta` header is written on the first save and re-appended whenever
-    /// any meta field changes (last one wins on load).
+    /// Append new `Message` lines; re-append `Meta` whenever it changed (last one wins on load).
+    /// No `Tally` — use [`Session::save_with_tally`] on terminal stream events.
     pub fn save(&mut self) -> Result<(), String> {
         // All callers discard the result, so failures are logged here once.
-        self.save_inner().inspect_err(|e| {
+        self.save_inner(false).inspect_err(|e| {
             tracing::warn!(session = %self.id, "failed to save session: {e}");
         })
     }
 
-    fn save_inner(&mut self) -> Result<(), String> {
+    /// Like [`Session::save`], plus a [`SessionRecord::Tally`] line so counters
+    /// persist on terminal stream events even without new history.
+    pub fn save_with_tally(&mut self) -> Result<(), String> {
+        self.save_inner(true).inspect_err(|e| {
+            tracing::warn!(session = %self.id, "failed to save session: {e}");
+        })
+    }
+
+    fn save_inner(&mut self, with_tally: bool) -> Result<(), String> {
         let path = self.save_path().ok_or("No workspace set")?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -481,8 +495,8 @@ impl Session {
             buf.push_str(&line);
             buf.push('\n');
         }
-        // Tally follows new history so counters stay in sync without no-op growth.
-        if new_messages {
+        // Tally only on terminal stream events — avoids a redundant line per save.
+        if with_tally {
             let line = serde_json::to_string(&SessionRecord::Tally {
                 requests: self.requests,
                 tokens: self.tokens,
