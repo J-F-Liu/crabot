@@ -27,7 +27,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bashkit::analysis::{AnalyzedCommand, analyze_with_limits};
-use bashkit::{Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, async_trait};
+use bashkit::{
+    Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, HttpLimits, NetworkAllowlist,
+    async_trait,
+};
 
 use super::{
     CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, WaitError, create_pipe_pair,
@@ -447,6 +450,23 @@ fn build_bash(
             .max_stderr_bytes(MAX_STREAM_BYTES),
     );
 
+    // Real host identity — whoami/hostname/uname -n report the actual host.
+    if let Some(username) = real_username() {
+        builder = builder.username(username);
+    }
+    if let Some(hostname) = real_hostname() {
+        builder = builder.hostname(hostname);
+    }
+
+    // curl/wget (http_client feature): open policy like the `fetch` tool,
+    // limits raised to bashkit's cap (600s / 64 MB).
+    builder = builder
+        .network(NetworkAllowlist::allow_all().block_private_ips(false))
+        .http_limits(HttpLimits {
+            timeout: Duration::from_secs(600),
+            max_response_bytes: 64 * 1024 * 1024,
+        });
+
     // Seed env from host; HOME comes from the VFS home mount so `~` expands to
     // a clean POSIX path (the host's is often a Windows `C:\` form). Secret
     // vars (names ending in `API_KEY`) are withheld from the interpreter.
@@ -458,6 +478,14 @@ fn build_bash(
     if let Some(home) = &home_mount {
         builder = builder.env("HOME", home.vfs_path.to_string_lossy().into_owned());
     }
+
+    // Seed bash platform variables — hosts without bash (native Windows)
+    // export none of these. Seeded after host vars, so they always win.
+    let (ostype, machine) = platform_labels();
+    builder = builder
+        .env("OSTYPE", ostype)
+        .env("HOSTTYPE", std::env::consts::ARCH)
+        .env("MACHTYPE", format!("{}-{machine}", std::env::consts::ARCH));
 
     // Embedded Python (Monty) registers `python`/`python3` builtins — only
     // when the host has none (see `host_python_available`); otherwise those
@@ -834,6 +862,33 @@ fn real_home_mount() -> Option<RealMount> {
     let host_home = home_host_path()?;
     let vfs_path = super::convert_path_to_unix_style(&host_home);
     Some(RealMount::rw(host_home, vfs_path))
+}
+
+/// Real host username: `USER` (Unix/MSYS) or `USERNAME` (native Windows).
+fn real_username() -> Option<String> {
+    ["USER", "USERNAME"]
+        .into_iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+}
+
+/// Real host hostname via the OS (`gethostname` / `GetComputerNameW`).
+fn real_hostname() -> Option<String> {
+    hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .filter(|h| !h.is_empty())
+}
+
+/// Bash's `OSTYPE` and the vendor+OS half of `MACHTYPE` for the host
+/// (`msys`/`pc-msys` on Windows, `darwin`/`apple-darwin` on macOS, …).
+fn platform_labels() -> (&'static str, &'static str) {
+    match std::env::consts::OS {
+        "windows" => ("msys", "pc-msys"),
+        "macos" => ("darwin", "apple-darwin"),
+        "linux" => ("linux-gnu", "pc-linux-gnu"),
+        "freebsd" => ("freebsd", "pc-freebsd"),
+        _ => ("unknown", "unknown"),
+    }
 }
 
 /// Resolve the real host home directory, preferring `$HOME` then `USERPROFILE`.

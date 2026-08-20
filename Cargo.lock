@@ -537,6 +537,8 @@ dependencies = [
  "os_display",
  "rand 0.10.2",
  "regex",
+ "reqwest",
+ "rustls",
  "send_wrapper",
  "serde",
  "serde_json",
@@ -1227,6 +1229,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "home",
+ "hostname",
  "htmd",
  "http",
  "iced",
@@ -2577,6 +2580,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link",
 ]
 
 [[package]]
@@ -5961,7 +5975,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
