@@ -77,6 +77,35 @@ pub fn convert_path_to_unix_style(path: &std::path::Path) -> String {
     s.replace('\\', "/")
 }
 
+/// Host directory mounted at `/tmp` — the single source of truth shared by
+/// the `bash` tool's mount table and every file tool's `/tmp` resolution.
+/// Windows: workspace drive root + `tmp`, created on demand, falling back to
+/// the system temp when the root is unwritable or missing (UNC). Unix: the
+/// system temp dir.
+pub fn tmp_host_dir(workspace: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    if let Some(tmp) = drive_root_of(workspace).map(|root| root.join("tmp"))
+        && std::fs::create_dir_all(&tmp).is_ok()
+    {
+        return tmp;
+    }
+    #[cfg(not(windows))]
+    let _ = workspace;
+    std::env::temp_dir()
+}
+
+/// Drive root of a Windows path (`D:\Rust\crabot` → `D:\`).
+#[cfg(windows)]
+fn drive_root_of(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let std::path::Component::Prefix(prefix) = path.components().next()? else {
+        return None;
+    };
+    let (std::path::Prefix::Disk(d) | std::path::Prefix::VerbatimDisk(d)) = prefix.kind() else {
+        return None;
+    };
+    Some(std::path::PathBuf::from(format!("{}:\\", d as char)))
+}
+
 /// Build the (non‑canonicalized) target path for `path` relative to `workspace`.
 ///
 /// Handles native absolute paths, Windows Unix‑style paths such as
@@ -90,8 +119,17 @@ fn candidate_path(path: &str, workspace: &std::path::Path) -> std::path::PathBuf
     // On Windows a path like "/c/Users/..." is Unix‑style absolute, but
     // `Path::is_absolute()` returns false without a drive prefix.
     #[cfg(windows)]
-    if let Some(native) = convert_path_to_windows_style(path) {
-        return native;
+    {
+        // `/tmp` and `/tmp/...` map to the shared tmp dir ([`tmp_host_dir`]),
+        // matching the `bash` tool's mount; `/tmpfoo` stays root-relative.
+        if let Some(rest) = path.strip_prefix("/tmp")
+            && (rest.is_empty() || rest.starts_with('/'))
+        {
+            return tmp_host_dir(workspace).join(rest.trim_start_matches('/'));
+        }
+        if let Some(native) = convert_path_to_windows_style(path) {
+            return native;
+        }
     }
 
     workspace.join(p)

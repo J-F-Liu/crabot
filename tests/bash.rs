@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use tokio_util::sync::CancellationToken;
 
-use crabot::tools::ToolRegistry;
+use crabot::tools::{ToolRegistry, tmp_host_dir};
 
 /// Helper: create a temp workspace dir that is cleaned up on drop.
 struct TempDir {
@@ -170,9 +170,19 @@ fn run_bash_streaming(
     timeout_ms: Option<u64>,
     tx: std::sync::mpsc::Sender<String>,
 ) -> Result<String, String> {
+    run_bash_streaming_with_cancel(command, workspace, timeout_ms, CancellationToken::new(), tx)
+}
+
+/// Like [`run_bash_streaming`] with a caller-controlled cancel token.
+fn run_bash_streaming_with_cancel(
+    command: &str,
+    workspace: &Path,
+    timeout_ms: Option<u64>,
+    cancel: CancellationToken,
+    tx: std::sync::mpsc::Sender<String>,
+) -> Result<String, String> {
     let (bash, args) = bash_tool(command, timeout_ms);
     let workspace = workspace.to_path_buf();
-    let cancel = CancellationToken::new();
     // Same live-output cap as the UI path (`llm.rs::exec_tool_streaming`).
     let sink = crabot::tools::capping_sink(move |out| {
         let _ = tx.send(out);
@@ -490,21 +500,45 @@ fn bashkit_windows_all_drives_mounted_at_drive_letters() {
     assert!(asserted > 0, "no readable drives on this host");
 }
 
-/// `/tmp` is a real read-write mount: writes persist to the host temp dir,
-/// visible to later host commands.
+/// `/tmp` is a real read-write mount: writes persist to the shared tmp dir
+/// ([`tmp_host_dir`]), visible to later host commands.
 #[test]
-fn bashkit_tmp_mount_writes_to_real_temp() {
+fn bashkit_tmp_mount_writes_to_real_dir() {
     let tmp = TempDir::new("bash_tmp").unwrap();
     let probe = format!("crabot_tmp_probe_{}", std::process::id());
     let result = run_bash(&format!("echo hello > /tmp/{probe}"), &tmp.path, None).unwrap();
     assert!(!result.contains("Exit code"), "unexpected: {result}");
-    let host = std::env::temp_dir().join(&probe);
+    let host = tmp_host_dir(&tmp.path).join(&probe);
     assert_eq!(fs::read_to_string(&host).unwrap(), "hello\n");
     let _ = fs::remove_file(&host);
 }
 
-/// `cd /tmp` maps host commands to the real host temp dir, not the workspace:
-/// `git` there is not inside a repository (the workspace is).
+/// Regression: the `read` tool resolves `/tmp` to the same host dir
+/// ([`tmp_host_dir`]) as the `bash` tool's mount, so bash-written `/tmp/...`
+/// files are readable by the file tools. Windows-only: on Unix the file
+/// tools treat `/tmp` as a real path, which differs from the mount on
+/// macOS where `temp_dir()` is `$TMPDIR`.
+#[cfg(windows)]
+#[test]
+fn bashkit_tmp_written_file_readable_by_read_tool() {
+    let tmp = TempDir::new("bash_tmp_read").unwrap();
+    let probe = format!("crabot_tmp_read_{}", std::process::id());
+    let result = run_bash(&format!("echo hello > /tmp/{probe}"), &tmp.path, None).unwrap();
+    assert!(!result.contains("Exit code"), "unexpected: {result}");
+
+    let registry = ToolRegistry::new();
+    let read = registry.find_tool("read").expect("read tool registered");
+    let args = serde_json::json!({ "path": format!("/tmp/{probe}") });
+    let out = read
+        .execute(&args, &tmp.path, &CancellationToken::new())
+        .unwrap();
+    assert!(out.contains("hello"), "read tool could not see /tmp: {out}");
+
+    let _ = fs::remove_file(tmp_host_dir(&tmp.path).join(&probe));
+}
+
+/// `cd /tmp` maps host commands to the [`tmp_host_dir`] mount — outside the
+/// workspace repo, so `git` reports `fatal:`.
 #[test]
 fn bashkit_cd_tmp_does_not_fall_back_to_workspace() {
     let result = run_bash(
@@ -677,8 +711,8 @@ fn bashkit_converts_attached_vfs_path_args() {
     assert!(result.contains("false"), "unexpected: {result}");
 }
 
-/// `git -C /tmp` — the `/tmp` mount resolves to the host temp dir, so git
-/// reports `not a git repository` instead of `cannot change to '/tmp'`.
+/// `git -C /tmp` — the [`tmp_host_dir`] mount, so git reports `not a git
+/// repository` instead of `cannot change to '/tmp'`.
 #[test]
 fn bashkit_converts_tmp_vfs_path_args() {
     if !host_command_exists("git") {
@@ -800,24 +834,26 @@ fn bashkit_timeout_includes_partial_host_output() {
     );
 }
 
-/// Cancellation mid-script keeps output produced before the cancel.
+/// Cancellation mid-script keeps output produced before the cancel: the
+/// cancel fires only after the first chunk proves the script started, so
+/// build-time jitter can't cancel before anything was captured.
 #[test]
 fn bashkit_cancel_includes_partial_output() {
-    let (bash, args) = bash_tool("echo before; sleep 100", None);
     let workspace = crabot_workspace();
     let cancel = CancellationToken::new();
-    let flipper = cancel.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        flipper.cancel();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn({
+        let cancel = cancel.clone();
+        move || {
+            run_bash_streaming_with_cancel("echo before; sleep 100", &workspace, None, cancel, tx)
+        }
     });
-    let err = test_runtime()
-        .block_on(async {
-            await_tool(tokio::task::spawn_blocking(move || {
-                bash.execute(&args, &workspace, &cancel)
-            }))
-            .await
-        })
+    // First chunk ⇒ the script is running; cancel mid-`sleep 100`.
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
+    cancel.cancel();
+    let err = handle
+        .join()
+        .expect("streaming thread panicked")
         .unwrap_err();
     assert!(err.contains("Cancelled by user"), "unexpected: {err}");
     assert!(err.contains("--- partial stdout ---"), "unexpected: {err}");

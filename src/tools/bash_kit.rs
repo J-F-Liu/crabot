@@ -767,7 +767,9 @@ fn convert_posix_arg(value: &str, mounts: &[RealMount]) -> String {
 fn mounts(workspace: &Path, home: Option<&RealMount>) -> Vec<RealMount> {
     let mut list = vec![
         RealMount::rw(workspace, super::convert_path_to_unix_style(workspace)),
-        RealMount::rw(std::env::temp_dir(), "/tmp"),
+        // Shared tmp dir ([`super::tmp_host_dir`]), so the `bash` tool and
+        // every file tool agree on where `/tmp` lives.
+        RealMount::rw(super::tmp_host_dir(workspace), "/tmp"),
     ];
     if let Some(home) = home {
         list.insert(1, home.clone());

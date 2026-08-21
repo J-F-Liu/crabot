@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(windows)]
+use crabot::tools::tmp_host_dir;
 use crabot::tools::{
     COALESCE_MS, ChunkForwarder, OutStream, OutputSink, StreamingCap, ToolLimits,
     decode_stringified_args, resolve_path, resolve_path_partial, streaming_truncation_marker,
@@ -91,6 +93,42 @@ fn resolve_relative_nonexistent() {
     let tmp = TempDir::new("rel_miss").unwrap();
     let result = resolve_path("ghost.txt", &tmp.path);
     assert!(result.is_err());
+}
+
+/// Windows: the VFS `/tmp` resolves to the shared tmp host dir, so the file
+/// tools agree with the `bash` tool's mount regardless of the process CWD.
+#[cfg(windows)]
+#[test]
+fn resolve_tmp_maps_to_tmp_host_dir() {
+    let tmp = TempDir::new("tmp_vfs").unwrap();
+    let host_dir = tmp_host_dir(&tmp.path);
+    // `/tmp` itself (created by tmp_host_dir, so canonicalize succeeds).
+    assert_eq!(
+        resolve_path("/tmp", &tmp.path).unwrap(),
+        dunce::canonicalize(&host_dir).unwrap()
+    );
+    // `/tmp/<file>` appends to the same host dir.
+    let probe = format!("crabot_tmp_vfs_{}", std::process::id());
+    let host = host_dir.join(&probe);
+    fs::write(&host, b"x").unwrap();
+    assert_eq!(
+        resolve_path(&format!("/tmp/{probe}"), &tmp.path).unwrap(),
+        dunce::canonicalize(&host).unwrap()
+    );
+    let _ = fs::remove_file(&host);
+}
+
+/// Windows: `/tmpfoo` (no slash after `tmp`) is NOT the tmp mount — it stays
+/// a CWD-drive root-relative path instead of capturing into `tmp_host_dir`.
+#[cfg(windows)]
+#[test]
+fn resolve_tmp_prefix_does_not_capture_lookalikes() {
+    let tmp = TempDir::new("tmp_look").unwrap();
+    let resolved = resolve_path_partial("/tmpfoo", &tmp.path).unwrap();
+    assert!(
+        !resolved.starts_with(tmp_host_dir(&tmp.path)),
+        "/tmpfoo wrongly captured by the tmp mount: {resolved:?}"
+    );
 }
 
 // ── resolve_path_partial ─────────────────────────────────────
