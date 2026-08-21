@@ -1,4 +1,26 @@
-# Unreleased
+# Crabot v0.8.2
+
+- **Per-message session persistence** — session files are now saved incrementally after every complete message (assistant reply, tool results, injected user prompts) instead of only when the whole turn finishes, so a crash or force-kill mid-task no longer loses the conversation recorded so far.
+- **Retry covers mid-stream failures & stalls** — transient 429 / 5xx / connection errors that strike after streaming has started, and stalled streams, are now retried with an on-screen countdown (up to 5 attempts) instead of ending the turn.
+- **Panic details are logged** — a crash now appends the panic message and backtrace to `~/.crabot/logs/panic.log`, keeping GUI crashes diagnosable when stderr is hidden.
+
+- **`bash` tool: real identity & platform variables** — `whoami`/`hostname`/`uname -n` now report the actual host user and machine via bashkit's `.username()`/`.hostname()`, and `OSTYPE`/`MACHTYPE`/`HOSTTYPE` are seeded with real values (`msys`, `x86_64-pc-msys`, … on Windows), so scripts probing the platform see the true host instead of bashkit's virtual defaults.
+- **`bash` tool: curl/wget with open network** — the bashkit `http_client` feature is now enabled, so `curl`/`wget`/`http` work inside the in-process interpreter with the same open policy as the `fetch` tool (any http(s) destination, private IPs included) and raised limits: 600s timeout (bashkit's cap) and a 64 MB response cap.
+- **`bash` tool: host Python preferred** — `python`/`python3` now bridge to the host interpreter when one is on PATH; the embedded Monty interpreter remains the fallback.
+- **MSYS2-style argument conversion for bridged commands (Windows)** — VFS absolute paths in host command arguments are now rewritten to native paths before spawning (`git -C /d/... status` works with native git), mirroring MSYS2's automatic path conversion; covers standalone paths, `--opt=/path` forms, `/tmp` mounts, and UNC `//server/share`.
+
+- **Built-in `process` tool** — start, monitor, interact with, and stop long-running processes (servers, watchers, REPLs). Processes are addressed by their OS pid and launched directly via `shell-words` (no platform shell), mirroring the `bash` tool's host-command bridge.
+
+- **Throttled streaming tool output** — live tool output is now coalesced into at most ~10 UI updates per second (or one per 4 KB), so a noisy process (e.g. `cargo test` linking) can no longer flood the UI thread and freeze the window; forwarded output is additionally cut at `max_output_bytes` with a truncation marker, and only the tail window is laid out while a tool is still running, bounding memory and per-frame render cost.
+- **Responsive UI under load** — high-frequency cursor-move events are deduplicated, keeping the UI responsive while a heavy stream or tool output is rendering.
+- **Smart-case `find` patterns** — glob matching is now case-insensitive by default (`*.rs` matches `FOO.RS`); a pattern containing an uppercase character switches to exact-case matching (`*.RS` matches only uppercase extensions).
+- **`search` tool uses ripgrep's engine** — big files, non-UTF-8, and binary files are handled gracefully via streaming scans with binary detection and lossy UTF-8 fallback, instead of whole-file string reads.
+
+- **Taskbar attention for background sessions** — a finished background session flashes the taskbar once (Windows), and an unanswered `ask` keeps flashing until the window regains focus.
+- **Accurate DeepSeek pricing** — cost tracking now reflects DeepSeek pricing, which doubles during Beijing peak hours.
+- **Update download progress** — the self-update flow now shows streaming download progress while fetching the new release.
+
+**Full Changelog**: [`v0.8.1...v0.8.2`](https://github.com/J-F-Liu/crabot/compare/v0.8.1...v0.8.2)
 
 # Crabot v0.8.1
 

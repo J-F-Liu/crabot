@@ -1,0 +1,5 @@
+# Limit parallel rustc/link.exe processes (default = number of CPU cores).
+# `cargo test` compiles one test binary per integration test file; without a
+# cap, a many-core machine spawns a link.exe for each of them at once.
+[build]
+jobs = 4

@@ -1,6 +1,6 @@
 [package]
 name = "crabot"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 description = "A smart and powerful coding agent with native GUI."
 license = "MIT"
@@ -96,7 +96,13 @@ pulldown-cmark-escape = "0.11"
 libc = "0.2"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Pipes", "Win32_System_Console", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_System_Pipes",
+    "Win32_System_Console",
+    "Win32_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+] }
 
 [build-dependencies]
 winresource = "0.1.31"
