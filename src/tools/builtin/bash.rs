@@ -6,7 +6,9 @@ use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
-use super::{ChunkForwarder, OutputSink, Tool, WaitError, arg_str, tool_limits, wait_with_timeout};
+use crate::tools::{
+    ChunkForwarder, OutputSink, Tool, WaitError, arg_str, bash_kit, tool_limits, wait_with_timeout,
+};
 
 pub struct BashTool;
 
@@ -92,14 +94,14 @@ fn run(
     let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
     let limits = tool_limits();
     let timeout = Duration::from_millis(
-        super::arg_u64(args, "timeout")
+        crate::tools::arg_u64(args, "timeout")
             .map(|v| v.clamp(1000, limits.max_command_timeout_ms))
             .unwrap_or(limits.command_timeout_ms),
     );
     // Prefer bashkit's in-process interpreter; fall back to `bash -c` for
     // scripts it cannot faithfully execute.
-    match super::bash_kit::collect_external_names(command) {
-        Ok(names) => super::bash_kit::execute(command, workspace, timeout, cancel, names, sink),
+    match bash_kit::collect_external_names(command) {
+        Ok(names) => bash_kit::execute(command, workspace, timeout, cancel, names, sink),
         Err(()) => {
             tracing::info!("bashkit falling back to host bash: {}", command);
             execute_real_bash(command, workspace, timeout, cancel, sink)
@@ -115,20 +117,20 @@ fn execute_real_bash(
     cancel: &CancellationToken,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
-    let (stdout_tx, stdout_rx) = super::create_pipe_pair("stdout")?;
-    let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
+    let (stdout_tx, stdout_rx) = crate::tools::create_pipe_pair("stdout")?;
+    let (stderr_tx, stderr_rx) = crate::tools::create_pipe_pair("stderr")?;
 
     let mut cmd = std::process::Command::new("bash");
     // Drop secrets (names ending in `API_KEY`) and rustup's recursion counter
     // (rustup proxies abort past their counter max).
-    super::sanitize_child_env(&mut cmd);
+    crate::tools::sanitize_child_env(&mut cmd);
     cmd.arg("-c")
         .arg(command)
         .current_dir(workspace)
-        .stdout(super::pipe_to_stdio(stdout_tx))
-        .stderr(super::pipe_to_stdio(stderr_tx));
+        .stdout(crate::tools::pipe_to_stdio(stdout_tx))
+        .stderr(crate::tools::pipe_to_stdio(stderr_tx));
 
-    super::detach_child(&mut cmd);
+    crate::tools::detach_child(&mut cmd);
 
     let child = cmd
         .spawn()
@@ -148,7 +150,7 @@ fn execute_real_bash(
     // Flush carried/coalesced bytes on every path (success, timeout, cancel).
     forwarder.finish();
     let output = result.map_err(WaitError::into_message)?;
-    Ok(super::format_command_output(&output))
+    Ok(crate::tools::format_command_output(&output))
 }
 
 /// Render a timeout in milliseconds as a human-readable duration, e.g.

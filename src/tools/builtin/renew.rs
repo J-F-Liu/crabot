@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use genai::chat::ToolCall;
 use serde_json::{Value, json};
 
-use super::Tool;
+use crate::tools::Tool;
 
 /// Move renew calls to the end so the turn's other tools run first.
 /// Only the first renew takes effect; later renews are reported as errors.

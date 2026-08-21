@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Tool, arg_path, make_workspace_relative, normalize_newlines, resolve_path};
+use crate::tools::{Tool, arg_path, make_workspace_relative, normalize_newlines, resolve_path};
 
 /// A single edit operation with flexible field-name aliases for cross‑model
 /// compatibility (e.g. `old_text` / `old` / `search`).

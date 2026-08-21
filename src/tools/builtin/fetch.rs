@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use dom_smoothie::{Article, Config, Readability};
 use serde_json::{Value, json};
 
-use super::{CANCEL_REASON, Tool, arg_str, tool_limits, truncate_output};
+use crate::tools::{CANCEL_REASON, Tool, arg_str, tool_limits, truncate_output};
 
 pub struct FetchTool;
 

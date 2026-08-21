@@ -3,7 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
-use super::Tool;
+use crate::tools::Tool;
 
 /// Request emitted by the builtin task tool to spawn a sub-agent session.
 #[derive(Debug, Clone)]

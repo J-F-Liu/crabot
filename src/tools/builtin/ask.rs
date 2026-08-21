@@ -3,7 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
-use super::Tool;
+use crate::tools::Tool;
 
 /// A request for input from the user. The UI completes this tool call.
 pub struct AskTool;

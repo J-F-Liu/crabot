@@ -21,12 +21,12 @@ use std::os::unix::io::AsRawFd;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, RawHandle};
 
-use super::{
+use crate::lock;
+use crate::tools::{
     CANCEL_REASON, OutputSink, ProcessSignal, StdinWriteError, StreamDecoder, Tool, arg_str,
     arg_u64, detach_child, exit_code_of, resolve_path, sanitize_child_env, signal_process_tree,
     tool_limits, write_stdin_bounded,
 };
-use crate::lock;
 
 /// Cap on retained exited process entries; the oldest are dropped on `start`.
 const MAX_RETAINED_EXITED: usize = 64;
@@ -667,7 +667,7 @@ fn read_step(reader: &mut impl Read, buf: &mut [u8], fd: i32) -> ReadStep {
 /// a blocking `ReadFile` can never hang.
 #[cfg(windows)]
 fn read_step(reader: &mut impl Read, buf: &mut [u8], raw: isize) -> ReadStep {
-    match super::peek_pipe_available(raw as RawHandle) {
+    match crate::tools::peek_pipe_available(raw as RawHandle) {
         Some(0) => {
             std::thread::sleep(READER_IDLE_SLEEP);
             ReadStep::Retry

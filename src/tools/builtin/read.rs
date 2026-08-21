@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
-use super::{Tool, arg_path, arg_u64, make_workspace_relative, resolve_path, tool_limits};
+use crate::tools::{Tool, arg_path, arg_u64, make_workspace_relative, resolve_path, tool_limits};
 
 pub struct ReadTool;
 

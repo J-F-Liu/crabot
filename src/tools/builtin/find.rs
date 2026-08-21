@@ -5,8 +5,8 @@ use tokio_util::sync::CancellationToken;
 use globset::{GlobBuilder, GlobMatcher};
 use serde_json::{Value, json};
 
-use super::{Tool, arg_str, resolve_path, tool_limits};
 use crate::lock;
+use crate::tools::{Tool, arg_str, resolve_path, tool_limits};
 
 pub struct FindTool;
 
@@ -105,7 +105,7 @@ pub(super) fn execute(
     if !search_path.exists() {
         return Err(format!(
             "Path does not exist: {}",
-            super::make_workspace_relative(&search_path, workspace)
+            crate::tools::make_workspace_relative(&search_path, workspace)
         ));
     }
 
@@ -139,7 +139,7 @@ pub(super) fn execute(
                         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                             return ignore::WalkState::Continue;
                         }
-                        let rel = super::make_workspace_relative(entry.path(), workspace);
+                        let rel = crate::tools::make_workspace_relative(entry.path(), workspace);
                         if matcher.matches(&rel) {
                             let _ = tx.send(rel);
                         }
@@ -150,7 +150,7 @@ pub(super) fn execute(
         });
 
     if cancel.is_cancelled() {
-        return Err(super::CANCEL_REASON.into());
+        return Err(crate::tools::CANCEL_REASON.into());
     }
     let root_err = lock(root_error).take();
     if let Some(err) = root_err {
@@ -172,5 +172,5 @@ pub(super) fn execute(
         ));
     }
 
-    Ok(super::truncate_output(results.join("\n")))
+    Ok(crate::tools::truncate_output(results.join("\n")))
 }

@@ -28,7 +28,9 @@ use grep_regex::RegexMatcher;
 use grep_searcher::sinks::Lossy;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
 
-use super::{Tool, arg_str, resolve_path, tool_limits};
+use crate::tools::{
+    Tool, arg_str, make_workspace_relative, resolve_path, tool_limits, truncate_output,
+};
 
 pub struct SearchTool;
 
@@ -140,7 +142,7 @@ pub(super) fn execute_search(
     let mut output = SearchOutput::default();
 
     if search_path.is_file() {
-        let rel = super::make_workspace_relative(&search_path, workspace);
+        let rel = make_workspace_relative(&search_path, workspace);
         output
             .search_file(
                 &mut searcher,
@@ -168,7 +170,7 @@ pub(super) fn execute_search(
             if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 continue;
             }
-            let rel = super::make_workspace_relative(entry.path(), workspace);
+            let rel = make_workspace_relative(entry.path(), workspace);
             // Ignore unreadable files; search continues with the rest.
             let _ = output.search_file(
                 &mut searcher,
@@ -182,7 +184,7 @@ pub(super) fn execute_search(
     } else {
         return Err(format!(
             "Path does not exist or is not searchable: {}",
-            super::make_workspace_relative(&search_path, workspace)
+            make_workspace_relative(&search_path, workspace)
         ));
     }
 
@@ -192,20 +194,20 @@ pub(super) fn execute_search(
             out.push('\n');
         }
         out.push_str("... [search was cancelled]\n");
-        Ok(super::truncate_output(out))
+        Ok(truncate_output(out))
     } else if !output.found {
         Ok("No matches found.".into())
     } else if output.truncated {
-        Ok(super::truncate_output(format!(
+        Ok(truncate_output(format!(
             "{}\n... [output truncated at {max_lines} lines; more matches exist but were omitted] ...\n",
             output.out
         )))
     } else if output.limit_reached {
-        Ok(super::truncate_output(format!(
+        Ok(truncate_output(format!(
             "{}\n... [output truncated at {max_lines} lines; more matches may exist] ...\n",
             output.out
         )))
     } else {
-        Ok(super::truncate_output(output.out))
+        Ok(truncate_output(output.out))
     }
 }

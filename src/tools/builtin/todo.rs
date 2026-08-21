@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio_util::sync::CancellationToken;
 
-use super::Tool;
+use crate::tools::Tool;
 
 /// Shared todo list — the tool writes to it; the UI reads from it.
 pub type TodoList = Arc<Mutex<Vec<TodoItem>>>;
