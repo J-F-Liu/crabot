@@ -6,6 +6,7 @@ use iced::{
 };
 use iced_selection::Text as SelectableText;
 
+use super::icons;
 use super::styles::{pane_side, primary_button, primary_toggler, secondary_button, sel_primary};
 use super::theme::{CRABOT_DANGER, thin_vertical};
 use crate::RightPaneEvent;
@@ -17,6 +18,37 @@ const MONO: Font = Font {
     family: font::Family::Monospace,
     ..Font::DEFAULT
 };
+
+/// Identifies a collapsible right-pane section.
+#[derive(Clone, Copy)]
+pub(crate) enum PaneSection {
+    ContextWindow,
+    TokenUsage,
+    AccessedFiles,
+    ModifiedFiles,
+}
+
+/// Expand/collapse state of the right-pane sections, shared across all
+/// session tabs so switching sessions keeps the current layout.
+#[derive(Debug)]
+pub(crate) struct PaneSections {
+    pub(crate) context_window: bool,
+    pub(crate) token_usage: bool,
+    pub(crate) accessed_files: bool,
+    pub(crate) modified_files: bool,
+}
+
+impl Default for PaneSections {
+    fn default() -> Self {
+        Self {
+            context_window: true,
+            token_usage: true,
+            accessed_files: true,
+            modified_files: true,
+        }
+    }
+}
+
 const BOLD: Font = Font {
     weight: font::Weight::Bold,
     ..Font::DEFAULT
@@ -54,6 +86,32 @@ fn revert_button(label: &'static str, event: RightPaneEvent) -> Element<'static,
         .into()
 }
 
+/// Section header with a trailing expand/collapse chevron.
+fn collapsible_header(
+    title: Cow<'static, str>,
+    expanded: bool,
+    section: PaneSection,
+) -> Element<'static, RightPaneEvent> {
+    with_trailing(section_header(title), collapse_toggle(expanded, section))
+}
+
+/// Expand/collapse chevron button used by collapsible sections.
+fn collapse_toggle(expanded: bool, section: PaneSection) -> Element<'static, RightPaneEvent> {
+    let (icon, tip) = if expanded {
+        (&icons::CHEVRONS_DOWN, "Collapse")
+    } else {
+        (&icons::CHEVRONS_RIGHT, "Expand")
+    };
+    icons::icon_action(icon, tip, RightPaneEvent::ToggleSection(section))
+}
+
+/// Selectable row for a single file path.
+fn file_row<'a>(path: &'a str) -> Element<'a, RightPaneEvent> {
+    container(SelectableText::new(path).size(13).style(sel_primary))
+        .padding([1, 0])
+        .into()
+}
+
 /// Build the todo-list section, returning `None` when the list is empty.
 fn todo_section(todo_items: &[TodoItem]) -> Option<Element<'static, RightPaneEvent>> {
     if todo_items.is_empty() {
@@ -88,6 +146,7 @@ pub(crate) fn right_pane<'a>(
     pane_width: f32,
     model: Option<&ModelConfig>,
     tab: &'a SessionTab,
+    sections: &PaneSections,
     dark_mode: bool,
 ) -> Element<'a, RightPaneEvent> {
     let token_amount = &tab.latest_tokens;
@@ -102,50 +161,73 @@ pub(crate) fn right_pane<'a>(
 
     // ── context window ──
     items.push(rule::horizontal(1).into());
-    let header = match context_window.filter(|&cw| cw > 0) {
+    let cw = context_window.filter(|&cw| cw > 0);
+    let expanded = sections.context_window;
+    // Collapsed shows only the fill ratio; expanded shows the raw size.
+    let header = match cw {
+        Some(cw) if !expanded => {
+            format!(
+                "Context window ({:.1}%)",
+                token_amount.context_fill_ratio(cw)
+            )
+        }
         Some(cw) => format!("Context window ({cw})"),
         None => "Context window".to_string(),
     };
-    items.push(section_header(Cow::from(header)));
-    items.push(token_row(
-        "Prompt tokens:",
-        format!("{}", token_amount.prompt),
+    items.push(collapsible_header(
+        Cow::from(header),
+        expanded,
+        PaneSection::ContextWindow,
     ));
-    items.push(token_row(
-        "Cached tokens:",
-        format!("{}", token_amount.cache_read + token_amount.cache_write),
-    ));
-    if let Some(cw) = context_window.filter(|&cw| cw > 0) {
-        let cfr = token_amount.context_fill_ratio(cw);
-        items.push(token_row("Fill ratio:", format!("{:.1}%", cfr)));
+    if expanded {
+        items.push(token_row("Prompt tokens:", token_amount.prompt.to_string()));
+        items.push(token_row(
+            "Cached tokens:",
+            (token_amount.cache_read + token_amount.cache_write).to_string(),
+        ));
+        if let Some(cw) = cw {
+            items.push(token_row(
+                "Fill ratio:",
+                format!("{:.1}%", token_amount.context_fill_ratio(cw)),
+            ));
+        }
     }
 
     // ── cumulative token usage and cost ──
     items.push(rule::horizontal(1).into());
-    items.push(section_header(Cow::Borrowed("Token Usage")));
-    items.push(token_row(
-        "Input tokens:",
-        format!("{}", session.tokens.input),
+    let expanded = sections.token_usage;
+    items.push(collapsible_header(
+        if expanded {
+            Cow::Borrowed("Token Usage")
+        } else {
+            // Collapsed shows only the session cost.
+            Cow::from(format!("Token Usage ({})", session.formatted_cost()))
+        },
+        expanded,
+        PaneSection::TokenUsage,
     ));
-    items.push(token_row(
-        "Output tokens:",
-        format!("{}", session.tokens.output),
-    ));
-    items.push(token_row(
-        "Cache read:",
-        format!("{}", session.tokens.cache_read),
-    ));
-    if session.tokens.cache_write > 0 {
+    if expanded {
+        items.push(token_row("Input tokens:", session.tokens.input.to_string()));
         items.push(token_row(
-            "Cache write:",
-            format!("{}", session.tokens.cache_write),
+            "Output tokens:",
+            session.tokens.output.to_string(),
         ));
-    }
-    items.push(token_row("Session cost:", session.formatted_cost()));
-    items.push(rule::horizontal(1).into());
-    items.push(token_row("Num Requests:", session.requests.to_string()));
-    if !session.updated_at.is_empty() {
-        items.push(token_row("Last Response:", session.updated_at_time()));
+        items.push(token_row(
+            "Cache read:",
+            session.tokens.cache_read.to_string(),
+        ));
+        if session.tokens.cache_write > 0 {
+            items.push(token_row(
+                "Cache write:",
+                session.tokens.cache_write.to_string(),
+            ));
+        }
+        items.push(token_row("Session cost:", session.formatted_cost()));
+        items.push(rule::horizontal(1).into());
+        items.push(token_row("Num Requests:", session.requests.to_string()));
+        if !session.updated_at.is_empty() {
+            items.push(token_row("Last Response:", session.updated_at_time()));
+        }
     }
 
     // ── todo items ──
@@ -153,35 +235,55 @@ pub(crate) fn right_pane<'a>(
         items.push(section);
     }
 
+    // ── accessed files ──
+    if !session.accessed_files.is_empty() {
+        let expanded = sections.accessed_files;
+        items.push(rule::horizontal(1).into());
+        items.push(collapsible_header(
+            Cow::Borrowed("Accessed Files"),
+            expanded,
+            PaneSection::AccessedFiles,
+        ));
+        if expanded {
+            let files: Vec<_> = session.accessed_files.iter().map(|p| file_row(p)).collect();
+            items.push(column(files).spacing(2).into());
+        }
+    }
+
     // ── modified files ──
     if !session.modified_files.is_empty() {
-        let files: Vec<Element<'_, RightPaneEvent>> = session
-            .modified_files
-            .iter()
-            .map(|p| {
-                let label = container(SelectableText::new(p.as_str()).size(13).style(sel_primary))
-                    .padding([1, 0]);
-                if tab.snapshot_files.contains(p) && !tab.running() {
-                    with_trailing(
-                        label,
-                        revert_button("Revert", RightPaneEvent::RevertFile(p.clone())),
-                    )
-                } else {
-                    label.into()
-                }
-            })
-            .collect();
+        let expanded = sections.modified_files;
         items.push(rule::horizontal(1).into());
-        let header = section_header(Cow::Borrowed("Modified Files"));
-        items.push(if tab.snapshot_files.is_empty() || tab.running() {
-            header
+        // Revert All is available only when snapshots exist and the session is
+        // idle; then the list is always shown expanded.
+        let show_revert_all = !tab.snapshot_files.is_empty() && !tab.running();
+        let trailing: Element<RightPaneEvent> = if show_revert_all {
+            revert_button("Revert All", RightPaneEvent::RevertAll)
         } else {
-            with_trailing(
-                header,
-                revert_button("Revert All", RightPaneEvent::RevertAll),
-            )
-        });
-        items.push(column(files).spacing(2).into());
+            collapse_toggle(expanded, PaneSection::ModifiedFiles)
+        };
+        items.push(with_trailing(
+            section_header(Cow::Borrowed("Modified Files")),
+            trailing,
+        ));
+        if expanded || show_revert_all {
+            let can_revert = |p: &String| tab.snapshot_files.contains(p) && !tab.running();
+            let files: Vec<_> = session
+                .modified_files
+                .iter()
+                .map(|p| {
+                    if can_revert(p) {
+                        with_trailing(
+                            file_row(p),
+                            revert_button("Revert", RightPaneEvent::RevertFile(p.clone())),
+                        )
+                    } else {
+                        file_row(p)
+                    }
+                })
+                .collect();
+            items.push(column(files).spacing(2).into());
+        }
         if let Some(err) = &tab.modified_files_error {
             items.push(
                 container(with_trailing(

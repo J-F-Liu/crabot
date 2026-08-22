@@ -306,11 +306,8 @@ pub(crate) fn update(
             if tr.name == "ask" {
                 state.ask_request = None;
             }
-            if let Some(path_str) = tr.get_modified_file()
-                && !session.modified_files.iter().any(|p| p == path_str)
-            {
-                session.modified_files.push(path_str.to_string());
-            }
+            tr.track_modified_file(&mut session.modified_files);
+            tr.track_read_file(&mut session.accessed_files);
             if let Some(dialog) = session.dialogs.last_mut() {
                 dialog.push_tool_result(tr);
             }

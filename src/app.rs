@@ -18,7 +18,7 @@ use crabot::user::{UserPrompt, WorkMode};
 use prompt::{FilepathEntry, TOOLS, WORKSPACE_TREE};
 
 use crate::views::{
-    DividerState, center_pane, divider, left_pane, right_pane,
+    DividerState, PaneSection, PaneSections, center_pane, divider, left_pane, right_pane,
     session_list::SessionEntry,
     theme::{self, CRABOT_MODAL_SCRIM},
     tool_list::ToolListState,
@@ -399,6 +399,8 @@ pub(crate) struct App {
     pub conversation: ConversationState,
     /// Settings-dialog visibility and working state.
     pub settings_dialog: crate::views::SettingsState,
+    /// Right-pane section expand/collapse state, shared across all tabs.
+    pub pane_sections: PaneSections,
     pub overlay: OverlayState,
 }
 
@@ -569,6 +571,8 @@ pub(crate) enum RightPaneEvent {
     RevertAll,
     /// Dismiss the transient revert error message.
     DismissRevertError,
+    /// Expand or collapse a right-pane section.
+    ToggleSection(PaneSection),
 }
 
 // ── Root Message ──────────────────────────────────────────────────
@@ -590,6 +594,8 @@ pub(crate) enum Message {
     /// Revert All finished: (tab number, per-file outcomes).
     RevertAllDone(usize, Vec<Result<String, String>>),
     DismissRevertError,
+    /// Expand or collapse a right-pane section.
+    TogglePaneSection(PaneSection),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -685,7 +691,7 @@ impl App {
         };
 
         let models_count = models.models.len();
-        let app = Self {
+        let mut app = Self {
             settings: saved,
             layout: LayoutState {
                 window_size,
@@ -705,6 +711,7 @@ impl App {
             conversation: ConversationState::new(initial_selected_model, initial_selected_preamble),
             models,
             settings_dialog: crate::views::SettingsState::default(),
+            pane_sections: PaneSections::default(),
             overlay: OverlayState {
                 show_workspace_dialog: false,
                 default_workspace_path: setup::default_workspace_path(),
@@ -722,6 +729,8 @@ impl App {
             dark_mode,
             "crabot boot complete"
         );
+        // Boot-time session list scan: show the loading placeholder until it lands.
+        app.conversation.session_list_loading = !workspace_path.as_os_str().is_empty();
         let session_task = conversation::refresh_session_list(workspace_path.clone());
         let workspace_task = prompt::scan_workspace_content(workspace_path, None);
         let discover_task = mcp_list
@@ -807,6 +816,16 @@ impl App {
             }
             Message::DismissRevertError => {
                 self.conversation.viewing_mut().modified_files_error = None;
+                Task::none()
+            }
+            Message::TogglePaneSection(section) => {
+                let expanded = match section {
+                    PaneSection::ContextWindow => &mut self.pane_sections.context_window,
+                    PaneSection::TokenUsage => &mut self.pane_sections.token_usage,
+                    PaneSection::AccessedFiles => &mut self.pane_sections.accessed_files,
+                    PaneSection::ModifiedFiles => &mut self.pane_sections.modified_files,
+                };
+                *expanded = !*expanded;
                 Task::none()
             }
         }
@@ -974,6 +993,7 @@ impl App {
                 self.settings.right_pane_width,
                 self.get_current_model(),
                 self.conversation.viewing(),
+                &self.pane_sections,
                 self.settings.dark_mode,
             )
             .map(|event| match event {
@@ -983,6 +1003,7 @@ impl App {
                 RightPaneEvent::RevertFile(path) => Message::RevertFile(path),
                 RightPaneEvent::RevertAll => Message::RevertAll,
                 RightPaneEvent::DismissRevertError => Message::DismissRevertError,
+                RightPaneEvent::ToggleSection(section) => Message::TogglePaneSection(section),
             }),
         ]
         .spacing(0)

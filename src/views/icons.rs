@@ -31,6 +31,12 @@ pub(crate) const CHEVRON_LEFT: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/s
 /// Lucide "chevron-right" icon.
 pub(crate) const CHEVRON_RIGHT: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"##;
 
+/// Lucide "chevrons-right" icon.
+pub(crate) const CHEVRONS_RIGHT: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/></svg>"##;
+
+/// Lucide "chevrons-down" icon.
+pub(crate) const CHEVRONS_DOWN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 6-5 5-5-5"/><path d="m17 13-5 5-5-5"/></svg>"##;
+
 /// A small SVG icon button with a tooltip shown below on hover.
 #[must_use]
 pub(crate) fn icon_action<M: Clone + 'static>(

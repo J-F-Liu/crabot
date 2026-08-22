@@ -72,6 +72,10 @@ pub struct Session {
     /// Derived from history on load; not serialised directly.
     #[serde(skip)]
     pub modified_files: Vec<String>,
+    /// Files read during this session (read tool).
+    /// Derived from history on load; not serialised directly.
+    #[serde(skip)]
+    pub accessed_files: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -124,6 +128,7 @@ impl Session {
             cost: 0.0,
             currency: Currency::new(),
             modified_files: Vec::new(),
+            accessed_files: Vec::new(),
             created_at: time,
             updated_at: String::new(),
         }
@@ -310,6 +315,9 @@ impl Session {
             }
         }
 
+        let mut accessed: Vec<String> = Vec::new();
+        let mut modified: Vec<String> = Vec::new();
+
         let mut dialogs: Vec<Dialog> = Vec::new();
 
         /// Append `turn` to the last dialog, or start a new one if none exists.
@@ -323,8 +331,6 @@ impl Session {
                 }),
             }
         }
-
-        let mut modified: Vec<String> = Vec::new();
 
         for msg in &self.history {
             match msg.role {
@@ -373,12 +379,9 @@ impl Session {
                             timestamp: String::new(),
                             streaming: false,
                         };
-                        // Track files modified by write / edit tools.
-                        if let Some(path_str) = tr.get_modified_file()
-                            && !modified.iter().any(|p| p == path_str)
-                        {
-                            modified.push(path_str.to_string());
-                        }
+                        // Track files touched by write / edit / read tools.
+                        tr.track_modified_file(&mut modified);
+                        tr.track_read_file(&mut accessed);
                         trs.push(tr);
                     }
                     if !trs.is_empty() {
@@ -393,6 +396,7 @@ impl Session {
         }
 
         self.modified_files = modified;
+        self.accessed_files = accessed;
         self.dialogs = dialogs;
     }
 

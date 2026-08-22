@@ -29,7 +29,7 @@ pub(crate) use center_pane::{
 };
 pub(crate) use left_pane::left_pane;
 pub(crate) use modal::{revert_all_modal, workspace_modal};
-pub(crate) use right_pane::right_pane;
+pub(crate) use right_pane::{PaneSection, PaneSections, right_pane};
 pub(crate) use search_bar::SearchEvent;
 pub(crate) use settings::{
     NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState, settings_dialog,
