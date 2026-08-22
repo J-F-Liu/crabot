@@ -10,7 +10,7 @@ use crabot::model::{Model, ModelList, currency_symbol};
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
-        button, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
+        Row, button, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
         text_input,
     },
 };
@@ -36,6 +36,8 @@ pub(crate) enum ModelsEvent {
     RefreshModels,
     ToggleModel(String, bool),
     SelectModelDetail(String),
+    /// Edit one parameter of the currently-selected checked model.
+    EditModelParam(ModelParam),
     /// Choose which pricing offer to display / use when adding a model.
     SelectOfferSource(String),
     // Label actions
@@ -56,6 +58,152 @@ pub(crate) enum ModelsEvent {
     LabelInputFocus(bool),
     /// Persist the working model list to disk.
     SaveModels,
+}
+
+// ── Model parameter editor ───────────────────────────────────────
+
+/// One editable parameter of a checked model.
+#[derive(Debug, Clone)]
+pub(crate) enum ModelParam {
+    Name(String),
+    Thinking(bool),
+    /// Comma-separated level names.
+    ThinkingLevels(String),
+    /// Comma-separated input modes ("text", "image", …).
+    Input(String),
+    ContextWindow(String),
+    MaxTokens(String),
+    CostInput(String),
+    CostOutput(String),
+    CostCacheRead(String),
+    CostCacheWrite(String),
+    Currency(String),
+    DoubleOnPeakHour(bool),
+}
+
+/// Raw-text drafts backing the parameter editor — keeps partially-typed
+/// numbers visible instead of snapping back to the last valid value.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModelEditDraft {
+    pub(crate) name: String,
+    pub(crate) thinking_levels: String,
+    pub(crate) input: String,
+    pub(crate) context_window: String,
+    pub(crate) max_tokens: String,
+    pub(crate) cost_input: String,
+    pub(crate) cost_output: String,
+    pub(crate) cost_cache_read: String,
+    pub(crate) cost_cache_write: String,
+    pub(crate) currency: String,
+}
+
+impl ModelEditDraft {
+    /// Seed raw-text drafts from a model's current parameters.
+    fn from_model(m: &Model) -> Self {
+        Self {
+            name: m.name.clone(),
+            thinking_levels: m.thinking_levels.join(", "),
+            input: m.input.join(", "),
+            context_window: m.context_window.to_string(),
+            max_tokens: m.max_tokens.to_string(),
+            cost_input: m.cost.input.to_string(),
+            cost_output: m.cost.output.to_string(),
+            cost_cache_read: m.cost.cache_read.to_string(),
+            cost_cache_write: m.cost.cache_write.to_string(),
+            currency: m.cost.currency.to_string(),
+        }
+    }
+
+    /// Record the raw text of an edited field (flags have no draft).
+    fn record(&mut self, param: &ModelParam) {
+        let (field, value) = match param {
+            ModelParam::Name(v) => (&mut self.name, v),
+            ModelParam::ThinkingLevels(v) => (&mut self.thinking_levels, v),
+            ModelParam::Input(v) => (&mut self.input, v),
+            ModelParam::ContextWindow(v) => (&mut self.context_window, v),
+            ModelParam::MaxTokens(v) => (&mut self.max_tokens, v),
+            ModelParam::CostInput(v) => (&mut self.cost_input, v),
+            ModelParam::CostOutput(v) => (&mut self.cost_output, v),
+            ModelParam::CostCacheRead(v) => (&mut self.cost_cache_read, v),
+            ModelParam::CostCacheWrite(v) => (&mut self.cost_cache_write, v),
+            ModelParam::Currency(v) => (&mut self.currency, v),
+            ModelParam::Thinking(_) | ModelParam::DoubleOnPeakHour(_) => return,
+        };
+        *field = value.clone();
+    }
+}
+
+/// Split a comma-separated draft string into trimmed, non-empty entries.
+fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+// Models of the currently-edited provider.
+fn provider_models(state: &SettingsState) -> Option<&[Model]> {
+    state
+        .working_models
+        .providers
+        .get(&state.selected_provider_id)
+        .map(|p| p.models.as_slice())
+}
+
+/// Parse a numeric field: empty means unset (default), invalid keeps `current`.
+fn parse_field<T: Default + std::str::FromStr>(raw: &str, current: T) -> T {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        T::default()
+    } else {
+        raw.parse().unwrap_or(current)
+    }
+}
+
+/// Apply one [`ModelParam`] to a model.
+fn apply_to_model(model: &mut Model, param: &ModelParam) {
+    use ModelParam::*;
+    match param {
+        Name(v) => model.name = v.clone(),
+        Thinking(v) => model.thinking = *v,
+        ThinkingLevels(v) => model.thinking_levels = split_csv(v),
+        Input(v) => model.input = split_csv(v),
+        ContextWindow(v) => model.context_window = parse_field(v, model.context_window),
+        MaxTokens(v) => model.max_tokens = parse_field(v, model.max_tokens),
+        CostInput(v) => model.cost.input = parse_field(v, model.cost.input),
+        CostOutput(v) => model.cost.output = parse_field(v, model.cost.output),
+        CostCacheRead(v) => model.cost.cache_read = parse_field(v, model.cost.cache_read),
+        CostCacheWrite(v) => model.cost.cache_write = parse_field(v, model.cost.cache_write),
+        DoubleOnPeakHour(v) => model.cost.double_on_peak_hour = *v,
+        // Keep the current currency if the new value doesn't fit.
+        Currency(v) => {
+            model.cost.currency = v.trim().try_into().unwrap_or(model.cost.currency);
+        }
+    }
+}
+
+/// Apply one [`ModelParam`] to the selected checked model, keeping the
+/// raw-text drafts in sync so partially-typed input stays visible.
+fn apply_model_param(state: &mut SettingsState, param: ModelParam) {
+    let Some(id) = state.selected_model_id.clone() else {
+        return;
+    };
+    let Some(provider) = state
+        .working_models
+        .providers
+        .get_mut(&state.selected_provider_id)
+    else {
+        return;
+    };
+    if let Some(model) = provider.models.iter_mut().find(|m| m.id == id) {
+        apply_to_model(model, &param);
+        // Keep the draft in sync only after a successful apply.
+        if let Some(d) = state.model_edit.as_mut() {
+            d.record(&param);
+        }
+    }
 }
 
 // ── Provider entry for pick list ──────────────────────────────────
@@ -506,32 +654,11 @@ fn models_section_view<'a>(
                 if let Some(model) =
                     provider_models.and_then(|ml| ml.iter().find(|m| &m.id == selected_id))
                 {
-                    let name = if model.name.is_empty() {
-                        "—".to_string()
-                    } else {
-                        model.name.clone()
-                    };
-                    let mut header = vec![
-                        detail_row("Name", name),
-                        detail_row(
-                            "Thinking",
-                            if model.thinking {
-                                "yes".into()
-                            } else {
-                                "no".into()
-                            },
-                        ),
-                    ];
-                    if !model.thinking_levels.is_empty() {
-                        header.push(detail_row("Think Levels", model.thinking_levels.join(", ")));
+                    // Checked model: show the editable parameter form.
+                    match state.model_edit.as_ref() {
+                        Some(draft) => model_edit_panel(model, draft),
+                        None => readonly_model_detail(model),
                     }
-                    model_detail_panel(
-                        &model.cost,
-                        &model.input,
-                        model.context_window,
-                        model.max_tokens,
-                        header,
-                    )
                 } else if let Some(details) = state.model_db.get(selected_id) {
                     // Pick the active offer: user-selected source, or first.
                     let active_cost = state
@@ -540,17 +667,7 @@ fn models_section_view<'a>(
                         .and_then(|src| details.offers.iter().find(|o| o.source == src))
                         .unwrap_or_else(|| details.offers.first().unwrap_or(&details.cost));
 
-                    let header = vec![
-                        detail_row("Name", details.name.clone()),
-                        detail_row(
-                            "Thinking",
-                            if details.thinking {
-                                "yes".into()
-                            } else {
-                                "no".into()
-                            },
-                        ),
-                    ];
+                    let header = base_header(&details.name, details.thinking, &[]);
 
                     let detail = model_detail_panel(
                         active_cost,
@@ -664,7 +781,166 @@ fn model_detail_panel<'a>(
     container(column(rows).spacing(2))
         .padding(8)
         .style(form_card_style)
-        .width(Length::FillPortion(1))
+        .width(Length::FillPortion(2))
+        .into()
+}
+
+/// Shared Name/Thinking(/Levels) rows for model detail panels.
+fn base_header(
+    name: &str,
+    thinking: bool,
+    levels: &[String],
+) -> Vec<Element<'static, SettingsEvent>> {
+    let mut header = vec![
+        detail_row(
+            "Name",
+            if name.is_empty() {
+                "—".into()
+            } else {
+                name.to_string()
+            },
+        ),
+        detail_row(
+            "Thinking",
+            if thinking { "yes".into() } else { "no".into() },
+        ),
+    ];
+    if !levels.is_empty() {
+        header.push(detail_row("Think Levels", levels.join(", ")));
+    }
+    header
+}
+
+/// Read-only fallback for a checked model whose editor drafts aren't seeded.
+fn readonly_model_detail(model: &Model) -> Element<'static, SettingsEvent> {
+    let header = base_header(&model.name, model.thinking, &model.thinking_levels);
+    model_detail_panel(
+        &model.cost,
+        &model.input,
+        model.context_window,
+        model.max_tokens,
+        header,
+    )
+}
+
+/// Editable parameter form shown on the right for a checked model.
+fn model_edit_panel<'a>(model: &'a Model, d: &'a ModelEditDraft) -> Element<'a, SettingsEvent> {
+    // Right-aligned muted tag of fixed width (row labels and sub-labels).
+    let tag = |t: &'static str, w: f32| {
+        container(text(t).size(11).color(color_muted()))
+            .width(Length::Fixed(w))
+            .align_x(Alignment::End)
+    };
+    let input = |val: &'a str, ph: &'static str, w: Length, mk: fn(String) -> ModelParam| {
+        text_input(ph, val)
+            .on_input(move |v| SettingsEvent::Models(ModelsEvent::EditModelParam(mk(v))))
+            .size(11)
+            .padding([2, 4])
+            .width(w)
+    };
+    let cb = |checked: bool, mk: fn(bool) -> ModelParam| {
+        checkbox(checked)
+            .label("")
+            .on_toggle(move |v| SettingsEvent::Models(ModelsEvent::EditModelParam(mk(v))))
+            .style(crate::views::primary_checkbox)
+    };
+    // One form row: leading label + widget body.
+    let form_row = |label: &'static str, body: Row<'a, SettingsEvent>| -> Row<'a, SettingsEvent> {
+        row![tag(label, 74.0)]
+            .push(body.spacing(6).align_y(Alignment::Center))
+            .spacing(6)
+            .align_y(Alignment::Center)
+    };
+    let num = |val: &'a str, mk: fn(String) -> ModelParam| input(val, "0", Length::Fixed(72.0), mk);
+
+    // Known currencies first; keep any custom value already on the model.
+    let mut currencies: Vec<String> = ["USD", "CNY", "EUR", "GBP"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    if !d.currency.is_empty() && !currencies.contains(&d.currency) {
+        currencies.push(d.currency.clone());
+    }
+    let selected_currency = currencies.iter().find(|c| **c == d.currency).cloned();
+
+    let form = column![
+        form_row(
+            "Name",
+            row![input(
+                &d.name,
+                "Display name",
+                Length::Fill,
+                ModelParam::Name
+            )],
+        ),
+        form_row(
+            "Thinking",
+            row![
+                cb(model.thinking, ModelParam::Thinking),
+                text("Levels").size(11).color(color_muted()),
+                input(
+                    &d.thinking_levels,
+                    "comma separated",
+                    Length::Fill,
+                    ModelParam::ThinkingLevels
+                ),
+            ],
+        ),
+        form_row(
+            "Input Modes",
+            row![input(
+                &d.input,
+                "comma separated",
+                Length::Fill,
+                ModelParam::Input
+            )],
+        ),
+        form_row(
+            "Context",
+            row![
+                num(&d.context_window, ModelParam::ContextWindow),
+                text("Max Tokens").size(11).color(color_muted()),
+                num(&d.max_tokens, ModelParam::MaxTokens),
+            ],
+        ),
+        form_row(
+            "Cost /M",
+            row![
+                tag("Input", 46.0),
+                num(&d.cost_input, ModelParam::CostInput),
+                tag("Output", 46.0),
+                num(&d.cost_output, ModelParam::CostOutput),
+            ],
+        ),
+        form_row(
+            "Cache /M",
+            row![
+                tag("Read", 46.0),
+                num(&d.cost_cache_read, ModelParam::CostCacheRead),
+                tag("Write", 46.0),
+                num(&d.cost_cache_write, ModelParam::CostCacheWrite),
+            ],
+        ),
+        form_row(
+            "Currency",
+            row![
+                pick_list(currencies, selected_currency, |c: String| {
+                    SettingsEvent::Models(ModelsEvent::EditModelParam(ModelParam::Currency(c)))
+                })
+                .text_size(11)
+                .padding([2, 4])
+                .width(Length::Fixed(90.0)),
+                text("Peak ×2").size(11).color(color_muted()),
+                cb(model.cost.double_on_peak_hour, ModelParam::DoubleOnPeakHour),
+            ],
+        ),
+    ]
+    .spacing(6);
+
+    container(scrollable(form).width(Length::Fill).height(Length::Fill))
+        .padding(8)
+        .style(form_card_style)
+        .width(Length::FillPortion(2))
         .into()
 }
 
@@ -795,10 +1071,18 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
                                 ..Default::default()
                             }
                         };
+                        // Seed the editor if this model is being viewed.
+                        if state.selected_model_id.as_deref() == Some(&model.id) {
+                            state.model_edit = Some(ModelEditDraft::from_model(&model));
+                        }
                         provider.models.push(model);
                     }
                 } else {
                     provider.models.retain(|m| m.id != id);
+                    if state.selected_model_id.as_deref() == Some(&id) {
+                        state.selected_model_id = None;
+                        state.model_edit = None;
+                    }
                 }
             }
         }
@@ -806,11 +1090,17 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             if state.selected_model_id.as_deref() == Some(&id) {
                 state.selected_model_id = None;
                 state.selected_offer_source = None;
+                state.model_edit = None;
             } else {
-                state.selected_model_id = Some(id);
+                state.selected_model_id = Some(id.clone());
                 state.selected_offer_source = None;
+                // Seed the parameter editor when the clicked model is checked.
+                state.model_edit = provider_models(state)
+                    .and_then(|models| models.iter().find(|m| m.id == id))
+                    .map(ModelEditDraft::from_model);
             }
         }
+        ModelsEvent::EditModelParam(param) => apply_model_param(state, param),
         ModelsEvent::SelectOfferSource(source) => {
             state.selected_offer_source = Some(source);
         }
@@ -818,6 +1108,7 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             state.flush_current_provider();
             state.reset_provider_fields();
             state.selected_model_id = None;
+            state.model_edit = None;
             state.selected_offer_source = None;
             state.available_model_ids.clear();
             state.selected_provider_id.clear();

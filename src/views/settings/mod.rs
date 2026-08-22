@@ -101,6 +101,8 @@ pub(crate) struct SettingsState {
     cached_model_ids: HashMap<String, Vec<String>>,
     /// Which model ID is currently selected for detail display.
     pub(super) selected_model_id: Option<String>,
+    /// Raw-text drafts backing the checked-model parameter editor.
+    pub(super) model_edit: Option<ai_models::ModelEditDraft>,
     // Label editing
     pub(super) new_label_name: String,
     /// Whether the blank new-label capsule is being edited.
@@ -186,6 +188,7 @@ impl Default for SettingsState {
             models_fetch_error: None,
             cached_model_ids: HashMap::new(),
             selected_model_id: None,
+            model_edit: None,
             new_label_name: String::new(),
             adding_label: false,
             drag_label: None,
@@ -232,6 +235,7 @@ impl SettingsState {
         self.provider_strict_mode = p.strict_mode;
         self.is_new_provider = false;
         self.selected_model_id = None;
+        self.model_edit = None;
         // Use cached model IDs if available, otherwise trigger a fetch.
         if let Some(cached) = self.cached_model_ids.get(&self.selected_provider_id) {
             self.available_model_ids = cached.clone();

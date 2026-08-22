@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+// ── ModelList ───────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelList {
     pub providers: IndexMap<String, Provider>,
@@ -70,6 +72,59 @@ impl ModelList {
     }
 }
 
+// ── Provider ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Provider {
+    pub name: String,
+    pub base_url: String,
+    pub api_type: String,
+    pub auth: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub strict_mode: bool,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    pub models: Vec<Model>,
+}
+
+impl std::fmt::Display for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+// ── Model ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Model {
+    pub id: String,
+    pub name: String,
+    pub thinking: bool,
+    pub thinking_levels: Vec<String>,
+    pub input: Vec<String>,
+    pub context_window: u32,
+    pub max_tokens: u32,
+    pub cost: Cost,
+    /// All pricing offers (different currencies / providers).
+    #[serde(default, skip)]
+    pub offers: Vec<Cost>,
+}
+
+impl std::fmt::Display for Model {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl PartialEq for Model {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+// ── ModelConfig / TaskModels ────────────────────────────────────────
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub provider_id: String,
@@ -126,6 +181,7 @@ impl TaskModels {
     }
 }
 
+/// Resolved connection/runtime info for one configured model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub base_url: String,
@@ -139,73 +195,9 @@ pub struct ModelInfo {
     pub thinking_level: String,
 }
 
-// ── Provider ────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct Provider {
-    pub name: String,
-    pub base_url: String,
-    pub api_type: String,
-    pub auth: String,
-    pub api_key: String,
-    #[serde(default)]
-    pub strict_mode: bool,
-    #[serde(default)]
-    pub headers: BTreeMap<String, String>,
-    pub models: Vec<Model>,
-}
-
-impl std::fmt::Display for Provider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-// ── Model ───────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Model {
-    pub id: String,
-    pub name: String,
-    pub thinking: bool,
-    pub thinking_levels: Vec<String>,
-    pub input: Vec<String>,
-    pub context_window: u32,
-    pub max_tokens: u32,
-    pub cost: Cost,
-    /// All pricing offers (different currencies / providers).
-    #[serde(default, skip)]
-    pub offers: Vec<Cost>,
-}
-
-impl std::fmt::Display for Model {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.name)
-    }
-}
-
-impl PartialEq for Model {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-// ── Cost ────────────────────────────────────────────────────────────
+// ── Cost / TokenAmount ──────────────────────────────────────────────
 
 pub type Currency = ArrayString<8>;
-
-/// Peak hours in Beijing time (UTC+8): 09:00–12:00 and 14:00–18:00.
-fn is_beijing_peak_hour() -> bool {
-    let now_utc = chrono::Utc::now();
-    let beijing = now_utc + chrono::Duration::hours(8);
-    let hour = beijing.hour();
-    matches!(hour, 9 | 10 | 11 | 14 | 15 | 16 | 17)
-}
-
-/// True when the field equals the default (`false`) and can be omitted from output.
-fn is_false(value: &bool) -> bool {
-    !*value
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Cost {
@@ -299,6 +291,19 @@ pub fn currency_symbol(currency: &str) -> &str {
         "GBP" => "£",
         other => other,
     }
+}
+
+/// Peak hours in Beijing time (UTC+8): 09:00–12:00 and 14:00–18:00.
+fn is_beijing_peak_hour() -> bool {
+    let now_utc = chrono::Utc::now();
+    let beijing = now_utc + chrono::Duration::hours(8);
+    let hour = beijing.hour();
+    matches!(hour, 9 | 10 | 11 | 14 | 15 | 16 | 17)
+}
+
+/// True when the field equals the default (`false`) and can be omitted from output.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 // ── loaders ─────────────────────────────────────────────────────────
