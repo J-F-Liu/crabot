@@ -108,19 +108,25 @@ fn is_retryable(e: &genai::Error) -> bool {
     }
 }
 
+/// Loop-invariant inputs shared by every streaming attempt.
+struct StreamCtx<'a> {
+    client: &'a Client,
+    model: &'a ModelInfo,
+    session_id: &'a str,
+    chat_options: &'a ChatOptions,
+    cancel_token: &'a CancellationToken,
+}
+
 /// Establish the stream, racing the request and first poll against cancellation.
 /// Returns `Ok(None)` if cancelled, `Err((stage, e))` on failure.
 async fn try_acquire_stream(
-    client: &Client,
-    model: &ModelInfo,
+    ctx: &StreamCtx<'_>,
     chat_req: &ChatRequest,
-    chat_options: &ChatOptions,
-    cancel_token: &CancellationToken,
 ) -> Result<Option<AcquiredStream>, (AcquireStage, genai::Error)> {
     let stream_result = tokio::select! {
         biased;
-        _ = cancel_token.cancelled() => return Ok(None),
-        res = client.exec_chat_stream(&model.model_id, chat_req.clone(), Some(chat_options)) => res,
+        _ = ctx.cancel_token.cancelled() => return Ok(None),
+        res = ctx.client.exec_chat_stream(&ctx.model.model_id, chat_req.clone(), Some(ctx.chat_options)) => res,
     };
     let mut stream = match stream_result {
         Ok(chat_res) => chat_res.stream,
@@ -133,7 +139,7 @@ async fn try_acquire_stream(
     let first = loop {
         let ev = tokio::select! {
             biased;
-            _ = cancel_token.cancelled() => return Ok(None),
+            _ = ctx.cancel_token.cancelled() => return Ok(None),
             ev = stream.next() => ev,
         };
         match ev {
@@ -151,11 +157,11 @@ async fn try_acquire_stream(
 
 /// Outcome of one streaming attempt.
 enum AttemptOutcome {
-    /// Stream finished; captured content (text + tool calls) and reasoning.
-    Finished {
-        content: Option<MessageContent>,
-        reasoning: Option<String>,
-    },
+    /// Stream finished; the captured assistant message (text, tool calls, reasoning).
+    Finished { msg: ChatMessage },
+    /// Stream finished but captured nothing (no text, reasoning, or tool calls);
+    /// retried by the caller like a transient failure.
+    Empty,
     /// Cancelled by the user or the UI channel closing.
     Cancelled,
     /// Failure; `stage` is `None` for mid-stream errors.
@@ -165,6 +171,28 @@ enum AttemptOutcome {
     },
     /// Stall watchdog fired; retried by the caller like a transient failure.
     Stalled,
+}
+
+/// Wrap a completed stream's capture into an assistant message; an empty
+/// response becomes a retryable `Empty` outcome instead of a finished turn.
+fn attempt_finished(
+    ctx: &StreamCtx<'_>,
+    content: Option<MessageContent>,
+    reasoning: Option<String>,
+) -> AttemptOutcome {
+    let msg =
+        ChatMessage::assistant(content.unwrap_or_else(|| MessageContent::from_text(String::new())))
+            .with_reasoning_content(reasoning.filter(|r| !r.is_empty()));
+    if assistant_msg_is_empty(&msg) {
+        tracing::info!(
+            model = %ctx.model.model_id,
+            session = %ctx.session_id,
+            "received empty assistant message"
+        );
+        AttemptOutcome::Empty
+    } else {
+        AttemptOutcome::Finished { msg }
+    }
 }
 
 /// Terminal error message for a failed attempt, labeled by where it surfaced.
@@ -185,11 +213,8 @@ fn failure_message(stage: Option<AcquireStage>, error: &genai::Error, attempt: u
 /// Run one streaming attempt: acquire, then forward events until End, failure,
 /// or cancellation. The caller owns the session history and terminal events.
 async fn stream_attempt(
-    client: &Client,
-    model: &ModelInfo,
+    ctx: &StreamCtx<'_>,
     chat_req: &ChatRequest,
-    chat_options: &ChatOptions,
-    cancel_token: &CancellationToken,
     stall_timeout_secs: u64,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) -> AttemptOutcome {
@@ -216,17 +241,16 @@ async fn stream_attempt(
         }
     }
 
-    let (mut stream, mut pending_event) =
-        match try_acquire_stream(client, model, chat_req, chat_options, cancel_token).await {
-            Ok(Some(acquired)) => (acquired.stream, acquired.first),
-            Ok(None) => return AttemptOutcome::Cancelled,
-            Err((stage, error)) => {
-                return AttemptOutcome::Failed {
-                    stage: Some(stage),
-                    error,
-                };
-            }
-        };
+    let (mut stream, mut pending_event) = match try_acquire_stream(ctx, chat_req).await {
+        Ok(Some(acquired)) => (acquired.stream, acquired.first),
+        Ok(None) => return AttemptOutcome::Cancelled,
+        Err((stage, error)) => {
+            return AttemptOutcome::Failed {
+                stage: Some(stage),
+                error,
+            };
+        }
+    };
 
     // Stall watchdog: Anthropic heartbeats every ~15-30s, so silence past
     // the window means the stream died. Any event resets the deadline.
@@ -243,7 +267,7 @@ async fn stream_attempt(
             None => tokio::select! {
                 // Biased so ties resolve deterministically: cancel > stream data > stall timeout.
                 biased;
-                _ = cancel_token.cancelled() => return AttemptOutcome::Cancelled,
+                _ = ctx.cancel_token.cancelled() => return AttemptOutcome::Cancelled,
                 ev = stream.next() => ev,
                 _ = stall_sleep(stall_deadline) => return AttemptOutcome::Stalled,
             },
@@ -263,17 +287,14 @@ async fn stream_attempt(
             }
             Ok(ChatStreamEvent::End(end)) => {
                 tracing::debug!(
-                    model = %model.model_id,
+                    model = %ctx.model.model_id,
                     "LLM stream ended, usage: {:?}",
                     end.captured_usage
                 );
                 if !on_event(SessionEvent::TokenUsage(end.captured_usage)).await {
                     return AttemptOutcome::Cancelled;
                 }
-                return AttemptOutcome::Finished {
-                    content: end.captured_content,
-                    reasoning: end.captured_reasoning_content,
-                };
+                return attempt_finished(ctx, end.captured_content, end.captured_reasoning_content);
             }
             // Ignore Start, Heartbeat, ThoughtSignature, ToolCallChunk, empty chunks.
             Ok(_) => None,
@@ -289,10 +310,7 @@ async fn stream_attempt(
         }
     }
     // Stream closed without an End event — nothing was captured.
-    AttemptOutcome::Finished {
-        content: None,
-        reasoning: None,
-    }
+    AttemptOutcome::Empty
 }
 
 /// Warn, then count down `RETRY_DELAY_SECS` one second at a time so Stop
@@ -695,7 +713,7 @@ pub async fn send_stream(
     if let Some(prompt) = &user_prompt {
         let user_msg = ChatMessage::user(MessageContent::from_parts(prompt.to_content_parts()));
         // Record it immediately so the prompt survives a failed stream.
-        if !record_user_msg(&mut chat_req, user_msg, on_event).await {
+        if !record_msg(&mut chat_req, user_msg, on_event).await {
             return;
         }
     }
@@ -726,8 +744,8 @@ pub async fn send_stream(
     // Agent loop: keep calling the LLM until it responds without tool calls.
     let mut finished = false;
 
-    /// Push a user message into the request and record it in history.
-    async fn record_user_msg(
+    /// Push a message into the request and record it in history.
+    async fn record_msg(
         chat_req: &mut ChatRequest,
         user_msg: ChatMessage,
         on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
@@ -750,7 +768,7 @@ pub async fn send_stream(
         let Some(prompt) = lock(pending).take() else {
             return true;
         };
-        if !record_user_msg(chat_req, ChatMessage::user(prompt.clone()), on_event).await {
+        if !record_msg(chat_req, ChatMessage::user(prompt.clone()), on_event).await {
             return false;
         }
         if !on_event(SessionEvent::UserPrompt(prompt)).await {
@@ -776,6 +794,15 @@ pub async fn send_stream(
         "starting LLM interaction"
     );
 
+    // Loop-invariant inputs shared by every streaming attempt.
+    let stream_ctx = StreamCtx {
+        client: &client,
+        model: &model,
+        session_id: &session_id,
+        chat_options: &chat_options,
+        cancel_token: &cancel_token,
+    };
+
     for _ in 0..max_iterations {
         // Signal that we're connecting to the LLM.
         on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await;
@@ -784,25 +811,18 @@ pub async fn send_stream(
         // (Anthropic limit: 4 breakpoints; system prompt uses 1 for Ephemeral1h).
         mark_cache_tail(&mut chat_req.messages);
 
-        // Retry transient failures (setup, first poll, mid-stream, stall)
-        // by re-sending the same request; `attempt` counts requests this turn.
+        // Retry transient failures (setup, first poll, mid-stream, stall,
+        // empty response) by re-sending the same request; `attempt` counts
+        // requests this turn.
         let mut attempt: u32 = 0;
-        let (captured_content, captured_reasoning) = loop {
+        let assistant_msg = loop {
             attempt += 1;
-            let outcome = stream_attempt(
-                &client,
-                &model,
-                &chat_req,
-                &chat_options,
-                &cancel_token,
-                stream_stall_timeout_secs,
-                on_event,
-            )
-            .await;
+            let outcome =
+                stream_attempt(&stream_ctx, &chat_req, stream_stall_timeout_secs, on_event).await;
 
             // Terminal outcomes break or return; transient ones yield a retry reason.
             let reason = match outcome {
-                AttemptOutcome::Finished { content, reasoning } => break (content, reasoning),
+                AttemptOutcome::Finished { msg } => break msg,
                 AttemptOutcome::Cancelled => {
                     tracing::info!(
                         model = %model.model_id,
@@ -813,37 +833,48 @@ pub async fn send_stream(
                     return;
                 }
                 AttemptOutcome::Failed { stage, error } => {
-                    if attempt >= MAX_ATTEMPTS || !is_retryable(&error) {
+                    if attempt < MAX_ATTEMPTS && is_retryable(&error) {
+                        error.to_string()
+                    } else {
                         tracing::error!(
                             attempt,
                             model = %model.model_id,
                             error = %error,
                             "LLM request failed"
                         );
-                        let message = failure_message(stage, &error, attempt);
-                        on_event(SessionEvent::Error(message)).await;
+                        on_event(SessionEvent::Error(failure_message(stage, &error, attempt)))
+                            .await;
                         return;
                     }
-                    error.to_string()
                 }
-                AttemptOutcome::Stalled => {
-                    let stalled =
-                        format!("stream stalled: no data for {stream_stall_timeout_secs}s");
+                // Transient outcomes retried below like a failure.
+                outcome @ (AttemptOutcome::Empty | AttemptOutcome::Stalled) => {
+                    let (reason, error) = if matches!(outcome, AttemptOutcome::Stalled) {
+                        let stalled =
+                            format!("stream stalled: no data for {stream_stall_timeout_secs}s");
+                        (
+                            stalled.clone(),
+                            format!("LLM {stalled}; the connection may have died. Please retry."),
+                        )
+                    } else {
+                        (
+                            "empty assistant response".into(),
+                            format!(
+                                "LLM returned an empty response {attempt} times. Please retry."
+                            ),
+                        )
+                    };
                     if attempt >= MAX_ATTEMPTS {
                         tracing::warn!(
                             attempt,
                             model = %model.model_id,
                             session = %session_id,
-                            stall_timeout_secs = stream_stall_timeout_secs,
-                            "LLM stream stalled"
+                            "giving up: {reason}"
                         );
-                        on_event(SessionEvent::Error(format!(
-                            "LLM {stalled}; the connection may have died. Please retry."
-                        )))
-                        .await;
+                        on_event(SessionEvent::Error(error)).await;
                         return;
                     }
-                    stalled
+                    reason
                 }
             };
 
@@ -854,32 +885,17 @@ pub async fn send_stream(
             }
         };
 
-        // captured_content has full text + tool calls thanks to ChatOptions.
-        let assistant_content =
-            captured_content.unwrap_or_else(|| MessageContent::from_text(String::new()));
-        let mut tool_calls: Vec<ToolCall> = assistant_content
+        // The finished message is guaranteed non-empty (empty responses retry
+        // inside the loop), so it is always resent and persisted.
+        let mut tool_calls: Vec<ToolCall> = assistant_msg
+            .content
             .tool_calls()
             .into_iter()
             .cloned()
             .collect();
 
-        // Drop an empty reasoning capture.
-        let assistant_msg = ChatMessage::assistant(assistant_content)
-            .with_reasoning_content(captured_reasoning.filter(|r| !r.is_empty()));
-
-        // Skip empty assistant messages — nothing to resend or persist.
-        if !assistant_msg_is_empty(&assistant_msg) {
-            chat_req = chat_req.append_message(assistant_msg.clone());
-            if !on_event(SessionEvent::MessageReady(assistant_msg)).await {
-                on_event(SessionEvent::Cancelled).await;
-                return;
-            }
-        } else {
-            tracing::info!(
-                model = %model.model_id,
-                session = %session_id,
-                "received empty assistant message, skipping record in session"
-            );
+        if !record_msg(&mut chat_req, assistant_msg.clone(), on_event).await {
+            return;
         }
 
         if tool_calls.is_empty() {
