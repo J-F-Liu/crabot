@@ -10,7 +10,7 @@
 //! arguments; [`collect_external_names`] extracts those names from literal
 //! arguments. `watch`/`parallel` stubs never run commands and `env` refuses
 //! them, so scripts that would involve one fall back to real bash. Mirrors
-//! bashkit 0.16.0 — re-verify when bumping.
+//! bashkit 0.17.1 — re-verify when bumping.
 //!
 //! On Windows, VFS absolute paths in arguments are rewritten to host paths
 //! before spawning ([`convert_args_for_host`]), MSYS2-style: native

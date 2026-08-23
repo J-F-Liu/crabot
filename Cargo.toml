@@ -15,7 +15,7 @@ serde_json = "1"
 chrono = "0.4"
 rfd = "0.17"
 home = "0.5"
-genai = "=0.7.0-beta.18"
+genai = "=0.7.0-beta.19"
 futures = "0.3"
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -71,10 +71,14 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"
 linkify = "0.11.0"
-bashkit = { version = "=0.16.0", default-features = false, features = [
+bashkit = { version = "=0.17.1", default-features = false, features = [
     "http_client",
     "realfs",
     "python",
+    # 0.17: crypto backend is explicit now (ring = default, aws-lc-rs = FIPS).
+    "ring",
+    # 0.17: named-TZ support moved behind this feature; off ⇒ `date` errors on host TZ.
+    "tzdata",
 ] }
 tokio-util = "0.7.19"
 tracing = "0.1.44"
