@@ -8,6 +8,7 @@ use iced::window;
 use iced::{Event, Point, Subscription};
 
 use crate::widgets::textarea;
+use crabot::tools::process;
 
 use super::{App, ConversationEvent, LayoutEvent, Message};
 
@@ -158,19 +159,18 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
 
     // Only subscribe to the auto-repeat timer while an arrow is held,
     // avoiding unnecessary timer ticks when idle.
-    if state.conversation.tab_bar_held_direction.is_some() {
-        Subscription::batch([
-            event_sub,
-            window::close_requests()
-                .map(|_id| Message::Conversation(ConversationEvent::AppClosing)),
-            time::every(std::time::Duration::from_millis(SCROLL_REPEAT_MS))
-                .map(|_| Message::Conversation(ConversationEvent::TabBarScrollTick)),
-        ])
+    let repeat_sub = if state.conversation.tab_bar_held_direction.is_some() {
+        time::every(std::time::Duration::from_millis(SCROLL_REPEAT_MS))
+            .map(|_| Message::Conversation(ConversationEvent::TabBarScrollTick))
     } else {
-        Subscription::batch([
-            event_sub,
-            window::close_requests()
-                .map(|_id| Message::Conversation(ConversationEvent::AppClosing)),
-        ])
-    }
+        Subscription::none()
+    };
+    Subscription::batch([
+        event_sub,
+        window::close_requests().map(|_id| Message::Conversation(ConversationEvent::AppClosing)),
+        repeat_sub,
+        // One tick per process start/exit; each tick refreshes the cached
+        // process list in App state (plus one initial snapshot tick).
+        Subscription::run(process::events).map(|_| Message::ProcessTick),
+    ])
 }

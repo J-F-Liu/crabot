@@ -401,6 +401,9 @@ pub(crate) struct App {
     pub settings_dialog: crate::views::SettingsState,
     /// Right-pane section expand/collapse state, shared across all tabs.
     pub pane_sections: PaneSections,
+    /// Running-process snapshot shown in the right pane, refreshed once per
+    /// registry change via [`Message::ProcessTick`].
+    pub running_processes: Vec<tools::process::RunningProcess>,
     pub overlay: OverlayState,
 }
 
@@ -596,6 +599,8 @@ pub(crate) enum Message {
     DismissRevertError,
     /// Expand or collapse a right-pane section.
     TogglePaneSection(PaneSection),
+    /// Managed process started/exited; refresh the cached right-pane list.
+    ProcessTick,
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -712,6 +717,7 @@ impl App {
             models,
             settings_dialog: crate::views::SettingsState::default(),
             pane_sections: PaneSections::default(),
+            running_processes: Vec::new(),
             overlay: OverlayState {
                 show_workspace_dialog: false,
                 default_workspace_path: setup::default_workspace_path(),
@@ -822,10 +828,17 @@ impl App {
                 let expanded = match section {
                     PaneSection::ContextWindow => &mut self.pane_sections.context_window,
                     PaneSection::TokenUsage => &mut self.pane_sections.token_usage,
+                    PaneSection::Processes => &mut self.pane_sections.processes,
                     PaneSection::AccessedFiles => &mut self.pane_sections.accessed_files,
                     PaneSection::ModifiedFiles => &mut self.pane_sections.modified_files,
                 };
                 *expanded = !*expanded;
+                Task::none()
+            }
+            // Refresh the cached list once per registry change; the view
+            // only reads the snapshot.
+            Message::ProcessTick => {
+                self.running_processes = tools::process::running_processes();
                 Task::none()
             }
         }
@@ -994,6 +1007,7 @@ impl App {
                 self.get_current_model(),
                 self.conversation.viewing(),
                 &self.pane_sections,
+                &self.running_processes,
                 self.settings.dark_mode,
             )
             .map(|event| match event {

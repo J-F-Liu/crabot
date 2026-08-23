@@ -457,3 +457,35 @@ fn decode_stringified_args_leaves_undecodable_or_wrong_kind_strings() {
     // A string field is never decoded, even when it happens to be JSON.
     assert_eq!(args["text"], r#"{"a":1}"#);
 }
+
+// ── tool-execution tab scope ─────────────────────────────────────
+
+#[test]
+fn tab_scope_nests_and_restores() {
+    use crabot::tools::{current_tab_number, with_tab_scope};
+
+    assert!(current_tab_number().is_none());
+    with_tab_scope(2, || {
+        assert_eq!(current_tab_number(), Some(2));
+        with_tab_scope(7, || {
+            assert_eq!(current_tab_number(), Some(7));
+        });
+        assert_eq!(current_tab_number(), Some(2));
+    });
+    assert!(current_tab_number().is_none());
+}
+
+#[test]
+fn tab_scope_restores_after_panic() {
+    use crabot::tools::{current_tab_number, with_tab_scope};
+
+    assert!(current_tab_number().is_none());
+    let panicked = std::panic::catch_unwind(|| {
+        with_tab_scope(3, || {
+            assert_eq!(current_tab_number(), Some(3));
+            panic!("tool panicked");
+        });
+    });
+    assert!(panicked.is_err());
+    assert!(current_tab_number().is_none());
+}

@@ -1,3 +1,4 @@
+use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 
@@ -11,7 +12,6 @@ use serde_json::Value;
 use serde_json::json;
 #[cfg(unix)]
 use std::sync::{Arc, Mutex};
-#[cfg(unix)]
 use tokio_util::sync::CancellationToken;
 
 /// Helper: create a fresh temp workspace dir cleaned up on drop.
@@ -43,7 +43,6 @@ fn execute(tool: &ProcessTool, args: Value, workspace: &std::path::Path) -> Resu
     tool.execute(&args, workspace, &CancellationToken::new())
 }
 
-#[cfg(unix)]
 /// Numeric tokens of a `start`/`restart` result, in order.
 fn pids(result: &str) -> impl DoubleEndedIterator<Item = u32> + '_ {
     result
@@ -51,7 +50,6 @@ fn pids(result: &str) -> impl DoubleEndedIterator<Item = u32> + '_ {
         .filter_map(|w| w.trim_end_matches(':').parse().ok())
 }
 
-#[cfg(unix)]
 fn pid(result: &str) -> u32 {
     pids(result)
         .next()
@@ -335,6 +333,129 @@ fn start_wait_and_logs() {
     let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
     assert!(logs.contains("hello"), "logs: {logs}");
     assert!(logs.contains("world"), "logs: {logs}");
+}
+
+// ── registry change events ────────────────────────────────────────
+
+/// A command that stays alive for ~5s on every platform.
+#[cfg(unix)]
+const SLEEP_CMD: &str = "sleep 5";
+#[cfg(windows)]
+const SLEEP_CMD: &str = "ping -n 6 127.0.0.1";
+
+#[tokio::test]
+async fn events_fire_on_start_and_exit() {
+    use std::time::Duration;
+
+    use futures::StreamExt;
+
+    let tool = ProcessTool;
+    let cancel = CancellationToken::new();
+    let mut events = crabot::tools::process::events();
+
+    // The stream opens with a snapshot tick, before any process exists.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), events.next())
+            .await
+            .expect("no initial tick on subscribe")
+            .is_some()
+    );
+
+    let result = tool
+        .execute(
+            &json!({"action": "start", "command": SLEEP_CMD}),
+            Path::new("."),
+            &cancel,
+        )
+        .unwrap();
+    let pid = pid(&result);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), events.next())
+            .await
+            .expect("no registry tick after start")
+            .is_some()
+    );
+
+    tool.execute(
+        &json!({"action": "stop", "pid": pid}),
+        Path::new("."),
+        &cancel,
+    )
+    .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), events.next())
+            .await
+            .expect("no registry tick after exit")
+            .is_some()
+    );
+}
+
+/// The UI-facing snapshot lists running processes in start order, with the
+/// owning tab captured from the tool-execution scope (`None` in the playground).
+#[test]
+fn running_processes_track_owner_and_lifecycle() {
+    use std::time::Duration;
+
+    use crabot::tools::{process, with_tab_scope};
+
+    let tool = ProcessTool;
+    let cancel = CancellationToken::new();
+    let find = |pid: u32| {
+        process::running_processes()
+            .into_iter()
+            .find(|p| p.pid == pid)
+    };
+
+    // Started outside the LLM loop: no owning tab.
+    let result = tool
+        .execute(
+            &json!({"action": "start", "command": SLEEP_CMD}),
+            Path::new("."),
+            &cancel,
+        )
+        .unwrap();
+    let playground_pid = pid(&result);
+    let entry = find(playground_pid).expect("started process listed");
+    assert_eq!(entry.tab, None);
+
+    // Started inside a tab scope: the entry carries the owning tab number.
+    let result = with_tab_scope(7, || {
+        tool.execute(
+            &json!({"action": "start", "command": SLEEP_CMD}),
+            Path::new("."),
+            &cancel,
+        )
+    })
+    .unwrap();
+    let tab_pid = pid(&result);
+    let entry = find(tab_pid).expect("started process listed");
+    assert_eq!(entry.tab, Some(7));
+    assert_eq!(entry.command, SLEEP_CMD);
+
+    // Stopping a process removes it from the snapshot once the reaper records
+    // the exit (which is also what pings the registry-change events).
+    tool.execute(
+        &json!({"action": "stop", "pid": tab_pid}),
+        Path::new("."),
+        &cancel,
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while find(tab_pid).is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "process still listed after stop"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    // Clean up the remaining playground process.
+    tool.execute(
+        &json!({"action": "stop", "pid": playground_pid}),
+        Path::new("."),
+        &cancel,
+    )
+    .unwrap();
 }
 
 #[cfg(unix)]

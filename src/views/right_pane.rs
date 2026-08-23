@@ -8,11 +8,14 @@ use iced_selection::Text as SelectableText;
 
 use super::icons;
 use super::styles::{pane_side, primary_button, primary_toggler, secondary_button, sel_primary};
-use super::theme::{CRABOT_DANGER, thin_vertical};
+use super::theme::{CRABOT_DANGER, thin_horizontal, thin_vertical};
 use crate::RightPaneEvent;
 use crate::app::SessionTab;
 use crabot::model::ModelConfig;
-use crabot::tools::todo::{TodoItem, TodoStatus};
+use crabot::tools::{
+    process,
+    todo::{TodoItem, TodoStatus},
+};
 
 const MONO: Font = Font {
     family: font::Family::Monospace,
@@ -24,6 +27,7 @@ const MONO: Font = Font {
 pub(crate) enum PaneSection {
     ContextWindow,
     TokenUsage,
+    Processes,
     AccessedFiles,
     ModifiedFiles,
 }
@@ -34,6 +38,7 @@ pub(crate) enum PaneSection {
 pub(crate) struct PaneSections {
     pub(crate) context_window: bool,
     pub(crate) token_usage: bool,
+    pub(crate) processes: bool,
     pub(crate) accessed_files: bool,
     pub(crate) modified_files: bool,
 }
@@ -43,6 +48,7 @@ impl Default for PaneSections {
         Self {
             context_window: true,
             token_usage: true,
+            processes: true,
             accessed_files: true,
             modified_files: true,
         }
@@ -142,11 +148,40 @@ fn todo_section(todo_items: &[TodoItem]) -> Option<Element<'static, RightPaneEve
     )
 }
 
+/// Running-processes rows: one per process tagged with its owning session,
+/// horizontally scrollable when wider than the pane.
+fn process_section(processes: &[process::RunningProcess]) -> Element<'static, RightPaneEvent> {
+    let rows: Vec<Element<'static, RightPaneEvent>> = processes
+        .iter()
+        .map(|p| {
+            // Processes started outside the LLM loop (tool playground) carry
+            // no owner tag; tab numbers match the tab-bar "Session N" labels.
+            let owner = p
+                .tab
+                .map_or_else(String::new, |n| format!("Session {n} · "));
+            container(
+                text(format!("{owner}{}: {}", p.pid, p.command))
+                    .size(14)
+                    .font(MONO),
+            )
+            .padding([1, 0])
+            .into()
+        })
+        .collect();
+    // Shrink-width content: the viewport scrolls only when a row overflows.
+    scrollable(column(rows).spacing(3))
+        .direction(thin_horizontal())
+        .width(Length::Fill)
+        .spacing(2)
+        .into()
+}
+
 pub(crate) fn right_pane<'a>(
     pane_width: f32,
     model: Option<&ModelConfig>,
     tab: &'a SessionTab,
     sections: &PaneSections,
+    processes: &[process::RunningProcess],
     dark_mode: bool,
 ) -> Element<'a, RightPaneEvent> {
     let token_amount = &tab.latest_tokens;
@@ -167,7 +202,7 @@ pub(crate) fn right_pane<'a>(
     let header = match cw {
         Some(cw) if !expanded => {
             format!(
-                "Context window ({:.1}%)",
+                "Context window: {:.1}%",
                 token_amount.context_fill_ratio(cw)
             )
         }
@@ -201,7 +236,7 @@ pub(crate) fn right_pane<'a>(
             Cow::Borrowed("Token Usage")
         } else {
             // Collapsed shows only the session cost.
-            Cow::from(format!("Token Usage ({})", session.formatted_cost()))
+            Cow::from(format!("Token Usage: {}", session.formatted_cost()))
         },
         expanded,
         PaneSection::TokenUsage,
@@ -233,6 +268,25 @@ pub(crate) fn right_pane<'a>(
     // ── todo items ──
     if let Some(section) = todo_section(&todo_items) {
         items.push(section);
+    }
+
+    // ── running processes ──
+    if !processes.is_empty() {
+        let expanded = sections.processes;
+        items.push(rule::horizontal(1).into());
+        items.push(collapsible_header(
+            if expanded {
+                Cow::Borrowed("Running Processes")
+            } else {
+                // Collapsed shows only the live count.
+                Cow::from(format!("Running Processes: {}", processes.len()))
+            },
+            expanded,
+            PaneSection::Processes,
+        ));
+        if expanded {
+            items.push(process_section(processes));
+        }
     }
 
     // ── accessed files ──

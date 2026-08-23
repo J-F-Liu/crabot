@@ -932,6 +932,7 @@ pub(crate) fn start_dialog(
         model,
         workspace: app.prompt.workspace.1.clone(),
         session_id: tab.session.id.clone(),
+        tab_number,
         system_prompt,
         user_prompt,
         tools,

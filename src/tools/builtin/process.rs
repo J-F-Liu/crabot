@@ -12,8 +12,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use futures::{StreamExt, stream::BoxStream};
 use serde_json::{Value, json};
 use shell_words::split;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
@@ -58,6 +60,15 @@ const MAX_LINES: u64 = 2000;
 /// Shared across session tabs, like the MCP connection cache.
 static PROCESSES: LazyLock<Mutex<HashMap<u32, Arc<ProcessEntry>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Pinged on every process start/exit; the UI refreshes its cached process
+/// list once per tick instead of querying the registry on every frame.
+static PROCESS_EVENTS: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| broadcast::channel(1).0);
+
+/// Ping the change channel. Best-effort: a tick only triggers a registry re-read.
+fn notify_process_changed() {
+    let _ = PROCESS_EVENTS.send(());
+}
 
 pub struct ProcessTool;
 
@@ -199,13 +210,55 @@ fn start(args: &Value, workspace: &Path) -> Result<String, String> {
         .transpose()?
         .unwrap_or_default();
     let parts = parse_command(command)?;
-    let entry = start_command(command, parts, cwd, env)?;
+    // Tag the entry with the calling session tab (None in the tool playground).
+    let entry = start_command(command, parts, cwd, env, crate::tools::current_tab_number())?;
     Ok(format!(
         "Started process {}: {}\ncwd: {}",
         entry.pid,
         entry.command,
         entry.cwd.display()
     ))
+}
+
+/// Snapshot of one running managed process, for the right-pane UI.
+pub struct RunningProcess {
+    pub pid: u32,
+    /// Owning session tab number, or `None` outside the LLM loop (tool playground).
+    pub tab: Option<usize>,
+    pub command: String,
+}
+
+/// Currently running managed processes, ordered by start time.
+pub fn running_processes() -> Vec<RunningProcess> {
+    let procs = lock(&PROCESSES);
+    let mut entries: Vec<&Arc<ProcessEntry>> = procs.values().filter(|e| !e.has_exited()).collect();
+    entries.sort_by_key(|e| e.started_at);
+    entries
+        .into_iter()
+        .map(|e| RunningProcess {
+            pid: e.pid,
+            tab: e.tab,
+            command: e.command.clone(),
+        })
+        .collect()
+}
+
+/// Stream yielding one tick on subscribe plus one tick per registry change,
+/// so a subscriber is always consistent with the registry even if it missed a
+/// ping while unsubscribed. Lagged pings coalesce since each tick only
+/// re-reads the registry. Safe to subscribe permanently.
+pub fn events() -> BoxStream<'static, ()> {
+    let changes = futures::stream::unfold(PROCESS_EVENTS.subscribe(), |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(()) => return Some(((), rx)),
+                // Coalesce lagged pings instead of ending the stream.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    futures::stream::iter([()]).chain(changes).boxed()
 }
 
 fn list() -> Result<String, String> {
@@ -433,7 +486,8 @@ fn restart(args: &Value, workspace: &Path) -> Result<String, String> {
         None => e.env.clone(),
     };
     let note = stop_for_restart(&e);
-    let entry = start_command(&command, parts, cwd, env)?;
+    // A replacement keeps the original entry's owning tab.
+    let entry = start_command(&command, parts, cwd, env, e.tab)?;
     Ok(format!(
         "Process {} ({}) {note}; replacement started with pid {}",
         e.pid, e.command, entry.pid
@@ -518,6 +572,7 @@ fn start_command(
     parts: Vec<String>,
     cwd: PathBuf,
     env: HashMap<String, String>,
+    tab: Option<usize>,
 ) -> Result<Arc<ProcessEntry>, String> {
     let (exe, exe_args) = parts
         .split_first()
@@ -546,6 +601,7 @@ fn start_command(
         command: command.to_string(),
         cwd,
         env,
+        tab,
         pid,
         started_at: Instant::now(),
         status: Mutex::new(ProcessStatus::Running),
@@ -561,6 +617,7 @@ fn start_command(
         // Pid reuse: the new process takes the key from any retained exited entry.
         procs.insert(pid, Arc::clone(&entry));
     }
+    notify_process_changed();
 
     let stdout_raw = raw_pipe(&stdout);
     spawn_reader(Arc::clone(&entry), stdout, stdout_raw);
@@ -700,6 +757,7 @@ fn spawn_reaper(entry: Arc<ProcessEntry>, mut child: Child) {
         *lock(&entry.status) = ProcessStatus::Exited(code);
         // Close stdin so a later `input` fails cleanly.
         lock(&entry.stdin).take();
+        notify_process_changed();
     });
 }
 
@@ -920,6 +978,8 @@ struct ProcessEntry {
     command: String,
     cwd: PathBuf,
     env: HashMap<String, String>,
+    /// Owning session tab number, `None` when started outside the LLM loop.
+    tab: Option<usize>,
     started_at: Instant,
     status: Mutex<ProcessStatus>,
     stdin: Mutex<Option<ChildStdin>>,

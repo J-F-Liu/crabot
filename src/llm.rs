@@ -379,12 +379,14 @@ fn log_tool_outcome(name: &str, result: &Result<String, String>, start: Instant)
     }
 }
 
-/// Execute a tool on a blocking thread; unknown tools report an error result.
+/// Execute a tool on a blocking thread under the session-tab scope; a missing
+/// tool yields an error result.
 async fn exec_tool(
     tool: Option<ToolRef>,
     tc: &ToolCall,
     workspace: std::path::PathBuf,
     cancel_token: CancellationToken,
+    tab_number: usize,
 ) -> Result<String, String> {
     let name = tc.fn_name.clone();
     let start = Instant::now();
@@ -392,7 +394,9 @@ async fn exec_tool(
         Some(t) => {
             let fn_arguments = tc.fn_arguments.clone();
             await_tool(tokio::task::spawn_blocking(move || {
-                t.execute(&fn_arguments, &workspace, &cancel_token)
+                tools::with_tab_scope(tab_number, || {
+                    t.execute(&fn_arguments, &workspace, &cancel_token)
+                })
             }))
             .await
         }
@@ -409,6 +413,7 @@ async fn exec_tool_streaming(
     tc: &ToolCall,
     workspace: std::path::PathBuf,
     cancel_token: CancellationToken,
+    tab_number: usize,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) -> Result<String, String> {
     let Some(tool) = tool else {
@@ -423,7 +428,9 @@ async fn exec_tool_streaming(
     let name = tc.fn_name.clone();
     let start = Instant::now();
     let handle = tokio::task::spawn_blocking(move || {
-        tool.execute_streaming(&fn_arguments, &workspace, &cancel_token, &sink)
+        tools::with_tab_scope(tab_number, || {
+            tool.execute_streaming(&fn_arguments, &workspace, &cancel_token, &sink)
+        })
     });
 
     // Coalesce chunks into batches, flushing on size or age.
@@ -496,6 +503,8 @@ struct ExecutionCtx<'a> {
     tools: &'a [ToolRef],
     workspace: &'a std::path::Path,
     cancel_token: &'a CancellationToken,
+    /// Session tab number, tagged onto global state tools create (e.g. process entries).
+    tab_number: usize,
     /// Shared ask-tool deadline — the UI extends it to give more time.
     ask_deadline: &'a Arc<Mutex<Instant>>,
 }
@@ -520,7 +529,7 @@ async fn run_parallel_batch(
         let cancel = ctx.cancel_token.clone();
         let tool = find_tool(ctx.tools, &tc.fn_name);
         let workspace = ctx.workspace.to_path_buf();
-        let result = exec_tool(tool, tc, workspace, cancel).await;
+        let result = exec_tool(tool, tc, workspace, cancel, ctx.tab_number).await;
         let (response, result) = build_tool_result(tc, result);
         tool_responses.push(response);
         on_event(SessionEvent::ToolResult(result)).await;
@@ -559,11 +568,12 @@ async fn run_parallel_batch(
                 build_tool_result(&tc, result)
             })
         } else {
+            let tab_number = ctx.tab_number;
             let tool = find_tool(ctx.tools, &tc.fn_name);
             let workspace = ctx.workspace.to_path_buf();
             let tc = tc.clone();
             Box::pin(async move {
-                let result = exec_tool(tool, &tc, workspace, cancel).await;
+                let result = exec_tool(tool, &tc, workspace, cancel, tab_number).await;
                 build_tool_result(&tc, result)
             })
         };
@@ -631,9 +641,9 @@ async fn run_serial_tool(
             let cancel = ctx.cancel_token.clone();
             // bash and process stream their output live like LLM text chunks.
             if matches!(tc.fn_name.as_str(), "bash" | "process") {
-                exec_tool_streaming(tool, tc, workspace, cancel, on_event).await
+                exec_tool_streaming(tool, tc, workspace, cancel, ctx.tab_number, on_event).await
             } else {
-                exec_tool(tool, tc, workspace, cancel).await
+                exec_tool(tool, tc, workspace, cancel, ctx.tab_number).await
             }
         }
     };
@@ -651,8 +661,10 @@ async fn run_serial_tool(
 pub struct SendConfig {
     pub model: ModelInfo,
     pub workspace: std::path::PathBuf,
-    /// Session id keying this stream's file snapshots.
+    /// Session id keying this stream's state: file snapshots and logs.
     pub session_id: String,
+    /// Session tab number keying this stream's process-ownership tags.
+    pub tab_number: usize,
     pub system_prompt: String,
     pub user_prompt: Option<UserPrompt>,
     pub tools: Vec<ToolRef>,
@@ -686,6 +698,7 @@ pub async fn send_stream(
         model,
         workspace,
         session_id,
+        tab_number,
         system_prompt,
         user_prompt,
         tools,
@@ -783,6 +796,7 @@ pub async fn send_stream(
         tools: &tools,
         workspace: &workspace,
         cancel_token: &cancel_token,
+        tab_number,
         ask_deadline: &ask_deadline,
     };
 

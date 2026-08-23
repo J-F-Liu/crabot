@@ -115,9 +115,18 @@ pub(crate) fn theme_for(dark: bool) -> Theme {
     if dark { dark_theme() } else { default_theme() }
 }
 
+fn thin_scrollbar() -> Scrollbar {
+    Scrollbar::new().width(4).scroller_width(4)
+}
+
 /// Thin vertical scrollbar direction for all scrollable widgets.
 pub(crate) fn thin_vertical() -> Direction {
-    Direction::Vertical(Scrollbar::new().width(4).scroller_width(4))
+    Direction::Vertical(thin_scrollbar())
+}
+
+/// Thin horizontal scrollbar direction, used by the process list.
+pub(crate) fn thin_horizontal() -> Direction {
+    Direction::Horizontal(thin_scrollbar())
 }
 
 // ── palette accessors ─────────────────────────────────────────────

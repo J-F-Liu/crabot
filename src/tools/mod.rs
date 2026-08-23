@@ -13,6 +13,7 @@ pub mod mcp;
 
 // ── Submodules ─────────────────────────────────────────────────────
 mod capture;
+mod context;
 mod exec;
 mod limits;
 mod paths;
@@ -29,6 +30,7 @@ pub use renew::move_renews_to_end;
 pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
 
 pub(crate) use charset::{StreamDecoder, decode_bytes};
+pub use context::{current_tab_number, with_tab_scope};
 
 // ── tool ────────────────────────────────────────────────────────────
 pub(crate) use tool::CAPTURE_GRACE;
