@@ -351,6 +351,13 @@ pub(crate) fn update(
             };
         }
         SessionEvent::MessageReady(msg) => {
+            if msg.role == ChatRole::System {
+                // Audit only: never a UI turn; deduped on record.
+                if let Some(text) = msg.content.joined_texts() {
+                    session.record_system_prompt(&text);
+                }
+                return Task::none();
+            }
             // Only non-empty assistant messages are emitted, so record as-is.
             backfill_assistant_turn(state, session, &msg);
             session.history.push(msg);
@@ -601,12 +608,11 @@ fn tab_workspace(app: &App, tab: &SessionTab) -> PathBuf {
 /// Whether the session started with a workspace layout — a successor session
 /// should then receive a freshly rebuilt tree. Cheap: no filesystem access.
 fn session_started_with_tree(tab: &SessionTab) -> bool {
-    tab.session.history.first().is_some_and(|m| {
-        m.role == ChatRole::User
-            && m.content.parts().iter().any(|p| {
-                p.as_text()
-                    .is_some_and(|t| t.starts_with("Working directory layout"))
-            })
+    tab.session.first_user_message().is_some_and(|m| {
+        m.content.parts().iter().any(|p| {
+            p.as_text()
+                .is_some_and(|t| t.starts_with("Working directory layout"))
+        })
     })
 }
 

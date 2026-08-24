@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crabot::model::ModelConfig;
 use crabot::session::{Session, SessionRecord, list_session_paths};
-use genai::chat::ChatMessage;
+use genai::chat::{ChatMessage, ChatRole};
 
 fn temp_workspace() -> PathBuf {
     let base = std::env::temp_dir().join(format!("crabot-test-{}", std::process::id()));
@@ -195,6 +195,69 @@ fn tally_written_only_by_save_with_tally() {
     let loaded = Session::load(&path).expect("reload");
     assert_eq!(loaded.requests, 5);
     assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);
+}
+
+#[test]
+fn record_system_prompt_dedupes_and_roundtrips() {
+    let ws = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws.clone();
+
+    // First record writes a new System message and persists it.
+    assert!(session.record_system_prompt("preamble\nrules"));
+    assert_eq!(session.history.len(), 1);
+    assert_eq!(session.history[0].role, ChatRole::System);
+    assert_eq!(
+        session.history[0].content.joined_texts().as_deref(),
+        Some("preamble\nrules")
+    );
+
+    // Identical prompt → deduped, no new record.
+    assert!(!session.record_system_prompt("preamble\nrules"));
+    assert_eq!(session.history.len(), 1);
+
+    // A changed prompt appends a second record.
+    assert!(session.record_system_prompt("preamble\nnew rules"));
+    assert_eq!(session.history.len(), 2);
+
+    // Empty / whitespace prompts are ignored.
+    assert!(!session.record_system_prompt(""));
+    assert!(!session.record_system_prompt("   \n"));
+    assert_eq!(session.history.len(), 2);
+
+    // Round trip: System records survive reload but never become dialogs.
+    let path = session.save_path().unwrap();
+    let loaded = Session::load(&path).expect("reload");
+    assert_eq!(loaded.history.len(), 2);
+    assert_eq!(loaded.history[0].role, ChatRole::System);
+    assert_eq!(loaded.history[1].role, ChatRole::System);
+    assert!(loaded.dialogs.is_empty());
+}
+
+#[test]
+fn system_prompt_record_roundtrips_with_conversation() {
+    let ws = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws.clone();
+    session.title = "With system".into();
+
+    // Simulate a stream: system record first, then the user message.
+    assert!(session.record_system_prompt("system prompt"));
+    session.history.push(ChatMessage::user("hello"));
+    session.save().expect("save");
+    let path = session.save_path().unwrap();
+
+    let mut loaded = Session::load(&path).expect("reload");
+    assert_eq!(loaded.history.len(), 2);
+    assert_eq!(loaded.history[0].role, ChatRole::System);
+    assert_eq!(loaded.history[1].role, ChatRole::User);
+    // rebuild_dialogs must not surface the system record as a turn.
+    assert_eq!(loaded.total_turns(), 1);
+    assert_eq!(loaded.dialogs[0].turns[0].role, ChatRole::User);
+
+    // A later identical prompt is deduped against the recorded one.
+    assert!(!loaded.record_system_prompt("system prompt"));
+    assert_eq!(loaded.history.len(), 2);
 }
 
 #[test]

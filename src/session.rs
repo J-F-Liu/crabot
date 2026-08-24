@@ -263,6 +263,16 @@ impl Session {
         self.dialogs.is_empty()
     }
 
+    /// History excluding system-prompt audit records.
+    pub fn conversation_messages(&self) -> impl Iterator<Item = &ChatMessage> {
+        self.history.iter().filter(|m| m.role != ChatRole::System)
+    }
+
+    /// First user message, skipping system-prompt audit records.
+    pub fn first_user_message(&self) -> Option<&ChatMessage> {
+        self.history.iter().find(|m| m.role == ChatRole::User)
+    }
+
     /// Case-insensitive search across all turns in all dialogs.
     /// Returns flat turn indices (matching `center_pane`'s `flat_idx` numbering)
     /// for turns whose content matches the query.
@@ -632,6 +642,23 @@ impl Session {
         // `persisted` / `saved_meta` are `#[serde(skip)]` → next save writes a full jsonl.
         session.rebuild_dialogs();
         Ok(session)
+    }
+
+    /// Audit record of the system prompt, deduped against the last record.
+    pub fn record_system_prompt(&mut self, prompt: &str) -> bool {
+        let changed = !prompt.trim().is_empty()
+            && self
+                .history
+                .iter()
+                .rev()
+                .find(|m| m.role == ChatRole::System)
+                .and_then(|m| m.content.joined_texts())
+                .as_deref()
+                != Some(prompt);
+        if changed {
+            self.history.push(ChatMessage::system(prompt));
+        }
+        changed
     }
 
     /// Ensure Assistant messages with tool calls also carry a `ReasoningContent` part.

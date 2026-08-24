@@ -765,7 +765,8 @@ fn prepare_session_tab(
         .model
         .as_ref()
         .is_some_and(|m| m.model_id != model_config.model_id);
-    if !model_changed || tab.session.history.len() <= 1 {
+    // Audit records don't count: only the initial prompt → nothing to fork yet.
+    if !model_changed || tab.session.conversation_messages().count() <= 1 {
         // Same model (or nothing to fork yet): continue on this tab.
         tab.session.model = Some(model_config.clone());
         tab.session.workspace = app.prompt.workspace.1.clone();

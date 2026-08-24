@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use genai::adapter::AdapterKind;
 use genai::chat::{
-    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatStream, ChatStreamEvent,
+    CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, ChatStream, ChatStreamEvent,
     MessageContent, ReasoningEffort, ToolCall, ToolResponse,
 };
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
@@ -717,10 +717,13 @@ pub async fn send_stream(
     // Build chat request from genai history directly.
     // System prompt as a message with 1h cache TTL (rarely changes, large).
     let sys_msg = ChatMessage::system(system_prompt).with_options(CacheControl::Ephemeral1h);
-    let mut chat_req = ChatRequest::default()
-        .append_message(sys_msg)
-        .with_tools(tools::build_tools(&tools, model.strict));
-    chat_req = chat_req.append_messages(history);
+    let mut chat_req = ChatRequest::default().with_tools(tools::build_tools(&tools, model.strict));
+    // Record the prompt (audit-only) and put it on the wire first.
+    if !record_msg(&mut chat_req, sys_msg, on_event).await {
+        return;
+    }
+    // Prior audit records must not be re-sent to the LLM.
+    chat_req = chat_req.append_messages(history.into_iter().filter(|m| m.role != ChatRole::System));
 
     // Optionally add a new user message (None when resending history as-is).
     if let Some(prompt) = &user_prompt {
