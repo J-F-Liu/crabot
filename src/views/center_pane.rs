@@ -22,6 +22,7 @@ use crate::app::session_state::SessionEvent;
 use crate::app::{ConversationState, SessionTab};
 use crate::llm::DialogPhase;
 use crate::views::search_bar::SearchState;
+use crate::widgets::popup_menu::PopupMenu;
 use crate::{AskRequest, CenterPaneEvent, ConversationEvent};
 
 use super::icons;
@@ -38,6 +39,7 @@ use super::tool_message::{
     args_rows, ask_result_view, bold_font, highlighted_text, highlighted_text_font, path_arg_row,
     result_text,
 };
+use super::user_prompt::{menu_container_style, menu_item_style};
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
 pub(crate) const SEARCH_INPUT: widget::Id = widget::Id::new("search-input");
@@ -760,7 +762,7 @@ pub(crate) fn center_pane<'a>(
     mouse_area(
         container(column![
             super::session_tabs::session_tabs(conversation),
-            session_header(title),
+            session_header(title, conversation.header_menu_open),
             pending_header(pending_user_prompt),
             if search_state.visible {
                 super::search_bar::view(search_query, search_results, search_state.current).map(
@@ -808,8 +810,8 @@ pub(crate) fn center_pane<'a>(
 
 // ── session header ──────────────────────────────────────────────────
 
-/// Header bar: prompt text or "New session", plus export/copy/resend icons.
-fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
+/// Header bar with a collapsed actions popup (export/copy/resend).
+fn session_header<'a>(prompt: &'a str, menu_open: bool) -> Element<'a, CenterPaneEvent> {
     let header = row![
         header_container(
             SelectableText::new(prompt)
@@ -823,21 +825,7 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
                 }),
             200.0,
         ),
-        icons::icon_action(
-            icons::DOWNLOAD,
-            "Export session as HTML",
-            CenterPaneEvent::Conversation(ConversationEvent::ExportSessionHtml)
-        ),
-        icons::icon_action(
-            icons::COPY,
-            "Copy session title",
-            CenterPaneEvent::Conversation(ConversationEvent::CopySessionTitle)
-        ),
-        icons::icon_action(
-            icons::RESEND,
-            "Resend session history",
-            CenterPaneEvent::Conversation(ConversationEvent::ResendSessionHistory)
-        ),
+        header_actions_menu(menu_open),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -846,6 +834,60 @@ fn session_header<'a>(prompt: &'a str) -> Element<'a, CenterPaneEvent> {
         .width(Fill)
         .padding([6, 14])
         .style(session_header_style)
+        .into()
+}
+
+/// The "…" trigger and its export/copy/resend popup menu.
+fn header_actions_menu(menu_open: bool) -> Element<'static, CenterPaneEvent> {
+    let items = [
+        (
+            icons::COPY,
+            "Copy title",
+            ConversationEvent::CopySessionTitle,
+        ),
+        (
+            icons::RESEND,
+            "Resend session",
+            ConversationEvent::ResendSessionHistory,
+        ),
+        (
+            icons::DOWNLOAD,
+            "Export as HTML",
+            ConversationEvent::ExportSessionHtml,
+        ),
+    ];
+
+    let overlay = container(
+        column(items.into_iter().map(|(icon, label, event)| {
+            button(
+                row![icons::svg_icon(icon), text(label).size(13)]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+            )
+            .on_press(CenterPaneEvent::Conversation(event))
+            .padding([6, 12])
+            .width(Fill)
+            .style(menu_item_style)
+            .into()
+        }))
+        .width(180)
+        .padding([4, 0]),
+    )
+    .style(menu_container_style);
+
+    let trigger = button(icons::svg_icon(icons::MORE_HORIZONTAL))
+        .on_press(CenterPaneEvent::Conversation(
+            ConversationEvent::ToggleHeaderActionsMenu,
+        ))
+        .padding([6, 8])
+        .style(icon_button_style);
+
+    PopupMenu::new(trigger, overlay, menu_open)
+        .right_aligned()
+        .gap(2.0)
+        .on_dismiss(CenterPaneEvent::Conversation(
+            ConversationEvent::ToggleHeaderActionsMenu,
+        ))
         .into()
 }
 

@@ -153,10 +153,10 @@ fn files_field_view<'a>(files: &'a ExpandableEditor) -> Element<'a, PromptEvent>
     }
 }
 
-// ── Recipe dropdown menu styles ───────────────────────────────────
+// ── Popup menu styles (shared) ───────────────────────────────────
 
-/// Container style for the recipe dropdown popup — surface card with subtle border.
-fn menu_container_style(_theme: &iced::Theme) -> container::Style {
+/// Popup menu container — surface card with subtle border.
+pub(crate) fn menu_container_style(_theme: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(color_dialog_bg().into()),
         border: Border {
@@ -169,7 +169,7 @@ fn menu_container_style(_theme: &iced::Theme) -> container::Style {
 }
 
 /// Flat menu-item button style with hover highlight, like a native context menu.
-fn menu_item_style(_theme: &iced::Theme, status: button::Status) -> button::Style {
+pub(crate) fn menu_item_style(_theme: &iced::Theme, status: button::Status) -> button::Style {
     let base = button::Style {
         background: None,
         text_color: color_text_strong(),

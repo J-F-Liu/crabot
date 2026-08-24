@@ -30,6 +30,11 @@ pub(crate) enum TabBarDirection {
     Right,
 }
 
+/// Close the session-header actions popup menu, if open.
+fn close_header_menu(app: &mut App) {
+    app.conversation.header_menu_open = false;
+}
+
 /// Scroll the tab bar by `delta` pixels, clamping to valid range.
 fn scroll_tab_bar(s: &mut TabBarScrollState, delta: f32) -> Task<Message> {
     let new_x = (s.offset + delta).clamp(0.0, s.max_offset());
@@ -42,17 +47,25 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::NavigateSession(up) => {
             return navigate_session(app, up);
         }
-        ConversationEvent::ResendSessionHistory => return resend_session(app),
         ConversationEvent::SessionEvent(number, event) => {
             return session_state::session_event(app, number, event);
         }
         ConversationEvent::SearchEvent(event) => {
             return search_event(app, event);
         }
+        ConversationEvent::ToggleHeaderActionsMenu => {
+            app.conversation.header_menu_open = !app.conversation.header_menu_open;
+        }
         ConversationEvent::CopySessionTitle => {
+            close_header_menu(app);
             return iced::clipboard::write(app.conversation.viewing().center_pane_title.clone());
         }
+        ConversationEvent::ResendSessionHistory => {
+            close_header_menu(app);
+            return resend_session(app);
+        }
         ConversationEvent::ExportSessionHtml => {
+            close_header_menu(app);
             return export_session_html(app);
         }
         ConversationEvent::ExportSessionHtmlDone(outcome) => match outcome {
@@ -319,6 +332,7 @@ fn restore_viewing_tab(app: &mut App) -> Task<Message> {
 
 /// Switch the viewing tab to the one with the given number.
 pub(super) fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
+    close_header_menu(app);
     let Some(pos) = app.conversation.tab_pos(number) else {
         return Task::none();
     };

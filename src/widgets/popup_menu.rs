@@ -35,9 +35,10 @@ where
     on_dismiss: Option<Message>,
     width: Length,
     height: Length,
-    /// Horizontal offset from the left edge of the trigger:
-    /// 0 = left-aligned, positive = shifted right, negative = shifted left.
+    /// Horizontal offset from the trigger's left edge (0 = flush).
     offset_x: f32,
+    /// Align the menu's right edge with the trigger's right edge.
+    right_aligned: bool,
     /// Vertical gap (logical pixels) between the trigger and the menu in
     /// both directions.
     gap: f32,
@@ -61,6 +62,7 @@ where
             width: Length::Shrink,
             height: Length::Shrink,
             offset_x: 0.0,
+            right_aligned: false,
             gap: 4.0,
         }
     }
@@ -79,12 +81,19 @@ where
         self
     }
 
-    /// Horizontal offset from the right edge of the trigger.
-    /// Default is 0 (menu right-edge flush with trigger right-edge).
-    /// Negative values pull the menu left; positive push it right.
+    /// Horizontal offset from the trigger's left edge (0 = flush).
+    /// Negative pulls left; positive pushes right.
     #[must_use]
     pub fn offset_x(mut self, offset: f32) -> Self {
         self.offset_x = offset;
+        self
+    }
+
+    /// Align the menu's right edge with the trigger's right edge
+    /// (default: left edge with left edge).
+    #[must_use]
+    pub fn right_aligned(mut self) -> Self {
+        self.right_aligned = true;
         self
     }
 
@@ -229,6 +238,7 @@ where
             width: &self.width,
             height: &self.height,
             offset_x: self.offset_x,
+            right_aligned: self.right_aligned,
             gap: self.gap,
             trigger_bounds,
             trigger_position,
@@ -248,6 +258,7 @@ where
     width: &'b Length,
     height: &'b Length,
     offset_x: f32,
+    right_aligned: bool,
     gap: f32,
     trigger_bounds: Rectangle,
     trigger_position: Point,
@@ -271,13 +282,18 @@ where
 
         let menu_size = node.bounds();
 
-        // Decide direction: if there's enough room below (trigger bottom + gap +
-        // menu height ≤ viewport height), place below; otherwise above.
+        // Place below the trigger if it fits, otherwise above.
         let space_below =
             bounds.height - (self.trigger_position.y + self.trigger_bounds.height + self.gap);
 
-        // X: left-aligned with trigger's left edge, plus offset.
-        let x = (self.trigger_position.x + self.offset_x)
+        // X: flush with the trigger's left edge, or right edge if right-aligned.
+        let x = (self.trigger_position.x
+            + if self.right_aligned {
+                self.trigger_bounds.width - menu_size.width
+            } else {
+                0.0
+            }
+            + self.offset_x)
             .clamp(0.0, (bounds.width - menu_size.width).max(0.0));
 
         let y = if space_below >= menu_size.height {

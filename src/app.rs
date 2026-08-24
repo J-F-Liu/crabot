@@ -290,6 +290,8 @@ pub(crate) struct ConversationState {
     pub(crate) tab_bar_held_direction: Option<conversation::TabBarDirection>,
     /// Which arrow is currently hovered, for visual feedback.
     pub(crate) tab_bar_hovered_direction: Option<conversation::TabBarDirection>,
+    /// True while the session-header actions popup menu is expanded.
+    pub(crate) header_menu_open: bool,
 }
 
 impl ConversationState {
@@ -305,6 +307,7 @@ impl ConversationState {
             tab_bar_scroll: TabBarScrollState::default(),
             tab_bar_held_direction: None,
             tab_bar_hovered_direction: None,
+            header_menu_open: false,
         }
     }
 
@@ -510,6 +513,8 @@ pub(crate) enum ConversationEvent {
     TabBarScrollRightHold,
     /// Timer tick for auto-repeat scrolling while an arrow is held.
     TabBarScrollTick,
+    /// Toggle the session-header actions popup menu.
+    ToggleHeaderActionsMenu,
     /// Cursor entered a tab-bar arrow.
     TabBarArrowEnter(conversation::TabBarDirection),
     /// Cursor left a tab-bar arrow.

@@ -37,6 +37,22 @@ pub(crate) const CHEVRONS_RIGHT: &[u8] = br##"<svg xmlns="http://www.w3.org/2000
 /// Lucide "chevrons-down" icon.
 pub(crate) const CHEVRONS_DOWN: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 6-5 5-5-5"/><path d="m17 13-5 5-5-5"/></svg>"##;
 
+/// Lucide "ellipsis" (more-horizontal) icon.
+pub(crate) const MORE_HORIZONTAL: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>"##;
+
+/// A tinted 14×14 SVG icon (no button wrapper).
+pub(crate) fn svg_icon(icon: &'static [u8]) -> iced::widget::Svg<'static> {
+    svg(svg::Handle::from_memory(icon))
+        .width(14)
+        .height(14)
+        .style(|_theme, status| svg::Style {
+            color: Some(match status {
+                svg::Status::Hovered => color_text_strong(),
+                _ => color_muted(),
+            }),
+        })
+}
+
 /// A small SVG icon button with a tooltip shown below on hover.
 #[must_use]
 pub(crate) fn icon_action<M: Clone + 'static>(
@@ -44,18 +60,8 @@ pub(crate) fn icon_action<M: Clone + 'static>(
     tip: &'static str,
     on_press: M,
 ) -> Element<'static, M> {
-    let icon = svg(svg::Handle::from_memory(icon))
-        .width(14)
-        .height(14)
-        .style(|_theme, status| svg::Style {
-            color: Some(match status {
-                svg::Status::Hovered => color_text_strong(),
-                svg::Status::Idle => color_muted(),
-            }),
-        });
-
     tooltip(
-        button(icon)
+        button(svg_icon(icon))
             .on_press(on_press)
             .padding(6)
             .style(icon_button_style),
