@@ -130,7 +130,7 @@ fn test_runtime() -> tokio::runtime::Runtime {
         .expect("test runtime")
 }
 
-/// Join a spawned tool task like `llm.rs::await_tool` does.
+/// Join a spawned tool task like `llm::tool_call::await_tool` does.
 async fn await_tool(
     handle: tokio::task::JoinHandle<Result<String, String>>,
 ) -> Result<String, String> {
@@ -139,7 +139,7 @@ async fn await_tool(
         .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
 }
 
-/// Run the `bash` tool exactly like `llm.rs::exec_tool` does: on a blocking
+/// Run the `bash` tool exactly like `llm::tool_call::call_tool` does: on a blocking
 /// thread with a tokio runtime context.
 fn run_bash(command: &str, workspace: &Path, timeout_ms: Option<u64>) -> Result<String, String> {
     run_bash_with_cancel(command, workspace, timeout_ms, CancellationToken::new())
@@ -183,7 +183,7 @@ fn run_bash_streaming_with_cancel(
 ) -> Result<String, String> {
     let (bash, args) = bash_tool(command, timeout_ms);
     let workspace = workspace.to_path_buf();
-    // Same live-output cap as the UI path (`llm.rs::exec_tool_streaming`).
+    // Same live-output cap as the UI path (`llm::tool_call::call_tool_streaming`).
     let sink = crabot::tools::capping_sink(move |out| {
         let _ = tx.send(out);
     });
