@@ -3,7 +3,7 @@ use iced::{Task, widget};
 use crabot::HashSetExt;
 use crabot::chat::{Turn, TurnBody};
 use crabot::model::ModelConfig;
-use crabot::session::Session;
+use crabot::session::{Session, fix_history};
 use crabot::user::UserPrompt;
 use futures::{SinkExt, future::FutureExt};
 use std::path::{Path, PathBuf};
@@ -63,6 +63,10 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::ResendSessionHistory => {
             close_header_menu(app);
             return resend_session(app);
+        }
+        ConversationEvent::ForkSession => {
+            close_header_menu(app);
+            return fork_session(app);
         }
         ConversationEvent::ExportSessionHtml => {
             close_header_menu(app);
@@ -266,6 +270,14 @@ fn export_session_html(app: &App) -> Task<Message> {
     )
 }
 
+/// Push a tab onto the conversation, clear focus, and return its position.
+fn push_tab(app: &mut App, tab: SessionTab) -> usize {
+    let pos = app.conversation.session_tabs.len();
+    app.conversation.session_tabs.push(tab);
+    app.layout.focused = None;
+    pos
+}
+
 /// New session tab that becomes the viewing one (user/renew tabs);
 /// `parent` is the spawning session's id, empty for user tabs.
 fn new_session(
@@ -278,10 +290,7 @@ fn new_session(
     let mut tab = SessionTab::new(number, selected_model, selected_preamble);
     tab.session.parent = parent;
     tracing::debug!(tab = number, parent = %tab.session.parent, "new session tab opened");
-    app.conversation.session_tabs.push(tab);
-    app.layout.focused = None;
-
-    app.conversation.viewing = app.conversation.session_tabs.len() - 1;
+    app.conversation.viewing = push_tab(app, tab);
 
     // Refresh workspace-dependent fields (files tree + AGENTS.md land async).
     let content_task = crate::app::prompt::refresh_workspace_content(app);
@@ -300,9 +309,7 @@ fn new_background_session(
     let number = app.conversation.next_tab_number();
     let mut tab = SessionTab::new(number, selected_model, selected_preamble);
     tab.session.parent = parent;
-    app.conversation.session_tabs.push(tab);
-    app.layout.focused = None;
-    app.conversation.session_tabs.len() - 1
+    push_tab(app, tab)
 }
 
 /// Synchronise the left-pane workspace fields to match the session's workspace.
@@ -763,96 +770,47 @@ fn resend_session(app: &mut App) -> Task<Message> {
     start_dialog(app, tab_pos, &model, None, None)
 }
 
+/// Fork the viewing session into a new tab and switch to it.
+/// Requires a completed reply and no running stream.
+fn fork_session(app: &mut App) -> Task<Message> {
+    if !app.conversation.can_fork() {
+        return Task::none();
+    }
+    let number = app.conversation.next_tab_number();
+    let (source_id, fork_tab) = {
+        let view = app.conversation.viewing();
+        let session = view.session.fork();
+        // Keep the fork's model label when known, else the source picker's.
+        let selected_model = session
+            .model
+            .as_ref()
+            .map(|m| app.find_model_label(m))
+            .unwrap_or_else(|| view.selected_model.clone());
+        let tab = SessionTab::from_session(
+            number,
+            session,
+            selected_model,
+            view.selected_preamble.clone(),
+        );
+        (view.session.id.clone(), tab)
+    };
+    tracing::debug!(tab = number, source = %source_id, "session forked");
+    let pos = push_tab(app, fork_tab);
+    app.conversation.viewing = pos;
+    // Unused forks stay unpersisted; list entry just shows the current session.
+    surface_session_in_list(app, pos);
+    // Fresh tab has no saved offset — restore_viewing_tab scrolls to top.
+    restore_viewing_tab(app)
+}
+
 // ── Stream orchestration ──────────────────────────────────────────
 
-/// Apply the model to the tab, forking the session into a new viewing tab
-/// when the model changes. Returns the effective tab position.
-fn prepare_session_tab(
-    app: &mut App,
-    tab_pos: usize,
-    model_config: &ModelConfig,
-    user_prompt: Option<&UserPrompt>,
-) -> usize {
+/// Apply the selected model to the tab's session and persist it.
+fn prepare_session_tab(app: &mut App, tab_pos: usize, model_config: &ModelConfig) {
     let tab = &mut app.conversation.session_tabs[tab_pos];
-    let model_changed = tab
-        .session
-        .model
-        .as_ref()
-        .is_some_and(|m| m.model_id != model_config.model_id);
-    // Audit records don't count: only the initial prompt → nothing to fork yet.
-    if !model_changed || tab.session.conversation_messages().count() <= 1 {
-        // Same model (or nothing to fork yet): continue on this tab.
-        tab.session.model = Some(model_config.clone());
-        tab.session.workspace = app.prompt.workspace.1.clone();
-        tab.session.save().ok();
-        return tab_pos;
-    }
-
-    let mut forked = tab.session.fork();
-    // Remember the original model to restore the picker label later.
-    let old_model = tab.session.model.clone();
-    if model_config.model_id.starts_with("deepseek") {
-        forked.fix_history();
-    }
-    // The unanswered user dialog added by `launch_dialog` now belongs to the
-    // fork — drop it from the original tab and restore its UI state.
-    if user_prompt.is_some() {
-        tab.session.dialogs.pop();
-        tab.center_pane_title = tab
-            .session
-            .dialogs
-            .last()
-            .map(|d| d.title.clone())
-            .unwrap_or_else(|| "New session".into());
-        tab.expanded_dialogs.clear();
-        tab.expanded_dialogs
-            .insert(tab.session.dialogs.len().saturating_sub(1));
-        tab.search.invalidate_offsets();
-    }
-    let fork_model = tab.selected_model.clone();
-    let fork_preamble = tab.selected_preamble.clone();
-    // `tab` borrow ends here — the fork tab is pushed into the same list.
-
-    forked.model = Some(model_config.clone());
-    forked.workspace = app.prompt.workspace.1.clone();
-    forked.save().ok();
-
-    // Restore the original tab's picker to the model its session still uses.
-    if let Some(old) = old_model
-        && let Some(label) = app
-            .models
-            .models
-            .iter()
-            .find(|(_, cfg)| cfg.provider_id == old.provider_id && cfg.model_id == old.model_id)
-            .map(|(label, _)| label.clone())
-    {
-        app.conversation.session_tabs[tab_pos].selected_model = label;
-    }
-
-    let mut fork_tab = SessionTab::from_session(
-        app.conversation.next_tab_number(),
-        forked,
-        fork_model,
-        fork_preamble,
-    );
-    // Mirror `launch_dialog`'s heading for the sent prompt.
-    if let Some(prompt) = user_prompt {
-        fork_tab.center_pane_title = prompt.content.clone();
-    }
-    fork_tab
-        .expanded_dialogs
-        .insert(fork_tab.session.dialogs.len().saturating_sub(1));
-    let fork_number = fork_tab.number;
-    let fork_session_id = fork_tab.session.id.clone();
-    app.conversation.session_tabs.push(fork_tab);
-    app.conversation.viewing = app.conversation.session_tabs.len() - 1;
-    app.layout.focused = None;
-    tracing::debug!(
-        tab = fork_number,
-        session = %fork_session_id,
-        "model change forked session into a new tab"
-    );
-    app.conversation.viewing
+    tab.session.model = Some(model_config.clone());
+    tab.session.workspace = app.prompt.workspace.1.clone();
+    tab.session.save().ok();
 }
 
 /// Record the session in its workspace's list cache once, and surface it in
@@ -894,8 +852,7 @@ pub(crate) fn start_dialog(
         return Task::none();
     };
 
-    // Continuing with a different model forks the session into a new tab.
-    let tab_pos = prepare_session_tab(app, tab_pos, model_config, user_prompt.as_ref());
+    prepare_session_tab(app, tab_pos, model_config);
     let tab_number = app.conversation.session_tabs[tab_pos].number;
     surface_session_in_list(app, tab_pos);
 
@@ -961,7 +918,11 @@ pub(crate) fn start_dialog(
         stream_stall_timeout_secs: app.settings.stream_stall_timeout,
     };
 
-    let history = tab.session.history.clone();
+    let mut history = tab.session.history.clone();
+    // Deepseek rejects tool-calls without a reasoning part — patch the request copy.
+    if model_config.model_id.starts_with("deepseek") {
+        fix_history(&mut history);
+    }
 
     Task::batch([
         if is_viewing {

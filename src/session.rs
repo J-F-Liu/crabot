@@ -107,6 +107,21 @@ fn generate_session_id(now: chrono::DateTime<chrono::Local>) -> String {
     dt.naive_local().format("%Y%m%d-%H%M%S").to_string()
 }
 
+/// Add empty reasoning parts to assistant tool-calls missing them, so
+/// deepseek-style APIs accept the history. Operates in place.
+pub fn fix_history(history: &mut [ChatMessage]) {
+    for message in history {
+        if message.role == ChatRole::Assistant
+            && message.content.contains_tool_call()
+            && !message.content.contains_reasoning_content()
+        {
+            message
+                .content
+                .push(ContentPart::ReasoningContent(String::new()));
+        }
+    }
+}
+
 impl Session {
     /// Create a new session.
     pub fn new() -> Self {
@@ -263,14 +278,14 @@ impl Session {
         self.dialogs.is_empty()
     }
 
-    /// History excluding system-prompt audit records.
-    pub fn conversation_messages(&self) -> impl Iterator<Item = &ChatMessage> {
-        self.history.iter().filter(|m| m.role != ChatRole::System)
-    }
-
     /// First user message, skipping system-prompt audit records.
     pub fn first_user_message(&self) -> Option<&ChatMessage> {
         self.history.iter().find(|m| m.role == ChatRole::User)
+    }
+
+    /// Whether the conversation contains an assistant reply.
+    pub fn has_reply(&self) -> bool {
+        self.history.iter().any(|m| m.role == ChatRole::Assistant)
     }
 
     /// Case-insensitive search across dialog headers and turn headers/content.
@@ -687,20 +702,6 @@ impl Session {
             self.history.push(ChatMessage::system(prompt));
         }
         changed
-    }
-
-    /// Ensure Assistant messages with tool calls also carry a `ReasoningContent` part.
-    pub fn fix_history(&mut self) {
-        for message in &mut self.history {
-            if message.role == ChatRole::Assistant
-                && message.content.contains_tool_call()
-                && !message.content.contains_reasoning_content()
-            {
-                message
-                    .content
-                    .push(ContentPart::ReasoningContent(String::new()));
-            }
-        }
     }
 
     /// Build the current `Meta` record from this session's fields.

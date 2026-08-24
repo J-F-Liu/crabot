@@ -5,7 +5,9 @@ use iced::{
     },
 };
 
-use crate::views::theme::{color_border, color_dialog_bg, color_surface, color_text_strong};
+use crate::views::theme::{
+    color_border, color_dialog_bg, color_muted, color_surface, color_text_strong,
+};
 use iced_aw::{
     style::{status::Status, tab_bar::Style as TabBarStyle},
     widget::tab_bar::{TabBar, TabLabel},
@@ -179,6 +181,10 @@ pub(crate) fn menu_item_style(_theme: &iced::Theme, status: button::Status) -> b
     match status {
         button::Status::Hovered | button::Status::Pressed => button::Style {
             background: Some(color_surface().into()),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            text_color: color_muted(),
             ..base
         },
         _ => base,

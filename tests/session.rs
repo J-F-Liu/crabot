@@ -360,6 +360,17 @@ fn fork_resets_persisted() {
 }
 
 #[test]
+fn has_reply_detects_assistant_messages() {
+    let mut session = Session::new();
+    assert!(!session.has_reply());
+    session.history.push(ChatMessage::system("audit"));
+    session.history.push(ChatMessage::user("first"));
+    assert!(!session.has_reply());
+    session.history.push(ChatMessage::assistant("reply"));
+    assert!(session.has_reply());
+}
+
+#[test]
 fn workspace_switch_writes_full_history_to_new_file() {
     let ws_a = temp_workspace();
     let ws_b = temp_workspace();

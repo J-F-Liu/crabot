@@ -762,7 +762,11 @@ pub(crate) fn center_pane<'a>(
     mouse_area(
         container(column![
             super::session_tabs::session_tabs(conversation),
-            session_header(title, conversation.header_menu_open),
+            session_header(
+                title,
+                conversation.header_menu_open,
+                conversation.can_fork()
+            ),
             pending_header(pending_user_prompt),
             if search_state.visible {
                 super::search_bar::view(search_query, search_results, search_state.current).map(
@@ -810,8 +814,12 @@ pub(crate) fn center_pane<'a>(
 
 // ── session header ──────────────────────────────────────────────────
 
-/// Header bar with a collapsed actions popup (export/copy/resend).
-fn session_header<'a>(prompt: &'a str, menu_open: bool) -> Element<'a, CenterPaneEvent> {
+/// Header bar with a collapsed actions popup (export/copy/resend/fork).
+fn session_header<'a>(
+    prompt: &'a str,
+    menu_open: bool,
+    fork_enabled: bool,
+) -> Element<'a, CenterPaneEvent> {
     let header = row![
         header_container(
             SelectableText::new(prompt)
@@ -825,7 +833,7 @@ fn session_header<'a>(prompt: &'a str, menu_open: bool) -> Element<'a, CenterPan
                 }),
             200.0,
         ),
-        header_actions_menu(menu_open),
+        header_actions_menu(menu_open, fork_enabled),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -837,38 +845,46 @@ fn session_header<'a>(prompt: &'a str, menu_open: bool) -> Element<'a, CenterPan
         .into()
 }
 
-/// The "…" trigger and its export/copy/resend popup menu.
-fn header_actions_menu(menu_open: bool) -> Element<'static, CenterPaneEvent> {
+/// The "…" trigger and its export/copy/resend/fork popup menu.
+fn header_actions_menu(menu_open: bool, fork_enabled: bool) -> Element<'static, CenterPaneEvent> {
+    // `None` renders the item disabled (no on_press handler).
     let items = [
         (
             icons::COPY,
             "Copy title",
-            ConversationEvent::CopySessionTitle,
+            Some(ConversationEvent::CopySessionTitle),
         ),
         (
             icons::RESEND,
             "Resend session",
-            ConversationEvent::ResendSessionHistory,
+            Some(ConversationEvent::ResendSessionHistory),
+        ),
+        (
+            icons::FORK,
+            "Fork session",
+            fork_enabled.then_some(ConversationEvent::ForkSession),
         ),
         (
             icons::DOWNLOAD,
             "Export as HTML",
-            ConversationEvent::ExportSessionHtml,
+            Some(ConversationEvent::ExportSessionHtml),
         ),
     ];
 
     let overlay = container(
         column(items.into_iter().map(|(icon, label, event)| {
-            button(
+            let mut item = button(
                 row![icons::svg_icon(icon), text(label).size(13)]
                     .spacing(8)
                     .align_y(Alignment::Center),
             )
-            .on_press(CenterPaneEvent::Conversation(event))
             .padding([6, 12])
             .width(Fill)
-            .style(menu_item_style)
-            .into()
+            .style(menu_item_style);
+            if let Some(event) = event {
+                item = item.on_press(CenterPaneEvent::Conversation(event));
+            }
+            item.into()
         }))
         .width(180)
         .padding([4, 0]),

@@ -351,6 +351,12 @@ impl ConversationState {
         self.viewing().running()
     }
 
+    /// Whether the viewing session can be forked: a completed reply exists
+    /// and no stream is running. Shared by the header menu and `fork_session`.
+    pub(crate) fn can_fork(&self) -> bool {
+        self.viewing().session.has_reply() && !self.viewing_is_streaming()
+    }
+
     /// Take the next tab number and advance the counter.
     pub(crate) fn next_tab_number(&mut self) -> usize {
         let n = self.next_tab_number;
@@ -485,6 +491,8 @@ pub(crate) enum ConversationEvent {
     NavigateSession(bool),
     DefocusSessionPicker,
     ResendSessionHistory,
+    /// Fork the viewing session into a new tab.
+    ForkSession,
     AskInputChanged(String),
     AskAction(session_state::AskAction),
     /// A session-streaming event tagged with the tab number that owns the stream.
