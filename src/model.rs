@@ -1,5 +1,5 @@
 use arrayvec::ArrayString;
-use chrono::Timelike;
+use chrono::{Datelike, Timelike};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -293,12 +293,12 @@ pub fn currency_symbol(currency: &str) -> &str {
     }
 }
 
-/// Peak hours in Beijing time (UTC+8): 09:00–12:00 and 14:00–18:00.
+/// Peak hours in Beijing time (UTC+8): Mon–Fri 09:00–12:00 and 14:00–18:00.
 fn is_beijing_peak_hour() -> bool {
-    let now_utc = chrono::Utc::now();
-    let beijing = now_utc + chrono::Duration::hours(8);
-    let hour = beijing.hour();
-    matches!(hour, 9 | 10 | 11 | 14 | 15 | 16 | 17)
+    let beijing = chrono::Utc::now() + chrono::Duration::hours(8);
+    // Weekday only: Mon = 0 … Fri = 4; Sat/Sun are always off-peak.
+    beijing.weekday().num_days_from_monday() < 5
+        && matches!(beijing.hour(), 9 | 10 | 11 | 14 | 15 | 16 | 17)
 }
 
 /// True when the field equals the default (`false`) and can be omitted from output.
