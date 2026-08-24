@@ -8,7 +8,6 @@ use crabot::chat::{Dialog, Turn, TurnBody, markdown_options, streaming_tool_ids,
 use crabot::session::Session;
 use crabot::tools::edit::EditParam;
 use crabot::tools::todo::{TodoItem, TodoStatus};
-use genai::chat::ChatRole;
 use pulldown_cmark::{Event, Tag, html};
 use serde_json::Value;
 
@@ -125,11 +124,7 @@ fn render_dialog(
 ) {
     let collapsed = !ctx.expanded_dialogs.contains(&di);
     let indicator = if collapsed { "⊞" } else { "⊟" };
-    let title = if dialog.title.is_empty() {
-        format!("Dialog {}", di + 1)
-    } else {
-        dialog.title.clone()
-    };
+    let title = dialog.display_title(di);
     let turn_count = dialog.turns.len();
     let turn_label = if turn_count == 1 { "turn" } else { "turns" };
 
@@ -190,14 +185,11 @@ fn render_text_turn(turn: &Turn, i: usize, ctx: &RenderCtx<'_>, out: &mut String
         unreachable!("render_text_turn called on non-Text turn")
     };
 
-    let (role_label, bubble_class) = match turn.role {
-        ChatRole::User => ("User", "user"),
-        ChatRole::Assistant => ("Assistant", "assistant"),
-        _ => ("System", "system"),
-    };
-    let badge_class = role_label.to_lowercase();
+    let role_label = turn.role_label();
+    // Bubble and badge CSS classes both match the lowercased role label.
+    let css_class = role_label.to_lowercase();
 
-    w!(out, "<div class=\"bubble {bubble_class}\">");
+    w!(out, "<div class=\"bubble {css_class}\">");
     if let Some(reasoning) = tc.reasoning.as_deref() {
         // Reasoning defaults to expanded, so membership inverts.
         let expanded = !ctx.expanded_turns.contains(&(i, 0));
@@ -207,7 +199,7 @@ fn render_text_turn(turn: &Turn, i: usize, ctx: &RenderCtx<'_>, out: &mut String
         w!(out, "<summary class=\"turn-header\">");
         render_turn_header(
             role_label,
-            &badge_class,
+            &css_class,
             Some(indicator),
             &turn.timestamp,
             out,
@@ -221,7 +213,7 @@ fn render_text_turn(turn: &Turn, i: usize, ctx: &RenderCtx<'_>, out: &mut String
         w!(out, "</details>");
     } else {
         w!(out, "<div class=\"turn-header\">");
-        render_turn_header(role_label, &badge_class, None, &turn.timestamp, out);
+        render_turn_header(role_label, &css_class, None, &turn.timestamp, out);
         w!(out, "</div>");
     }
     w!(

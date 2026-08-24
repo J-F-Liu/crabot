@@ -296,11 +296,22 @@ pub(super) fn highlighted_text<M: Clone + 'static>(
     query: &str,
     size: f32,
 ) -> Element<'static, M> {
+    highlighted_text_font(content, query, size, Font::DEFAULT)
+}
+
+/// Like [`highlighted_text`], with an explicit font (e.g. bold header text).
+pub(super) fn highlighted_text_font<M: Clone + 'static>(
+    content: &str,
+    query: &str,
+    size: f32,
+    font: Font,
+) -> Element<'static, M> {
     if query.trim().is_empty() {
-        return text(content.to_string()).size(size).into();
+        return text(content.to_string()).size(size).font(font).into();
     }
     rich_text(highlighted_spans(content, query))
         .size(size)
+        .font(font)
         .into()
 }
 
@@ -313,7 +324,7 @@ fn mono_font() -> Font {
 }
 
 /// Bold weight version of the default font.
-fn bold_font() -> Font {
+pub(super) fn bold_font() -> Font {
     Font {
         weight: font::Weight::Bold,
         ..Font::DEFAULT

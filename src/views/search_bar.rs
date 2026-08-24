@@ -13,7 +13,7 @@ use crate::ConversationEvent;
 use crate::app::SessionTab;
 use crate::views::{SEARCH_INPUT, measure_turn_offsets, scroll_to};
 use crabot::chat::TurnBody;
-use crabot::session::Session;
+use crabot::session::{SearchHit, Session};
 
 /// UI state and widget bookkeeping for center-pane search.
 #[derive(Debug)]
@@ -22,8 +22,8 @@ pub(crate) struct SearchState {
     pub(crate) visible: bool,
     /// Current search query text.
     pub(crate) query: String,
-    /// Flat turn indices matching the current query.
-    pub(crate) results: Vec<usize>,
+    /// Flat turn indices matching the current query, with match kinds.
+    pub(crate) results: Vec<SearchHit>,
     /// Index into `results` for the currently-highlighted match.
     pub(crate) current: usize,
     /// Cached y-offsets for each turn in the scrollable content (pixels).
@@ -68,7 +68,7 @@ impl SearchState {
     pub(crate) fn submit(&mut self, session: &Session) -> Option<usize> {
         self.results = session.search(&self.query);
         self.current = 0;
-        self.results.first().copied()
+        self.results.first().map(|h| h.flat_idx)
     }
 
     /// Move the current result pointer by `delta`, wrapping around.
@@ -78,7 +78,7 @@ impl SearchState {
         }
         let len = self.results.len() as i32;
         self.current = (self.current as i32 + delta).rem_euclid(len) as usize;
-        Some(self.results[self.current])
+        Some(self.results[self.current].flat_idx)
     }
 
     /// Scroll to a turn using stored offsets. Callers must ensure offsets have been measured.
@@ -170,6 +170,8 @@ pub(crate) fn update_on(
             };
             if let Some(target) = target {
                 let q = state.query.clone();
+                // Header hits target the dialog's first turn; expand_result
+                // expands collapsed dialogs so the target turn can be measured.
                 let changed = expand_result(session, expanded_dialogs, expanded_turns, target, &q);
                 if !changed && let Some(task) = state.scroll_to_target(target) {
                     return task;
@@ -236,7 +238,7 @@ pub(crate) fn expand_result(
 /// Search bar widget displayed between the session header and the scrollable content.
 pub(crate) fn view<'a>(
     query: &'a str,
-    results: &[usize],
+    results: &[SearchHit],
     current: usize,
 ) -> Element<'a, SearchEvent> {
     let total = results.len();

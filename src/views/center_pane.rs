@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crabot::chat::{Dialog, Turn, TurnBody, streaming_tool_ids, tool_items};
-use crabot::session::Session;
+use crabot::session::{SearchHit, SearchHitKind, Session};
 use genai::chat::ChatRole;
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task,
@@ -35,7 +35,8 @@ use super::theme::{
     color_dialog_bg, color_muted, color_surface, color_text, color_text_strong, thin_vertical,
 };
 use super::tool_message::{
-    args_rows, ask_result_view, highlighted_text, path_arg_row, result_text,
+    args_rows, ask_result_view, bold_font, highlighted_text, highlighted_text_font, path_arg_row,
+    result_text,
 };
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
@@ -194,12 +195,38 @@ fn search_current_style(_theme: &Theme) -> container::Style {
     }
 }
 
+/// Outline style for a search hit of `kind` at `flat_idx`; none when it doesn't match.
+fn search_hit_style(
+    state: &SearchState,
+    kind: SearchHitKind,
+    flat_idx: usize,
+) -> fn(&Theme) -> container::Style {
+    let is_hit = |h: &SearchHit| h.kind == kind && h.flat_idx == flat_idx;
+    if state.results.get(state.current).is_some_and(is_hit) {
+        search_current_style
+    } else if state.results.iter().any(is_hit) {
+        search_match_style
+    } else {
+        |_| container::Style::default()
+    }
+}
+
 /// Small work-mode badge pill shown in dialog headers.
-fn work_mode_badge(name: String, font_scale: f32) -> Element<'static, CenterPaneEvent> {
-    container(text(name).size(11.0 * font_scale).font(Font {
+fn work_mode_badge(
+    name: &str,
+    font_scale: f32,
+    search_query: &str,
+) -> Element<'static, CenterPaneEvent> {
+    let semibold = Font {
         weight: font::Weight::Semibold,
         ..Font::DEFAULT
-    }))
+    };
+    container(highlighted_text_font(
+        name,
+        search_query,
+        11.0 * font_scale,
+        semibold,
+    ))
     .padding([2, 8])
     .style(|_theme: &Theme| container::Style {
         background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.12).into()),
@@ -244,20 +271,38 @@ struct TurnView<'a> {
     theme: &'a Theme,
     font_scale: f32,
     search_query: &'a str,
+    /// Lowercased `search_query`, precomputed once per frame.
+    search_lower: String,
+}
+
+impl<'a> TurnView<'a> {
+    /// Header timestamp — keyword-highlighted when it matches the search query.
+    fn timestamp(&self, ts: &'a str) -> Element<'a, CenterPaneEvent> {
+        let size = 11.0 * self.font_scale;
+        if !self.search_lower.trim().is_empty() && ts.to_lowercase().contains(&self.search_lower) {
+            highlighted_text(ts, self.search_query, size)
+        } else {
+            text(ts).size(size).color(color_muted()).into()
+        }
+    }
 }
 
 // ── turn block builders ────────────────────────────────────────────
 
-/// Build the colored role badge shown in a turn header.
+/// Colored role badge in a turn header. Tool-name badges highlight `query`
+/// matches; plain role labels ("User"/"Assistant") pass an empty query.
 fn role_badge(
-    badge_text: String,
+    badge_text: &str,
     style_label: &'static str,
     font_scale: f32,
+    query: &str,
 ) -> Element<'static, CenterPaneEvent> {
-    container(text(badge_text).size(12.0 * font_scale).font(Font {
-        weight: font::Weight::Bold,
-        ..Font::DEFAULT
-    }))
+    container(highlighted_text_font(
+        badge_text,
+        query,
+        12.0 * font_scale,
+        bold_font(),
+    ))
     .padding([3, 0])
     .style(role_badge_style(style_label))
     .into()
@@ -313,7 +358,7 @@ fn tool_header_row<'a>(
 fn tool_turn_block<'a>(
     msg: &'a Turn,
     i: usize,
-    ctx: &TurnView<'_>,
+    ctx: &TurnView<'a>,
     streaming_ids: &HashSet<&str>,
 ) -> Element<'a, CenterPaneEvent> {
     let items = tool_items(msg, streaming_ids);
@@ -329,7 +374,12 @@ fn tool_turn_block<'a>(
             elements.push(Space::new().height(8).into());
         }
 
-        let badge = role_badge(format!("Tool - {name}"), "Tool", ctx.font_scale);
+        let badge = role_badge(
+            &format!("Tool - {name}"),
+            "Tool",
+            ctx.font_scale,
+            ctx.search_query,
+        );
         let completed = result.is_some() && !streaming;
 
         let (status_icon, status_color) = match (result, streaming) {
@@ -350,7 +400,7 @@ fn tool_turn_block<'a>(
                 Font::DEFAULT
             });
 
-        let ts_text = text(ts).size(11.0 * ctx.font_scale).color(color_muted());
+        let ts_text = ctx.timestamp(ts);
 
         // Running tool: header + args + live output, no expand/collapse
         // control; the placeholder is replaced by the final result on finish.
@@ -462,16 +512,13 @@ fn text_turn_block<'a>(
         unreachable!("text_turn_block called on non-Text turn")
     };
 
-    let (role_label, bubble_style): (&'static str, fn(&Theme) -> container::Style) = match msg.role
-    {
-        ChatRole::User => ("User", user_bubble_style),
-        ChatRole::Assistant => ("Assistant", assistant_bubble_style),
-        _ => ("System", assistant_bubble_style),
+    let role_label = msg.role_label();
+    let bubble_style: fn(&Theme) -> container::Style = match msg.role {
+        ChatRole::User => user_bubble_style,
+        _ => assistant_bubble_style,
     };
-    let badge = role_badge(role_label.to_string(), role_label, ctx.font_scale);
-    let ts_text = text(&msg.timestamp)
-        .size(11.0 * ctx.font_scale)
-        .color(color_muted());
+    let badge = role_badge(role_label, role_label, ctx.font_scale, "");
+    let ts_text = ctx.timestamp(&msg.timestamp);
     let mut content_col = column![].spacing(8).width(Fill);
 
     // ── header: badge + (indicator if reasoning) + timestamp ──
@@ -601,7 +648,7 @@ pub(crate) fn center_pane<'a>(
     } else {
         ""
     };
-    let search_results: &[usize] = &search_state.results;
+    let search_results: &[SearchHit] = &search_state.results;
     // Running-in-background tab numbers for the status line.
     let running_tabs: Vec<usize> = conversation
         .running_positions()
@@ -616,6 +663,7 @@ pub(crate) fn center_pane<'a>(
         theme,
         font_scale,
         search_query,
+        search_lower: search_query.to_lowercase(),
     };
     // Flatten dialogs into turns with a running flat index per dialog.
     let mut flat_idx: usize = 0;
@@ -623,13 +671,10 @@ pub(crate) fn center_pane<'a>(
         .iter()
         .enumerate()
         .map(|(di, dialog)| {
+            let dialog_start = flat_idx; // First flat turn index of this dialog.
             let collapsed = !expanded_dialogs.contains(&di);
             let indicator = if collapsed { "⊞" } else { "⊟" };
-            let title = if dialog.title.is_empty() {
-                format!("Dialog {}", di + 1)
-            } else {
-                dialog.title.clone()
-            };
+            let title = dialog.display_title(di);
             let turn_count = dialog.turns.len();
 
             // ── clickable header ──────────────────────────────────
@@ -640,22 +685,21 @@ pub(crate) fn center_pane<'a>(
                     .into(),
             ];
             if let Some(mode) = dialog.mode {
-                row_elements.push(work_mode_badge(mode.name.to_string(), font_scale));
+                row_elements.push(work_mode_badge(&mode.name, font_scale, search_query));
             }
-            row_elements.push(
-                text(title)
-                    .size(13.0 * font_scale)
-                    .font(Font {
-                        weight: font::Weight::Bold,
-                        ..Font::DEFAULT
-                    })
-                    .into(),
-            );
+            row_elements.push(highlighted_text_font(
+                &title,
+                search_query,
+                13.0 * font_scale,
+                bold_font(),
+            ));
             let title_row = iced::widget::Row::with_children(row_elements)
                 .width(Length::Fill)
                 .spacing(8)
                 .align_y(Alignment::Center);
 
+            let header_style =
+                search_hit_style(search_state, SearchHitKind::DialogHeader, dialog_start);
             let header = mouse_area(
                 container(
                     row![title_row, turn_count_badge(turn_count, font_scale)]
@@ -664,7 +708,8 @@ pub(crate) fn center_pane<'a>(
                         .width(Fill),
                 )
                 .width(Fill)
-                .padding([8, 12]),
+                .padding([8, 12])
+                .style(header_style),
             )
             .on_press(CenterPaneEvent::Conversation(
                 ConversationEvent::ToggleDialogExpand(di),
@@ -684,18 +729,8 @@ pub(crate) fn center_pane<'a>(
                     .map(|msg| {
                         let i = flat_idx;
                         flat_idx += 1;
-                        let is_match = search_results.contains(&i);
-                        let is_current = is_match
-                            && !search_results.is_empty()
-                            && search_results[search_state.current] == i;
                         let block = turn_block(msg, i, &turn_ctx, &streaming_ids);
-                        let style: fn(&Theme) -> container::Style = if is_current {
-                            search_current_style
-                        } else if is_match {
-                            search_match_style
-                        } else {
-                            |_| container::Style::default()
-                        };
+                        let style = search_hit_style(search_state, SearchHitKind::Turn, i);
                         container(block)
                             .width(Fill)
                             .padding(2)

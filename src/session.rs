@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 use chrono::{Datelike, TimeZone};
 
-use crate::chat::{Dialog, ToolResult, Turn, is_enveloped_error, strip_error_envelope};
+use crate::chat::{Dialog, ToolResult, Turn, TurnBody, is_enveloped_error, strip_error_envelope};
 use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
 use crate::user::WorkMode;
@@ -273,41 +273,69 @@ impl Session {
         self.history.iter().find(|m| m.role == ChatRole::User)
     }
 
-    /// Case-insensitive search across all turns in all dialogs.
-    /// Returns flat turn indices (matching `center_pane`'s `flat_idx` numbering)
-    /// for turns whose content matches the query.
-    pub fn search(&self, query: &str) -> Vec<usize> {
+    /// Case-insensitive search across dialog headers and turn headers/content.
+    /// `flat_idx` matches `center_pane` numbering; dialog-header hits land on
+    /// the dialog's first turn so navigation can scroll to them.
+    pub fn search(&self, query: &str) -> Vec<SearchHit> {
         if query.trim().is_empty() {
             return Vec::new();
         }
         let q = query.to_lowercase();
+        let matches = |s: &str| s.to_lowercase().contains(&q);
         let mut results = Vec::new();
         let mut flat_idx: usize = 0;
-        for dialog in &self.dialogs {
+        for (di, dialog) in self.dialogs.iter().enumerate() {
+            let dialog_start = flat_idx;
+            // Dialog header: displayed title + work-mode badge.
+            let header_hit = matches(&dialog.display_title(di))
+                || dialog.mode.as_ref().is_some_and(|m| matches(&m.name));
+            let mut dialog_hits = Vec::new();
             for turn in &dialog.turns {
+                // Role labels ("User"/"Assistant"/"Tool - …") are uniform across
+                // turn kinds, hence not searchable; timestamps, tool names/args
+                // and message content are.
                 let hit = match &turn.body {
-                    crate::chat::TurnBody::Text(tc) => {
-                        tc.content.to_lowercase().contains(&q)
-                            || tc
-                                .reasoning
-                                .as_deref()
-                                .is_some_and(|r| r.to_lowercase().contains(&q))
+                    TurnBody::Text(tc) => {
+                        matches(&turn.timestamp)
+                            || matches(&tc.content)
+                            || tc.reasoning.as_deref().is_some_and(matches)
                     }
-                    crate::chat::TurnBody::Tool(trs) => trs.iter().any(|tr| {
-                        tr.name.to_lowercase().contains(&q)
-                            || tr.args.to_string().to_lowercase().contains(&q)
+                    TurnBody::Tool(trs) => trs.iter().any(|tr| {
+                        matches(&tr.timestamp)
+                            || matches(&tr.name)
+                            || matches(&tr.args.to_string())
                             || match &tr.result {
-                                Ok(s) => s.to_lowercase().contains(&q),
-                                Err(e) => e.to_lowercase().contains(&q),
+                                Ok(s) => matches(s),
+                                Err(e) => matches(e),
                             }
                     }),
-                    crate::chat::TurnBody::Temp(_) => false,
+                    TurnBody::Temp(calls) => {
+                        matches(&turn.timestamp)
+                            || calls
+                                .iter()
+                                .any(|c| matches(&c.name) || matches(&c.args.to_string()))
+                    }
                 };
                 if hit {
-                    results.push(flat_idx);
+                    dialog_hits.push(SearchHit {
+                        flat_idx,
+                        kind: SearchHitKind::Turn,
+                    });
                 }
                 flat_idx += 1;
             }
+            // Header hits jump to the dialog's first turn; skip when that turn
+            // is itself a hit so Next/Prev never lands on the same spot twice.
+            let first_turn_hit = dialog_hits
+                .first()
+                .is_some_and(|h| h.flat_idx == dialog_start);
+            if header_hit && !dialog.turns.is_empty() && !first_turn_hit {
+                results.push(SearchHit {
+                    flat_idx: dialog_start,
+                    kind: SearchHitKind::DialogHeader,
+                });
+            }
+            results.extend(dialog_hits);
         }
         results
     }
@@ -686,6 +714,25 @@ impl Session {
             created_at: self.created_at.clone(),
         }
     }
+}
+
+/// Where a [`SearchHit`] matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchHitKind {
+    /// Dialog header text; jumps to the dialog's first turn. Not emitted when
+    /// that turn is also a hit, since both would share the same jump target.
+    DialogHeader,
+    /// Turn header or content.
+    Turn,
+}
+
+/// One match from [`Session::search`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchHit {
+    /// Flat turn index to jump to, matching `center_pane` numbering.
+    pub flat_idx: usize,
+    /// What part of the conversation matched.
+    pub kind: SearchHitKind,
 }
 
 /// Extract YYYY-MM from a session id (format: YYYYMMDD-HHMMSS).

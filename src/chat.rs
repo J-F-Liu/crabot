@@ -206,6 +206,15 @@ pub struct Dialog {
 }
 
 impl Dialog {
+    /// Title shown in the dialog header ("Dialog N" fallback for empty titles).
+    pub fn display_title(&self, index: usize) -> String {
+        if self.title.is_empty() {
+            format!("Dialog {}", index + 1)
+        } else {
+            self.title.clone()
+        }
+    }
+
     /// Append a completed tool result to the in-progress tool group. A result
     /// matching a streaming placeholder replaces it in place; others append,
     /// so parallel batches keep their completion order.
@@ -316,6 +325,15 @@ impl Turn {
             role: ChatRole::Tool,
             body: TurnBody::Temp(calls),
             timestamp: String::new(),
+        }
+    }
+
+    /// Role label shown in the turn header ("User"/"Assistant"/"System").
+    pub fn role_label(&self) -> &'static str {
+        match self.role {
+            ChatRole::User => "User",
+            ChatRole::Assistant => "Assistant",
+            _ => "System",
         }
     }
 }

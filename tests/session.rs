@@ -19,6 +19,95 @@ fn temp_workspace() -> PathBuf {
 }
 
 #[test]
+fn search_covers_dialog_and_turn_headers() {
+    use crabot::chat::{ToolCall, ToolResult, Turn};
+    use crabot::session::{SearchHit, SearchHitKind};
+    use crabot::user::WorkMode;
+
+    let mut session = Session::new();
+    session.add_dialog("Fix the script".into(), Some(WorkMode::from("code")));
+    session.push_turn(Turn::user("hello there"));
+    session.push_turn(Turn::assistant("script edit done", None));
+    session.push_turn(Turn::from_tool_calls(vec![ToolCall {
+        name: "bash".into(),
+        call_id: None,
+        args: serde_json::json!({ "cmd": "ls" }),
+    }]));
+    session.push_turn(Turn::from_tool_results(vec![ToolResult {
+        name: "edit".into(),
+        call_id: Some("c1".into()),
+        args: serde_json::json!({ "path": "src/main.rs" }),
+        result: Ok("modified 3 lines".into()),
+        timestamp: "15:00:00".into(),
+        streaming: false,
+    }]));
+    session.dialogs[0].turns[0].timestamp = "12:34:56".into();
+    session.dialogs[0].turns[1].timestamp = "13:45:00".into();
+    session.dialogs[0].turns[2].timestamp = "14:00:00".into();
+    session.add_dialog("Empty dialog".into(), None);
+
+    let dialog_hits = |hits: &[SearchHit]| -> Vec<usize> {
+        hits.iter()
+            .filter(|h| h.kind == SearchHitKind::DialogHeader)
+            .map(|h| h.flat_idx)
+            .collect()
+    };
+    let turn_hits = |hits: &[SearchHit]| -> Vec<usize> {
+        hits.iter()
+            .filter(|h| h.kind == SearchHitKind::Turn)
+            .map(|h| h.flat_idx)
+            .collect()
+    };
+
+    // Dialog title match jumps to the dialog's first turn.
+    assert_eq!(dialog_hits(&session.search("script")), vec![0]);
+    // Work-mode badge match is case-insensitive.
+    assert_eq!(dialog_hits(&session.search("CODE")), vec![0]);
+    // Header hits come before turn hits in visual order.
+    let hits = session.search("script");
+    assert_eq!(hits[0].kind, SearchHitKind::DialogHeader);
+    assert_eq!(hits[1].kind, SearchHitKind::Turn);
+    assert_eq!(hits[1].flat_idx, 1);
+
+    // Role labels are deliberately not searchable — uniform across turn kinds.
+    assert!(session.search("user").is_empty());
+    assert!(session.search("assistant").is_empty());
+    // Timestamp shown in the turn header matches.
+    assert_eq!(turn_hits(&session.search("12:34")), vec![0]);
+    // Pending tool-call names match via the turn header badge.
+    assert_eq!(turn_hits(&session.search("bash")), vec![2]);
+    // Pending tool-call args match too (they're rendered in the turn).
+    assert_eq!(turn_hits(&session.search("ls")), vec![2]);
+    // Completed tool names match via the body too (turn 1 hits only on content).
+    assert_eq!(turn_hits(&session.search("edit")), vec![1, 3]);
+    // Completed tool results match via the body: result text and args.
+    assert_eq!(turn_hits(&session.search("modified")), vec![3]);
+    assert_eq!(turn_hits(&session.search("main.rs")), vec![3]);
+
+    // Blank queries match nothing.
+    assert!(session.search("  ").is_empty());
+    // A dialog-header match in an empty dialog has no jump target — skipped.
+    assert!(session.search("empty dialog").is_empty());
+}
+
+#[test]
+fn header_hit_deduped_when_first_turn_matches() {
+    use crabot::chat::Turn;
+    use crabot::session::{SearchHit, SearchHitKind};
+
+    let mut session = Session::new();
+    session.add_dialog("user request".into(), None);
+    session.push_turn(Turn::user("user data"));
+
+    // Header and first turn share the same jump target — only one hit remains,
+    // so Next/Prev never lands on the same target twice.
+    let hits: Vec<SearchHit> = session.search("user");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].kind, SearchHitKind::Turn);
+    assert_eq!(hits[0].flat_idx, 0);
+}
+
+#[test]
 fn round_trip_jsonl() {
     let ws = temp_workspace();
     let mut session = Session::new();
@@ -226,6 +315,7 @@ fn record_system_prompt_dedupes_and_roundtrips() {
     assert_eq!(session.history.len(), 2);
 
     // Round trip: System records survive reload but never become dialogs.
+    session.save().expect("save");
     let path = session.save_path().unwrap();
     let loaded = Session::load(&path).expect("reload");
     assert_eq!(loaded.history.len(), 2);
