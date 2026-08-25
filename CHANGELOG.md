@@ -1,3 +1,19 @@
+# Crabot v0.8.3
+
+- **Right pane overhaul** — the right pane is now organized into collapsible sections, with a new **Accessed Files** list alongside file snapshots, and a **Running Processes** section showing live processes started via the `process` tool.
+- **Session header popup menu** — header actions are consolidated into a "…" popup menu, which gains two new items: **Fork session** (branch the conversation into a new session) and **Compact session** (condense history to free context window).
+- **`ask` tool: custom answers** — beyond picking an option, users can now type a free-form answer and submit it with an "Enter my answer" button.
+- **Search bar matches headers** — search now also covers dialog and turn headers, not just message bodies.
+- **Inline model parameter editor** — checked models in the AI Models settings dialog can be tuned inline (temperature, max tokens, …) without opening the per-model dialog.
+- **Retry empty LLM responses** — empty assistant responses are retried like transient failures instead of ending the turn.
+- **Shared `/tmp` across tools** — the `bash` tool and file tools resolve `/tmp` to the same host directory, so temp files written by one are visible to the other.
+- **System prompt saved in sessions** — the system prompt is recorded into the session JSONL file for faithful reloads.
+- **bashkit & genai updates** — dependency refresh.
+- **DeepSeek peak-hour pricing on weekdays only** — the doubled pricing now applies Monday–Friday only.
+- **Snapshot cleanup on exit** — `.agent/snapshots` are cleaned up when the app exits.
+
+**Full Changelog**: [`v0.8.2...v0.8.3`](https://github.com/J-F-Liu/crabot/compare/v0.8.2...v0.8.3)
+
 # Crabot v0.8.2
 
 - **Per-message session persistence** — session files are now saved incrementally after every complete message (assistant reply, tool results, injected user prompts) instead of only when the whole turn finishes, so a crash or force-kill mid-task no longer loses the conversation recorded so far.
