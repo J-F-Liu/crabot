@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
 use std::path::PathBuf;
 
 use iced::widget::scrollable::Viewport;
@@ -415,6 +416,8 @@ pub(crate) struct App {
     /// registry change via [`Message::ProcessTick`].
     pub running_processes: Vec<tools::process::RunningProcess>,
     pub overlay: OverlayState,
+    /// Per-workspace shared snapshot locks held until exit (see `snapshot::retain_workspace_lock`).
+    pub(crate) snapshot_locks: HashMap<PathBuf, File>,
 }
 
 // ── Domain event types ────────────────────────────────────────────
@@ -734,6 +737,7 @@ impl App {
             settings_dialog: crate::views::SettingsState::default(),
             pane_sections: PaneSections::default(),
             running_processes: Vec::new(),
+            snapshot_locks: HashMap::new(),
             overlay: OverlayState {
                 show_workspace_dialog: false,
                 default_workspace_path: setup::default_workspace_path(),
@@ -743,6 +747,8 @@ impl App {
                 download_state: crate::views::update::UpdateDownloadState::Idle,
             },
         };
+        // Hold the boot workspace's shared lock for the process lifetime.
+        snapshot::retain_workspace_lock(&mut app, &workspace_path);
         tracing::info!(
             workspace = %workspace_path.display(),
             models = models_count,
@@ -807,7 +813,7 @@ impl App {
             Message::RestartApp => {
                 self.conversation.stop();
                 self.save_settings();
-                snapshot::cleanup_all(self);
+                snapshot::cleanup_snapshots(self);
                 let workspace_path = &self.prompt.workspace.1;
                 tracing::info!("restarting crabot");
                 match std::env::current_exe() {

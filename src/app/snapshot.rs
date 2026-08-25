@@ -6,6 +6,7 @@
 //! deleted on tab close / app exit.
 
 use std::collections::hash_map::DefaultHasher;
+use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,8 +21,46 @@ use crabot::tools::{arg_path, resolve_path_partial};
 /// Outcome of a single background revert — `Ok(raw)` unlists the file, `Err` shows the message.
 type RevertOutcome = Result<String, String>;
 
+fn snapshots_root(workspace: &Path) -> PathBuf {
+    workspace.join(".agent").join("snapshots")
+}
+
 fn snapshot_dir(workspace: &Path, session_id: &str) -> PathBuf {
-    workspace.join(".agent").join("snapshots").join(session_id)
+    snapshots_root(workspace).join(session_id)
+}
+
+/// Advisory-lock file marking an instance as active on a workspace.
+fn lock_file(workspace: &Path) -> PathBuf {
+    workspace.join(".agent").join("snapshots.lock")
+}
+
+// ── cross-instance workspace locks ────────────────────────────────
+// Every running instance holds a shared lock per active workspace for its
+// whole lifetime; exit-time cleanup takes an exclusive lock (after dropping
+// its own shared one) to detect whether another instance is still alive.
+fn open_lock_file(workspace: &Path) -> std::io::Result<File> {
+    File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_file(workspace))
+}
+
+/// Take the shared workspace lock once, held until app exit, so a concurrent
+/// instance's cleanup knows this instance is alive.
+pub(crate) fn retain_workspace_lock(app: &mut App, workspace: &Path) {
+    if workspace.as_os_str().is_empty() || app.snapshot_locks.contains_key(workspace) {
+        return;
+    }
+    match open_lock_file(workspace).and_then(|file| file.lock_shared().map(|()| file)) {
+        Ok(file) => {
+            app.snapshot_locks.insert(workspace.to_path_buf(), file);
+        }
+        Err(e) => {
+            tracing::debug!(workspace = %workspace.display(), "failed to lock snapshots.lock: {e}")
+        }
+    }
 }
 
 /// Stable per-file filename — hash of the canonical key, so capture and
@@ -152,11 +191,47 @@ pub(crate) fn cleanup(workspace: &Path, session_id: &str) {
     }
 }
 
-/// Delete snapshot files of all open tabs (app exit / restart).
-pub(crate) fn cleanup_all(app: &mut App) {
-    for tab in &app.conversation.session_tabs {
-        cleanup(&tab.session.workspace, &tab.session.id);
+/// Clear the snapshots of every locked workspace (app exit / restart). Draining
+/// `snapshot_locks` releases our shared lock, then an exclusive-lock probe
+/// decides whether another instance is still alive on that workspace.
+/// Iterating locks (not just open tabs) also covers switched-away workspaces.
+pub(crate) fn cleanup_snapshots(app: &mut App) {
+    for (workspace, lock) in app.snapshot_locks.drain() {
+        drop(lock);
+        let Ok(probe) = open_lock_file(&workspace) else {
+            tracing::debug!(workspace = %workspace.display(), "failed to open snapshots.lock");
+            continue;
+        };
+        match probe.try_lock() {
+            Ok(()) => {
+                // Keep the snapshots root itself, clear only its entries.
+                if let Err(e) = clear_dir(&snapshots_root(&workspace)) {
+                    tracing::debug!(workspace = %workspace.display(), "failed to clean snapshots: {e}");
+                }
+            }
+            // Another instance still holds the shared lock — keep its snapshots.
+            Err(e) => tracing::debug!(
+                workspace = %workspace.display(),
+                "another crabot instance active, keeping snapshots ({e})"
+            ),
+        }
     }
+}
+
+/// Empty a directory but keep it — removes every entry (dirs recursively).
+fn clear_dir(dir: &Path) -> std::io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
 }
 
 // ── Background revert ──────────────────────────────────────────────

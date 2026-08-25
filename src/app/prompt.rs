@@ -205,6 +205,8 @@ fn switch_workspace(app: &mut App, path: &Path) -> bool {
     app.prompt.workspace.1 = path.to_path_buf();
     app.prompt.workspace_options =
         crate::views::build_workspace_options(&app.settings.recent_workspaces);
+    // Hold the accepted workspace's shared snapshot lock for the process lifetime.
+    crate::app::snapshot::retain_workspace_lock(app, path);
     preferred
 }
 
