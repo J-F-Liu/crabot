@@ -765,7 +765,7 @@ pub(crate) fn center_pane<'a>(
             session_header(
                 title,
                 conversation.header_menu_open,
-                conversation.can_fork()
+                conversation.can_derive()
             ),
             pending_header(pending_user_prompt),
             if search_state.visible {
@@ -814,11 +814,11 @@ pub(crate) fn center_pane<'a>(
 
 // ── session header ──────────────────────────────────────────────────
 
-/// Header bar with a collapsed actions popup (export/copy/resend/fork).
+/// Header bar with a collapsed actions popup (copy/resend/fork/compact/export).
 fn session_header<'a>(
     prompt: &'a str,
     menu_open: bool,
-    fork_enabled: bool,
+    derive_enabled: bool,
 ) -> Element<'a, CenterPaneEvent> {
     let header = row![
         header_container(
@@ -833,7 +833,7 @@ fn session_header<'a>(
                 }),
             200.0,
         ),
-        header_actions_menu(menu_open, fork_enabled),
+        header_actions_menu(menu_open, derive_enabled),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -845,8 +845,8 @@ fn session_header<'a>(
         .into()
 }
 
-/// The "…" trigger and its export/copy/resend/fork popup menu.
-fn header_actions_menu(menu_open: bool, fork_enabled: bool) -> Element<'static, CenterPaneEvent> {
+/// The "…" trigger and its copy/resend/fork/compact/export popup menu.
+fn header_actions_menu(menu_open: bool, derive_enabled: bool) -> Element<'static, CenterPaneEvent> {
     // `None` renders the item disabled (no on_press handler).
     let items = [
         (
@@ -862,7 +862,12 @@ fn header_actions_menu(menu_open: bool, fork_enabled: bool) -> Element<'static, 
         (
             icons::FORK,
             "Fork session",
-            fork_enabled.then_some(ConversationEvent::ForkSession),
+            derive_enabled.then_some(ConversationEvent::ForkSession),
+        ),
+        (
+            icons::COMPACT,
+            "Compact session",
+            derive_enabled.then_some(ConversationEvent::CompactSession),
         ),
         (
             icons::DOWNLOAD,

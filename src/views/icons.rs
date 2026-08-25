@@ -43,6 +43,9 @@ pub(crate) const MORE_HORIZONTAL: &[u8] = br##"<svg xmlns="http://www.w3.org/200
 /// Lucide "git-fork" icon.
 pub(crate) const FORK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 12v2a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-2"/><line x1="12" x2="12" y1="9" y2="12"/></svg>"##;
 
+/// Lucide "fold-vertical" icon, tweaked: two dashed rows in the middle, shorter arrows.
+pub(crate) const COMPACT: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-fold-vertical-icon lucide-fold-vertical"><path d="M12 23v-5"/><path d="M12 6V1"/><path d="M4 10H2"/><path d="M10 10H8"/><path d="M16 10h-2"/><path d="M22 10h-2"/><path d="M4 14H2"/><path d="M10 14H8"/><path d="M16 14h-2"/><path d="M22 14h-2"/><path d="m15 21-3-3-3 3"/><path d="m15 3-3 3-3-3"/></svg>"##;
+
 /// A tinted 14×14 SVG icon (no button wrapper).
 pub(crate) fn svg_icon(icon: &'static [u8]) -> iced::widget::Svg<'static> {
     svg(svg::Handle::from_memory(icon))

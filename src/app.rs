@@ -351,9 +351,10 @@ impl ConversationState {
         self.viewing().running()
     }
 
-    /// Whether the viewing session can be forked: a completed reply exists
-    /// and no stream is running. Shared by the header menu and `fork_session`.
-    pub(crate) fn can_fork(&self) -> bool {
+    /// Whether the viewing session can be forked or compacted: a completed
+    /// reply exists and no stream is running. Shared by the header menu and
+    /// `derive_session`.
+    pub(crate) fn can_derive(&self) -> bool {
         self.viewing().session.has_reply() && !self.viewing_is_streaming()
     }
 
@@ -493,6 +494,8 @@ pub(crate) enum ConversationEvent {
     ResendSessionHistory,
     /// Fork the viewing session into a new tab.
     ForkSession,
+    /// Compact the viewing session into a new tab.
+    CompactSession,
     AskInputChanged(String),
     AskAction(session_state::AskAction),
     /// A session-streaming event tagged with the tab number that owns the stream.

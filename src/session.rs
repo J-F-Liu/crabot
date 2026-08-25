@@ -54,7 +54,7 @@ pub struct Session {
     #[serde(skip)]
     pub dialogs: Vec<Dialog>,
     /// History messages already written to the jsonl file.
-    /// `#[serde(skip)]` — reset to 0 on fork so the next save writes everything.
+    /// `#[serde(skip)]` — reset to 0 on fork/compact so the next save writes everything.
     #[serde(skip)]
     pub persisted: usize,
     /// Serialized snapshot of the last-written `Meta` record.
@@ -149,19 +149,65 @@ impl Session {
         }
     }
 
-    /// Create a copy of this session with a fresh id and timestamps.
-    pub fn fork(&self) -> Self {
+    /// Clone with a fresh id/timestamps — the copy gets its own file and
+    /// must rewrite everything on the next save.
+    fn fresh_copy(&self) -> Self {
         let mut session = self.clone();
         let now = chrono::Local::now();
         session.id = generate_session_id(now);
         session.created_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
         session.updated_at = String::new();
-        // Fresh accumulators — the fork starts its own usage/cost accounting.
-        session.tokens = TokenAmount::default();
         session.cost = 0.0;
-        // New file — everything must be written again.
         session.persisted = 0;
         session.saved_meta = None;
+        session
+    }
+
+    /// Fork: fresh copy with its own usage accounting. System-prompt records
+    /// are dropped — the fork starts its own audit trail.
+    pub fn fork(&self) -> Self {
+        let mut session = self.fresh_copy();
+        let mut tokens = TokenAmount::default();
+        tokens.prompt = session.tokens.prompt;
+        session.tokens = tokens;
+        session
+    }
+
+    /// Compact: fresh copy where each dialog keeps only its user prompt and
+    /// final text answer; tool activity, partial replies and system-prompt
+    /// records are dropped.
+    pub fn compact(&self) -> Self {
+        let mut session = self.fresh_copy();
+        // Keep the last text-only assistant reply per dialog; flush it before
+        // the next user prompt and at the end.
+        let mut answer: Option<ChatMessage> = None;
+        let mut compacted = Vec::with_capacity(session.dialogs.len() * 2);
+        for msg in &session.history {
+            match msg.role {
+                ChatRole::User => {
+                    compacted.extend(answer.take());
+                    compacted.push(msg.clone());
+                }
+                ChatRole::Assistant
+                    if !msg.content.contains_tool_call()
+                        && msg.content.joined_texts().is_some_and(|t| !t.is_empty()) =>
+                {
+                    answer = Some(msg.clone());
+                }
+                _ => {}
+            }
+        }
+        compacted.extend(answer.take());
+        session.history = compacted;
+        session.rebuild_dialogs();
+        // Fresh accumulators
+        session.tokens = TokenAmount::default();
+        session.requests = 0;
+        // Persist immediately so the compacted file exists on disk; failures
+        // are logged inside `save_with_tally`.
+        if session.workspace.is_dir() {
+            let _ = session.save_with_tally();
+        }
         session
     }
 
@@ -544,26 +590,10 @@ impl Session {
             buf.push_str(&meta_json);
             buf.push('\n');
         }
-        for msg in &self.history[start..] {
-            let line = serde_json::to_string(&SessionRecord::Message {
-                message: msg.clone(),
-            })
-            .map_err(|e| format!("Failed to serialize message: {e}"))?;
-            buf.push_str(&line);
-            buf.push('\n');
-        }
+        Self::push_messages(&mut buf, &self.history, start)?;
         // Tally only on terminal stream events — avoids a redundant line per save.
         if with_tally {
-            let line = serde_json::to_string(&SessionRecord::Tally {
-                requests: self.requests,
-                tokens: self.tokens,
-                cost: self.cost,
-                currency: self.currency,
-                updated_at: self.updated_at.clone(),
-            })
-            .map_err(|e| format!("Failed to serialize tally: {e}"))?;
-            buf.push_str(&line);
-            buf.push('\n');
+            self.push_tally(&mut buf)?;
         }
 
         let mut file = std::fs::OpenOptions::new()
@@ -702,6 +732,38 @@ impl Session {
             self.history.push(ChatMessage::system(prompt));
         }
         changed
+    }
+
+    /// Append `history[start..]` as one `Message` record line per message.
+    fn push_messages(
+        buf: &mut String,
+        history: &[ChatMessage],
+        start: usize,
+    ) -> Result<(), String> {
+        for msg in &history[start..] {
+            let line = serde_json::to_string(&SessionRecord::Message {
+                message: msg.clone(),
+            })
+            .map_err(|e| format!("Failed to serialize message: {e}"))?;
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        Ok(())
+    }
+
+    /// Append the cumulative usage snapshot as one `Tally` record line.
+    fn push_tally(&self, buf: &mut String) -> Result<(), String> {
+        let line = serde_json::to_string(&SessionRecord::Tally {
+            requests: self.requests,
+            tokens: self.tokens,
+            cost: self.cost,
+            currency: self.currency,
+            updated_at: self.updated_at.clone(),
+        })
+        .map_err(|e| format!("Failed to serialize tally: {e}"))?;
+        buf.push_str(&line);
+        buf.push('\n');
+        Ok(())
     }
 
     /// Build the current `Meta` record from this session's fields.

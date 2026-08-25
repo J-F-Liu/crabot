@@ -68,6 +68,10 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             close_header_menu(app);
             return fork_session(app);
         }
+        ConversationEvent::CompactSession => {
+            close_header_menu(app);
+            return compact_session(app);
+        }
         ConversationEvent::ExportSessionHtml => {
             close_header_menu(app);
             return export_session_html(app);
@@ -773,14 +777,25 @@ fn resend_session(app: &mut App) -> Task<Message> {
 /// Fork the viewing session into a new tab and switch to it.
 /// Requires a completed reply and no running stream.
 fn fork_session(app: &mut App) -> Task<Message> {
-    if !app.conversation.can_fork() {
+    derive_session(app, Session::fork, "forked")
+}
+
+/// Compact the viewing session into a new tab and switch to it.
+/// Requires a completed reply and no running stream.
+fn compact_session(app: &mut App) -> Task<Message> {
+    derive_session(app, Session::compact, "compacted")
+}
+
+/// Derive a copy of the viewing session into a new tab and switch to it.
+fn derive_session(app: &mut App, derive: fn(&Session) -> Session, verb: &str) -> Task<Message> {
+    if !app.conversation.can_derive() {
         return Task::none();
     }
     let number = app.conversation.next_tab_number();
-    let (source_id, fork_tab) = {
+    let (source_id, tab) = {
         let view = app.conversation.viewing();
-        let session = view.session.fork();
-        // Keep the fork's model label when known, else the source picker's.
+        let session = derive(&view.session);
+        // Keep the derived session's model label when known, else the source picker's.
         let selected_model = session
             .model
             .as_ref()
@@ -794,10 +809,10 @@ fn fork_session(app: &mut App) -> Task<Message> {
         );
         (view.session.id.clone(), tab)
     };
-    tracing::debug!(tab = number, source = %source_id, "session forked");
-    let pos = push_tab(app, fork_tab);
+    tracing::debug!(tab = number, source = %source_id, "session {verb}");
+    let pos = push_tab(app, tab);
     app.conversation.viewing = pos;
-    // Unused forks stay unpersisted; list entry just shows the current session.
+    // Surface the new session in the list without persisting an extra entry.
     surface_session_in_list(app, pos);
     // Fresh tab has no saved offset — restore_viewing_tab scrolls to top.
     restore_viewing_tab(app)

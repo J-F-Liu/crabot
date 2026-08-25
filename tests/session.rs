@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
+use crabot::chat::TurnBody;
 use crabot::model::ModelConfig;
 use crabot::session::{Session, SessionRecord, list_session_paths};
-use genai::chat::{ChatMessage, ChatRole};
+use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
 
 fn temp_workspace() -> PathBuf {
     let base = std::env::temp_dir().join(format!("crabot-test-{}", std::process::id()));
@@ -16,6 +17,39 @@ fn temp_workspace() -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&ws).unwrap();
     ws
+}
+
+/// An assistant message carrying a single tool call.
+fn tool_call(call_id: &str, fn_name: &str, args: serde_json::Value) -> ChatMessage {
+    ChatMessage::new(
+        ChatRole::Assistant,
+        MessageContent::from_tool_calls(vec![ToolCall {
+            call_id: call_id.into(),
+            fn_name: fn_name.into(),
+            fn_arguments: args,
+            thought_signatures: None,
+        }]),
+    )
+}
+
+/// A tool message answering `call_id`.
+fn tool_result(call_id: &str) -> ChatMessage {
+    ChatMessage::new(ChatRole::Tool, vec![ToolResponse::new(call_id, "ok")])
+}
+
+/// History roles in order.
+fn roles(session: &Session) -> Vec<ChatRole> {
+    session.history.iter().map(|m| m.role.clone()).collect()
+}
+
+/// Number of tool/temp turns across all dialogs.
+fn tool_turns(session: &Session) -> usize {
+    session
+        .dialogs
+        .iter()
+        .flat_map(|d| &d.turns)
+        .filter(|t| matches!(&t.body, TurnBody::Tool(_) | TurnBody::Temp(_)))
+        .count()
 }
 
 #[test]
@@ -357,6 +391,127 @@ fn fork_resets_persisted() {
     let forked = session.fork();
     assert_eq!(forked.persisted, 0);
     assert_ne!(forked.id, session.id);
+}
+
+#[test]
+fn compact_keeps_user_and_last_assistant_per_dialog() {
+    let mut session = Session::new();
+    session.history.push(ChatMessage::system("audit"));
+    // Dialog 1: user → tool round → intermediate → final answer.
+    session.history.push(ChatMessage::user("first prompt"));
+    session
+        .history
+        .push(tool_call("c1", "bash", serde_json::json!({ "cmd": "ls" })));
+    session.history.push(tool_result("c1"));
+    session.history.push(ChatMessage::assistant("intermediate"));
+    session.history.push(ChatMessage::assistant("final answer"));
+    // Dialog 2: interrupted mid-tool — tool calls, no final text.
+    session.history.push(ChatMessage::user("second prompt"));
+    session.history.push(tool_call(
+        "c2",
+        "read",
+        serde_json::json!({ "path": "a.txt" }),
+    ));
+
+    let compacted = session.compact();
+
+    // Fresh id; the source is untouched; only the prompts and the final text
+    // answer remain — the system record and all tool activity are gone.
+    assert_ne!(compacted.id, session.id);
+    assert_eq!(session.history.len(), 8);
+    assert_eq!(
+        roles(&compacted),
+        vec![ChatRole::User, ChatRole::Assistant, ChatRole::User]
+    );
+    assert_eq!(
+        compacted.history[1].content.joined_texts().as_deref(),
+        Some("final answer")
+    );
+    assert_eq!(tool_turns(&compacted), 0);
+    assert_eq!(compacted.dialogs.len(), 2);
+    assert_eq!(compacted.dialogs[0].turns.len(), 2); // prompt + final answer
+    assert_eq!(compacted.dialogs[1].turns.len(), 1); // interrupted — prompt only
+    assert_eq!(compacted.dialogs[1].turns[0].role, ChatRole::User);
+}
+
+#[test]
+fn fork_drops_system_prompt_records() {
+    let mut session = Session::new();
+    session.history.push(ChatMessage::system("audit 1"));
+    session.history.push(ChatMessage::user("first prompt"));
+    session.history.push(ChatMessage::assistant("first reply"));
+    session.history.push(ChatMessage::system("audit 2"));
+    session.history.push(ChatMessage::user("second prompt"));
+    session.history.push(ChatMessage::assistant("second reply"));
+    session.rebuild_dialogs();
+
+    let forked = session.fork();
+
+    // The fork keeps the conversation but starts its own audit trail.
+    assert_eq!(session.history.len(), 6);
+    assert_eq!(
+        roles(&forked),
+        vec![
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant
+        ]
+    );
+    assert_eq!(
+        forked.history[0].content.joined_texts().as_deref(),
+        Some("first prompt")
+    );
+    assert_eq!(
+        forked.history[3].content.joined_texts().as_deref(),
+        Some("second reply")
+    );
+    assert_eq!(forked.dialogs.len(), 2);
+}
+
+#[test]
+fn compact_skips_assistant_replies_with_tool_calls() {
+    let mut session = Session::new();
+    session.history.push(ChatMessage::user("prompt"));
+    // A final answer that also carries tool calls is dropped entirely.
+    session.history.push(ChatMessage::new(
+        ChatRole::Assistant,
+        MessageContent::from_parts(vec![
+            "done".into(),
+            ContentPart::ToolCall(ToolCall {
+                call_id: "c1".into(),
+                fn_name: "bash".into(),
+                fn_arguments: serde_json::json!({}),
+                thought_signatures: None,
+            }),
+        ]),
+    ));
+
+    let compacted = session.compact();
+
+    // The mixed answer is skipped, not partially kept — only the prompt stays.
+    assert_eq!(session.history.len(), 2);
+    assert_eq!(compacted.history.len(), 1);
+    assert_eq!(compacted.history[0].role, ChatRole::User);
+}
+
+#[test]
+fn compact_without_workspace_is_in_memory_only() {
+    let mut session = Session::new();
+    session.history.push(ChatMessage::user("prompt"));
+    session.history.push(ChatMessage::assistant("skipped"));
+    session.history.push(ChatMessage::assistant("kept"));
+
+    let compacted = session.compact();
+
+    // Fresh id; the source is untouched.
+    assert_ne!(compacted.id, session.id);
+    assert_eq!(session.history.len(), 3);
+    assert_eq!(compacted.history.len(), 2);
+    assert_eq!(
+        compacted.history[1].content.joined_texts().as_deref(),
+        Some("kept")
+    );
 }
 
 #[test]
