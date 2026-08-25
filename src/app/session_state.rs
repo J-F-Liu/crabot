@@ -50,6 +50,8 @@ pub(crate) struct SessionState {
     /// Active ask-tool request shown in the tool turn.
     pub(crate) ask_request: Option<AskRequest>,
     pub(crate) ask_input: String,
+    /// Free-text custom-answer input is visible ("Enter my answer" toggle).
+    pub(crate) ask_custom_input: bool,
     /// Shared ask-tool deadline — the UI extends it while a question is pending.
     pub(crate) ask_deadline: Arc<Mutex<Instant>>,
     /// Seconds left on the active ask countdown (ticked by `AskCountdown`).
@@ -81,6 +83,7 @@ impl SessionState {
             pending_prompt: None,
             ask_request: None,
             ask_input: String::new(),
+            ask_custom_input: false,
             ask_deadline: Arc::new(Mutex::new(Instant::now())),
             ask_seconds_left: 0,
             ask_sender: None,
@@ -166,9 +169,9 @@ pub(crate) enum AskAction {
     /// User submitted an answer (text read from `ask_input`).
     Ok,
     /// User chose to skip the question.
-    Skip,
-    /// User chose none of the provided options.
-    NoneApply,
+    YouDecide,
+    /// User toggles the free-text input to type a custom answer.
+    EnterAnswer,
     /// User selected one of the provided options.
     OptionSelected(String),
     /// User extended the response deadline.
@@ -265,6 +268,7 @@ pub(crate) fn update(
             let no_options = request.options.is_empty();
             state.ask_request = Some(request);
             state.ask_input.clear();
+            state.ask_custom_input = false;
             state.ask_seconds_left = ASK_TIMEOUT_SECS;
             if no_options && viewing {
                 return iced::widget::operation::focus(ASK_INPUT.clone());

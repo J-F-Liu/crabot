@@ -74,10 +74,20 @@ fn ask_option_list(
         .collect()
 }
 
+/// Free-text answer input shared by both ask layouts.
+fn ask_answer_input(input: &str) -> Element<'static, ConversationEvent> {
+    text_input("Type your answer…", input)
+        .id(ASK_INPUT.clone())
+        .on_input(ConversationEvent::AskInputChanged)
+        .on_submit_maybe((!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok)))
+        .into()
+}
+
 /// Interactive response controls for the builtin ask tool.
 pub(crate) fn ask_view(
     request: &AskRequest,
     input: &str,
+    custom_input: bool,
     seconds_left: u64,
     font_scale: f32,
 ) -> Element<'static, ConversationEvent> {
@@ -104,40 +114,34 @@ pub(crate) fn ask_view(
         SelectableText::new(request.question.clone())
             .style(sel_default)
             .into();
-    let none_apply = button(text("None apply"))
+    let enter_answer = button(text("Enter my answer"))
         .style(secondary_button)
-        .on_press(ConversationEvent::AskAction(AskAction::NoneApply));
-    let skip = button(text("You decide"))
+        .on_press(ConversationEvent::AskAction(AskAction::EnterAnswer));
+    let you_decide = button(text("You decide"))
         .style(secondary_button)
-        .on_press(ConversationEvent::AskAction(AskAction::Skip));
+        .on_press(ConversationEvent::AskAction(AskAction::YouDecide));
     let controls: Element<'static, ConversationEvent> = if request.options.is_empty() {
         row![
-            text_input("Type your answer…", input)
-                .id(ASK_INPUT.clone())
-                .on_input(ConversationEvent::AskInputChanged)
-                .on_submit(ConversationEvent::AskAction(AskAction::Ok))
-                .width(Fill),
-            button(text("Ok"))
-                .style(primary_button)
-                .on_press(ConversationEvent::AskAction(AskAction::Ok)),
-            skip
+            ask_answer_input(input),
+            button(text("Ok")).style(primary_button).on_press_maybe(
+                (!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok))
+            ),
+            you_decide
         ]
         .spacing(8)
         .into()
     } else {
-        let ok_enabled = !input.is_empty();
-        let options_col =
+        let mut options_col =
             column(ask_option_list(&request.options, input, font_scale, true)).spacing(8);
+        if custom_input {
+            options_col = options_col.push(ask_answer_input(input));
+        }
         let action_row = row![
-            button(text("Ok"))
-                .style(primary_button)
-                .on_press_maybe(if ok_enabled {
-                    Some(ConversationEvent::AskAction(AskAction::Ok))
-                } else {
-                    None
-                }),
-            none_apply,
-            skip
+            button(text("Ok")).style(primary_button).on_press_maybe(
+                (!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok))
+            ),
+            enter_answer,
+            you_decide
         ]
         .spacing(8)
         .padding([4, 16]);

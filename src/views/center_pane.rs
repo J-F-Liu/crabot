@@ -638,6 +638,7 @@ pub(crate) fn center_pane<'a>(
         .map(|p| p.content.as_str());
     let ask_request: Option<&AskRequest> = tab.session_state.ask_request.as_ref();
     let ask_input: &str = &tab.session_state.ask_input;
+    let ask_custom_input = tab.session_state.ask_custom_input;
     let search_state: &SearchState = &tab.search;
     // Ensure turn widget IDs match the dialog layout for scroll-to-match.
     let total: usize = dialogs.iter().map(|d| d.turns.len()).sum();
@@ -794,6 +795,7 @@ pub(crate) fn center_pane<'a>(
                     super::tool_message::ask_view(
                         request,
                         ask_input,
+                        ask_custom_input,
                         tab.session_state.ask_seconds_left,
                         font_scale,
                     )

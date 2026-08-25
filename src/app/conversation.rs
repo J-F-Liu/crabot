@@ -549,8 +549,16 @@ fn ask_action(app: &mut App, action: AskAction) -> Task<Message> {
             return Task::none();
         }
         AskAction::Ok => Ok(app.conversation.viewing().session_state.ask_input.clone()),
-        AskAction::Skip => Ok("No preference. Use your best judgment.".into()),
-        AskAction::NoneApply => Ok("None of the options apply.".into()),
+        AskAction::YouDecide => Ok("No preference. Use your best judgment.".into()),
+        AskAction::EnterAnswer => {
+            let state = &mut app.conversation.viewing_mut().session_state;
+            state.ask_custom_input = !state.ask_custom_input;
+            return if state.ask_custom_input {
+                widget::operation::focus(ASK_INPUT.clone())
+            } else {
+                Task::none()
+            };
+        }
     };
     let _ = app
         .conversation
