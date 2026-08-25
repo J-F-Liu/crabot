@@ -69,7 +69,7 @@ pub fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         tracing_subscriber::EnvFilter::new(
-            "info,iced_winit=off,iced_wgpu=off,genai::adapter::adapters::openai::streamer=off,iced_futures::subscription::tracker=off",
+            "info,iced_winit=error,iced_wgpu=error,genai::adapter::adapters::openai::streamer=error,iced_futures::subscription::tracker=error",
         )
     });
 
