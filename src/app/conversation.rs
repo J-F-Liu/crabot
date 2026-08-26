@@ -35,6 +35,23 @@ fn close_header_menu(app: &mut App) {
     app.conversation.header_menu_open = false;
 }
 
+/// Show an async message dialog (the sync `show()` would block the UI thread).
+/// The mapped message lands in the no-op `Cancelled` arm of `ExportSessionHtmlDone`.
+fn show_message_dialog(level: rfd::MessageLevel, title: &str, description: &str) -> Task<Message> {
+    Task::perform(
+        rfd::AsyncMessageDialog::new()
+            .set_level(level)
+            .set_title(title)
+            .set_description(description)
+            .show(),
+        |_| {
+            Message::Conversation(ConversationEvent::ExportSessionHtmlDone(
+                export::ExportOutcome::Cancelled,
+            ))
+        },
+    )
+}
+
 /// Scroll the tab bar by `delta` pixels, clamping to valid range.
 fn scroll_tab_bar(s: &mut TabBarScrollState, delta: f32) -> Task<Message> {
     let new_x = (s.offset + delta).clamp(0.0, s.max_offset());
@@ -79,18 +96,14 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::ExportSessionHtmlDone(outcome) => match outcome {
             export::ExportOutcome::Cancelled | export::ExportOutcome::Saved => {}
             export::ExportOutcome::SavedButNotOpened(error) => {
-                rfd::MessageDialog::new()
-                    .set_level(rfd::MessageLevel::Warning)
-                    .set_title("Export saved")
-                    .set_description(&error)
-                    .show();
+                return show_message_dialog(rfd::MessageLevel::Warning, "Export saved", &error);
             }
             export::ExportOutcome::Failed(error) => {
-                rfd::MessageDialog::new()
-                    .set_level(rfd::MessageLevel::Error)
-                    .set_title("Export session failed")
-                    .set_description(&error)
-                    .show();
+                return show_message_dialog(
+                    rfd::MessageLevel::Error,
+                    "Export session failed",
+                    &error,
+                );
             }
         },
         ConversationEvent::AppClosing => {
@@ -249,26 +262,41 @@ fn export_session_html(app: &App) -> Task<Message> {
     let expanded_dialogs = tab.expanded_dialogs.clone();
     let expanded_turns = tab.expanded_turns.clone();
 
+    // Async save dialog (sync blocks the executor); rendering/writing run
+    // off-thread via spawn_blocking.
     Task::perform(
         async move {
-            let Some(path) = rfd::FileDialog::new().set_file_name(file_name).save_file() else {
+            let Some(handle) = rfd::AsyncFileDialog::new()
+                .set_file_name(file_name)
+                .save_file()
+                .await
+            else {
                 return export::ExportOutcome::Cancelled;
             };
-            let html =
-                export::render_session_html(&session, &title, &expanded_dialogs, &expanded_turns);
-            if let Err(e) = std::fs::write(&path, html) {
-                return export::ExportOutcome::Failed(format!(
-                    "Failed to write {}: {e}",
-                    path.display()
-                ));
-            }
-            match open::that(&path) {
-                Ok(()) => export::ExportOutcome::Saved,
-                Err(e) => export::ExportOutcome::SavedButNotOpened(format!(
-                    "Wrote {} but could not open it in a browser: {e}",
-                    path.display()
-                )),
-            }
+            let path = handle.path().to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                let html = export::render_session_html(
+                    &session,
+                    &title,
+                    &expanded_dialogs,
+                    &expanded_turns,
+                );
+                if let Err(e) = std::fs::write(&path, html) {
+                    return export::ExportOutcome::Failed(format!(
+                        "Failed to write {}: {e}",
+                        path.display()
+                    ));
+                }
+                match open::that(&path) {
+                    Ok(()) => export::ExportOutcome::Saved,
+                    Err(e) => export::ExportOutcome::SavedButNotOpened(format!(
+                        "Wrote {} but could not open it in a browser: {e}",
+                        path.display()
+                    )),
+                }
+            })
+            .await
+            .unwrap_or_else(|e| export::ExportOutcome::Failed(format!("Export task failed: {e}")))
         },
         |result| Message::Conversation(ConversationEvent::ExportSessionHtmlDone(result)),
     )
@@ -359,9 +387,26 @@ pub(super) fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
 
     let restore_task = restore_viewing_tab(app);
 
-    // Focus the ask input so the user can answer the ask tool immediately.
-    let focus_task = widget::operation::focus(ASK_INPUT.clone());
+    let focus_task = pending_ask_focus_task(app, pos);
     restore_task.chain(focus_task)
+}
+
+/// Whether the tab at `pos` has a pending ask request awaiting an answer.
+fn has_pending_ask(app: &App, pos: usize) -> bool {
+    app.conversation.session_tabs[pos]
+        .session_state
+        .ask_request
+        .is_some()
+}
+
+/// A task focusing the ask input when the tab has a pending ask request,
+/// so the user can answer it immediately; [`Task::none`] otherwise.
+fn pending_ask_focus_task(app: &App, pos: usize) -> Task<Message> {
+    if has_pending_ask(app, pos) {
+        widget::operation::focus(ASK_INPUT.clone())
+    } else {
+        Task::none()
+    }
 }
 
 /// Switch to the tab at the given 1-based position; digit 0 means the last tab.
@@ -452,8 +497,13 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
         tab.expanded_dialogs.clear();
         tab.search.invalidate_offsets();
         if existing != app.conversation.viewing {
+            // Keep the picker focused so arrow-key navigation continues to work,
+            // unless the target tab has a pending ask (whose input wins focus).
+            let has_ask = has_pending_ask(app, existing);
             let task = switch_tab(app, app.conversation.session_tabs[existing].number);
-            app.layout.focused = Some(FocusedTarget::SessionPicker);
+            if !has_ask {
+                app.layout.focused = Some(FocusedTarget::SessionPicker);
+            }
             return task;
         }
         return Task::none();
@@ -624,11 +674,12 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     else {
         return Task::none();
     };
+    // Sync the prompt workspace BEFORE composing the system prompt.
+    let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
     let system_prompt = preamble.as_deref().map(|preamble| {
         app.prompt
             .compose_system_prompt(Some(preamble), &app.settings.selected_rules)
     });
-    let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
     let parent = &app.conversation.session_tabs[parent_pos];
     let parent_path = parent.task_path.clone();
     let parent_id = parent.session.id.clone();
