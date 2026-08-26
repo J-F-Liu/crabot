@@ -91,7 +91,11 @@ impl SessionTab {
         selected_model: String,
         selected_preamble: String,
     ) -> Self {
-        let prompt_tokens = session.tokens.prompt;
+        let latest_tokens = TokenAmount {
+            prompt: session.tokens.prompt,
+            output: session.tokens.output,
+            ..Default::default()
+        };
         let title = session.title.clone();
         let todo_items = todo::create_todo_list(session.last_todo_items());
         Self {
@@ -99,10 +103,7 @@ impl SessionTab {
             session,
             session_state: SessionState::new(),
             center_pane_title: title,
-            latest_tokens: TokenAmount {
-                prompt: prompt_tokens,
-                ..Default::default()
-            },
+            latest_tokens,
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
             selectable_msgs: HashSet::new(),

@@ -368,8 +368,12 @@ pub(crate) fn update(
             let _ = session.save();
         }
         SessionEvent::TokenUsage(usage) => {
-            let u = usage.unwrap_or_default();
+            // If no usage (provider didn't report it) — keep the previous value.
+            let Some(u) = usage else { return Task::none() };
             let tokens = TokenAmount::from_genai(&u);
+            if tokens.prompt == 0 && tokens.output == 0 {
+                return Task::none();
+            }
             session.accumulate_tokens(&tokens, model_cost);
             *latest_tokens = tokens;
             // Refresh the markdown cache after all chunks are collected.

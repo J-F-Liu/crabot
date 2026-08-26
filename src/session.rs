@@ -167,9 +167,12 @@ impl Session {
     /// are dropped — the fork starts its own audit trail.
     pub fn fork(&self) -> Self {
         let mut session = self.fresh_copy();
-        let mut tokens = TokenAmount::default();
-        tokens.prompt = session.tokens.prompt;
-        session.tokens = tokens;
+        // Keep only cumulative prompt/output counts.
+        session.tokens = TokenAmount {
+            prompt: session.tokens.prompt,
+            output: session.tokens.output,
+            ..Default::default()
+        };
         // Save the forked session; failures are logged inside `save`.
         if session.workspace.is_dir() {
             let _ = session.save();
