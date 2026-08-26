@@ -53,8 +53,12 @@ impl Default for SearchState {
 
 impl SearchState {
     /// Clear cached layout measurements after content/layout changes.
+    ///
+    /// Bumps `measure_generation` so any in-flight measurement task that was
+    /// started against the old layout is discarded when its result arrives.
     pub(crate) fn invalidate_offsets(&mut self) {
         self.turn_offsets.clear();
+        self.measure_generation += 1;
     }
 
     /// Replace the query and clear stale search results.
@@ -96,11 +100,16 @@ impl SearchState {
         }
     }
 
-    /// Ensure `turn_ids` matches the current turn count, rebuilding if needed.
+    /// Ensure `turn_ids` matches the current turn count: truncate stale IDs
+    /// beyond `total` and append new IDs as needed. Existing IDs keep their
+    /// identity so cached offsets stay valid.
     pub(crate) fn ensure_turn_ids(&self, total: usize) {
         let mut ids = self.turn_ids.borrow_mut();
-        if ids.len() < total {
-            *ids = (0..total).map(|_| Id::unique()).collect();
+        if ids.len() > total {
+            ids.truncate(total);
+        } else if ids.len() < total {
+            let start = ids.len();
+            ids.extend((start..total).map(|_| Id::unique()));
         }
     }
 

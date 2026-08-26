@@ -20,6 +20,11 @@ use super::{SettingsEvent, SettingsState, form_card_style};
 
 // ── Events ──────────────────────────────────────────────────────────
 
+/// Raw in-progress array-item input text, keyed by `(param name, item index)`.
+/// Keeps inputs showing exactly what was typed while the coerced value lives
+/// in [`SettingsState::playground_param_values`].
+pub(crate) type ArrayDrafts = std::collections::HashMap<(String, usize), String>;
+
 /// Events for the Tool Playground tab.
 #[derive(Debug, Clone)]
 pub(crate) enum PlaygroundEvent {
@@ -276,7 +281,11 @@ pub(crate) fn coerce_value(raw: &str, param_type: &str) -> serde_json::Value {
 
 // ── Parameter field rendering ───────────────────────────────────
 
-fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, SettingsEvent> {
+fn render_param_field<'a>(
+    p: &ParamDef,
+    current_value: &str,
+    array_drafts: &ArrayDrafts,
+) -> Element<'a, SettingsEvent> {
     match p.param_type.as_str() {
         "boolean" => {
             let checked = current_value == "true";
@@ -316,7 +325,13 @@ fn render_param_field<'a>(p: &ParamDef, current_value: &str) -> Element<'a, Sett
                 let del_name = name.clone();
                 let edit_name = name.clone();
                 let edit_itype = items_type.clone();
-                let mut input = text_input("", item_text)
+                // Show raw draft if present so partially-typed values aren't
+                // re-serialized with quotes.
+                let display = array_drafts
+                    .get(&(name.clone(), i))
+                    .cloned()
+                    .unwrap_or_else(|| item_text.clone());
+                let mut input = text_input("", &display)
                     .on_input(move |v| {
                         SettingsEvent::Playground(PlaygroundEvent::EditPlaygroundArrayItem(
                             edit_name.clone(),
@@ -527,7 +542,8 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
                         .cloned()
                         .unwrap_or_default();
 
-                    let field = render_param_field(p, &current_value);
+                    let field =
+                        render_param_field(p, &current_value, &state.playground_array_drafts);
 
                     let type_badge = text(format!("[{}]", p_type)).size(11).color(color_muted());
 
@@ -699,6 +715,7 @@ pub(super) fn update(state: &mut SettingsState, event: PlaygroundEvent) {
                 state.playground_selected_index = Some(index);
                 // Reset param values when switching tools.
                 state.playground_param_values.clear();
+                state.playground_array_drafts.clear();
                 state.playground_result = None;
                 state.playground_running = false;
             }
@@ -721,8 +738,13 @@ pub(super) fn update(state: &mut SettingsState, event: PlaygroundEvent) {
                     items.remove(index);
                 }
             });
+            state.clear_array_drafts(&name);
         }
         PlaygroundEvent::EditPlaygroundArrayItem(name, index, value, items_type) => {
+            // Remember raw text so the input shows exactly what was typed.
+            state
+                .playground_array_drafts
+                .insert((name.clone(), index), value.clone());
             edit_array_items(state, &name, |items| {
                 if index < items.len() {
                     items[index] = coerce_value(&value, items_type.as_deref().unwrap_or("string"));

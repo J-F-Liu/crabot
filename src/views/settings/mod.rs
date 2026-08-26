@@ -154,6 +154,8 @@ pub(crate) struct SettingsState {
     pub(crate) playground_selected_index: Option<usize>,
     /// Per-parameter text values for the selected tool's parameter form.
     pub(crate) playground_param_values: std::collections::HashMap<String, String>,
+    /// Raw in-progress array-item input text (see [`tool_playground::ArrayDrafts`]).
+    pub(crate) playground_array_drafts: tool_playground::ArrayDrafts,
     /// Last execution result (Ok or Err), if any.
     pub(crate) playground_result: Option<Result<String, String>>,
     /// Whether a playground tool is currently executing.
@@ -215,7 +217,8 @@ impl Default for SettingsState {
             auto_check_updates: true,
             playground_tools: Vec::new(),
             playground_selected_index: None,
-            playground_param_values: std::collections::HashMap::new(),
+            playground_param_values: HashMap::new(),
+            playground_array_drafts: HashMap::new(),
             playground_result: None,
             playground_running: false,
             playground_cancel: CancellationToken::new(),
@@ -280,6 +283,7 @@ impl SettingsState {
         self.refresh_playground_tools(tools);
         self.playground_selected_index = None;
         self.playground_param_values.clear();
+        self.playground_array_drafts.clear();
         self.playground_result = None;
         self.playground_running = false;
         // Cancel any in-flight execution and bump generation.
@@ -291,6 +295,13 @@ impl SettingsState {
     fn reset_playground_cancel(&mut self) {
         self.playground_cancel.cancel();
         self.playground_cancel = CancellationToken::new();
+    }
+
+    /// Drop all drafts for one array parameter (used when its item indices
+    /// shift, e.g. after removing an item).
+    pub(super) fn clear_array_drafts(&mut self, name: &str) {
+        self.playground_array_drafts
+            .retain(|(param, _), _| param != name);
     }
 
     /// Refresh the playground tool list without resetting user selection or parameters.
