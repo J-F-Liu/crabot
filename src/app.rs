@@ -747,8 +747,6 @@ impl App {
                 download_state: crate::views::update::UpdateDownloadState::Idle,
             },
         };
-        // Hold the boot workspace's shared lock for the process lifetime.
-        snapshot::retain_workspace_lock(&mut app, &workspace_path);
         tracing::info!(
             workspace = %workspace_path.display(),
             models = models_count,

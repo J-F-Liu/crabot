@@ -346,6 +346,8 @@ pub async fn fetch_available_models(base_url: &str, api_key: &str) -> Result<Vec
     };
     let client = reqwest::Client::builder()
         .user_agent(crate::app_title())
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
     let resp = client
@@ -355,10 +357,15 @@ pub async fn fetch_available_models(base_url: &str, api_key: &str) -> Result<Vec
         .send()
         .await
         .map_err(|e| format!("HTTP request failed: {e}"))?;
+    let status = resp.status();
     let body = resp
         .text()
         .await
         .map_err(|e| format!("Failed to read response: {e}"))?;
+    if !status.is_success() {
+        let detail = body.chars().take(200).collect::<String>();
+        return Err(format!("HTTP {status}: {detail}"));
+    }
     let json: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("Invalid JSON: {e}"))?;
     let models = json["data"]

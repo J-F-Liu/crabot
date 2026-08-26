@@ -48,7 +48,8 @@ fn open_lock_file(workspace: &Path) -> std::io::Result<File> {
 }
 
 /// Take the shared workspace lock once, held until app exit, so a concurrent
-/// instance's cleanup knows this instance is alive.
+/// instance's cleanup knows this instance is alive. Called on first snapshot
+/// in `workspace`; never-snapshotted workspaces stay unlocked.
 pub(crate) fn retain_workspace_lock(app: &mut App, workspace: &Path) {
     if workspace.as_os_str().is_empty() || app.snapshot_locks.contains_key(workspace) {
         return;

@@ -170,6 +170,10 @@ impl Session {
         let mut tokens = TokenAmount::default();
         tokens.prompt = session.tokens.prompt;
         session.tokens = tokens;
+        // Save the forked session; failures are logged inside `save`.
+        if session.workspace.is_dir() {
+            let _ = session.save();
+        }
         session
     }
 
@@ -203,8 +207,7 @@ impl Session {
         // Fresh accumulators
         session.tokens = TokenAmount::default();
         session.requests = 0;
-        // Persist immediately so the compacted file exists on disk; failures
-        // are logged inside `save_with_tally`.
+        // Save the compacted session; failures are logged inside `save_with_tally`.
         if session.workspace.is_dir() {
             let _ = session.save_with_tally();
         }

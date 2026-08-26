@@ -337,9 +337,25 @@ fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     }
     let Some(mut stdin) = lock(&e.stdin).take() else {
         e.writing.store(false, Ordering::SeqCst);
+        if e.stdin_abandoned.load(Ordering::SeqCst) {
+            return Err(not_accepting_input(
+                &e,
+                "its stdin was closed because an earlier input was cancelled",
+            ));
+        }
         return Err(not_accepting_input(&e, "it has exited or been stopped"));
     };
 
+    // Non-blocking stdin (Unix) so `write_stdin_bounded` polls instead of
+    // hanging on a full pipe; on Windows the abandoned-write path covers it.
+    if let Err(err) = crate::tools::set_raw_fd_nonblocking(&stdin) {
+        e.writing.store(false, Ordering::SeqCst);
+        *lock(&e.stdin) = Some(stdin);
+        return Err(format!(
+            "Failed to prepare stdin of process {}: {err}",
+            e.pid
+        ));
+    }
     // Write on a helper thread so a full pipe cannot block this call; stdin
     // is taken out of the mutex, so `stop` never waits on the write.
     let payload = [text.as_bytes(), b"\n"].concat();
@@ -350,8 +366,9 @@ fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     let cancel_for_write = cancel.clone();
     std::thread::spawn(move || {
         let res = write_payload(&entry, &mut stdin, &payload, &cancel_for_write, deadline);
-        // Return stdin for later input, or drop it on exit (closing the pipe).
-        if !entry.has_exited() {
+        // Drop stdin when exited or abandoned, closing the pipe so the child
+        // sees EOF instead of a surprise late delivery.
+        if !entry.has_exited() && !entry.stdin_abandoned.load(Ordering::SeqCst) {
             *lock(&entry.stdin) = Some(stdin);
         }
         entry.writing.store(false, Ordering::SeqCst);
@@ -362,6 +379,8 @@ fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     // a blocking `write` the child never drains.
     loop {
         if cancel.is_cancelled() {
+            // Un-block future inputs; the writer thread drops stdin later.
+            e.abandon_write();
             return Err(CANCEL_REASON.into());
         }
         match rx.recv_timeout(POLL_INTERVAL) {
@@ -375,10 +394,13 @@ fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
                 ));
             }
             Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() >= deadline => {
+                e.abandon_write();
                 return Err(stdin_timeout_err(&e));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Writer thread died without restoring state.
+                e.abandon_write();
                 return Err(format!(
                     "Stdin writer for process {} ({}) failed unexpectedly",
                     e.pid, e.command
@@ -607,6 +629,7 @@ fn start_command(
         status: Mutex::new(ProcessStatus::Running),
         stdin: Mutex::new(stdin),
         writing: AtomicBool::new(false),
+        stdin_abandoned: AtomicBool::new(false),
         logs: ProcessLogs::new(tool_limits().max_output_bytes),
         pending_readers: AtomicUsize::new(2),
     });
@@ -985,6 +1008,9 @@ struct ProcessEntry {
     stdin: Mutex<Option<ChildStdin>>,
     /// Set while an `input` write is in flight; guards against concurrent writes.
     writing: AtomicBool,
+    /// Set when an in-flight input write was cancelled/timed out: the writer
+    /// thread discards stdin on completion instead of returning it.
+    stdin_abandoned: AtomicBool,
     logs: ProcessLogs,
     /// Reader threads still draining stdout/stderr.
     pending_readers: AtomicUsize,
@@ -1009,6 +1035,14 @@ impl ProcessEntry {
 
     fn is_done(&self) -> bool {
         self.has_exited() && self.pending_readers.load(Ordering::SeqCst) == 0
+    }
+
+    /// Mark the in-flight input write as abandoned: the writer thread drops
+    /// stdin when its write completes (closing the pipe), and the writing
+    /// flag clears immediately so a wedged writer can't block future inputs.
+    fn abandon_write(&self) {
+        self.stdin_abandoned.store(true, Ordering::SeqCst);
+        self.writing.store(false, Ordering::SeqCst);
     }
 }
 

@@ -64,7 +64,8 @@ pub(crate) use exec::peek_pipe_available;
 pub(crate) use exec::{
     ProcessSignal, StdinWriteError, combine_output, create_pipe_pair, detach_child, exit_code_of,
     format_command_output, is_secret_env_key, pipe_to_stdio, sanitize_child_env,
-    set_pipe_nonblocking, set_sender_noninheritable, signal_process_tree, write_stdin_bounded,
+    set_pipe_nonblocking, set_raw_fd_nonblocking, set_sender_noninheritable, signal_process_tree,
+    write_stdin_bounded,
 };
 
 // ── capture ─────────────────────────────────────────────────────────

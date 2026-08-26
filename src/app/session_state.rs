@@ -907,6 +907,12 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
         SessionEvent::TaskRequest(request) => {
             return handle_task_request(app, number, request.clone());
         }
+        SessionEvent::SnapshotsCaptured(_) => {
+            if let Some(pos) = app.conversation.tab_pos(number) {
+                let workspace = app.conversation.session_tabs[pos].session.workspace.clone();
+                super::snapshot::retain_workspace_lock(app, &workspace);
+            }
+        }
         _ => {}
     }
 

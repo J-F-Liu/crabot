@@ -525,8 +525,6 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
                 app.conversation.viewing().selected_model.clone()
             };
             let selected_preamble = app.conversation.viewing().selected_preamble.clone();
-            // The loaded session may live in a different workspace than the prompt.
-            snapshot::retain_workspace_lock(app, &session.workspace);
             let tab = app.conversation.viewing_mut();
             *tab = SessionTab::from_session(number, session, selected_model, selected_preamble);
             // Scroll to top for a freshly loaded session.

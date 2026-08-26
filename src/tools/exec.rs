@@ -178,6 +178,30 @@ pub(crate) fn set_pipe_nonblocking<E: interprocess::os::unix::unnamed_pipe::Unna
         .map_err(|e| format!("Failed to set non-blocking mode: {e}"))
 }
 
+/// Set any fd-carrying object (e.g. a `ChildStdin`) to non-blocking mode so
+/// bounded writers poll instead of hanging on a full pipe. No-op stub on
+/// Windows: cancellation there goes through the abandoned-write path instead.
+#[cfg(unix)]
+pub(crate) fn set_raw_fd_nonblocking<F: std::os::unix::io::AsRawFd>(f: &F) -> Result<(), String> {
+    // SAFETY: the fd is live and owned by `f`; F_GETFL/F_SETFL only adjust status flags.
+    unsafe {
+        let fd = f.as_raw_fd();
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return Err(format!(
+                "Failed to set non-blocking mode: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn set_raw_fd_nonblocking<F>(_f: &F) -> Result<(), String> {
+    Ok(())
+}
+
 /// Set a pipe half to non-blocking mode; no-op on Windows.
 #[cfg(windows)]
 pub(crate) fn set_pipe_nonblocking<E>(end: &E) -> Result<(), String> {

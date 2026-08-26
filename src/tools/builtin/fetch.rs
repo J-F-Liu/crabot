@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use dom_smoothie::{Article, Config, Readability};
 use serde_json::{Value, json};
 
-use crate::tools::{CANCEL_REASON, Tool, arg_str, tool_limits, truncate_output};
+use crate::tools::{CANCEL_REASON, Tool, arg_str, decode_bytes, tool_limits, truncate_output};
 
 pub struct FetchTool;
 
@@ -91,6 +91,9 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
         ));
     }
 
+    // Read at call time so runtime settings changes take effect (the client is cached).
+    let timeout = Duration::from_millis(tool_limits().fetch_timeout_ms);
+
     tokio::runtime::Handle::current().block_on(async {
         // Race the HTTP request against user cancellation.
         let resp = tokio::select! {
@@ -98,7 +101,7 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
             _ = cancel.cancelled() => {
                 return Err(CANCEL_REASON.into());
             }
-            r = client()?.get(parsed.clone()).send() => {
+            r = client()?.get(parsed.clone()).timeout(timeout).send() => {
                 r.map_err(|e| format!("Failed to fetch {url}: {e}"))?
             }
         };
@@ -124,19 +127,31 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
             .unwrap_or_default()
             .to_string();
 
-        // Download the body, with cancellation support.
-        let body = tokio::select! {
+        // Stream the body with a hard byte cap — chunked responses without
+        // Content-Length must not grow memory unbounded.
+        use futures::StreamExt;
+        let mut body_bytes: Vec<u8> = Vec::with_capacity(max_body_bytes.min(1 << 20));
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = tokio::select! {
             biased;
-            _ = cancel.cancelled() => {
-                return Err(CANCEL_REASON.into());
+            _ = cancel.cancelled() => return Err(CANCEL_REASON.into()),
+            chunk = stream.next() => chunk,
+        } {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(e) => return Err(format!("Failed to read response body: {e}")),
+            };
+            if body_bytes.len() + chunk.len() > max_body_bytes {
+                return Err(format!(
+                    "Response body exceeds {max_body_bytes} bytes (no Content-Length limit)"
+                ));
             }
-            r = resp.text() => {
-                r.map_err(|e| format!("Failed to read response body: {e}"))?
-            }
-        };
+            body_bytes.extend_from_slice(&chunk);
+        }
 
-        // Cap oversized bodies at a valid UTF-8 boundary.
-        let body = truncate_body(body, max_body_bytes);
+        // Charset-aware decoding; re-truncate since decoding may expand bytes
+        // (e.g. UTF-16 → UTF-8).
+        let body = truncate_body(decode_bytes(&body_bytes), max_body_bytes);
 
         let output = match classify(mime_type(&content_type), &body) {
             ContentKind::Html => convert_html(&body, url, format)?,
@@ -153,12 +168,12 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
 
 // ── async helpers ──────────────────────────────────────────────────
 
-/// Shared async client: keeps one connection pool across all fetch calls.
+/// Shared async client: one connection pool for all fetch calls. No client-level
+/// timeout — each request reads the current [`tool_limits`](super::tool_limits).
 fn client() -> Result<&'static reqwest::Client, String> {
     static CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
         reqwest::Client::builder()
             .user_agent(crate::app_title())
-            .timeout(Duration::from_millis(tool_limits().fetch_timeout_ms))
             .build()
             .map_err(|e| format!("Failed to build HTTP client: {e}"))
     });
