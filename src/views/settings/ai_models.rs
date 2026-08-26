@@ -6,7 +6,8 @@ use crate::views::theme::{
     CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_surface,
     color_text_strong,
 };
-use crabot::model::{Model, ModelList, currency_symbol};
+use crabot::model::{Model, currency_symbol};
+use crabot::model_database::ModelDatabase;
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
@@ -34,6 +35,10 @@ pub(crate) enum ModelsEvent {
     ModelsFetched(String, Result<Vec<String>, String>),
     /// Manually refresh the available-model list for the current provider.
     RefreshModels,
+    /// Raw text of the model search box.
+    EditModelSearch(String),
+    /// Apply the search text as the model-list filter.
+    ApplyModelFilter,
     ToggleModel(String, bool),
     SelectModelDetail(String),
     /// Edit one parameter of the currently-selected checked model.
@@ -150,6 +155,39 @@ fn provider_models(state: &SettingsState) -> Option<&[Model]> {
         .providers
         .get(&state.selected_provider_id)
         .map(|p| p.models.as_slice())
+}
+
+/// Rows visible in the 200px model list; longer lists show the search box.
+const MODEL_LIST_SCROLL_ROWS: usize = 8;
+
+/// IDs shown in the model list: checked models first (configured order),
+/// then remaining fetched IDs.
+fn display_model_ids(state: &SettingsState) -> Vec<&str> {
+    let provider_ids: Vec<&str> = provider_models(state)
+        .map(|ms| ms.iter().map(|m| m.id.as_str()).collect())
+        .unwrap_or_default();
+    let fetched = &state.available_model_ids;
+    if fetched.is_empty() {
+        return provider_ids;
+    }
+    // Checked models always stay visible — they may not be offered by the
+    // /models endpoint (custom or stale IDs) but are still in the config.
+    let tail: Vec<&str> = fetched
+        .iter()
+        .filter(|id| !provider_ids.contains(&id.as_str()))
+        .map(String::as_str)
+        .collect();
+    let mut ids = provider_ids;
+    ids.extend(tail);
+    ids
+}
+
+/// True when the model ID or its database name matches `query` (case-insensitive).
+fn model_matches_filter(id: &str, query: &str, db: &ModelDatabase) -> bool {
+    id.to_lowercase().contains(query)
+        || db
+            .get(id)
+            .is_some_and(|m| m.name.to_lowercase().contains(query))
 }
 
 /// Parse a numeric field: empty means unset (default), invalid keeps `current`.
@@ -315,10 +353,29 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                 None,
                 move |v| SettingsEvent::Models(ModelsEvent::EditProviderApiKey(v)),
             ),
-            checkbox_row("Strict Mode", state.provider_strict_mode, |v| {
-                SettingsEvent::Models(ModelsEvent::ToggleProviderStrictMode(v))
-            },),
-            models_section_view(state, &state.working_models),
+            {
+                // Search box appears once the model list is long enough to scroll,
+                // and stays visible while a filter is applied.
+                let search = (!state.fetching_models
+                    && (!state.model_filter.is_empty()
+                        || state.available_model_ids.len() > MODEL_LIST_SCROLL_ROWS))
+                    .then(|| {
+                        text_input("Search models…", &state.model_search)
+                            .on_input(|v| SettingsEvent::Models(ModelsEvent::EditModelSearch(v)))
+                            .on_submit(SettingsEvent::Models(ModelsEvent::ApplyModelFilter))
+                            .size(12)
+                            .padding([2, 6])
+                            .width(Length::Fixed(160.0))
+                            .into()
+                    });
+                checkbox_row(
+                    "Strict Mode",
+                    state.provider_strict_mode,
+                    |v| SettingsEvent::Models(ModelsEvent::ToggleProviderStrictMode(v)),
+                    search,
+                )
+            },
+            models_section_view(state),
         ]
         .spacing(10);
 
@@ -528,6 +585,7 @@ fn checkbox_row<'a>(
     label: &'static str,
     checked: bool,
     on_toggle: impl Fn(bool) -> SettingsEvent + 'a,
+    trailing: Option<Element<'a, SettingsEvent>>,
 ) -> Element<'a, SettingsEvent> {
     let label_col = container(text(label).size(14))
         .width(90)
@@ -536,42 +594,36 @@ fn checkbox_row<'a>(
         .label("")
         .on_toggle(on_toggle)
         .style(crate::views::primary_checkbox);
-    row![label_col, cb]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
+    let mut r = row![label_col, cb].spacing(10).align_y(Alignment::Center);
+    if let Some(t) = trailing {
+        r = r
+            .push(iced::widget::Space::new().width(Length::Fill))
+            .push(t);
+    }
+    r.into()
 }
 
 /// Renders the models section with a table of checkboxes and model IDs.
-fn models_section_view<'a>(
-    state: &'a SettingsState,
-    models: &'a ModelList,
-) -> Element<'a, SettingsEvent> {
-    let provider_model_ids: Vec<&str> = models
-        .providers
-        .get(&state.selected_provider_id)
-        .map(|p| p.models.iter().map(|m| m.id.as_str()).collect())
-        .unwrap_or_default();
-
-    // Header: "Models" label
+fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let header = container(text("Models").size(14))
         .width(90)
         .align_x(Alignment::End);
 
-    let display_ids: Vec<&str> = if state.available_model_ids.is_empty() {
-        provider_model_ids.to_vec()
-    } else {
-        state
-            .available_model_ids
-            .iter()
-            .map(|s| s.as_str())
-            .collect()
-    };
+    // All IDs, narrowed by the applied filter when set.
+    let all_ids = display_model_ids(state);
+    let display_ids: Vec<&str> = all_ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            state.model_filter.is_empty()
+                || model_matches_filter(id, &state.model_filter, &state.model_db)
+        })
+        .collect();
 
     // Body: status or table + details
     let body: Element<'_, SettingsEvent> = if state.fetching_models {
         text("Loading models…").size(12).color(color_muted()).into()
-    } else if display_ids.is_empty() {
+    } else if all_ids.is_empty() {
         let fetch = button(text("Fetch Models").size(12))
             .style(crate::views::styles::primary_button)
             .on_press_maybe(
@@ -585,12 +637,22 @@ fn models_section_view<'a>(
         } else {
             fetch.into()
         }
+    } else if display_ids.is_empty() {
+        container(
+            text("No models match the search filter.")
+                .size(11)
+                .color(color_muted()),
+        )
+        .padding(8)
+        .style(form_card_style)
+        .into()
     } else {
         // ── Table column ──────────────────────────────────────────
         let model_rows: Vec<Element<'_, SettingsEvent>> = display_ids
             .iter()
             .map(|&id| {
-                let checked = provider_model_ids.contains(&id);
+                let checked =
+                    provider_models(state).is_some_and(|ms| ms.iter().any(|m| m.id == id));
                 let is_selected = state.selected_model_id.as_deref() == Some(id);
 
                 // Disable checkbox when the new provider hasn't been named yet.
@@ -646,13 +708,8 @@ fn models_section_view<'a>(
         // ── Details panel ────────────────────────────────────────
         let details: Element<'_, SettingsEvent> =
             if let Some(selected_id) = &state.selected_model_id {
-                let provider_models = models
-                    .providers
-                    .get(&state.selected_provider_id)
-                    .map(|p| &p.models);
-
                 if let Some(model) =
-                    provider_models.and_then(|ml| ml.iter().find(|m| &m.id == selected_id))
+                    provider_models(state).and_then(|ms| ms.iter().find(|m| &m.id == selected_id))
                 {
                     // Checked model: show the editable parameter form.
                     match state.model_edit.as_ref() {
@@ -1011,6 +1068,17 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             state.available_model_ids.clear();
             state.models_fetch_error = None;
             state.fetching_models = true;
+        }
+        ModelsEvent::EditModelSearch(v) => {
+            state.model_search = v;
+            // Clearing the box drops the applied filter immediately so the
+            // list can't be left stranded in a filtered state.
+            if state.model_search.trim().is_empty() {
+                state.model_filter.clear();
+            }
+        }
+        ModelsEvent::ApplyModelFilter => {
+            state.model_filter = state.model_search.trim().to_lowercase();
         }
         ModelsEvent::ModelsFetched(provider_id, result) => {
             state.fetching_models = false;

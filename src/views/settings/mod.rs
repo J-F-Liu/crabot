@@ -97,6 +97,10 @@ pub(crate) struct SettingsState {
     pub(super) fetching_models: bool,
     pub(super) available_model_ids: Vec<String>,
     pub(super) models_fetch_error: Option<String>,
+    /// Raw model-search text, applied as the filter on Enter.
+    pub(super) model_search: String,
+    /// Applied model-list filter; empty shows all.
+    pub(super) model_filter: String,
     /// Cache of fetched model IDs keyed by provider ID — avoids re-fetching on switch.
     cached_model_ids: HashMap<String, Vec<String>>,
     /// Which model ID is currently selected for detail display.
@@ -188,6 +192,8 @@ impl Default for SettingsState {
             fetching_models: false,
             available_model_ids: Vec::new(),
             models_fetch_error: None,
+            model_search: String::new(),
+            model_filter: String::new(),
             cached_model_ids: HashMap::new(),
             selected_model_id: None,
             model_edit: None,
@@ -239,6 +245,8 @@ impl SettingsState {
         self.is_new_provider = false;
         self.selected_model_id = None;
         self.model_edit = None;
+        self.model_search.clear();
+        self.model_filter.clear();
         // Use cached model IDs if available, otherwise trigger a fetch.
         if let Some(cached) = self.cached_model_ids.get(&self.selected_provider_id) {
             self.available_model_ids = cached.clone();
@@ -260,6 +268,8 @@ impl SettingsState {
         self.provider_api_key.clear();
         self.provider_strict_mode = false;
         self.is_new_provider = true;
+        self.model_search.clear();
+        self.model_filter.clear();
     }
 
     /// Load custom tools into the dialog's working copy (on dialog open).
