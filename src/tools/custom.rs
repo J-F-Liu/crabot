@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use tokio_util::sync::CancellationToken;
 
@@ -108,6 +108,9 @@ pub struct CustomTool {
     /// Command template using [TinyTemplate syntax](https://docs.rs/tinytemplate/1.2.1/tinytemplate/syntax/index.html).
     /// The first whitespace-separated token is the executable; the remainder are arguments.
     /// `{param}` inserts an argument value, and `{{ if param }}...{{ endif }}` enables conditional logic.
+    ///
+    /// Values are substituted after shell-style splitting (see [`PLACEHOLDER_PREFIX`]),
+    /// so they can never inject extra argv elements.
     pub command: String,
 }
 
@@ -134,27 +137,7 @@ impl Tool for CustomTool {
         workspace: &Path,
         cancel: &CancellationToken,
     ) -> Result<String, String> {
-        // Build context: all defined params default to null,
-        // then overlay with actual args.
-        let mut ctx = serde_json::Map::new();
-        for param in &self.parameters {
-            ctx.insert(param.name.clone(), Value::Null);
-        }
-        if let Some(obj) = args.as_object() {
-            for (key, val) in obj {
-                ctx.insert(key.clone(), val.clone());
-            }
-        }
-
-        let mut tt = TinyTemplate::new();
-        tt.add_template("cmd", &self.command)
-            .map_err(|e| format!("Template error: {e}"))?;
-        let rendered = tt
-            .render("cmd", &Value::Object(ctx))
-            .map_err(|e| format!("Template render error: {e}"))?;
-
-        // Split into executable and arguments (honouring shell quoting).
-        let parts = split(&rendered).map_err(|e| format!("Failed to parse command: {e}"))?;
+        let parts = self.build_argv(args)?;
         let (exe, args) = parts
             .split_first()
             .ok_or_else(|| "Empty command template".to_string())?;
@@ -166,8 +149,11 @@ impl Tool for CustomTool {
         let mut cmd = Command::new(exe);
         cmd.args(args)
             .current_dir(workspace)
+            .stdin(Stdio::null())
             .stdout(super::pipe_to_stdio(stdout_tx))
             .stderr(super::pipe_to_stdio(stderr_tx));
+        // Drop secrets and rustup's recursion counter, like other child paths.
+        super::sanitize_child_env(&mut cmd);
         // Prevent a visible console window from flashing on Windows.
         #[cfg(windows)]
         {
@@ -191,7 +177,80 @@ impl Tool for CustomTool {
         )
         .map_err(|e| format!("Custom tool '{}': {}", self.name, e.into_message()))?;
 
-        Ok(super::format_command_output(&output))
+        // Native executable — no MSYS signal-decode semantics.
+        Ok(super::format_command_output(&output, false))
+    }
+}
+
+// ── Command construction ──────────────────────────────────────────
+
+/// Reserved prefix of internal placeholders (`@@CRABOT_ARG_<n>@@`). Values are
+/// rendered as unique placeholders, split with shell-quoting rules, then
+/// substituted back — so values can never inject extra argv elements. The
+/// prefix must not appear in templates or values, or a crafted input could
+/// forge another parameter's placeholder.
+const PLACEHOLDER_PREFIX: &str = "@@CRABOT_ARG_";
+
+fn placeholder(idx: usize) -> String {
+    format!("{PLACEHOLDER_PREFIX}{idx}@@")
+}
+
+impl CustomTool {
+    /// Build the argv for this tool call. See [`PLACEHOLDER_PREFIX`] for the
+    /// placeholder workflow. Unknown args are ignored; `{{ if }}` conditionals
+    /// still work since present params hold truthy placeholders.
+    fn build_argv(&self, args: &Value) -> Result<Vec<String>, String> {
+        let mut tt = TinyTemplate::new();
+        tt.add_template("cmd", &self.command)
+            .map_err(|e| format!("Template error: {e}"))?;
+
+        // See PLACEHOLDER_PREFIX: forbid collisions that could forge a placeholder.
+        if self.command.contains(PLACEHOLDER_PREFIX) {
+            return Err(format!(
+                "Command template must not contain the reserved marker '{PLACEHOLDER_PREFIX}'"
+            ));
+        }
+
+        let mut ph_ctx = serde_json::Map::new();
+        let mut substitutions: Vec<(String, String)> = Vec::new();
+        for param in &self.parameters {
+            match args.get(&param.name) {
+                Some(v) if !v.is_null() => {
+                    // Non-string values render as compact JSON; strings stay raw.
+                    let rendered = match v {
+                        Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    if rendered.contains(PLACEHOLDER_PREFIX) {
+                        return Err(format!(
+                            "Value of parameter '{}' must not contain the reserved marker '{PLACEHOLDER_PREFIX}'",
+                            param.name
+                        ));
+                    }
+                    let ph = placeholder(substitutions.len());
+                    ph_ctx.insert(param.name.clone(), Value::String(ph.clone()));
+                    substitutions.push((ph, rendered));
+                }
+                _ => {
+                    ph_ctx.insert(param.name.clone(), Value::Null);
+                }
+            }
+        }
+
+        let rendered = tt
+            .render("cmd", &Value::Object(ph_ctx))
+            .map_err(|e| format!("Template render error: {e}"))?;
+
+        // Split first (shell quoting), substitute second — see PLACEHOLDER_PREFIX.
+        Ok(split(&rendered)
+            .map_err(|e| format!("Failed to parse command: {e}"))?
+            .into_iter()
+            .map(|token| {
+                substitutions
+                    .iter()
+                    .fold(token, |t, (ph, value)| t.replace(ph, value))
+            })
+            .collect())
     }
 }
 

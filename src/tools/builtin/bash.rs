@@ -150,7 +150,9 @@ fn execute_real_bash(
     // Flush carried/coalesced bytes on every path (success, timeout, cancel).
     forwarder.finish();
     let output = result.map_err(WaitError::into_message)?;
-    Ok(crate::tools::format_command_output(&output))
+    // The fallback runs a real (MSYS/Cygwin on Windows) bash, whose signal
+    // deaths use the `signal << 8` exit-code encoding.
+    Ok(crate::tools::format_command_output(&output, true))
 }
 
 /// Render a timeout in milliseconds as a human-readable duration, e.g.

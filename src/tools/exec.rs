@@ -243,16 +243,23 @@ pub(crate) fn set_sender_noninheritable(sender: &unnamed_pipe::Sender) -> Result
 }
 
 /// Map an `ExitStatus` to a bash-style exit code (`128 + signal` for signal
-/// death). Unix reports signal death via `signal()` (no `code()`); MSYS/Cygwin
-/// encodes it as `signal << 8` (SIGTERM → 3840, which native exit codes never
-/// collide with). Both are normalized here so the bashkit and real-`bash`
-/// routes report identically. Falls back to -1 when neither is available.
+/// death). Falls back to -1 when neither is available.
 pub(crate) fn exit_code_of(status: &std::process::ExitStatus) -> i32 {
+    exit_code_of_impl(status, false)
+}
+
+/// Like [`exit_code_of`], but for MSYS/Cygwin statuses also decodes signal
+/// death encoded as `code == signal << 8` (SIGTERM → 3840 → 143). This form
+/// collides with native exit codes that are multiples of 256, so it must only
+/// be used for output of a real MSYS/Cygwin `bash`, never native commands.
+fn exit_code_of_impl(status: &std::process::ExitStatus, msys: bool) -> i32 {
     if let Some(code) = status.code() {
-        // MSYS/Cygwin signal death on Windows (`code()` ≤ 255 on Unix).
-        let sig = code >> 8;
-        if (1..=64).contains(&sig) && sig << 8 == code {
-            return 128 + sig;
+        // `code()` is ≤ 255 on Unix, so the `sig << 8` form can't occur there.
+        if msys {
+            let sig = code >> 8;
+            if (1..=64).contains(&sig) && sig << 8 == code {
+                return 128 + sig;
+            }
         }
         return code;
     }
@@ -267,14 +274,15 @@ pub(crate) fn exit_code_of(status: &std::process::ExitStatus) -> i32 {
 }
 
 /// Combine stdout, stderr, and exit code into one string, then truncate.
-/// Output is decoded with charset detection (see [`decode_bytes`]).
-pub(crate) fn format_command_output(output: &std::process::Output) -> String {
+/// Output is decoded with charset detection (see [`decode_bytes`]); pass
+/// `msys = true` only for output of a real MSYS/Cygwin `bash`.
+pub(crate) fn format_command_output(output: &std::process::Output, msys: bool) -> String {
     let stdout = decode_bytes(&output.stdout);
     let stderr = decode_bytes(&output.stderr);
     truncate_output(combine_output(
         &stdout,
         &stderr,
-        exit_code_of(&output.status),
+        exit_code_of_impl(&output.status, msys),
     ))
 }
 
