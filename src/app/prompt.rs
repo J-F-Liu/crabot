@@ -53,6 +53,12 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         PromptEvent::ToggleExpanded(name) => {
             if name == WORKSPACE_TREE {
                 app.prompt.files.expanded = !app.prompt.files.expanded;
+                if app.prompt.files.expanded {
+                    // Fetch a fresh tree each time the pane is expanded.
+                    return request_files_tree(app);
+                }
+                // Drop the stale snapshot so re-expanding shows "Loading…".
+                app.prompt.files.tree.clear();
             } else if name == TOOLS {
                 app.prompt.tools.expanded = !app.prompt.tools.expanded;
             } else {
@@ -131,6 +137,9 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         PromptEvent::DismissRecipeDropdown => {
             app.prompt.recipe_dropdown_expanded = false;
         }
+        PromptEvent::FileTreeReady(tree) => {
+            app.prompt.files.tree = tree;
+        }
         PromptEvent::SendPrompt => {
             return crate::app::conversation::send_prompt(app);
         }
@@ -203,16 +212,16 @@ fn switch_workspace(app: &mut App, path: &Path) -> bool {
         .unwrap_or(true);
     app.prompt.agents_md.0 = preferred;
     app.prompt.workspace.1 = path.to_path_buf();
+    app.prompt.files.tree.clear();
     app.prompt.workspace_options =
         crate::views::build_workspace_options(&app.settings.recent_workspaces);
     preferred
 }
 
-/// Result of an off-thread workspace scan: the files tree and AGENTS.md.
+/// Result of an off-thread workspace scan: AGENTS.md presence and content.
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceScan {
     pub(crate) workspace: PathBuf,
-    pub(crate) files_tree: String,
     pub(crate) agents_md_exists: bool,
     pub(crate) agents_md_content: String,
     /// When set (workspace switch), AGENTS.md is enabled only while the file
@@ -220,8 +229,8 @@ pub(crate) struct WorkspaceScan {
     pub(crate) agents_md_preferred: Option<bool>,
 }
 
-/// Scan a workspace (files tree + AGENTS.md) off the UI thread; the result is
-/// applied to the prompt state via `WorkspaceContentReady` when it lands.
+/// Scan AGENTS.md off the UI thread; the result is applied to the prompt
+/// state via `WorkspaceContentReady` when it lands.
 pub(crate) fn scan_workspace_content(
     workspace: PathBuf,
     agents_md_preferred: Option<bool>,
@@ -229,17 +238,12 @@ pub(crate) fn scan_workspace_content(
     Task::perform(
         async move {
             let path = workspace.clone();
-            let (files_tree, agents_md_exists, agents_md_content) =
-                tokio::task::spawn_blocking(move || {
-                    let tree = workspace::build_files_tree(&path);
-                    let (exists, content) = load_agents_md(&path);
-                    (tree, exists, content)
-                })
-                .await
-                .unwrap_or_default();
+            let (agents_md_exists, agents_md_content) =
+                tokio::task::spawn_blocking(move || load_agents_md(&path))
+                    .await
+                    .unwrap_or_default();
             WorkspaceScan {
                 workspace,
-                files_tree,
                 agents_md_exists,
                 agents_md_content,
                 agents_md_preferred,
@@ -249,7 +253,28 @@ pub(crate) fn scan_workspace_content(
     )
 }
 
-/// Reload the files tree and AGENTS.md content when a fresh session tab is created.
+/// Fetch a fresh files tree off the UI thread.
+pub(crate) async fn scan_files_tree(workspace: PathBuf) -> String {
+    let label = workspace.display().to_string();
+    tokio::task::spawn_blocking(move || workspace::build_files_tree(&workspace))
+        .await
+        .inspect_err(|err| tracing::warn!("Files tree scan failed for {label}: {err}"))
+        .unwrap_or_default()
+}
+
+/// Fetch a fresh files tree for the expanded preview pane.
+pub(crate) fn request_files_tree(app: &App) -> Task<Message> {
+    let workspace = app.prompt.workspace.1.clone();
+    if workspace.as_os_str().is_empty() {
+        return Task::none();
+    }
+    Task::perform(scan_files_tree(workspace), |tree| {
+        Message::Prompt(PromptEvent::FileTreeReady(tree))
+    })
+}
+
+/// Re-scan AGENTS.md when a fresh session tab is created; also re-enable the
+/// workspace-tree toggle so new sessions send the tree by default.
 pub(crate) fn refresh_workspace_content(app: &mut App) -> Task<Message> {
     let workspace = app.prompt.workspace.1.clone();
     app.prompt.files.enabled = true;

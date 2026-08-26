@@ -1,8 +1,6 @@
 use iced::{
     Alignment, Border, Element, Fill, Length, Padding, padding,
-    widget::{
-        button, checkbox, column, container, row, scrollable, text, text::Wrapping, text_editor,
-    },
+    widget::{button, checkbox, column, container, row, scrollable, text, text::Wrapping},
 };
 
 use crate::views::theme::{
@@ -15,7 +13,7 @@ use iced_aw::{
 
 use super::system_prompt::expandable_header;
 use crate::WORKSPACE_TREE;
-use crate::app::ExpandableEditor;
+use crate::app::FileTreePane;
 use crate::widgets::popup_menu::PopupMenu;
 use crate::widgets::textarea::TextArea;
 use crate::{FocusedTarget, PromptEvent};
@@ -27,7 +25,8 @@ pub(crate) fn user_prompt_view<'a>(
     workmode_enabled: bool,
     prompt_recipes: &'a [String],
     recipe_dropdown_expanded: bool,
-    files: &'a ExpandableEditor,
+    files: &'a FileTreePane,
+    workspace_set: bool,
 ) -> Element<'a, PromptEvent> {
     let mut tab_bar_builder = TabBar::new(PromptEvent::SelectWorkMode);
     for mode in WorkMode::all() {
@@ -98,7 +97,7 @@ pub(crate) fn user_prompt_view<'a>(
         ]
         .spacing(8)
         .align_y(Alignment::Center),
-        files_field_view(files),
+        files_field_view(files, workspace_set),
         user_prompt
             .view(|msg| PromptEvent::EditTextArea(FocusedTarget::UserPrompt, msg))
             .height(120),
@@ -120,36 +119,45 @@ pub(crate) fn user_prompt_view<'a>(
 
 // ── Workspace tree view ──────────────────────────────────────────
 
-fn files_field_view<'a>(files: &'a ExpandableEditor) -> Element<'a, PromptEvent> {
+fn files_field_view<'a>(files: &'a FileTreePane, workspace_set: bool) -> Element<'a, PromptEvent> {
     let name = WORKSPACE_TREE;
     let header = expandable_header(name, files.enabled, files.expanded);
 
     use iced::widget::scrollable::{Direction, Scrollbar};
 
     if files.expanded {
-        column![
-            header,
-            container(
-                scrollable(
-                    container(
-                        text_editor(&files.content)
-                            .on_action(move |a| PromptEvent::EditTextContent(name, a))
-                            .font(iced::Font::MONOSPACE)
-                            .wrapping(text::Wrapping::None),
-                    )
-                    .padding(Padding::new(0.0).bottom(12.0)),
+        let body: Element<'_, PromptEvent> = if files.tree.is_empty() {
+            text(if workspace_set {
+                "Loading…"
+            } else {
+                "No workspace selected."
+            })
+            .size(12)
+            .style(|_| text::Style {
+                color: Some(color_muted()),
+            })
+            .into()
+        } else {
+            scrollable(
+                container(
+                    text(&files.tree)
+                        .font(iced::Font::MONOSPACE)
+                        .wrapping(Wrapping::None),
                 )
-                .direction(Direction::Both {
-                    vertical: Scrollbar::new().width(4).scroller_width(4),
-                    horizontal: Scrollbar::new().width(4).scroller_width(4),
-                })
-                .height(Length::Fixed(200.0)),
+                .padding(Padding::new(0.0).bottom(12.0)),
             )
-            .style(container::bordered_box)
-            .width(Fill),
-        ]
-        .spacing(4)
-        .into()
+            .direction(Direction::Both {
+                vertical: Scrollbar::new().width(4).scroller_width(4),
+                horizontal: Scrollbar::new().width(4).scroller_width(4),
+            })
+            .height(Length::Fixed(200.0))
+            .into()
+        };
+        column![header, body]
+            .spacing(4)
+            .padding(Padding::new(0.0).top(4.0))
+            .width(Fill)
+            .into()
     } else {
         header
     }

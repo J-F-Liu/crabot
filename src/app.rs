@@ -16,7 +16,7 @@ use crabot::model::{self, ModelConfig, ModelList};
 use crabot::setup;
 use crabot::tools;
 use crabot::user::{UserPrompt, WorkMode};
-use prompt::{FilepathEntry, TOOLS, WORKSPACE_TREE};
+use prompt::{FilepathEntry, TOOLS};
 
 use crate::views::{
     DividerState, PaneSection, PaneSections, center_pane, divider, left_pane, right_pane,
@@ -80,6 +80,15 @@ pub(crate) struct ExpandableEditor {
     pub(crate) content: text_editor::Content,
 }
 
+/// Collapsible read-only preview of the workspace files tree.
+#[derive(Debug)]
+pub(crate) struct FileTreePane {
+    pub(crate) enabled: bool,
+    pub(crate) expanded: bool,
+    /// Latest fetched tree (display-only; rebuilt each time the pane expands).
+    pub(crate) tree: String,
+}
+
 /// System prompt, workspace, prompt-file options, and user-prompt editor.
 pub(crate) struct PromptWorkspaceState {
     pub(crate) preamble_enabled: bool,
@@ -91,7 +100,7 @@ pub(crate) struct PromptWorkspaceState {
     pub(crate) rules_options: Vec<FilepathEntry>,
     pub(crate) workspace_options: Vec<FilepathEntry>,
     pub(crate) agents_md_exists: bool,
-    pub(crate) files: ExpandableEditor,
+    pub(crate) files: FileTreePane,
     pub(crate) tools: ExpandableEditor,
     pub(crate) user_prompt: TextArea,
     pub(crate) workmode: WorkMode,
@@ -111,7 +120,6 @@ impl PromptWorkspaceState {
     pub(crate) fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
         match name {
             TOOLS => Some(&mut self.tools.content),
-            WORKSPACE_TREE => Some(&mut self.files.content),
             _ => None,
         }
     }
@@ -452,6 +460,8 @@ pub(crate) enum PromptEvent {
     ToggleExpanded(&'static str),
     EditTextField(&'static str, String),
     EditTextContent(&'static str, text_editor::Action),
+    /// A freshly built files tree for the expanded preview pane.
+    FileTreeReady(String),
     EditTextArea(FocusedTarget, textarea::Message),
     SelectWorkspace(FilepathEntry),
     WorkspaceDialogResult(Option<PathBuf>),
@@ -480,7 +490,7 @@ pub(crate) enum ConversationEvent {
     LoadSession(SessionEntry),
     /// A finished workspace session-list scan, tagged with the workspace it scanned.
     SessionListLoaded(PathBuf, Vec<SessionEntry>),
-    /// A finished off-thread workspace scan (files tree + AGENTS.md).
+    /// A finished off-thread AGENTS.md scan, tagged with the workspace it scanned.
     WorkspaceContentReady(Box<prompt::WorkspaceScan>),
     /// A prepared task-tool spawn whose blocking workspace scan finished — the
     /// sub-agent session can now be launched.
@@ -488,6 +498,9 @@ pub(crate) enum ConversationEvent {
     /// A prepared renew spawn whose blocking workspace scan finished — the
     /// continuation session can now be launched.
     RenewSpawnReady(Box<session_state::SuccessorSpawn>),
+    /// A validated prompt whose fresh workspace-tree scan finished — it can now
+    /// be injected or launched.
+    SendWithFreshTree(Box<conversation::PendingSend>),
     ToggleTurnExpand(usize, usize),
     ToggleDialogExpand(usize),
     ToggleAllDialogsExpand,
@@ -697,11 +710,11 @@ impl App {
             rules_options,
             workspace_options,
             agents_md_exists: false,
-            // Populated asynchronously via WorkspaceContentReady when the scan lands.
-            files: ExpandableEditor {
-                expanded: false,
+            // Tree is fetched fresh from disk whenever the pane is expanded.
+            files: FileTreePane {
                 enabled: true,
-                content: text_editor::Content::new(),
+                expanded: false,
+                tree: String::new(),
             },
             tools: ExpandableEditor {
                 expanded: false,

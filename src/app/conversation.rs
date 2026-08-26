@@ -4,7 +4,7 @@ use crabot::HashSetExt;
 use crabot::chat::{Turn, TurnBody};
 use crabot::model::ModelConfig;
 use crabot::session::{Session, fix_history};
-use crabot::user::UserPrompt;
+use crabot::user::{UserPrompt, WorkMode};
 use futures::{SinkExt, future::FutureExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -140,8 +140,6 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::WorkspaceContentReady(scan) => {
             // Only apply if the workspace hasn't changed while the scan was in flight.
             if scan.workspace == app.prompt.workspace.1 {
-                app.prompt.files.content =
-                    widget::text_editor::Content::with_text(&scan.files_tree);
                 app.prompt.agents_md_exists = scan.agents_md_exists;
                 app.prompt.agents_md.1 = scan.agents_md_content;
                 if let Some(preferred) = scan.agents_md_preferred {
@@ -152,6 +150,9 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         }
         ConversationEvent::TaskSpawnReady(spawn) => return continue_task_spawn(app, *spawn),
         ConversationEvent::RenewSpawnReady(spawn) => return continue_renew_spawn(app, *spawn),
+        ConversationEvent::SendWithFreshTree(pending) => {
+            return continue_send_with_fresh_tree(app, *pending);
+        }
         ConversationEvent::ToggleTurnExpand(index, sub_index) => {
             let key = (index, sub_index);
             let tab = app.conversation.viewing_mut();
@@ -324,7 +325,7 @@ fn new_session(
     tracing::debug!(tab = number, parent = %tab.session.parent, "new session tab opened");
     app.conversation.viewing = push_tab(app, tab);
 
-    // Refresh workspace-dependent fields (files tree + AGENTS.md land async).
+    // Refresh workspace-dependent fields (AGENTS.md lands async).
     let content_task = crate::app::prompt::refresh_workspace_content(app);
 
     // Fresh tab has no saved scroll offset — scroll to top.
@@ -732,32 +733,81 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
         return Task::none();
     }
 
-    let user_prompt = build_user_prompt(app, content);
+    // Capture everything needed before touching the input state.
+    let mode = app.prompt.workmode_enabled.then_some(app.prompt.workmode);
+    let with_tree = app.prompt.files.enabled;
     app.prompt.files.enabled = false;
     app.prompt.user_prompt.clear();
 
-    let tab_pos = app.conversation.viewing;
-    let tab = app.conversation.viewing_mut();
+    let tab_number = app.conversation.viewing_tab_number();
 
-    // If current tab is running, inject to streaming.
+    // Unchecked path: launch directly with no workspace tree.
+    if !with_tree {
+        return dispatch_prompt(
+            app,
+            app.conversation.viewing,
+            &model,
+            UserPrompt::new(mode, content, None),
+        );
+    }
+
+    // Checked path: rebuild the tree at send time so the model sees the
+    // current workspace layout; the prompt launches once the scan lands.
+    let workspace = app.prompt.workspace.1.clone();
+    Task::perform(
+        async move {
+            let files_tree = super::prompt::scan_files_tree(workspace).await;
+            PendingSend {
+                tab_number,
+                content,
+                mode,
+                model,
+                files_tree,
+            }
+        },
+        |pending| Message::Conversation(ConversationEvent::SendWithFreshTree(Box::new(pending))),
+    )
+}
+
+/// Deliver a prompt to a tab: inject into a running dialog or launch a new one.
+fn dispatch_prompt(
+    app: &mut App,
+    tab_pos: usize,
+    model: &ModelConfig,
+    user_prompt: UserPrompt,
+) -> Task<Message> {
+    let tab = &mut app.conversation.session_tabs[tab_pos];
     if tab.session_state.phase != DialogPhase::Idle {
         tab.session_state.inject_prompt(user_prompt);
         return Task::none();
     }
-
-    launch_dialog(app, tab_pos, &model, user_prompt, None)
+    launch_dialog(app, tab_pos, model, user_prompt, None)
 }
 
-/// Build a `UserPrompt` from `content` using the current prompt settings.
-fn build_user_prompt(app: &App, content: String) -> UserPrompt {
-    let mode = app.prompt.workmode_enabled.then_some(app.prompt.workmode);
-    let workspace_tree = if app.prompt.files.enabled {
-        let tree = app.prompt.files.content.text();
-        (!tree.is_empty()).then(|| tree.to_string())
-    } else {
-        None
+/// A validated prompt waiting for its fresh workspace-tree scan to finish.
+#[derive(Clone)] // required by the Clone derive on ConversationEvent
+pub(crate) struct PendingSend {
+    tab_number: usize,
+    content: String,
+    mode: Option<WorkMode>,
+    model: ModelConfig,
+    files_tree: String,
+}
+
+/// Complete a checked-path send once the off-thread tree scan lands.
+fn continue_send_with_fresh_tree(app: &mut App, pending: PendingSend) -> Task<Message> {
+    let PendingSend {
+        tab_number,
+        content,
+        mode,
+        model,
+        files_tree,
+    } = pending;
+    let Some(tab_pos) = app.conversation.tab_pos(tab_number) else {
+        return Task::none();
     };
-    UserPrompt::new(mode, content, workspace_tree)
+    let tree = (!files_tree.is_empty()).then_some(files_tree);
+    dispatch_prompt(app, tab_pos, &model, UserPrompt::new(mode, content, tree))
 }
 
 /// Set up a new dialog from `content` on the given tab and start streaming.

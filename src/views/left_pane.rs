@@ -40,7 +40,8 @@ pub(crate) fn left_pane<'a>(
     let selected_rules: &str = &settings.selected_rules;
     let rules_options: &[FilepathEntry] = &prompt.rules_options;
     let workspace_options: &[FilepathEntry] = &prompt.workspace_options;
-    let files: &crate::app::ExpandableEditor = &prompt.files;
+    let files: &crate::app::FileTreePane = &prompt.files;
+    let workspace_set = !prompt.workspace.1.as_os_str().is_empty();
     let enabled_tools: &HashSet<String> = &tools.enabled_tools;
     let tool_registry: &crabot::tools::ToolRegistry = &tools.tool_registry;
     let user_prompt: &TextArea = &prompt.user_prompt;
@@ -106,6 +107,7 @@ pub(crate) fn left_pane<'a>(
                         prompt_recipes,
                         recipe_dropdown_expanded,
                         files,
+                        workspace_set,
                     )
                     .map(LeftPaneEvent::Prompt),
                     tools_section(
