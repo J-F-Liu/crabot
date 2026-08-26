@@ -1,3 +1,17 @@
+# Crabot v0.8.4
+
+- **Fresh workspace file tree at send time** — the workspace files tree offered to the model is rebuilt when a message is sent, instead of relying on a stale startup snapshot.
+- **Preserve token counts** — token usage recorded in the session is kept when an LLM response is missing usage data, so context tracking no longer regresses.
+- **More reliable `fetch` tool** — large or slow web pages are fetched more robustly.
+- **Resilient model listing** — servers that misbehave when listing models no longer break the model picker.
+- **Background HTML export** — session HTML export renders and writes on a background thread, keeping the UI responsive.
+- **`ask` focus fix** — switching to a tab focuses the ask input only when an ask is actually pending.
+- **Playground & search bar fixes** — the playground preserves raw array item text while typing (no premature reformatting), and the search bar discards stale layout measurements.
+- **Custom tool argument safety** — argument values are rendered via internal placeholders substituted after shell-splitting, preventing argv injection and preserving values containing spaces or quotes as single arguments.
+- **Fix: "Dark theme" toggle button** — the toggle works again.
+
+**Full Changelog**: [`v0.8.3...v0.8.4`](https://github.com/J-F-Liu/crabot/compare/v0.8.3...v0.8.4)
+
 # Crabot v0.8.3
 
 - **Right pane overhaul** — the right pane is now organized into collapsible sections, with a new **Accessed Files** list alongside file snapshots, and a **Running Processes** section showing live processes started via the `process` tool.
