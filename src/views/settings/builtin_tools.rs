@@ -1,10 +1,11 @@
 use iced::{
     Alignment, Element, Length,
-    widget::{column, container, pick_list, row, text, text_input, toggler},
+    widget::{column, container, row, text, text_input, toggler},
 };
 
 use super::{BOLD, SettingsEvent, SettingsState, SettingsTab, form_card_style, section_header};
 use crate::views::model_config::ProviderEntry;
+use crate::views::styles::styled_pick_list;
 use crate::views::theme::color_muted;
 use crabot::model::{Model, ModelConfig};
 use crabot::tools::ToolLimits;
@@ -445,11 +446,11 @@ fn tier_row<'a>(
             .unwrap_or_default();
         let selected_model = state.working_models.get_model(cfg).cloned();
         row![
-            pick_list(providers, selected_provider, move |e| {
+            styled_pick_list(providers, selected_provider, move |e| {
                 SettingsEvent::BuiltinTools(BuiltinToolsEvent::TaskModelSelectProvider(tier, e.id))
             })
             .width(Length::Fill),
-            pick_list(models, selected_model, move |m: Model| {
+            styled_pick_list(models, selected_model, move |m: Model| {
                 SettingsEvent::BuiltinTools(BuiltinToolsEvent::TaskModelSelectModel(tier, m.id))
             })
             .width(Length::Fill),

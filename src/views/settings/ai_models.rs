@@ -1,7 +1,8 @@
 use super::{
     NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState, SettingsTab,
-    delete_button_style, field_row, form_card_style, section_header,
+    delete_button_style, field_row, form_card_style, label_col, section_header,
 };
+use crate::views::styles::styled_pick_list;
 use crate::views::theme::{
     CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_surface,
     color_text_strong,
@@ -11,8 +12,7 @@ use crabot::model_database::ModelDatabase;
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
-        Row, button, checkbox, column, container, mouse_area, pick_list, row, scrollable, text,
-        text_input,
+        Row, button, checkbox, column, container, mouse_area, row, scrollable, text, text_input,
     },
 };
 
@@ -276,7 +276,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
         .find(|e| e.id == state.selected_provider_id)
         .cloned();
 
-    let picker = pick_list(entries, selected, |e: ProviderPickEntry| {
+    let picker = styled_pick_list(entries, selected, |e: ProviderPickEntry| {
         SettingsEvent::Models(ModelsEvent::SelectProvider(e.id))
     })
     .width(Length::Fill);
@@ -324,19 +324,14 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                 move |v| SettingsEvent::Models(ModelsEvent::EditProviderBaseUrl(v)),
             ),
             {
-                let label_col = |label: &'static str| {
-                    container(text(label).size(14))
-                        .width(90)
-                        .align_x(Alignment::End)
-                };
                 row![
                     label_col("API Type"),
-                    pick_list(API_TYPES, selected_api_type, |v| {
+                    styled_pick_list(API_TYPES, selected_api_type, |v| {
                         SettingsEvent::Models(ModelsEvent::EditProviderApiType(v.to_string()))
                     })
                     .width(Length::Fill),
                     label_col("Auth Type"),
-                    pick_list(AUTH_TYPES, selected_auth, |v| {
+                    styled_pick_list(AUTH_TYPES, selected_auth, |v| {
                         SettingsEvent::Models(ModelsEvent::EditProviderAuth(v.to_string()))
                     })
                     .width(Length::Fill),
@@ -587,14 +582,13 @@ fn checkbox_row<'a>(
     on_toggle: impl Fn(bool) -> SettingsEvent + 'a,
     trailing: Option<Element<'a, SettingsEvent>>,
 ) -> Element<'a, SettingsEvent> {
-    let label_col = container(text(label).size(14))
-        .width(90)
-        .align_x(Alignment::End);
     let cb = checkbox(checked)
         .label("")
         .on_toggle(on_toggle)
         .style(crate::views::primary_checkbox);
-    let mut r = row![label_col, cb].spacing(10).align_y(Alignment::Center);
+    let mut r = row![label_col(label), cb]
+        .spacing(10)
+        .align_y(Alignment::Center);
     if let Some(t) = trailing {
         r = r
             .push(iced::widget::Space::new().width(Length::Fill))
@@ -605,9 +599,7 @@ fn checkbox_row<'a>(
 
 /// Renders the models section with a table of checkboxes and model IDs.
 fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
-    let header = container(text("Models").size(14))
-        .width(90)
-        .align_x(Alignment::End);
+    let header = label_col("Models");
 
     // All IDs, narrowed by the applied filter when set.
     let all_ids = display_model_ids(state);
@@ -742,15 +734,15 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                             .selected_offer_source
                             .clone()
                             .unwrap_or_else(|| active_cost.source.clone());
-                        let picker = pick_list(sources, Some(selected_source), |src| {
-                            SettingsEvent::Models(ModelsEvent::SelectOfferSource(src))
-                        })
-                        .text_size(12);
                         column![
                             container(
                                 row![
                                     text("Offer").size(12).color(color_muted()).width(60),
-                                    picker.width(Length::Fill),
+                                    styled_pick_list(sources, Some(selected_source), |src| {
+                                        SettingsEvent::Models(ModelsEvent::SelectOfferSource(src))
+                                    })
+                                    .text_size(12)
+                                    .width(Length::Fill),
                                 ]
                                 .spacing(10)
                                 .align_y(Alignment::Center),
@@ -981,7 +973,7 @@ fn model_edit_panel<'a>(model: &'a Model, d: &'a ModelEditDraft) -> Element<'a, 
         form_row(
             "Currency",
             row![
-                pick_list(currencies, selected_currency, |c: String| {
+                styled_pick_list(currencies, selected_currency, |c: String| {
                     SettingsEvent::Models(ModelsEvent::EditModelParam(ModelParam::Currency(c)))
                 })
                 .text_size(11)

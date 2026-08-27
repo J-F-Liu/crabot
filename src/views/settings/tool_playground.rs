@@ -13,7 +13,7 @@ use crate::views::theme::{
     CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_text_strong,
     is_dark,
 };
-use crate::views::{primary_button, secondary_button};
+use crate::views::{primary_button, secondary_button, secondary_dropdown_style};
 use crate::widgets::dropdown::DropDown;
 
 use super::{SettingsEvent, SettingsState, form_card_style};
@@ -488,6 +488,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
     .item_is_header(move |i| header_flags.get(i).copied().unwrap_or(false))
     .item_indent(16.0)
     .header_font(super::BOLD)
+    .style(secondary_dropdown_style)
     .into();
 
     let selected_tool = state

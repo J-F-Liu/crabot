@@ -3,15 +3,17 @@
 
 use super::{
     SettingsEvent, SettingsState, SettingsTab, add_section, card_rule, collapsible_header,
-    delete_button_style, empty_hint, field_row, form_card_style, numbered_name, remove_expanded,
-    section_header, sub_card_style, textarea_field_row, toggle_expanded, unique_name,
+    delete_button_style, empty_hint, field_row, form_card_style, label_col, numbered_name,
+    remove_expanded, section_header, sub_card_style, textarea_field_row, toggle_expanded,
+    unique_name,
 };
+use crate::views::styles::styled_pick_list;
 use crate::views::theme::color_muted;
 use crate::widgets::textarea::TextArea;
 use crabot::tools::mcp::{McpServer, McpTransport};
 use iced::{
     Alignment, Element, Length,
-    widget::{button, checkbox, column, container, pick_list, row, text, text_input},
+    widget::{button, checkbox, column, container, row, text, text_input},
 };
 use indexmap::IndexMap;
 
@@ -235,15 +237,12 @@ fn transport_row<'a>(index: usize, transport: &'a McpTransport) -> Element<'a, S
         McpTransport::Stdio { .. } => Some("stdio"),
         McpTransport::Http { .. } => Some("http"),
     };
-    let label_col = container(text("Transport").size(14))
-        .width(90)
-        .align_x(Alignment::End);
-    let picker = pick_list(TRANSPORT_KINDS, selected, move |kind| {
+    let picker = styled_pick_list(TRANSPORT_KINDS, selected, move |kind| {
         SettingsEvent::Mcp(McpEvent::EditMcpTransport(index, kind.to_string()))
     })
     .text_size(12)
     .width(Length::Fixed(110.0));
-    row![label_col, picker]
+    row![label_col("Transport"), picker]
         .spacing(10)
         .align_y(Alignment::Center)
         .into()
@@ -251,9 +250,6 @@ fn transport_row<'a>(index: usize, transport: &'a McpTransport) -> Element<'a, S
 
 /// Checkbox controlling whether tool names are prefixed with the server name.
 fn qualify_row<'a>(index: usize, server: &'a McpServer) -> Element<'a, SettingsEvent> {
-    let label_col = container(text("Qualify").size(14))
-        .width(90)
-        .align_x(Alignment::End);
     let name = if server.name.trim().is_empty() {
         "server"
     } else {
@@ -264,7 +260,7 @@ fn qualify_row<'a>(index: usize, server: &'a McpServer) -> Element<'a, SettingsE
         .text_size(12)
         .on_toggle(move |v| SettingsEvent::Mcp(McpEvent::ToggleMcpQualify(index, v)))
         .style(crate::views::primary_checkbox);
-    row![label_col, toggle]
+    row![label_col("Qualify"), toggle]
         .spacing(10)
         .align_y(Alignment::Center)
         .into()

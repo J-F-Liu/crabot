@@ -11,7 +11,10 @@ use crabot::tools::mcp::{McpList, McpServer, McpTransport};
 use iced::padding;
 use iced::{
     Alignment, Border, Color, Element, Length,
-    widget::{button, column, container, mouse_area, row, rule, scrollable, svg, text, text_input},
+    widget::{
+        Container, button, column, container, mouse_area, row, rule, scrollable, svg, text,
+        text_input,
+    },
 };
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -719,6 +722,13 @@ pub(super) fn save_action_row<'a>(
         .into()
 }
 
+/// Right-aligned 90px label column used by form rows.
+pub(super) fn label_col<'a>(label: &'static str) -> Container<'a, SettingsEvent> {
+    container(text(label).size(14))
+        .width(90)
+        .align_x(Alignment::End)
+}
+
 /// A labelled single-line text input row used by the settings forms.
 pub(super) fn field_row<'a>(
     label: &'static str,
@@ -743,10 +753,8 @@ pub(super) fn field_row<'a>(
     if let Some(msg) = on_submit {
         input = input.on_submit(msg);
     }
-    let label_col = container(text(label).size(14))
-        .width(90)
-        .align_x(Alignment::End);
-    row![label_col, input]
+    let label = label_col(label);
+    row![label, input]
         .spacing(10)
         .align_y(Alignment::Center)
         .into()
@@ -759,16 +767,14 @@ pub(super) fn textarea_field_row<'a>(
     placeholder: &'a str,
     on_action: impl Fn(crate::widgets::textarea::Message) -> SettingsEvent + 'a,
 ) -> Element<'a, SettingsEvent> {
-    let label_col = container(text(label).size(14))
-        .width(90)
-        .align_x(Alignment::End)
+    let label = label_col(label)
         .align_y(Alignment::Start)
         .padding(padding::top(4));
     let editor = area
         .view(on_action)
         .placeholder(placeholder)
         .height(Length::Fixed(64.0));
-    row![label_col, container(editor).width(Length::Fill)]
+    row![label, container(editor).width(Length::Fill)]
         .spacing(10)
         .align_y(Alignment::Start)
         .into()

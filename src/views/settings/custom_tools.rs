@@ -7,12 +7,13 @@ use super::{
     remove_expanded, section_header, sub_card_style, textarea_field_row, toggle_expanded,
     unique_name,
 };
+use crate::views::styles::styled_pick_list;
 use crate::views::theme::color_muted;
 use crate::widgets::textarea::TextArea;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolParameter};
 use iced::{
     Alignment, Element, Length,
-    widget::{button, checkbox, column, container, pick_list, row, text, text_input},
+    widget::{button, checkbox, column, container, row, text, text_input},
 };
 
 /// Simple parameter kinds offered by the type picker. Complex kinds
@@ -229,7 +230,7 @@ fn param_card<'a>(
     index: usize,
     param: &'a ToolParameter,
 ) -> Element<'a, SettingsEvent> {
-    let kind_picker = pick_list(PARAM_KINDS, simple_kind(&param.kind), move |kind| {
+    let kind_picker = styled_pick_list(PARAM_KINDS, simple_kind(&param.kind), move |kind| {
         SettingsEvent::CustomTools(CustomToolsEvent::EditParamKind(
             tool_index,
             index,

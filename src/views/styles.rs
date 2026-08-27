@@ -495,12 +495,13 @@ pub(crate) fn disabled_dropdown_style(
     _theme: &Theme,
     _status: crate::widgets::dropdown::Status,
 ) -> crate::widgets::dropdown::Style {
+    let colors = dropdown_colors();
     crate::widgets::dropdown::Style {
         text_color: color_muted(),
         placeholder_color: color_muted(),
         handle_color: color_muted(),
-        background: iced::Background::Color(color_surface()),
-        border: dropdown_colors().border,
+        background: colors.surface.into(),
+        border: colors.border,
     }
 }
 
@@ -536,26 +537,55 @@ fn dropdown_colors() -> DropdownColors {
     }
 }
 
+/// Interaction state shared by the `pick_list` and `DropDown` trigger styles.
+#[derive(Clone, Copy)]
+enum TriggerStatus {
+    Active,
+    Hovered,
+    Opened,
+}
+
+impl DropdownColors {
+    /// Trigger background for the given interaction state.
+    fn trigger_background(&self, state: TriggerStatus) -> iced::Background {
+        match state {
+            TriggerStatus::Active => self.surface,
+            TriggerStatus::Hovered => self.hover,
+            TriggerStatus::Opened => self.pressed,
+        }
+        .into()
+    }
+}
+
+impl From<pick_list::Status> for TriggerStatus {
+    fn from(status: pick_list::Status) -> Self {
+        match status {
+            pick_list::Status::Active => Self::Active,
+            pick_list::Status::Hovered => Self::Hovered,
+            pick_list::Status::Opened { .. } => Self::Opened,
+        }
+    }
+}
+
+impl From<crate::widgets::dropdown::Status> for TriggerStatus {
+    fn from(status: crate::widgets::dropdown::Status) -> Self {
+        match status {
+            crate::widgets::dropdown::Status::Active => Self::Active,
+            crate::widgets::dropdown::Status::Hovered => Self::Hovered,
+            crate::widgets::dropdown::Status::Opened => Self::Opened,
+        }
+    }
+}
+
 /// iced `pick_list` trigger styled like [`secondary_button`].
 pub(crate) fn pick_list_style(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
     let colors = dropdown_colors();
-    let base = pick_list::Style {
+    pick_list::Style {
         text_color: color_text_strong(),
         placeholder_color: color_muted(),
         handle_color: color_muted(),
-        background: colors.surface.into(),
+        background: colors.trigger_background(status.into()),
         border: colors.border,
-    };
-    match status {
-        pick_list::Status::Active => base,
-        pick_list::Status::Hovered => pick_list::Style {
-            background: colors.hover.into(),
-            ..base
-        },
-        pick_list::Status::Opened { .. } => pick_list::Style {
-            background: colors.pressed.into(),
-            ..base
-        },
     }
 }
 
@@ -565,23 +595,12 @@ pub(crate) fn secondary_dropdown_style(
     status: crate::widgets::dropdown::Status,
 ) -> crate::widgets::dropdown::Style {
     let colors = dropdown_colors();
-    let base = crate::widgets::dropdown::Style {
+    crate::widgets::dropdown::Style {
         text_color: color_text_strong(),
         placeholder_color: color_muted(),
         handle_color: color_muted(),
-        background: colors.surface.into(),
+        background: colors.trigger_background(status.into()),
         border: colors.border,
-    };
-    match status {
-        crate::widgets::dropdown::Status::Active => base,
-        crate::widgets::dropdown::Status::Hovered => crate::widgets::dropdown::Style {
-            background: colors.hover.into(),
-            ..base
-        },
-        crate::widgets::dropdown::Status::Opened => crate::widgets::dropdown::Style {
-            background: colors.pressed.into(),
-            ..base
-        },
     }
 }
 
