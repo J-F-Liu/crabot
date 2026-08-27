@@ -83,7 +83,7 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
                 match current_exe {
                     Some(exe) => {
                         tracing::info!(exe = %exe.display(), "restarting into updated crabot");
-                        if let Err(e) = std::process::Command::new(&exe).spawn() {
+                        if let Err(e) = crate::app::spawn_relaunch(&exe, &[]) {
                             tracing::error!("failed to spawn updated executable: {e}");
                         }
                     }

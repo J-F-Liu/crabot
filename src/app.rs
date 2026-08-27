@@ -839,22 +839,28 @@ impl App {
                 self.conversation.stop();
                 self.save_settings();
                 snapshot::cleanup_snapshots(self);
+                tools::process::shutdown();
                 let workspace_path = &self.prompt.workspace.1;
                 tracing::info!("restarting crabot");
                 match std::env::current_exe() {
                     Ok(exe) => {
-                        // A workspace-local exe means a dev build — relaunch via cargo.
-                        let spawned = if !workspace_path.as_os_str().is_empty()
-                            && exe.starts_with(workspace_path)
+                        // A workspace-local exe means a dev build — relaunch via
+                        // cargo so the latest source changes take effect.
+                        if !workspace_path.as_os_str().is_empty() && exe.starts_with(workspace_path)
                         {
-                            std::process::Command::new("cargo")
+                            tracing::info!("relaunching via cargo run --release");
+                            if let Err(e) = std::process::Command::new("cargo")
                                 .args(["run", "--release"])
+                                .env_remove("RUST_RECURSION_COUNT")
                                 .spawn()
+                            {
+                                tracing::error!("failed to spawn cargo run --release: {e}");
+                            }
                         } else {
-                            std::process::Command::new(&exe).spawn()
-                        };
-                        if let Err(e) = spawned {
-                            tracing::error!("failed to spawn replacement process: {e}");
+                            tracing::info!(exe = %exe.display(), "relaunching current executable");
+                            if let Err(e) = spawn_relaunch(&exe, &[]) {
+                                tracing::error!("failed to spawn replacement process: {e}");
+                            }
                         }
                     }
                     Err(e) => tracing::error!("cannot determine current exe for restart: {e}"),
@@ -1089,4 +1095,33 @@ impl App {
     pub(crate) fn subscription(state: &Self) -> Subscription<Message> {
         subscription::subscription(state)
     }
+}
+
+/// Spawn a detached replacement for app restart: clears `RUST_RECURSION_COUNT`
+/// (repeated `cargo run` relaunches would exhaust it), nulls stdio, and on Unix
+/// starts a new session so the child outlives the parent's terminal.
+pub(crate) fn spawn_relaunch(
+    program: impl AsRef<std::ffi::OsStr>,
+    args: &[&str],
+) -> std::io::Result<std::process::Child> {
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            // New session: outlives the terminal, immune to SIGHUP.
+            cmd.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    cmd.spawn()
 }
