@@ -358,9 +358,10 @@ impl Session {
                 || dialog.mode.as_ref().is_some_and(|m| matches(&m.name));
             let mut dialog_hits = Vec::new();
             for turn in &dialog.turns {
-                // Role labels ("User"/"Assistant"/"Tool - …") are uniform across
-                // turn kinds, hence not searchable; timestamps, tool names/args
-                // and message content are.
+                // Plain role labels ("User"/"Assistant") are uniform across
+                // turn kinds, hence not searchable; tool badges embed the tool
+                // name ("Tool - read") and are searchable. Timestamps, tool
+                // names/args and message content are searchable too.
                 let hit = match &turn.body {
                     TurnBody::Text(tc) => {
                         matches(&turn.timestamp)
@@ -368,8 +369,8 @@ impl Session {
                             || tc.reasoning.as_deref().is_some_and(matches)
                     }
                     TurnBody::Tool(trs) => trs.iter().any(|tr| {
-                        matches(&tr.timestamp)
-                            || matches(&tr.name)
+                        matches(&format!("Tool - {}", tr.name))
+                            || matches(&tr.timestamp)
                             || matches(&tr.args.to_string())
                             || match &tr.result {
                                 Ok(s) => matches(s),
@@ -378,9 +379,10 @@ impl Session {
                     }),
                     TurnBody::Temp(calls) => {
                         matches(&turn.timestamp)
-                            || calls
-                                .iter()
-                                .any(|c| matches(&c.name) || matches(&c.args.to_string()))
+                            || calls.iter().any(|c| {
+                                matches(&format!("Tool - {}", c.name))
+                                    || matches(&c.args.to_string())
+                            })
                     }
                 };
                 if hit {

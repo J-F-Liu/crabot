@@ -118,6 +118,14 @@ fn search_covers_dialog_and_turn_headers() {
     assert_eq!(turn_hits(&session.search("modified")), vec![3]);
     assert_eq!(turn_hits(&session.search("main.rs")), vec![3]);
 
+    // The "Tool - {name}" role badge is searchable: a query like "Tool - read"
+    // matches the badge, case-insensitively, for both pending and completed calls.
+    assert_eq!(turn_hits(&session.search("Tool - bash")), vec![2]);
+    assert_eq!(turn_hits(&session.search("tool - edit")), vec![3]);
+    assert_eq!(turn_hits(&session.search("TOOL - BASH")), vec![2]);
+    // "Tool -" alone matches every tool turn badge.
+    assert_eq!(turn_hits(&session.search("Tool -")), vec![2, 3]);
+
     // Blank queries match nothing.
     assert!(session.search("  ").is_empty());
     // A dialog-header match in an empty dialog has no jump target — skipped.

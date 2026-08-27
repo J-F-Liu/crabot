@@ -221,9 +221,11 @@ pub(crate) fn expand_result(
                 }
                 TurnBody::Tool(trs) => {
                     // `expanded_turns` tracks expanded tool items; insert matching items.
+                    // The "Tool - {name}" badge is matched too, so queries like
+                    // "Tool - read" find and expand the right tool items.
                     let mut changed = false;
                     for (idx, tr) in trs.iter().enumerate() {
-                        let matches = tr.name.to_lowercase().contains(&q)
+                        let matches = format!("Tool - {}", tr.name).to_lowercase().contains(&q)
                             || tr.args.to_string().to_lowercase().contains(&q)
                             || match &tr.result {
                                 Ok(s) => s.to_lowercase().contains(&q),
