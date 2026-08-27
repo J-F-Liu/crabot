@@ -4,18 +4,20 @@
 //! — no real bash process, so the same path works natively on Windows. Scripts
 //! the interpreter cannot faithfully handle (parse errors, dynamic command
 //! names, `eval`/`exec`/`source`, path-based or glob-shaped names) make
-//! [`collect_external_names`] return `Err`, falling back to real `bash -c`.
+//! [`analyze_script`] return `Err`, falling back to real `bash -c`.
 //!
 //! Wrapper builtins (`timeout`, `xargs`, `find -exec`) hide commands in their
-//! arguments; [`collect_external_names`] extracts those names from literal
-//! arguments. `watch`/`parallel` stubs never run commands and `env` refuses
-//! them, so scripts that would involve one fall back to real bash. Mirrors
-//! bashkit 0.17.1 — re-verify when bumping.
+//! arguments; [`analyze_script`] extracts those names from literal arguments.
+//! `watch`/`parallel` stubs never run commands and `env` refuses them, so
+//! scripts that would involve one fall back to real bash. Mirrors bashkit
+//! 0.17.1 — re-verify when bumping.
 //!
-//! On Windows, VFS absolute paths in arguments are rewritten to host paths
-//! before spawning ([`convert_args_for_host`]), MSYS2-style: native
-//! executables receive host paths instead of VFS forms like `/d/...`.
+//! Windows path translation is bidirectional, MSYS2-style:
+//! [`convert_args_for_host`] rewrites VFS paths in bridged-command args to
+//! native form before spawning, and [`rewrite_host_paths`] rewrites
+//! host-style paths in builtin args to VFS form (`E:/...` → `/e/...`).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -26,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bashkit::analysis::{AnalyzedCommand, analyze_with_limits};
+use bashkit::analysis::{AnalyzedCommand, ScriptAnalysis, analyze_with_limits};
 use bashkit::{
     Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, HttpLimits, NetworkAllowlist,
     async_trait,
@@ -74,13 +76,20 @@ pub(crate) fn builtin_names() -> &'static HashSet<String> {
     })
 }
 
-/// Statically collect the external command names a script executes.
+/// Static analysis result: names to bridge plus the argument table the
+/// Windows path rewrite reads.
+pub(crate) struct ScriptPlan {
+    external_names: Vec<String>,
+    analysis: ScriptAnalysis,
+}
+
+/// Statically analyze a script for the in-process interpreter.
 ///
 /// Returns `Err(())` when the script cannot run faithfully in-process (parse
 /// error, dynamic/path-based/glob-shaped command names, opaque builtins,
 /// wrapper arguments that hide a command). Otherwise returns the names to
-/// bridge (empty when only builtins are used).
-pub(crate) fn collect_external_names(script: &str) -> Result<Vec<String>, ()> {
+/// bridge (empty when only builtins are used) and the argument table.
+pub(crate) fn analyze_script(script: &str) -> Result<ScriptPlan, ()> {
     let analysis = analyze_with_limits(script, 100, 100_000).map_err(|_| ())?;
     if analysis.is_opaque() {
         return Err(());
@@ -108,7 +117,10 @@ pub(crate) fn collect_external_names(script: &str) -> Result<Vec<String>, ()> {
         }
         push_external(name, &mut names, builtins);
     }
-    Ok(names)
+    Ok(ScriptPlan {
+        external_names: names,
+        analysis,
+    })
 }
 
 /// Names that must never be bridged: opaque builtins (`command`, `exec`),
@@ -289,9 +301,9 @@ fn collect_find_commands(
 
 /// Execute `command` through the in-process bashkit interpreter.
 ///
-/// `external_names` are bridged to host executables. The whole script shares
-/// one deadline (`timeout`) plus the caller's cancel flag. When `sink` is
-/// set, output streams live (host commands via pipe drains, builtins via the
+/// `plan.external_names` are bridged to host executables. The whole script
+/// shares one deadline (`timeout`) plus the caller's cancel flag. When `sink`
+/// is set, output streams live (host commands via pipe drains, builtins via the
 /// callback + flush ticker); timeout/cancel errors report partial output like
 /// the real-bash route.
 ///
@@ -305,7 +317,7 @@ pub(crate) fn execute(
     workspace: &Path,
     timeout: Duration,
     cancel: &CancellationToken,
-    external_names: Vec<String>,
+    plan: ScriptPlan,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
     let shared_cancel = CancellationToken::new();
@@ -316,13 +328,22 @@ pub(crate) fn execute(
     // Script-level forwarder: coalescing and partial capture apply per script, not per command.
     let forwarder = Arc::new(Mutex::new(ChunkForwarder::new(sink)));
 
+    // One mount table for the rewrite and the interpreter, so both agree on
+    // where host paths live in the VFS.
+    let home_mount = real_home_mount();
+    let mount_specs = mounts(workspace, home_mount.as_ref());
+    // Windows: rewrite host-style paths in builtin args to VFS form.
+    let script = rewrite_host_paths(command, &plan.analysis, &mount_specs);
+
     let mut bash = build_bash(
         workspace,
         timeout + Duration::from_secs(1), // backstop; outer select fires first
-        &external_names,
+        &plan.external_names,
         Arc::clone(&deadline_ms),
         shared_cancel.clone(),
         Arc::clone(&forwarder),
+        mount_specs,
+        home_mount,
     );
 
     let handle = tokio::runtime::Handle::current();
@@ -335,7 +356,7 @@ pub(crate) fn execute(
                     shared_cancel.cancel();
                     Err(error_with_partial(&forwarder, CANCEL_REASON))
                 }
-                result = run_script(&mut bash, command, &external_names, &forwarder) => {
+                result = run_script(&mut bash, &script, &plan.external_names, &forwarder) => {
                     result.map_err(|e| e.to_string())
                 }
                 _ = tokio::time::sleep(timeout) => {
@@ -413,7 +434,8 @@ impl Drop for FlushTicker {
 
 /// Build a bashkit `Bash` wired to the real workspace.
 ///
-/// Applies mount table (`mounts`), seeds env, and bridges external command names.
+/// Applies the mount table, seeds env, and bridges external command names.
+#[allow(clippy::too_many_arguments)] // one knob per interpreter concern
 fn build_bash(
     workspace: &Path,
     timeout: Duration,
@@ -421,10 +443,10 @@ fn build_bash(
     deadline_ms: Arc<AtomicU64>,
     cancel: CancellationToken,
     forwarder: Arc<Mutex<ChunkForwarder>>,
+    mount_specs: Vec<RealMount>,
+    home_mount: Option<RealMount>,
 ) -> Bash {
-    let home_mount = real_home_mount();
     let workspace_vfs = super::convert_path_to_unix_style(workspace);
-    let mount_specs = mounts(workspace, home_mount.as_ref());
     let shared_mounts: Arc<[RealMount]> = Arc::from(mount_specs.clone());
 
     let mut builder = Bash::builder()
@@ -765,6 +787,363 @@ fn convert_posix_arg(value: &str, mounts: &[RealMount]) -> String {
         }
     }
     value.to_string()
+}
+
+/// Rewrite host-style paths in builtin args to VFS form. A string is replaced
+/// only when EVERY remaining occurrence is a convertible builtin arg — the
+/// census counts arg occurrences, so heredoc bodies, comments, and protected
+/// positions (patterns, output text, bridged commands) skip the string.
+/// Longest first: rewriting `E:/x/y` removes the occurrence of `E:/x` inside
+/// it, so a shorter arg that is a string prefix of a longer one still
+/// converts (`cat E:/x/y E:/x`).
+#[cfg(windows)]
+fn rewrite_host_paths<'a>(
+    script: &'a str,
+    analysis: &ScriptAnalysis,
+    mounts: &[RealMount],
+) -> Cow<'a, str> {
+    // Fast path: every convertible host path contains a drive `:`.
+    if !script.contains(':') {
+        return Cow::Borrowed(script);
+    }
+    let mut convertible: Vec<_> = classify_args(analysis)
+        .into_iter()
+        .filter(|(_, (class, _))| *class == Convert)
+        .collect();
+    convertible.sort_by_key(|(arg, _)| std::cmp::Reverse(arg.len()));
+    let mut rewritten = script.to_string();
+    for (arg, (_, count)) in convertible {
+        if rewritten.matches(&arg).count() != count {
+            continue;
+        }
+        if let Some(vfs) = host_arg_to_vfs(&arg, mounts) {
+            rewritten = rewritten.replace(&arg, &vfs);
+        }
+    }
+    if rewritten == script {
+        Cow::Borrowed(script)
+    } else {
+        Cow::Owned(rewritten)
+    }
+}
+
+/// Identity on Unix: VFS paths are the real host paths, so nothing rewrites.
+#[cfg(not(windows))]
+fn rewrite_host_paths<'a>(
+    script: &'a str,
+    _analysis: &ScriptAnalysis,
+    _mounts: &[RealMount],
+) -> Cow<'a, str> {
+    Cow::Borrowed(script)
+}
+
+/// Per-string census: class (`Protect` wins) and occurrence count.
+#[cfg(windows)]
+type ArgCensus = HashMap<String, (ArgClass, usize)>;
+
+/// Per-argument classification for the rewrite.
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArgClass {
+    /// May be rewritten to VFS form (host-shaped builtin file operand).
+    Convert,
+    /// Never rewritten.
+    Protect,
+}
+
+#[cfg(windows)]
+use ArgClass::{Convert, Protect};
+
+/// Census of every literal argument: `Protect` on any occurrence wins.
+#[cfg(windows)]
+fn classify_args(analysis: &ScriptAnalysis) -> ArgCensus {
+    let builtins = builtin_names();
+    let mut census = HashMap::new();
+    for command in &analysis.commands {
+        let Some(name) = command.name.as_deref() else {
+            continue; // dynamic names already made the analysis opaque
+        };
+        // Bridged host commands keep native paths; protect-all builtins take
+        // no file operands.
+        if !builtins.contains(name) || PROTECT_ALL_BUILTINS.contains(&name) {
+            for arg in command.args.iter().flatten() {
+                add_census(&mut census, arg, Protect);
+            }
+        } else if name == "find" {
+            classify_find_args(command, &mut census);
+        } else if let Some(opts) = pattern_first_opts(name) {
+            classify_pattern_first_args(command, &opts, &mut census);
+        } else {
+            classify_convert_all_args(command, &mut census);
+        }
+    }
+    // Redirects are opened by the interpreter itself (VFS), even for bridged
+    // commands, so their paths always convert.
+    for redirect in &analysis.redirects {
+        if let Some(path) = &redirect.path {
+            add_census(&mut census, path, Convert);
+        }
+    }
+    census
+}
+
+/// Record one literal argument occurrence; `Protect` on any occurrence wins.
+#[cfg(windows)]
+fn add_census(census: &mut ArgCensus, arg: &str, class: ArgClass) {
+    let entry = census.entry(arg.to_string()).or_insert((Convert, 0));
+    entry.1 += 1;
+    if class == Protect {
+        entry.0 = Protect;
+    }
+}
+
+/// Builtins whose args are output/format text, variable handling, or wrapped
+/// commands — never rewritten, even when host-path-shaped.
+#[cfg(windows)]
+const PROTECT_ALL_BUILTINS: &[&str] = &[
+    "echo", "printf", "test", "[", "expr", // output/format text
+    "env", "timeout", "xargs", // wrappers: args carry bridged commands
+    // (`watch`/`parallel` need no entry: their stubs fail analysis first)
+    "read", "declare", "typeset", "local", "export", "unset", "set", "shopt", "return", "exit",
+    "wait", "kill", "sleep", "seq", "true", "false", "shift", "let", "alias", "unalias", "type",
+    "hash", "help", "history", "umask", "ulimit", // variables & flow control
+];
+
+/// Option table of a pattern-first builtin: the first bare operand is the
+/// pattern/program (protected), later operands are files (converted).
+#[cfg(windows)]
+struct PatternFirstOpts {
+    /// `(flag, class)` — the next arg is the flag's value (pattern source,
+    /// non-path value, or file).
+    value: &'static [(&'static str, ArgClass)],
+    /// `(prefix, class)` — attached value (`--flag=<value>`).
+    attached: &'static [(&'static str, ArgClass)],
+    /// Of the above, the flags supplying the pattern/program: once one is
+    /// seen, the first bare operand is a file.
+    program: &'static [&'static str],
+}
+
+#[cfg(windows)]
+fn pattern_first_opts(name: &str) -> Option<PatternFirstOpts> {
+    let opts = match name {
+        "grep" | "rg" => PatternFirstOpts {
+            value: &[
+                ("-e", Protect),
+                ("--regexp", Protect),
+                ("-A", Protect),
+                ("-B", Protect),
+                ("-C", Protect),
+                ("-m", Protect),
+                ("--after-context", Protect),
+                ("--before-context", Protect),
+                ("--context", Protect),
+                ("--max-count", Protect),
+                ("-f", Convert),
+                ("--file", Convert),
+            ],
+            attached: &[
+                ("--regexp=", Protect),
+                ("--include=", Protect),
+                ("--exclude=", Protect),
+                ("--exclude-dir=", Protect),
+                ("--color=", Protect),
+                ("--file=", Convert),
+            ],
+            program: &["-e", "--regexp", "-f", "--file", "--regexp=", "--file="],
+        },
+        "sed" => PatternFirstOpts {
+            value: &[
+                ("-e", Protect),
+                ("--expression", Protect),
+                ("-f", Convert),
+                ("--file", Convert),
+            ],
+            attached: &[
+                ("--expression=", Protect),
+                ("--in-place=", Protect),
+                ("--file=", Convert),
+            ],
+            program: &[
+                "-e",
+                "--expression",
+                "-f",
+                "--file",
+                "--expression=",
+                "--file=",
+            ],
+        },
+        "awk" => PatternFirstOpts {
+            value: &[
+                ("-F", Protect),
+                ("-v", Protect),
+                ("--assign", Protect),
+                ("-f", Convert),
+                ("--file", Convert),
+            ],
+            attached: &[("--field-separator=", Protect), ("--file=", Convert)],
+            program: &["-f", "--file", "--file="],
+        },
+        // No `jq` arm: the jq feature is off in this build, so jq is bridged
+        // (args protected) — re-add if the feature is ever enabled.
+        _ => return None,
+    };
+    Some(opts)
+}
+
+/// Scan a pattern-first builtin's args: flags consume their values with the
+/// flag's class; the first bare operand is the pattern/program, later bare
+/// operands are files.
+#[cfg(windows)]
+fn classify_pattern_first_args(
+    command: &AnalyzedCommand,
+    opts: &PatternFirstOpts,
+    census: &mut ArgCensus,
+) {
+    let mut program_supplied = false;
+    let mut operand_seen = false;
+    let args = command.args.as_slice();
+    let mut i = 0;
+    while i < args.len() {
+        let Some(arg) = args[i].as_deref() else {
+            i += 1;
+            continue;
+        };
+        if let Some((_, class)) = opts.value.iter().find(|(flag, _)| *flag == arg) {
+            program_supplied |= opts.program.contains(&arg);
+            if let Some(value) = args.get(i + 1).and_then(|a| a.as_deref()) {
+                add_census(census, value, *class);
+            }
+            i += 2;
+            continue;
+        }
+        if let Some((prefix, class)) = opts
+            .attached
+            .iter()
+            .find(|(prefix, _)| arg.starts_with(prefix))
+        {
+            program_supplied |= opts.program.contains(prefix);
+            add_census(census, &arg[prefix.len()..], *class);
+            i += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            i += 1; // plain flag
+            continue;
+        }
+        // Bare operand: the first is the pattern/program, later ones are
+        // files — unless a pattern flag already supplied it.
+        let class = if operand_seen || program_supplied {
+            Convert
+        } else {
+            Protect
+        };
+        operand_seen = true;
+        add_census(census, arg, class);
+        i += 1;
+    }
+}
+
+/// `find [PATH]... [EXPRESSION]` — leading bare operands are search paths
+/// (converted); from the first flag on, args are predicates, patterns, or
+/// `-exec` templates for bridged commands (protected).
+#[cfg(windows)]
+fn classify_find_args(command: &AnalyzedCommand, census: &mut ArgCensus) {
+    let mut expression = false;
+    for arg in command.args.iter().flatten() {
+        if expression || arg.starts_with('-') || matches!(arg.as_str(), "!" | "(" | ")") {
+            expression = true;
+            add_census(census, arg, Protect);
+        } else {
+            add_census(census, arg, Convert);
+        }
+    }
+}
+
+/// Attached-value flags whose value is a file path (`--file=<path>`, …).
+#[cfg(windows)]
+const ATTACHED_PATH_FLAGS: &[&str] = &[
+    "--file=",
+    "--files-from=",
+    "--exclude-from=",
+    "--output=",
+    "--log-file=",
+];
+
+/// `key=value` and `--flag=value` args are data (protected), except the
+/// attached path-flag allowlist above, whose value converts.
+#[cfg(windows)]
+fn classify_convert_all_args(command: &AnalyzedCommand, census: &mut ArgCensus) {
+    for arg in command.args.iter().flatten() {
+        if let Some(value) = ATTACHED_PATH_FLAGS.iter().find_map(|f| arg.strip_prefix(f)) {
+            add_census(census, value, Convert);
+        } else if arg.contains('=') {
+            add_census(census, arg, Protect);
+        } else {
+            add_census(census, arg, Convert);
+        }
+    }
+}
+
+/// VFS spelling of a host-style path arg: deepest mount-table match first
+/// (canonical case and routing), MSYS drive form (`C:\x` → `/c/x`) as
+/// fallback. `None` for non-host shapes and unmounted UNC paths.
+#[cfg(windows)]
+fn host_arg_to_vfs(arg: &str, mounts: &[RealMount]) -> Option<String> {
+    let drive = is_drive_path(arg);
+    if !drive && !arg.starts_with("\\\\") {
+        return None; // VFS-shaped, relative, or otherwise not a host path
+    }
+    if let Some(vfs) = mounted_vfs(arg, mounts) {
+        return Some(vfs);
+    }
+    // Unmounted drives still convert, MSYS-style; unmounted UNC has no VFS
+    // spelling. `convert_path_to_unix_style` also maps verbatim `\\?\C:\`.
+    drive.then(|| super::convert_path_to_unix_style(Path::new(arg)))
+}
+
+/// Host drive path shape: `C:\x`, `C:/x`, or the verbatim `\\?\C:\x` form.
+#[cfg(windows)]
+fn is_drive_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    let disk = |b: &[u8]| {
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
+    };
+    disk(b) || b.starts_with(br"\\?\") && disk(&b[4..])
+}
+
+/// Deepest case-insensitive mount match for a host path; returns the VFS
+/// spelling (canonical mount path + original-case remainder).
+#[cfg(windows)]
+fn mounted_vfs(arg: &str, mounts: &[RealMount]) -> Option<String> {
+    let lower = arg.to_ascii_lowercase().replace('\\', "/");
+    let mut best: Option<(&RealMount, usize, &str)> = None;
+    for mount in mounts {
+        let host = mount
+            .host_path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .replace('\\', "/");
+        let host = host.trim_end_matches('/');
+        let Some(rest) = lower.strip_prefix(host) else {
+            continue;
+        };
+        if !rest.is_empty() && !rest.starts_with('/') {
+            continue; // component boundary: `d:\tmp2` is not under `d:\tmp`
+        }
+        if best.is_none_or(|(_, depth, _)| host.len() > depth) {
+            best = Some((mount, host.len(), &arg[host.len()..]));
+        }
+    }
+    let (mount, _, rest) = best?;
+    let rest = rest.trim_start_matches(['/', '\\']);
+    if rest.is_empty() {
+        return Some(mount.vfs_path.to_string_lossy().into_owned());
+    }
+    Some(format!(
+        "{}/{}",
+        mount.vfs_path.to_string_lossy(),
+        rest.replace('\\', "/")
+    ))
 }
 
 /// VFS mount table in match order (specific mounts before broad ones).
@@ -1119,5 +1498,133 @@ mod tests {
         );
         assert_eq!(convert_arg_for_host("-C/d/x", &mounts), "-C/d/x");
         assert_eq!(convert_arg_for_host("/d/*.rs", &mounts), "/d/*.rs");
+    }
+
+    /// Mount table mirroring [`mounts`] on Windows.
+    fn test_mounts() -> Vec<RealMount> {
+        vec![
+            RealMount::rw("D:\\Rust\\crabot", "/d/Rust/crabot"),
+            RealMount::rw("D:\\tmp", "/tmp"),
+            RealMount::ro("E:\\", "/e"),
+        ]
+    }
+
+    /// Rewrite a script through the analysis + rewrite pipeline.
+    fn rewrite(script: &str, mounts: &[RealMount]) -> String {
+        let plan = analyze_script(script).expect("script must analyze");
+        rewrite_host_paths(script, &plan.analysis, mounts).into_owned()
+    }
+
+    #[test]
+    fn host_arg_to_vfs_mount_case_fallback_and_shapes() {
+        let mounts = test_mounts();
+        assert_eq!(
+            host_arg_to_vfs("E:/Code/x.rs", &mounts).as_deref(),
+            Some("/e/Code/x.rs")
+        );
+        assert_eq!(
+            host_arg_to_vfs("E:\\Code\\x.rs", &mounts).as_deref(),
+            Some("/e/Code/x.rs")
+        );
+        // Case-insensitive mount match keeps the canonical VFS spelling.
+        assert_eq!(
+            host_arg_to_vfs("d:\\RUST\\crabot\\src\\x.rs", &mounts).as_deref(),
+            Some("/d/Rust/crabot/src/x.rs")
+        );
+        assert_eq!(
+            host_arg_to_vfs("D:\\tmp\\f.txt", &mounts).as_deref(),
+            Some("/tmp/f.txt")
+        );
+        // Unmounted drives fall back to the MSYS form; verbatim devices too.
+        assert_eq!(host_arg_to_vfs("C:/x", &mounts).as_deref(), Some("/c/x"));
+        assert_eq!(
+            host_arg_to_vfs("\\\\?\\C:\\x\\y", &mounts).as_deref(),
+            Some("/c/x/y")
+        );
+        // Non-host shapes never convert.
+        assert_eq!(host_arg_to_vfs("/e/Code/x.rs", &mounts), None);
+        assert_eq!(host_arg_to_vfs("rel/x.rs", &mounts), None);
+        assert_eq!(host_arg_to_vfs("E:x", &mounts), None);
+        assert_eq!(host_arg_to_vfs("\\\\server\\share\\x", &mounts), None);
+    }
+
+    #[test]
+    fn rewrite_converts_builtin_file_operands() {
+        let mounts = test_mounts();
+        assert_eq!(
+            rewrite("grep -n 'needle' E:/Code/x.rs", &mounts),
+            "grep -n 'needle' /e/Code/x.rs"
+        );
+        assert_eq!(
+            rewrite("cat 'd:\\RUST\\crabot\\Cargo.toml'", &mounts),
+            "cat '/d/Rust/crabot/Cargo.toml'"
+        );
+        assert_eq!(
+            rewrite("sed -n '1p' E:/Code/x.rs", &mounts),
+            "sed -n '1p' /e/Code/x.rs"
+        );
+        assert_eq!(
+            rewrite("find E:/Code -name '*.rs'", &mounts),
+            "find /e/Code -name '*.rs'"
+        );
+        assert_eq!(rewrite("ls > E:/out.txt", &mounts), "ls > /e/out.txt");
+        assert_eq!(
+            rewrite("grep -f E:/pat.txt E:/data.txt", &mounts),
+            "grep -f /e/pat.txt /e/data.txt"
+        );
+        assert_eq!(
+            rewrite("grep --file=E:/pat.txt E:/data.txt", &mounts),
+            "grep --file=/e/pat.txt /e/data.txt"
+        );
+    }
+
+    #[test]
+    fn rewrite_leaves_patterns_output_and_bridged_args() {
+        let mounts = test_mounts();
+        // The pattern position stays native; the file operand converts.
+        assert_eq!(
+            rewrite("grep 'E:/Code' E:/Code/x.rs", &mounts),
+            "grep 'E:/Code' /e/Code/x.rs"
+        );
+        // Output text and bridged host commands stay verbatim.
+        assert_eq!(rewrite("echo E:/Code/x.rs", &mounts), "echo E:/Code/x.rs");
+        assert_eq!(
+            rewrite("git -C E:/Code/x status", &mounts),
+            "git -C E:/Code/x status"
+        );
+    }
+
+    #[test]
+    fn rewrite_skips_ambiguous_and_extra_occurrences() {
+        let mounts = test_mounts();
+        // Same string as pattern and file: conversion would change the pattern.
+        assert_eq!(rewrite("grep 'E:/x' E:/x", &mounts), "grep 'E:/x' E:/x");
+        // Same string as output and file: a global replace would corrupt the output.
+        assert_eq!(
+            rewrite("echo E:/x; cat E:/x", &mounts),
+            "echo E:/x; cat E:/x"
+        );
+        // Extra occurrence in a heredoc body: only exact arg occurrences convert.
+        let script = "cat E:/x <<'EOF'\nE:/x\nEOF\n";
+        assert_eq!(rewrite(script, &mounts), script);
+        // A protected longer string containing the shorter arg still blocks
+        // the rewrite (fails safe rather than corrupting the output).
+        assert_eq!(
+            rewrite("echo E:/x/y; cat E:/x", &mounts),
+            "echo E:/x/y; cat E:/x"
+        );
+    }
+
+    /// Prefix-overlapping operands both convert: longest-first replacement
+    /// removes the inner occurrence before the shorter arg's census count is
+    /// checked against the remaining text.
+    #[test]
+    fn rewrite_converts_prefix_overlapping_paths() {
+        let mounts = test_mounts();
+        assert_eq!(rewrite("cat E:/x/y E:/x", &mounts), "cat /e/x/y /e/x");
+        assert_eq!(
+            rewrite("cat E:/x/y E:/x E:/x/y", &mounts),
+            "cat /e/x/y /e/x /e/x/y"
+        );
     }
 }

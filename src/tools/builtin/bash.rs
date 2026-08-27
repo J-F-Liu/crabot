@@ -100,8 +100,8 @@ fn run(
     );
     // Prefer bashkit's in-process interpreter; fall back to `bash -c` for
     // scripts it cannot faithfully execute.
-    match bash_kit::collect_external_names(command) {
-        Ok(names) => bash_kit::execute(command, workspace, timeout, cancel, names, sink),
+    match bash_kit::analyze_script(command) {
+        Ok(plan) => bash_kit::execute(command, workspace, timeout, cancel, plan, sink),
         Err(()) => {
             tracing::info!("bashkit falling back to host bash: {}", command);
             execute_real_bash(command, workspace, timeout, cancel, sink)

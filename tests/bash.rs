@@ -727,6 +727,84 @@ fn bashkit_converts_tmp_vfs_path_args() {
     );
 }
 
+/// Windows: host-style drive paths in builtin arguments are rewritten to VFS
+/// form (`E:/...` → `/e/...`) — the inverse of the bridged-command
+/// conversion. `grep` (a bashkit builtin) reads both a drive-root probe file
+/// via its drive-letter mount and a temp-dir file via the home mount.
+#[cfg(windows)]
+#[test]
+fn bashkit_builtins_convert_host_path_args() {
+    let ws = crabot_workspace();
+    let needle = "crabot-host-path-probe-marker";
+
+    // Probe file in the drive root (read-only drive-letter mount).
+    let name = format!("crabot_hostpath_probe_{}.txt", std::process::id());
+    let (probe_host, probe_vfs) = drive_probe(&ws, &name);
+    if fs::write(&probe_host, format!("{needle}\n")).is_ok() {
+        let host_form = probe_host.to_string_lossy().replace('\\', "/");
+        let result = run_bash(&format!("grep '{needle}' '{host_form}'"), &ws, None).unwrap();
+        assert!(result.contains(needle), "host form failed: {result}");
+        assert!(!result.contains("No such file"), "unexpected: {result}");
+        // The VFS form works the same (control).
+        let result = run_bash(&format!("grep '{needle}' '{probe_vfs}'"), &ws, None).unwrap();
+        assert!(result.contains(needle), "VFS form failed: {result}");
+        let _ = fs::remove_file(&probe_host);
+    }
+
+    // File under the temp dir (read-write home mount path).
+    let dir = TempDir::new("hostpath").unwrap();
+    let file = dir.join("probe.txt");
+    fs::write(&file, format!("{needle}\n")).unwrap();
+    let host_form = file.to_string_lossy().replace('\\', "/");
+    let result = run_bash(&format!("grep '{needle}' '{host_form}'"), &ws, None).unwrap();
+    assert!(
+        result.contains(needle),
+        "host form under temp failed: {result}"
+    );
+}
+
+/// Windows: when one builtin operand is a string prefix of another
+/// (`.../probe` vs `.../probe.txt`), both still convert — the rewrite
+/// replaces longer paths first, so the shorter one's occurrence inside the
+/// longer path no longer inflates its census count.
+#[cfg(windows)]
+#[test]
+fn bashkit_builtins_convert_prefix_overlapping_args() {
+    let ws = crabot_workspace();
+    let dir = TempDir::new("hostpath_prefix").unwrap();
+    let short = dir.join("probe");
+    let long = dir.join("probe.txt");
+    fs::write(&short, "short\n").unwrap();
+    fs::write(&long, "long\n").unwrap();
+    let short_host = short.to_string_lossy().replace('\\', "/");
+    let long_host = long.to_string_lossy().replace('\\', "/");
+    // Longer path first in the command: without longest-first replacement the
+    // shorter arg keeps its host form and `cat` fails to find it.
+    let result = run_bash(&format!("cat '{long_host}' '{short_host}'"), &ws, None).unwrap();
+    assert!(
+        result.contains("short") && result.contains("long"),
+        "unexpected: {result}"
+    );
+    assert!(!result.contains("No such file"), "unexpected: {result}");
+}
+
+/// Windows: output positions and bridged commands keep host-style paths
+/// verbatim — the rewrite only touches builtin file operands.
+#[cfg(windows)]
+#[test]
+fn bashkit_builtins_leave_output_args_verbatim() {
+    let ws = crabot_workspace();
+    let result = run_bash("echo 'E:/virtual/unchanged'", &ws, None).unwrap();
+    assert!(
+        result.contains("E:/virtual/unchanged"),
+        "unexpected: {result}"
+    );
+    assert!(
+        !result.contains("/e/virtual/unchanged"),
+        "unexpected: {result}"
+    );
+}
+
 /// A builtin returning `ExecResult::err` does NOT stop the script: like real
 /// bash, the next `;`-separated command still runs and its exit code wins.
 #[test]
