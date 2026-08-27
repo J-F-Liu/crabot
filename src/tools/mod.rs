@@ -17,6 +17,7 @@ mod context;
 mod exec;
 mod limits;
 mod paths;
+mod proxy;
 mod registry;
 mod schema;
 mod tool;
@@ -57,6 +58,9 @@ pub use limits::{
     StreamingCap, ToolLimits, capping_sink, init_tool_limits, streaming_truncation_marker,
     tool_limits,
 };
+
+// ── proxy ───────────────────────────────────────────────────────────
+pub use proxy::{configure_proxy, llm_proxy_enabled, tools_proxy_active};
 
 // ── exec ────────────────────────────────────────────────────────────
 #[cfg(windows)]

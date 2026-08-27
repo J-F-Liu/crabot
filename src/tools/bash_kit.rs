@@ -468,6 +468,11 @@ fn build_bash(
             max_response_bytes: 64 * 1024 * 1024,
         });
 
+    // Route sandbox curl/wget through the system proxy when applied.
+    if let Some(transport) = super::proxy::system_proxy_transport() {
+        builder = builder.http_transport(transport);
+    }
+
     // Seed env from host; HOME comes from the VFS home mount so `~` expands to
     // a clean POSIX path (the host's is often a Windows `C:\` form). Secret
     // vars (names ending in `API_KEY`) are withheld from the interpreter.

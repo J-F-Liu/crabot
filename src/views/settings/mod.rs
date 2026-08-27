@@ -131,6 +131,10 @@ pub(crate) struct SettingsState {
     pub(crate) working_fill_ratio_threshold: String,
     /// Working copy of the stream stall timeout (s, raw text) — parsed on Save.
     pub(crate) working_stream_stall_timeout: String,
+    /// Working copy of "use system proxy for LLM" (Builtin Tools tab).
+    pub(crate) working_use_system_proxy_llm: bool,
+    /// Working copy of "use system proxy for tools" (Builtin Tools tab).
+    pub(crate) working_use_system_proxy_tools: bool,
     /// Working copies of built-in tool limits (raw text) — parsed on Save.
     pub(crate) working_tool_limits: builtin_tools::ToolLimitStrings,
     /// Working copy of sub-agent task models — saved on Save (Builtin Tools tab).
@@ -209,6 +213,8 @@ impl Default for SettingsState {
             working_max_iterations: String::new(),
             working_fill_ratio_threshold: String::new(),
             working_stream_stall_timeout: String::new(),
+            working_use_system_proxy_llm: true,
+            working_use_system_proxy_tools: true,
             working_tool_limits: builtin_tools::ToolLimitStrings::default(),
             working_task_models: TaskModels::default(),
             working_tools: ToolList::default(),
@@ -492,6 +498,8 @@ impl SettingsState {
         self.working_max_iterations = settings.max_iterations.to_string();
         self.working_fill_ratio_threshold = settings.fill_ratio_threshold.to_string();
         self.working_stream_stall_timeout = settings.stream_stall_timeout.to_string();
+        self.working_use_system_proxy_llm = settings.use_system_proxy_for_llm;
+        self.working_use_system_proxy_tools = settings.use_system_proxy_for_tools;
         self.working_tool_limits =
             builtin_tools::ToolLimitStrings::from_limits(&settings.tool_limits);
         self.working_task_models = settings.task_models.clone();
@@ -502,6 +510,8 @@ impl SettingsState {
         settings.max_iterations = self.parsed_max_iterations();
         settings.fill_ratio_threshold = self.parsed_fill_ratio_threshold();
         settings.stream_stall_timeout = self.parsed_stream_stall_timeout();
+        settings.use_system_proxy_for_llm = self.working_use_system_proxy_llm;
+        settings.use_system_proxy_for_tools = self.working_use_system_proxy_tools;
         settings.tool_limits = self.parsed_tool_limits();
         settings.task_models = self.working_task_models.clone();
     }

@@ -53,6 +53,10 @@ pub struct Settings {
     pub task_models: TaskModels,
     /// Whether to automatically check for new versions on startup.
     pub auto_check_updates: bool,
+    /// Route LLM API traffic through the Windows system proxy.
+    pub use_system_proxy_for_llm: bool,
+    /// Route tool HTTP (fetch, sandbox curl/wget, spawned processes) through it.
+    pub use_system_proxy_for_tools: bool,
     /// Latest version found in the last check, if newer than current.
     pub last_update_version: Option<String>,
     /// Whether the dark color theme is active.
@@ -89,6 +93,8 @@ impl Default for Settings {
             tool_limits: ToolLimits::default(),
             task_models: TaskModels::default(),
             auto_check_updates: true,
+            use_system_proxy_for_llm: true,
+            use_system_proxy_for_tools: true,
             last_update_version: None,
             dark_mode: false,
         }

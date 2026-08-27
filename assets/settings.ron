@@ -94,6 +94,8 @@
         ),
     ),
     auto_check_updates: true,
+    use_system_proxy_for_llm: true,
+    use_system_proxy_for_tools: true,
     last_update_version: None,
     dark_mode: false,
 )

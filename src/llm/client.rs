@@ -1,6 +1,6 @@
 //! Genai client construction with custom auth, endpoint, and adapter kind.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
@@ -14,8 +14,14 @@ pub(super) fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Cli
     let has_custom_endpoint = !base_url.is_empty();
     let has_custom_key = !api_key.is_empty();
 
+    let mut builder = Client::builder();
+    // LLM proxy off → no_proxy client so the registry/env proxy can't route LLM traffic.
+    if !crate::tools::llm_proxy_enabled() {
+        builder = builder.with_reqwest(direct_client().clone());
+    }
+
     if !has_custom_endpoint && !has_custom_key {
-        return Client::default();
+        return builder.build();
     }
 
     let mut base_url = base_url.to_string();
@@ -54,7 +60,19 @@ pub(super) fn build_client(base_url: &str, api_key: &str, api_type: &str) -> Cli
         },
     );
 
-    Client::builder()
+    builder
         .with_service_target_resolver(target_resolver)
         .build()
+}
+
+/// Shared direct reqwest client with genai's default WebConfig tuning;
+/// `no_proxy()` disables the registry/env proxy fallback.
+fn direct_client() -> &'static reqwest::Client {
+    static DIRECT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        genai::WebConfig::default()
+            .apply_to_builder(reqwest::Client::builder().no_proxy())
+            .build()
+            .expect("failed to build direct reqwest client")
+    });
+    &DIRECT
 }

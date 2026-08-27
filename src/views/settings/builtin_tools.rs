@@ -20,6 +20,10 @@ pub(crate) enum BuiltinToolsEvent {
     EditFillRatioThreshold(String),
     /// Edit the stream stall timeout field (s, raw text; 0 disables).
     EditStreamStallTimeout(String),
+    /// Toggle routing LLM API traffic through the system proxy.
+    ToggleUseSystemProxyLlm(bool),
+    /// Toggle routing tool HTTP through the system proxy.
+    ToggleUseSystemProxyTools(bool),
     /// Edit one built-in tool limit field (raw text).
     EditToolLimit(ToolLimitField, String),
     /// Pick a provider for a task sub-agent difficulty tier.
@@ -217,6 +221,7 @@ pub(super) fn builtin_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Se
     column![
         header,
         agent_card(state),
+        network_card(state),
         tool_limits_card(state),
         task_models_card(state),
         super::save_action_row(
@@ -225,7 +230,7 @@ pub(super) fn builtin_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Se
             SettingsEvent::BuiltinTools(BuiltinToolsEvent::SaveBuiltinTools),
         ),
     ]
-    .spacing(12)
+    .spacing(8)
     .into()
 }
 
@@ -256,7 +261,7 @@ fn num_input<'a>(
     text_input(placeholder, value)
         .on_input(on_input)
         .width(Length::Fixed(110.0))
-        .padding(4)
+        .padding(3)
         .size(13)
         .into()
 }
@@ -277,7 +282,7 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
                 num_input("25", &state.working_fill_ratio_threshold, move |v| {
                     SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditFillRatioThreshold(v))
                 },),
-                "Context fill ratio at which the agent is reminded to consider renewing.",
+                "Context fill ratio that triggers a renew reminder.",
             ),
             setting_row(
                 "Stream stall timeout (s)",
@@ -287,9 +292,59 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
                 "Seconds with no stream data before giving up. 0 = off.",
             ),
         ]
+        .spacing(6),
+    )
+    .padding([6, 12])
+    .style(form_card_style)
+    .width(Length::Fill)
+    .into()
+}
+
+// ── Network card ──────────────────────────────────────────────────
+
+/// One proxy toggle row: toggler + muted hint.
+fn proxy_toggle_row(
+    enabled: bool,
+    label: &'static str,
+    hint: &'static str,
+    on_toggle: fn(bool) -> BuiltinToolsEvent,
+) -> Element<'static, SettingsEvent> {
+    row![
+        toggler(enabled)
+            .label(label)
+            .text_size(12)
+            .on_toggle(move |v| SettingsEvent::BuiltinTools(on_toggle(v)))
+            .style(crate::views::primary_toggler),
+        text(hint).size(11).color(color_muted()),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn network_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
+    container(
+        column![
+            section_title("Network"),
+            proxy_toggle_row(
+                state.working_use_system_proxy_llm,
+                "LLM traffic via system proxy",
+                "Windows system proxy; HTTP(S)_PROXY env elsewhere.",
+                BuiltinToolsEvent::ToggleUseSystemProxyLlm,
+            ),
+            proxy_toggle_row(
+                state.working_use_system_proxy_tools,
+                "Tools traffic via system proxy",
+                "Fetch, bash curl/wget, and child processes.",
+                BuiltinToolsEvent::ToggleUseSystemProxyTools,
+            ),
+            text("Takes effect on restart.")
+                .size(11)
+                .color(color_muted()),
+        ]
         .spacing(8),
     )
-    .padding([10, 12])
+    .padding([6, 12])
     .style(form_card_style)
     .width(Length::Fill)
     .into()
@@ -314,7 +369,7 @@ fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
     let (left_fields, right_fields) = ToolLimitField::ALL.split_at(6);
     let column_rows = |fields: &[ToolLimitField]| {
         column(fields.iter().copied().map(|f| limit_row(state, f)))
-            .spacing(6)
+            .spacing(4)
             .width(Length::FillPortion(1))
     };
 
@@ -323,9 +378,9 @@ fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
             section_title("Tool Limits"),
             row![column_rows(left_fields), column_rows(right_fields)].spacing(12),
         ]
-        .spacing(8),
+        .spacing(6),
     )
-    .padding([10, 12])
+    .padding([6, 12])
     .style(form_card_style)
     .width(Length::Fill)
     .into()
@@ -355,11 +410,11 @@ fn task_models_card<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> 
             text("Models used by the task tool per difficulty tier. Inherit uses the parent session's model.")
                 .size(11)
                 .color(color_muted()),
-            column(rows).spacing(6),
+            column(rows).spacing(4),
         ]
-        .spacing(8),
+        .spacing(6),
     )
-    .padding([10, 12])
+    .padding([6, 12])
     .style(form_card_style)
     .width(Length::Fill)
     .into()
@@ -446,6 +501,8 @@ pub(super) fn update(state: &mut SettingsState, event: BuiltinToolsEvent) {
         BuiltinToolsEvent::EditMaxIterations(v) => state.working_max_iterations = v,
         BuiltinToolsEvent::EditFillRatioThreshold(v) => state.working_fill_ratio_threshold = v,
         BuiltinToolsEvent::EditStreamStallTimeout(v) => state.working_stream_stall_timeout = v,
+        BuiltinToolsEvent::ToggleUseSystemProxyLlm(v) => state.working_use_system_proxy_llm = v,
+        BuiltinToolsEvent::ToggleUseSystemProxyTools(v) => state.working_use_system_proxy_tools = v,
         BuiltinToolsEvent::EditToolLimit(field, v) => {
             *state.working_tool_limits.get_mut(field) = v;
         }

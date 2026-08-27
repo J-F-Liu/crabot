@@ -170,10 +170,14 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
 
 /// Shared async client: one connection pool for all fetch calls. No client-level
 /// timeout — each request reads the current [`tool_limits`](super::tool_limits).
+/// Tools proxy off → `no_proxy()` blocks reqwest's registry fallback.
 fn client() -> Result<&'static reqwest::Client, String> {
     static CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-        reqwest::Client::builder()
-            .user_agent(crate::app_title())
+        let mut builder = reqwest::Client::builder().user_agent(crate::app_title());
+        if !crate::tools::tools_proxy_active() {
+            builder = builder.no_proxy();
+        }
+        builder
             .build()
             .map_err(|e| format!("Failed to build HTTP client: {e}"))
     });

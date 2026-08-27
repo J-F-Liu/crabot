@@ -1210,6 +1210,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "windows-registry",
  "windows-sys 0.61.2",
  "winresource",
  "zip",

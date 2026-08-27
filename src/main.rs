@@ -30,6 +30,11 @@ pub fn main() -> iced::Result {
     setup::ensure_default_files();
     fonts::load_system_fonts();
     let saved = crabot::settings::Settings::load();
+    // Apply system-proxy settings before any HTTP client is built.
+    tools::configure_proxy(
+        saved.use_system_proxy_for_llm,
+        saved.use_system_proxy_for_tools,
+    );
     let size = Size::new(
         saved.window_size.0.max(MIN_W),
         saved.window_size.1.max(200.0),
