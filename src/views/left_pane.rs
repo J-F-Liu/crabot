@@ -7,8 +7,8 @@ use super::model_config::model_config_view;
 use super::session_list::session_view;
 use super::styles::{label, pane_side};
 use super::system_prompt::{
-    agents_md_field_view, date_field_view, file_picker_field_view, tools_field_view,
-    workspace_field_view,
+    agents_md_field_view, date_field_view, preamble_picker_view, skills_picker_view,
+    tools_field_view, workspace_field_view,
 };
 use super::theme::thin_vertical;
 use super::tool_list::{
@@ -37,8 +37,8 @@ pub(crate) fn left_pane<'a>(
     let agents_md_exists: bool = prompt.agents_md_exists;
     let tool_list_state: &ToolListState = &tools.tool_list_state;
     let preamble_options: &[FilepathEntry] = &prompt.preamble_options;
-    let selected_rules: &str = &settings.selected_rules;
-    let rules_options: &[FilepathEntry] = &prompt.rules_options;
+    let selected_skills: &[String] = &settings.selected_skills;
+    let skills_options: &[FilepathEntry] = &prompt.skills_options;
     let workspace_options: &[FilepathEntry] = &prompt.workspace_options;
     let files: &crate::app::FileTreePane = &prompt.files;
     let workspace_set = !prompt.workspace.1.as_os_str().is_empty();
@@ -67,20 +67,17 @@ pub(crate) fn left_pane<'a>(
             scrollable(
                 column![
                     label("System Prompt", 140.0),
-                    file_picker_field_view(
-                        crate::PREAMBLE,
+                    preamble_picker_view(
                         prompt.preamble_enabled,
                         preamble_options,
                         selected_preamble,
-                        PromptEvent::SelectPreamble,
                     )
                     .map(LeftPaneEvent::Prompt),
-                    file_picker_field_view(
-                        crate::RULES,
-                        prompt.rules_enabled,
-                        rules_options,
-                        selected_rules,
-                        PromptEvent::SelectRules,
+                    skills_picker_view(
+                        prompt.skills_enabled,
+                        prompt.skills_menu_expanded,
+                        skills_options,
+                        selected_skills,
                     )
                     .map(LeftPaneEvent::Prompt),
                     tools_field_view(&prompt.tools).map(LeftPaneEvent::Prompt),

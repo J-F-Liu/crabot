@@ -35,6 +35,8 @@ where
     on_dismiss: Option<Message>,
     width: Length,
     height: Length,
+    /// Maximum height of the popup menu; content scrolls beyond it.
+    max_height: Option<f32>,
     /// Horizontal offset from the trigger's left edge (0 = flush).
     offset_x: f32,
     /// Align the menu's right edge with the trigger's right edge.
@@ -61,6 +63,7 @@ where
             on_dismiss: None,
             width: Length::Shrink,
             height: Length::Shrink,
+            max_height: None,
             offset_x: 0.0,
             right_aligned: false,
             gap: 4.0,
@@ -78,6 +81,15 @@ where
     #[must_use]
     pub fn height(mut self, height: impl Into<Length>) -> Self {
         self.height = height.into();
+        self
+    }
+
+    /// Maximum height of the popup menu; content scrolls beyond it.
+    /// Pairs with [`height`](Self::height) set to `Length::Shrink` to hug
+    /// content up to this cap.
+    #[must_use]
+    pub fn max_height(mut self, max_height: f32) -> Self {
+        self.max_height = Some(max_height);
         self
     }
 
@@ -237,6 +249,7 @@ where
             on_dismiss: self.on_dismiss.as_ref(),
             width: &self.width,
             height: &self.height,
+            max_height: self.max_height,
             offset_x: self.offset_x,
             right_aligned: self.right_aligned,
             gap: self.gap,
@@ -257,6 +270,7 @@ where
     on_dismiss: Option<&'b Message>,
     width: &'b Length,
     height: &'b Length,
+    max_height: Option<f32>,
     offset_x: f32,
     right_aligned: bool,
     gap: f32,
@@ -271,9 +285,13 @@ where
     Renderer: renderer::Renderer,
 {
     fn layout(&mut self, renderer: &Renderer, bounds: Size) -> layout::Node {
-        let limits = layout::Limits::new(Size::ZERO, bounds)
+        let mut limits = layout::Limits::new(Size::ZERO, bounds)
             .width(*self.width)
             .height(*self.height);
+
+        if let Some(max_height) = self.max_height {
+            limits = limits.max_height(max_height);
+        }
 
         let node = self
             .menu
@@ -338,6 +356,11 @@ where
     ) {
         // Dismiss on Escape or click outside.
         if let Some(on_dismiss) = self.on_dismiss {
+            // The trigger bounds are stored origin-relative; translate them to
+            // absolute coordinates for hit-testing (the menu layout is
+            // already absolute).
+            let trigger_bounds =
+                self.trigger_bounds + Vector::new(self.trigger_position.x, self.trigger_position.y);
             match event {
                 Event::Keyboard(keyboard::Event::KeyPressed { key, .. })
                     if key == &keyboard::Key::Named(keyboard::key::Named::Escape) =>
@@ -350,7 +373,7 @@ where
                     mouse::Button::Left | mouse::Button::Right,
                 ))
                 | Event::Touch(touch::Event::FingerPressed { .. })
-                    if !cursor.is_over(layout.bounds()) && !cursor.is_over(self.trigger_bounds) =>
+                    if !cursor.is_over(layout.bounds()) && !cursor.is_over(trigger_bounds) =>
                 {
                     shell.publish(on_dismiss.clone());
                     shell.capture_event();

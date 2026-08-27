@@ -677,7 +677,7 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
     let system_prompt = preamble.as_deref().map(|preamble| {
         app.prompt
-            .compose_system_prompt(Some(preamble), &app.settings.selected_rules)
+            .compose_system_prompt(Some(preamble), &app.settings.selected_skills)
     });
     let parent = &app.conversation.session_tabs[parent_pos];
     let parent_path = parent.task_path.clone();
@@ -984,12 +984,12 @@ pub(crate) fn start_dialog(
 
     // Compute the system prompt before re-borrowing the tab (needs `&app`).
     // The task tool passes an override (mode preamble); otherwise assemble
-    // from the configured components, reading preamble/rules from disk.
+    // from the configured components, reading preamble/skills from disk.
     let system_prompt = match system_prompt_override {
         Some(override_prompt) => override_prompt,
         None => app.prompt.get_system_prompt(
             &app.conversation.session_tabs[tab_pos].selected_preamble,
-            &app.settings.selected_rules,
+            &app.settings.selected_skills,
         ),
     };
 

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crabot::workspace;
 
 pub(crate) const PREAMBLE: &str = "Preamble";
-pub(crate) const RULES: &str = "Rules";
+pub(crate) const SKILLS: &str = "Skills";
 pub(crate) const TOOLS: &str = "Tools";
 pub(crate) const WORKSPACE: &str = "Workspace";
 pub(crate) const AGENTS_MD: &str = "AGENTS.md";
@@ -41,8 +41,8 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
             PREAMBLE => {
                 app.prompt.preamble_enabled = enabled;
             }
-            RULES => {
-                app.prompt.rules_enabled = enabled;
+            SKILLS => {
+                app.prompt.skills_enabled = enabled;
             }
             _ => {
                 if let Some(field) = app.prompt.get_mut(name) {
@@ -113,8 +113,21 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         PromptEvent::SelectPreamble(entry) => {
             app.conversation.viewing_mut().selected_preamble = entry.display.clone();
         }
-        PromptEvent::SelectRules(entry) => {
-            app.settings.selected_rules = entry.display;
+        PromptEvent::ToggleSkill(name, enabled) => {
+            let skills = &mut app.settings.selected_skills;
+            if enabled {
+                if !skills.contains(&name) {
+                    skills.push(name);
+                }
+            } else {
+                skills.retain(|s| *s != name);
+            }
+        }
+        PromptEvent::ToggleSkillsMenu => {
+            app.prompt.skills_menu_expanded = !app.prompt.skills_menu_expanded;
+        }
+        PromptEvent::DismissSkillsMenu => {
+            app.prompt.skills_menu_expanded = false;
         }
         PromptEvent::SelectWorkMode(mode) => {
             app.prompt.workmode = mode;
@@ -312,4 +325,14 @@ pub(crate) fn load_prompt_file(options: &[FilepathEntry], selected: &str) -> Str
                 .ok()
         })
         .unwrap_or_default()
+}
+
+/// Read each selected file in order, joining non-empty contents with a blank line.
+pub(crate) fn load_prompt_files(options: &[FilepathEntry], selected: &[String]) -> String {
+    selected
+        .iter()
+        .map(|name| load_prompt_file(options, name))
+        .filter(|content| !content.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }

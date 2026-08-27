@@ -108,7 +108,8 @@ pub(crate) fn session_view<'a>(
         list = if streaming != DialogPhase::Idle {
             list.style(crate::views::disabled_dropdown_style)
         } else {
-            list.on_open(ConversationEvent::SessionPickerFocused)
+            list.style(crate::views::secondary_dropdown_style)
+                .on_open(ConversationEvent::SessionPickerFocused)
         };
 
         container(list).into()

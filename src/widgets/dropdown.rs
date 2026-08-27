@@ -28,6 +28,17 @@ use std::borrow::Borrow;
 
 // ── style types ────────────────────────────────────────────────────
 
+/// The visual state of a [`DropDown`] trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    /// The [`DropDown`] can be interacted with.
+    Active,
+    /// The cursor is hovering the trigger.
+    Hovered,
+    /// The dropdown menu is open.
+    Opened,
+}
+
 /// The appearance of a [`DropDown`] trigger.
 #[derive(Debug, Clone, Copy)]
 pub struct Style {
@@ -64,8 +75,11 @@ pub struct MenuStyle {
 impl Default for MenuStyle {
     fn default() -> Self {
         Self {
-            background: Background::Color(crate::views::theme::color_card()),
-            border: Border::default().rounded(6),
+            background: Background::Color(crate::views::theme::color_surface()),
+            border: Border::default()
+                .rounded(6)
+                .width(1)
+                .color(crate::views::theme::color_border()),
             text_color: crate::views::theme::color_text_strong(),
             selected_text_color: Color::WHITE,
             selected_background: Background::Color(Color::from_rgb(0.1, 0.6, 0.55)),
@@ -176,7 +190,8 @@ where
     text_size: Option<Pixels>,
     text_line_height: text::LineHeight,
     font: Option<Renderer::Font>,
-    style: Box<dyn Fn(&Theme) -> Style + 'a>,
+    /// Trigger style function; receives the trigger [`Status`].
+    style: StyleFn<'a, Theme>,
     menu_style: Box<dyn Fn(&Theme) -> MenuStyle + 'a>,
     menu_height: Length,
     on_open: Option<Message>,
@@ -188,6 +203,9 @@ where
     /// Left-padding for non-header items, in logical pixels.
     item_indent: f32,
 }
+
+/// Trigger style function; receives the trigger [`Status`].
+type StyleFn<'a, Theme> = Box<dyn Fn(&Theme, Status) -> Style + 'a>;
 
 /// Internal state stored in the widget tree.
 struct State<P: text::Paragraph> {
@@ -259,7 +277,7 @@ where
             text_size: None,
             text_line_height: text::LineHeight::default(),
             font: None,
-            style: Box::new(|_| Style::default()),
+            style: Box::new(|_, _| Style::default()),
             menu_style: Box::new(|_| MenuStyle::default()),
             menu_height: Length::Shrink,
             on_open: None,
@@ -312,8 +330,8 @@ where
         self
     }
 
-    /// Sets the style of the trigger button.
-    pub fn style(mut self, style: impl Fn(&Theme) -> Style + 'a) -> Self {
+    /// Sets the style of the trigger button; receives the trigger [`Status`].
+    pub fn style(mut self, style: impl Fn(&Theme, Status) -> Style + 'a) -> Self {
         self.style = Box::new(style);
         self
     }
@@ -516,12 +534,19 @@ where
         theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
-        let style = (self.style)(theme);
         let bounds = layout.bounds();
+        let status = if state.is_open {
+            Status::Opened
+        } else if cursor.is_over(bounds) {
+            Status::Hovered
+        } else {
+            Status::Active
+        };
+        let style = (self.style)(theme, status);
 
         // Background
         renderer.fill_quad(

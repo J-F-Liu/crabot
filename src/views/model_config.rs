@@ -1,11 +1,12 @@
 use super::icons;
-use super::theme::color_border;
+use super::styles::styled_pick_list;
+use super::theme::{color_border, color_surface};
 use crabot::model::{Model, ModelList};
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Length,
     border::Radius,
     mouse,
-    widget::{button, column, container, mouse_area, pick_list, row, svg, text, toggler, tooltip},
+    widget::{button, column, container, mouse_area, row, svg, text, toggler, tooltip},
 };
 use iced_aw::{
     style::{status::Status, tab_bar::Style as TabBarStyle},
@@ -68,8 +69,9 @@ pub(crate) fn model_config_view<'a>(
                     Status::Hovered => {
                         Background::Color(theme.extended_palette().primary.weak.color)
                     }
-                    _ => Background::Color(theme.extended_palette().background.weak.color),
+                    _ => Background::Color(color_surface()),
                 },
+                tab_label_border_color: color_border(),
                 text_color: match status {
                     Status::Active => Color::WHITE,
                     _ => theme.palette().text,
@@ -146,7 +148,7 @@ pub(crate) fn model_config_view<'a>(
         let level_picker: Element<_> = if levels.is_empty() {
             iced::widget::Space::new().width(Fill).height(30.0).into()
         } else {
-            pick_list(levels, selected_level, Event::SelectThinkingLevel)
+            styled_pick_list(levels, selected_level, Event::SelectThinkingLevel)
                 .width(Fill)
                 .into()
         };
@@ -175,9 +177,9 @@ pub(crate) fn model_config_view<'a>(
         iced::widget::container(
             column![
                 row![
-                    pick_list(providers, selected_entry, |e| Event::SelectProvider(e.id))
+                    styled_pick_list(providers, selected_entry, |e| Event::SelectProvider(e.id))
                         .width(Fill),
-                    pick_list(models, selected_model, |m| Event::SelectModel(m.id.clone())),
+                    styled_pick_list(models, selected_model, |m| Event::SelectModel(m.id.clone())),
                 ]
                 .spacing(4)
                 .align_y(Alignment::Center),

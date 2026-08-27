@@ -27,9 +27,9 @@ use crate::{AskRequest, CenterPaneEvent, ConversationEvent};
 
 use super::icons;
 use super::styles::{
-    assistant_bubble_style, bordered_bar_style, icon_button_style, pane_center,
-    reasoning_box_style, role_badge_style, sel_default, sel_secondary, session_header_style,
-    tool_bubble_style, user_bubble_style,
+    assistant_bubble_style, bordered_bar_style, icon_button_style, menu_container_style,
+    menu_item_style, pane_center, reasoning_box_style, role_badge_style, sel_default,
+    sel_secondary, session_header_style, tool_bubble_style, user_bubble_style,
 };
 use super::theme::{
     CRABOT_DANGER, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT,
@@ -39,7 +39,6 @@ use super::tool_message::{
     args_rows, ask_result_view, bold_font, highlighted_text, highlighted_text_font, path_arg_row,
     result_text,
 };
-use super::user_prompt::{menu_container_style, menu_item_style};
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
 pub(crate) const SEARCH_INPUT: widget::Id = widget::Id::new("search-input");

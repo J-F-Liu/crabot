@@ -92,12 +92,12 @@ pub(crate) struct FileTreePane {
 /// System prompt, workspace, prompt-file options, and user-prompt editor.
 pub(crate) struct PromptWorkspaceState {
     pub(crate) preamble_enabled: bool,
-    pub(crate) rules_enabled: bool,
+    pub(crate) skills_enabled: bool,
     pub(crate) workspace: (bool, PathBuf),
     pub(crate) agents_md: (bool, String),
     pub(crate) date: (bool, String),
     pub(crate) preamble_options: Vec<FilepathEntry>,
-    pub(crate) rules_options: Vec<FilepathEntry>,
+    pub(crate) skills_options: Vec<FilepathEntry>,
     pub(crate) workspace_options: Vec<FilepathEntry>,
     pub(crate) agents_md_exists: bool,
     pub(crate) files: FileTreePane,
@@ -106,6 +106,8 @@ pub(crate) struct PromptWorkspaceState {
     pub(crate) workmode: WorkMode,
     pub(crate) workmode_enabled: bool,
     pub(crate) recipe_dropdown_expanded: bool,
+    /// Whether the skills multi-select dropdown is open.
+    pub(crate) skills_menu_expanded: bool,
 }
 
 impl PromptWorkspaceState {
@@ -125,16 +127,16 @@ impl PromptWorkspaceState {
     }
 
     /// Concatenate all enabled components, returning the full system prompt.
-    /// Preamble and rules file contents are read from disk on every call.
+    /// Preamble and skills file contents are read from disk on every call.
     pub(crate) fn get_system_prompt(
         &self,
         selected_preamble: &str,
-        selected_rules: &str,
+        selected_skills: &[String],
     ) -> String {
         let preamble = self
             .preamble_enabled
             .then(|| prompt::load_prompt_file(&self.preamble_options, selected_preamble));
-        self.compose_system_prompt(preamble.as_deref(), selected_rules)
+        self.compose_system_prompt(preamble.as_deref(), selected_skills)
     }
 
     /// Like [`get_system_prompt`](Self::get_system_prompt), but with a
@@ -143,7 +145,7 @@ impl PromptWorkspaceState {
     pub(crate) fn compose_system_prompt(
         &self,
         preamble: Option<&str>,
-        selected_rules: &str,
+        selected_skills: &[String],
     ) -> String {
         fn section(prompt: &mut String, content: &str) {
             if !content.is_empty() {
@@ -162,10 +164,10 @@ impl PromptWorkspaceState {
         {
             section(&mut prompt, contents);
         }
-        if self.rules_enabled {
+        if self.skills_enabled {
             section(
                 &mut prompt,
-                &prompt::load_prompt_file(&self.rules_options, selected_rules),
+                &prompt::load_prompt_files(&self.skills_options, selected_skills),
             );
         }
         if self.tools.enabled {
@@ -466,7 +468,12 @@ pub(crate) enum PromptEvent {
     SelectWorkspace(FilepathEntry),
     WorkspaceDialogResult(Option<PathBuf>),
     SelectPreamble(FilepathEntry),
-    SelectRules(FilepathEntry),
+    /// Toggle a skill file in the multi-selection.
+    ToggleSkill(String, bool),
+    /// Open/close the skills multi-select dropdown.
+    ToggleSkillsMenu,
+    /// Dismiss the skills dropdown (outside click / Escape).
+    DismissSkillsMenu,
     SelectWorkMode(WorkMode),
     ToggleWorkMode(bool),
     ToggleRecipeDropdown,
@@ -660,7 +667,13 @@ impl App {
             .collect();
 
         let preamble_options = crate::views::build_md_file_options("preamble");
-        let rules_options = crate::views::build_md_file_options("rules");
+        let skills_options = crate::views::build_md_file_options("skills");
+
+        // Drop skill selections whose files no longer exist (e.g. a skill
+        // file deleted from ~/.crabot/skills).
+        saved
+            .selected_skills
+            .retain(|name| skills_options.iter().any(|entry| &entry.display == name));
 
         let workspace_path = saved.workspace.clone();
         let enabled_mcp_servers: HashSet<_> = saved
@@ -702,12 +715,12 @@ impl App {
 
         let prompt = PromptWorkspaceState {
             preamble_enabled: saved.preamble_enabled,
-            rules_enabled: saved.rules_enabled,
+            skills_enabled: saved.skills_enabled,
             workspace: (saved.workspace_enabled, workspace_path.clone()),
             agents_md: (saved.agents_md_enabled, String::new()),
             date: (saved.date_enabled, date_str),
             preamble_options,
-            rules_options,
+            skills_options,
             workspace_options,
             agents_md_exists: false,
             // Tree is fetched fresh from disk whenever the pane is expanded.
@@ -725,6 +738,7 @@ impl App {
             workmode: WorkMode::default_mode(),
             workmode_enabled: true,
             recipe_dropdown_expanded: false,
+            skills_menu_expanded: false,
         };
 
         let models_count = models.models.len();
@@ -897,7 +911,7 @@ impl App {
             self.layout.window_pos.y.max(0.0),
         );
         self.settings.preamble_enabled = self.prompt.preamble_enabled;
-        self.settings.rules_enabled = self.prompt.rules_enabled;
+        self.settings.skills_enabled = self.prompt.skills_enabled;
         self.settings.workspace_enabled = self.prompt.workspace.0;
         self.settings.agents_md_enabled = self.prompt.agents_md.0;
         self.settings.date_enabled = self.prompt.date.0;

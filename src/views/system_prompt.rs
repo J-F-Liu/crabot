@@ -1,16 +1,18 @@
 use iced::{
     Alignment, Element, Fill, Length,
     widget::{
-        Space, checkbox, column, mouse_area, pick_list, row, scrollable, text, text_editor,
-        text_input,
+        Space, button, checkbox, column, container, mouse_area, row, scrollable, text,
+        text::Wrapping, text_editor, text_input,
     },
 };
 
 use crate::PromptEvent;
-use crate::{AGENTS_MD, DATE, FilepathEntry, TOOLS, WORKSPACE};
+use crate::{AGENTS_MD, DATE, FilepathEntry, PREAMBLE, SKILLS, TOOLS, WORKSPACE};
 
+use super::styles::{menu_container_style, styled_pick_list};
 use super::theme::thin_vertical;
 use crate::app::ExpandableEditor;
+use crate::widgets::popup_menu::PopupMenu;
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -38,12 +40,10 @@ pub(crate) fn expandable_header<'a>(
 
 // ── field views ──────────────────────────────────────────────────────
 
-pub(crate) fn file_picker_field_view<'a>(
-    name: &'static str,
+pub(crate) fn preamble_picker_view<'a>(
     checked: bool,
     options: &'a [FilepathEntry],
     selected_display: &'a str,
-    on_select: fn(FilepathEntry) -> PromptEvent,
 ) -> Element<'a, PromptEvent> {
     let selected = if selected_display.is_empty() {
         None
@@ -56,11 +56,76 @@ pub(crate) fn file_picker_field_view<'a>(
 
     row![
         checkbox(checked)
-            .label(name)
+            .label(PREAMBLE)
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
+            .on_toggle(move |v| PromptEvent::ToggleEnabled(PREAMBLE, v))
             .width(Fill),
-        pick_list(options, selected, on_select).width(Fill),
+        styled_pick_list(options, selected, PromptEvent::SelectPreamble).width(Fill),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Skills checkbox + multi-select dropdown of skill files.
+pub(crate) fn skills_picker_view<'a>(
+    enabled: bool,
+    expanded: bool,
+    options: &'a [FilepathEntry],
+    selected: &'a [String],
+) -> Element<'a, PromptEvent> {
+    let summary = if selected.is_empty() {
+        "None selected".to_string()
+    } else if selected.len() <= 2 {
+        selected.join(", ")
+    } else {
+        format!("{} +{} more", selected[..2].join(", "), selected.len() - 2)
+    };
+
+    let trigger = button(
+        row![
+            text(summary).size(13).wrapping(Wrapping::None),
+            Space::new().width(Length::Fill),
+            text("▾").size(12),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .padding([4, 8])
+    .width(Length::Fill)
+    .on_press(PromptEvent::ToggleSkillsMenu)
+    .style(crate::views::secondary_button);
+
+    let menu_items: Vec<Element<'_, PromptEvent>> = options
+        .iter()
+        .map(|entry| {
+            let name = entry.display.clone();
+            let checked = selected.contains(&name);
+            checkbox(checked)
+                .label(name.clone())
+                .style(crate::views::primary_checkbox)
+                .on_toggle(move |v| PromptEvent::ToggleSkill(name.clone(), v))
+                .into()
+        })
+        .collect();
+    let overlay =
+        container(scrollable(column(menu_items).spacing(2).padding([4, 0])).height(Length::Shrink))
+            .style(menu_container_style);
+
+    let dropdown: Element<'_, PromptEvent> = PopupMenu::new(trigger, overlay, expanded)
+        .width(Length::Fixed(240.0))
+        .height(Length::Shrink)
+        .max_height(200.0)
+        .gap(2.0)
+        .on_dismiss(PromptEvent::DismissSkillsMenu)
+        .into();
+
+    row![
+        checkbox(enabled)
+            .label(SKILLS)
+            .style(crate::views::primary_checkbox)
+            .on_toggle(move |v| PromptEvent::ToggleEnabled(SKILLS, v))
+            .width(Fill),
+        dropdown,
     ]
     .spacing(4)
     .align_y(Alignment::Center)
@@ -121,14 +186,14 @@ pub(crate) fn workspace_field_view<'a>(
             .style(crate::views::primary_checkbox)
             .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
             .width(Fill),
-        pick_list(options, selected, PromptEvent::SelectWorkspace).width(Fill),
+        styled_pick_list(options, selected, PromptEvent::SelectWorkspace).width(Fill),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
     .into()
 }
 
-/// Build picker options for a prompt file directory (preamble / rules).
+/// Build picker options for a prompt file directory (preamble / skills).
 /// Each entry's display name is the file stem (extension omitted).
 pub fn build_md_file_options(subdir: &str) -> Vec<FilepathEntry> {
     let dir = crabot::setup::config_dir().join(subdir);

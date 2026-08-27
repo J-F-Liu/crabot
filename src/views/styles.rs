@@ -1,6 +1,8 @@
+use std::borrow::Borrow;
+
 use iced::{
     Border, Color, Element, Font, Length, Shadow, Theme, Vector, font,
-    widget::{button, checkbox, container, mouse_area, rule, toggler},
+    widget::{button, checkbox, container, mouse_area, pick_list, rule, toggler},
 };
 use iced_selection::text::Style as SelectionStyle;
 
@@ -439,15 +441,165 @@ pub(crate) fn role_badge_style(role: &str) -> impl Fn(&Theme) -> container::Styl
 
 // ── dropdown styles ───────────────────────────────────────────────
 
-/// Muted, non-interactive-looking style for DropDown when disabled.
-pub(crate) fn disabled_dropdown_style(_theme: &Theme) -> crate::widgets::dropdown::Style {
+/// Popup menu container — surface card with subtle border.
+pub(crate) fn menu_container_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(color_surface().into()),
+        border: Border {
+            color: color_border(),
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Pick-list menu styled like [`menu_container_style`].
+pub(crate) fn pick_list_menu_style(_theme: &Theme) -> iced::widget::overlay::menu::Style {
+    iced::widget::overlay::menu::Style {
+        background: color_surface().into(),
+        border: iced::Border::default()
+            .rounded(6)
+            .width(1)
+            .color(color_border()),
+        text_color: color_text_strong(),
+        selected_text_color: Color::WHITE,
+        selected_background: CRABOT_PRIMARY.into(),
+        shadow: Shadow::default(),
+    }
+}
+
+/// Flat menu-item button style with hover highlight, like a native context menu.
+pub(crate) fn menu_item_style(_theme: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: None,
+        text_color: color_text_strong(),
+        border: Border::default(),
+        ..button::Style::default()
+    };
+    match status {
+        button::Status::Hovered | button::Status::Pressed => button::Style {
+            background: Some(color_surface().into()),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            text_color: color_muted(),
+            ..base
+        },
+        _ => base,
+    }
+}
+
+/// Muted style for a disabled DropDown.
+pub(crate) fn disabled_dropdown_style(
+    _theme: &Theme,
+    _status: crate::widgets::dropdown::Status,
+) -> crate::widgets::dropdown::Style {
     crate::widgets::dropdown::Style {
         text_color: color_muted(),
         placeholder_color: color_muted(),
         handle_color: color_muted(),
         background: iced::Background::Color(color_surface()),
-        border: iced::Border::default(),
+        border: dropdown_colors().border,
     }
+}
+
+/// Shared trigger colors for [`pick_list_style`] and [`secondary_dropdown_style`].
+struct DropdownColors {
+    hover: Color,
+    pressed: Color,
+    surface: Color,
+    border: iced::Border,
+}
+
+/// Hover/pressed trigger colors for the dark theme.
+const DROPDOWN_HOVER_DARK: Color = Color::from_rgb8(0x33, 0x39, 0x44);
+const DROPDOWN_PRESSED_DARK: Color = Color::from_rgb8(0x3B, 0x42, 0x4E);
+/// Hover/pressed trigger colors for the light theme.
+const DROPDOWN_HOVER_LIGHT: Color = Color::from_rgb8(0xD8, 0xD8, 0xD8);
+const DROPDOWN_PRESSED_LIGHT: Color = Color::from_rgb8(0xC8, 0xC8, 0xC8);
+
+fn dropdown_colors() -> DropdownColors {
+    let (hover, pressed) = if is_dark() {
+        (DROPDOWN_HOVER_DARK, DROPDOWN_PRESSED_DARK)
+    } else {
+        (DROPDOWN_HOVER_LIGHT, DROPDOWN_PRESSED_LIGHT)
+    };
+    DropdownColors {
+        hover,
+        pressed,
+        surface: color_surface(),
+        border: iced::Border::default()
+            .rounded(6)
+            .width(1)
+            .color(color_border()),
+    }
+}
+
+/// iced `pick_list` trigger styled like [`secondary_button`].
+pub(crate) fn pick_list_style(_theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let colors = dropdown_colors();
+    let base = pick_list::Style {
+        text_color: color_text_strong(),
+        placeholder_color: color_muted(),
+        handle_color: color_muted(),
+        background: colors.surface.into(),
+        border: colors.border,
+    };
+    match status {
+        pick_list::Status::Active => base,
+        pick_list::Status::Hovered => pick_list::Style {
+            background: colors.hover.into(),
+            ..base
+        },
+        pick_list::Status::Opened { .. } => pick_list::Style {
+            background: colors.pressed.into(),
+            ..base
+        },
+    }
+}
+
+/// Custom `DropDown` trigger styled like [`secondary_button`].
+pub(crate) fn secondary_dropdown_style(
+    _theme: &Theme,
+    status: crate::widgets::dropdown::Status,
+) -> crate::widgets::dropdown::Style {
+    let colors = dropdown_colors();
+    let base = crate::widgets::dropdown::Style {
+        text_color: color_text_strong(),
+        placeholder_color: color_muted(),
+        handle_color: color_muted(),
+        background: colors.surface.into(),
+        border: colors.border,
+    };
+    match status {
+        crate::widgets::dropdown::Status::Active => base,
+        crate::widgets::dropdown::Status::Hovered => crate::widgets::dropdown::Style {
+            background: colors.hover.into(),
+            ..base
+        },
+        crate::widgets::dropdown::Status::Opened => crate::widgets::dropdown::Style {
+            background: colors.pressed.into(),
+            ..base
+        },
+    }
+}
+
+/// `pick_list` with the shared trigger and menu styles applied.
+pub(crate) fn styled_pick_list<'a, T, L, V, Message>(
+    options: L,
+    selected: Option<V>,
+    on_selected: impl Fn(T) -> Message + 'a,
+) -> iced::widget::PickList<'a, T, L, V, Message>
+where
+    T: ToString + PartialEq + Clone + 'a,
+    L: Borrow<[T]> + 'a,
+    V: Borrow<T> + 'a,
+    Message: Clone,
+{
+    iced::widget::pick_list(options, selected, on_selected)
+        .style(pick_list_style)
+        .menu_style(pick_list_menu_style)
 }
 
 /// Floating tooltip box — dark rounded background with a subtle shadow.

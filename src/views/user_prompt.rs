@@ -1,16 +1,15 @@
 use iced::{
-    Alignment, Border, Element, Fill, Length, Padding, padding,
+    Alignment, Element, Fill, Length, Padding, padding,
     widget::{button, checkbox, column, container, row, scrollable, text, text::Wrapping},
 };
 
-use crate::views::theme::{
-    color_border, color_dialog_bg, color_muted, color_surface, color_text_strong,
-};
+use crate::views::theme::{color_border, color_muted, color_surface};
 use iced_aw::{
     style::{status::Status, tab_bar::Style as TabBarStyle},
     widget::tab_bar::{TabBar, TabLabel},
 };
 
+use super::styles::{menu_container_style, menu_item_style};
 use super::system_prompt::expandable_header;
 use crate::WORKSPACE_TREE;
 use crate::app::FileTreePane;
@@ -44,8 +43,9 @@ pub(crate) fn user_prompt_view<'a>(
                 Status::Hovered => {
                     iced::Background::Color(theme.extended_palette().primary.weak.color)
                 }
-                _ => iced::Background::Color(theme.extended_palette().background.weak.color),
+                _ => iced::Background::Color(color_surface()),
             },
+            tab_label_border_color: color_border(),
             text_color: match status {
                 Status::Active => iced::Color::WHITE,
                 _ => theme.palette().text,
@@ -160,41 +160,5 @@ fn files_field_view<'a>(files: &'a FileTreePane, workspace_set: bool) -> Element
             .into()
     } else {
         header
-    }
-}
-
-// ── Popup menu styles (shared) ───────────────────────────────────
-
-/// Popup menu container — surface card with subtle border.
-pub(crate) fn menu_container_style(_theme: &iced::Theme) -> container::Style {
-    container::Style {
-        background: Some(color_dialog_bg().into()),
-        border: Border {
-            color: color_border(),
-            width: 1.0,
-            radius: 8.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
-/// Flat menu-item button style with hover highlight, like a native context menu.
-pub(crate) fn menu_item_style(_theme: &iced::Theme, status: button::Status) -> button::Style {
-    let base = button::Style {
-        background: None,
-        text_color: color_text_strong(),
-        border: Border::default(),
-        ..button::Style::default()
-    };
-    match status {
-        button::Status::Hovered | button::Status::Pressed => button::Style {
-            background: Some(color_surface().into()),
-            ..base
-        },
-        button::Status::Disabled => button::Style {
-            text_color: color_muted(),
-            ..base
-        },
-        _ => base,
     }
 }

@@ -17,10 +17,12 @@ pub struct Settings {
     /// Model label used to seed the first session tab at startup.
     pub selected_model: String,
     pub selected_preamble: String,
-    pub selected_rules: String,
+    /// Skill files selected for the system prompt, in selection order.
+    pub selected_skills: Vec<String>,
     /// Enabled status for each system-prompt component.
     pub preamble_enabled: bool,
-    pub rules_enabled: bool,
+    /// Whether the selected skills are included in the system prompt.
+    pub skills_enabled: bool,
     pub tools_enabled: bool,
     pub workspace_enabled: bool,
     pub agents_md_enabled: bool,
@@ -66,9 +68,9 @@ impl Default for Settings {
             window_pos: (0.0, 0.0),
             selected_model: String::new(),
             selected_preamble: String::new(),
-            selected_rules: String::new(),
+            selected_skills: Vec::new(),
             preamble_enabled: true,
-            rules_enabled: true,
+            skills_enabled: true,
             tools_enabled: true,
             workspace_enabled: true,
             agents_md_enabled: true,

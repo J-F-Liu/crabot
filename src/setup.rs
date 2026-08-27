@@ -94,47 +94,36 @@ pub fn ensure_default_files() {
     let _ = std::fs::create_dir_all(&crabot_dir);
     tracing::debug!(dir = %crabot_dir.display(), "ensuring default files");
 
-    // Seed any missing bundled preamble files (`crabot.md` plus the task-tool
-    // mode preambles) — never overwrite user edits.
-    let preamble_dir = crabot_dir.join("preamble");
-    let _ = std::fs::create_dir_all(&preamble_dir);
-    if let Some(dir) = ASSETS.get_dir("preamble") {
+    seed_bundled_dir(&crabot_dir, "preamble");
+    seed_bundled_dir(&crabot_dir, "skills");
+    seed_bundled_file(&crabot_dir, "tools.ron");
+    seed_bundled_file(&crabot_dir, "mcp.ron");
+    seed_bundled_file(&crabot_dir, "settings.ron");
+}
+
+/// Copy missing files from a bundled `assets/<name>` directory into
+/// `~/.crabot/<name>` — never overwrite user edits.
+fn seed_bundled_dir(crabot_dir: &Path, name: &str) {
+    let dir_path = crabot_dir.join(name);
+    let _ = std::fs::create_dir_all(&dir_path);
+    if let Some(dir) = ASSETS.get_dir(name) {
         for file in dir.files() {
-            if let Some(name) = file.path().file_name() {
-                let dest = preamble_dir.join(name);
+            if let Some(file_name) = file.path().file_name() {
+                let dest = dir_path.join(file_name);
                 if !dest.is_file() {
                     let _ = std::fs::write(&dest, file.contents());
                 }
             }
         }
     }
+}
 
-    let rules_dir = crabot_dir.join("rules");
-    if !rules_dir.is_dir() {
-        let _ = std::fs::create_dir(&rules_dir);
-        if let Some(rules) = ASSETS.get_dir("rules") {
-            let _ = rules.extract(&crabot_dir);
-        }
-    }
-
-    let tools_file = crabot_dir.join("tools.ron");
-    if !tools_file.is_file()
-        && let Some(file) = ASSETS.get_file("tools.ron")
+/// Copy a bundled asset file into `~/.crabot/` if missing.
+fn seed_bundled_file(crabot_dir: &Path, name: &str) {
+    let dest = crabot_dir.join(name);
+    if !dest.is_file()
+        && let Some(file) = ASSETS.get_file(name)
     {
-        let _ = std::fs::write(&tools_file, file.contents());
-    }
-
-    let mcp_file = crabot_dir.join("mcp.ron");
-    if !mcp_file.is_file()
-        && let Some(file) = ASSETS.get_file("mcp.ron")
-    {
-        let _ = std::fs::write(&mcp_file, file.contents());
-    }
-
-    let settings_file = crabot_dir.join("settings.ron");
-    if !settings_file.is_file()
-        && let Some(file) = ASSETS.get_file("settings.ron")
-    {
-        let _ = std::fs::write(&settings_file, file.contents());
+        let _ = std::fs::write(&dest, file.contents());
     }
 }
