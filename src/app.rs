@@ -851,7 +851,7 @@ impl App {
                             tracing::info!("relaunching via cargo run --release");
                             if let Err(e) = std::process::Command::new("cargo")
                                 .args(["run", "--release"])
-                                .env_remove("RUST_RECURSION_COUNT")
+                                .env_remove("RUST_RECURSION_COUNT") // repeated `cargo run` relaunches would exhaust it, max value is 20
                                 .spawn()
                             {
                                 tracing::error!("failed to spawn cargo run --release: {e}");
@@ -1097,8 +1097,7 @@ impl App {
     }
 }
 
-/// Spawn a detached replacement for app restart: clears `RUST_RECURSION_COUNT`
-/// (repeated `cargo run` relaunches would exhaust it), nulls stdio, and on Unix
+/// Spawn a detached replacement for app restart, nulls stdio, and on Unix
 /// starts a new session so the child outlives the parent's terminal.
 pub(crate) fn spawn_relaunch(
     program: impl AsRef<std::ffi::OsStr>,

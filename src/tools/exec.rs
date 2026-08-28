@@ -140,10 +140,8 @@ pub(crate) fn is_secret_env_key(key: &str) -> bool {
 }
 
 /// Strip secrets from a child command's inherited env: every variable whose
-/// name ends in `API_KEY`, plus rustup's recursion counter which aborts
-/// proxies past their max.
+/// name ends in `API_KEY`.
 pub(crate) fn sanitize_child_env(cmd: &mut std::process::Command) {
-    cmd.env_remove("RUST_RECURSION_COUNT");
     for key in std::env::vars().map(|(k, _)| k) {
         if is_secret_env_key(&key) {
             cmd.env_remove(&key);

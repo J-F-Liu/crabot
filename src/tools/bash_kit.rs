@@ -572,8 +572,7 @@ struct HostCommandBuiltin {
 }
 
 /// Mirror the script env (`export`, prefix assignments, `unset`) into the
-/// child, remapping the seeded VFS HOME to its host path and dropping
-/// secrets + rustup's recursion counter.
+/// child, remapping the seeded VFS HOME to its host path and dropping secrets.
 fn apply_child_env(
     cmd: &mut std::process::Command,
     env: &HashMap<String, String>,
@@ -587,7 +586,7 @@ fn apply_child_env(
             && value.as_str() == home.vfs_path.to_string_lossy()
         {
             cmd.env("HOME", &home.host_path);
-        } else if key != "RUST_RECURSION_COUNT" && !super::is_secret_env_key(key) {
+        } else if !super::is_secret_env_key(key) {
             cmd.env(key, value);
         }
     }
