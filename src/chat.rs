@@ -225,16 +225,22 @@ impl Dialog {
         }
         // Parallel tools finish out of order — remove the matching pending call;
         // stale ids fall back to FIFO so the group still drains.
-        let pos = match &self.turns[n - 1].body {
-            TurnBody::Temp(calls) => calls.iter().position(|c| c.call_id == tr.call_id).or((tr
-                .call_id
-                .is_some())
-            .then(|| {
-                tracing::warn!(call_id = ?tr.call_id, "tool result matched no pending call");
-                0
-            })),
-            _ => None,
-        };
+        let pos =
+            match &self.turns[n - 1].body {
+                TurnBody::Temp(calls) => calls
+                    .iter()
+                    .position(|c| c.call_id == tr.call_id)
+                    .or_else(|| {
+                        (tr.call_id.is_some()).then(|| {
+                            tracing::warn!(
+                                call_id = ?tr.call_id,
+                                "tool result matched no pending call"
+                            );
+                            0
+                        })
+                    }),
+                _ => None,
+            };
         if let TurnBody::Tool(trs) = &mut self.turns[n - 2].body {
             if let Some(slot) = tr
                 .call_id
