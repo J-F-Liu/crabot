@@ -762,11 +762,7 @@ pub(crate) fn center_pane<'a>(
     mouse_area(
         container(column![
             super::session_tabs::session_tabs(conversation),
-            session_header(
-                title,
-                conversation.header_menu_open,
-                conversation.can_derive()
-            ),
+            session_header(title, conversation),
             pending_header(pending_user_prompt),
             if search_state.visible {
                 super::search_bar::view(search_query, search_results, search_state.current).map(
@@ -818,8 +814,7 @@ pub(crate) fn center_pane<'a>(
 /// Header bar with a collapsed actions popup (copy/resend/fork/compact/export).
 fn session_header<'a>(
     prompt: &'a str,
-    menu_open: bool,
-    derive_enabled: bool,
+    conversation: &'a ConversationState,
 ) -> Element<'a, CenterPaneEvent> {
     let header = row![
         header_container(
@@ -834,7 +829,7 @@ fn session_header<'a>(
                 }),
             200.0,
         ),
-        header_actions_menu(menu_open, derive_enabled),
+        header_actions_menu(conversation),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -847,7 +842,10 @@ fn session_header<'a>(
 }
 
 /// The "…" trigger and its copy/resend/fork/compact/export popup menu.
-fn header_actions_menu(menu_open: bool, derive_enabled: bool) -> Element<'static, CenterPaneEvent> {
+fn header_actions_menu(conversation: &ConversationState) -> Element<'static, CenterPaneEvent> {
+    let menu_open = conversation.header_menu_open;
+    let idle = !conversation.viewing_is_streaming();
+    let has_reply = conversation.viewing().session.has_reply();
     // `None` renders the item disabled (no on_press handler).
     let items = [
         (
@@ -858,17 +856,17 @@ fn header_actions_menu(menu_open: bool, derive_enabled: bool) -> Element<'static
         (
             icons::RESEND,
             "Resend session",
-            Some(ConversationEvent::ResendSessionHistory),
+            idle.then_some(ConversationEvent::ResendSessionHistory),
         ),
         (
             icons::FORK,
             "Fork session",
-            derive_enabled.then_some(ConversationEvent::ForkSession),
+            has_reply.then_some(ConversationEvent::ForkSession),
         ),
         (
             icons::COMPACT,
             "Compact session",
-            derive_enabled.then_some(ConversationEvent::CompactSession),
+            (idle && has_reply).then_some(ConversationEvent::CompactSession),
         ),
         (
             icons::DOWNLOAD,

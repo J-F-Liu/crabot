@@ -883,23 +883,24 @@ fn resend_session(app: &mut App) -> Task<Message> {
     start_dialog(app, tab_pos, &model, None, None)
 }
 
-/// Fork the viewing session into a new tab and switch to it.
-/// Requires a completed reply and no running stream.
+/// Fork the viewing session into a new tab; needs a completed reply.
 fn fork_session(app: &mut App) -> Task<Message> {
+    if !app.conversation.viewing().session.has_reply() {
+        return Task::none();
+    }
     derive_session(app, Session::fork, "forked")
 }
 
-/// Compact the viewing session into a new tab and switch to it.
-/// Requires a completed reply and no running stream.
+/// Compact the viewing session into a new tab; needs a completed reply and no active stream.
 fn compact_session(app: &mut App) -> Task<Message> {
+    if app.conversation.viewing_is_streaming() || !app.conversation.viewing().session.has_reply() {
+        return Task::none();
+    }
     derive_session(app, Session::compact, "compacted")
 }
 
 /// Derive a copy of the viewing session into a new tab and switch to it.
 fn derive_session(app: &mut App, derive: fn(&Session) -> Session, verb: &str) -> Task<Message> {
-    if !app.conversation.can_derive() {
-        return Task::none();
-    }
     let number = app.conversation.next_tab_number();
     let (source_id, tab) = {
         let view = app.conversation.viewing();

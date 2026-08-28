@@ -362,13 +362,6 @@ impl ConversationState {
         self.viewing().running()
     }
 
-    /// Whether the viewing session can be forked or compacted: a completed
-    /// reply exists and no stream is running. Shared by the header menu and
-    /// `derive_session`.
-    pub(crate) fn can_derive(&self) -> bool {
-        self.viewing().session.has_reply() && !self.viewing_is_streaming()
-    }
-
     /// Take the next tab number and advance the counter.
     pub(crate) fn next_tab_number(&mut self) -> usize {
         let n = self.next_tab_number;
