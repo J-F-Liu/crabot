@@ -172,5 +172,9 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
         // One tick per process start/exit; each tick refreshes the cached
         // process list in App state (plus one initial snapshot tick).
         Subscription::run(process::events).map(|_| Message::ProcessTick),
+        // One tick per ACP command queued by the server handlers; each tick
+        // drains the queue in App::update (plus one initial drain tick).
+        Subscription::run(crate::acp::events)
+            .map(|_| Message::Acp(crate::acp::AcpMessage::CommandTick)),
     ])
 }

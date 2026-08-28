@@ -595,7 +595,7 @@ fn replace_stale_placeholder(session: &mut Session, backfill_from: usize) {
 // ── App-level stream-event routing ─────────────────────────────────
 
 /// The tab's effective model config: the session's model, or tab's selected model label.
-fn tab_model_config(app: &App, tab: &SessionTab) -> Option<ModelConfig> {
+pub(crate) fn tab_model_config(app: &App, tab: &SessionTab) -> Option<ModelConfig> {
     tab.session
         .model
         .clone()
@@ -1008,6 +1008,17 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
     } else {
         Task::none()
     };
+
+    // Cancelled/errored turns never relaunch, so resolve any ACP feed that
+    // was registered after the stream-side terminal event already ran.
+    // (`Done` turns relaunch via `dispatch_pending` and adopt the feed.)
+    if is_cancelled || task_error.is_some() {
+        crate::acp::end_session(
+            &app.conversation.session_tabs[pos].session.id,
+            is_cancelled,
+            task_error.clone(),
+        );
+    }
 
     // Task sub-agent that just terminated — deliver its final report to the parent.
     if let Some(parent) = app.conversation.session_tabs[pos].task_parent()

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use futures::{StreamExt, stream::BoxStream};
+use futures::stream::BoxStream;
 use serde_json::{Value, json};
 use shell_words::split;
 use tokio::sync::broadcast;
@@ -245,20 +245,9 @@ pub fn running_processes() -> Vec<RunningProcess> {
 
 /// Stream yielding one tick on subscribe plus one tick per registry change,
 /// so a subscriber is always consistent with the registry even if it missed a
-/// ping while unsubscribed. Lagged pings coalesce since each tick only
-/// re-reads the registry. Safe to subscribe permanently.
+/// ping while unsubscribed.
 pub fn events() -> BoxStream<'static, ()> {
-    let changes = futures::stream::unfold(PROCESS_EVENTS.subscribe(), |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(()) => return Some(((), rx)),
-                // Coalesce lagged pings instead of ending the stream.
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    });
-    futures::stream::iter([()]).chain(changes).boxed()
+    crate::broadcast_ticks(&PROCESS_EVENTS)
 }
 
 fn list() -> Result<String, String> {

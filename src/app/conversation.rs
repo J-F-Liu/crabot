@@ -108,6 +108,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         },
         ConversationEvent::AppClosing => {
             app.conversation.stop();
+            crate::acp::stop(app);
             app.save_settings();
             snapshot::cleanup_snapshots(app);
             process::shutdown();
@@ -311,9 +312,9 @@ fn push_tab(app: &mut App, tab: SessionTab) -> usize {
     pos
 }
 
-/// New session tab that becomes the viewing one (user/renew tabs);
+/// New session tab that becomes the viewing one (user/renew/ACP tabs);
 /// `parent` is the spawning session's id, empty for user tabs.
-fn new_session(
+pub(crate) fn new_session(
     app: &mut App,
     selected_model: String,
     selected_preamble: String,
@@ -441,6 +442,10 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
     let removed_session = &app.conversation.session_tabs[pos].session;
     tracing::debug!(tab = number, session = %removed_session.id, "session tab closed");
     snapshot::cleanup(&removed_session.workspace, &removed_session.id);
+    // Resolve any ACP prompt feed still registered for this session — a feed
+    // orphaned by a failed pending-prompt relaunch would otherwise hang its
+    // JSON-RPC handler forever.
+    crate::acp::end_session(&removed_session.id, false, Some("session closed".into()));
     app.conversation.session_tabs.remove(pos);
     // Clean up the pending-ask queue — the tab is gone.
     app.conversation.pending_ask_queue.retain(|&n| n != number);
@@ -770,7 +775,7 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
 }
 
 /// Deliver a prompt to a tab: inject into a running dialog or launch a new one.
-fn dispatch_prompt(
+pub(crate) fn dispatch_prompt(
     app: &mut App,
     tab_pos: usize,
     model: &ModelConfig,
@@ -841,23 +846,50 @@ fn launch_dialog(
     )
 }
 
-/// Auto-dispatch a prompt that was injected too late for the just-ended stream.
-pub(super) fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
-    // Use the tab's own model (session model takes precedence over the saved label).
+/// Guards before dispatching a prompt to `tab_pos`: resolves the tab's model
+/// and mirrors the early `start_dialog` bail-outs. On a missing workspace,
+/// `interactive` dispatches also surface the workspace dialog.
+pub(crate) fn prompt_dispatch_guard(
+    app: &mut App,
+    tab_pos: usize,
+    interactive: bool,
+) -> Result<ModelConfig, String> {
     let tab = &app.conversation.session_tabs[tab_pos];
-    let model = tab
-        .session
-        .model
-        .clone()
-        .or_else(|| app.models.get_config(&tab.selected_model).cloned());
-    // Validate guards BEFORE taking the parked prompt so it isn't lost on failure.
-    let Some(model) = model else {
-        return Task::none();
+    let Some(model) = session_state::tab_model_config(app, tab) else {
+        return Err("no model configured for this session".into());
     };
     if app.prompt.workspace.1.as_os_str().is_empty() {
-        app.overlay.show_workspace_dialog = true;
+        if interactive {
+            app.overlay.show_workspace_dialog = true;
+        }
+        return Err("no workspace configured".into());
+    }
+    // Mirror the model-info guard in `start_dialog`.
+    if app.models.get_model_info(&model).is_none() {
+        return Err("model unavailable".into());
+    }
+    Ok(model)
+}
+
+/// Auto-dispatch a prompt that was injected too late for the just-ended stream.
+pub(super) fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
+    let session_id = app.conversation.session_tabs[tab_pos].session.id.clone();
+    // An ACP cancel drained during the terminal-event race window suppresses
+    // the relaunch; resolve any feed it may have left behind.
+    if crate::acp::take_cancelled(&session_id) {
+        crate::acp::end_session(&session_id, true, None);
         return Task::none();
     }
+    // Validate guards BEFORE taking the parked prompt so it isn't lost on
+    // failure; a failed guard also resolves any ACP feed still waiting on
+    // this session — an unresolved feed would hang its JSON-RPC handler.
+    let model = match prompt_dispatch_guard(app, tab_pos, true) {
+        Ok(model) => model,
+        Err(message) => {
+            crate::acp::end_session(&session_id, false, Some(message));
+            return Task::none();
+        }
+    };
     let Some(user_prompt) = app.conversation.take_pending_prompt(tab_pos) else {
         return Task::none();
     };
@@ -996,6 +1028,8 @@ pub(crate) fn start_dialog(
 
     // Re-borrow for the remaining setup.
     let tab = &mut app.conversation.session_tabs[tab_pos];
+    // Session id captured by the stream callback for ACP feed routing.
+    let session_id = tab.session.id.clone();
     // Backfill placeholders from this stream's first turn.
     tab.session_state.backfill_from = tab.session.total_turns();
     tab.session_state.auto_scroll.store(true, Ordering::Relaxed);
@@ -1061,6 +1095,8 @@ pub(crate) fn start_dialog(
                 move |msg: SessionEvent| {
                     let cancel = cancel.clone();
                     let mut sender = sender.clone();
+                    // Feed the ACP bridge while the stream runs (sync, non-blocking).
+                    crate::acp::forward_event(&session_id, &msg);
                     async move {
                         let ok = sender
                             .send(Message::Conversation(ConversationEvent::SessionEvent(

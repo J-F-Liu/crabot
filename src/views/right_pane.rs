@@ -10,6 +10,7 @@ use super::icons;
 use super::styles::{pane_side, primary_button, primary_toggler, secondary_button, sel_primary};
 use super::theme::{CRABOT_DANGER, thin_horizontal, thin_vertical};
 use crate::RightPaneEvent;
+use crate::acp::AcpState;
 use crate::app::SessionTab;
 use crabot::model::ModelConfig;
 use crabot::tools::{
@@ -183,6 +184,7 @@ pub(crate) fn right_pane<'a>(
     sections: &PaneSections,
     processes: &[process::RunningProcess],
     dark_mode: bool,
+    acp: &AcpState,
 ) -> Element<'a, RightPaneEvent> {
     let token_amount = &tab.latest_tokens;
     let session = &tab.session;
@@ -352,16 +354,44 @@ pub(crate) fn right_pane<'a>(
 
     let col = column(items).spacing(8);
 
-    let theme_toggle = row![
-        text("Dark theme").size(14),
+    // ── top toggles: ACP Server left of Dark theme, plus a status line ──
+    fn toggle_group(
+        label: &'static str,
+        active: bool,
+        on_toggle: impl Fn(bool) -> RightPaneEvent + 'static,
+    ) -> Element<'static, RightPaneEvent> {
+        row![
+            text(label).size(13),
+            Space::new().width(6),
+            toggler(active)
+                .on_toggle(on_toggle)
+                .style(primary_toggler)
+                .size(14),
+        ]
+        .align_y(Alignment::Center)
+        .into()
+    }
+    let toggles = row![
+        toggle_group("ACP Server", acp.enabled, RightPaneEvent::ToggleAcpServer),
         Space::new().width(Fill),
-        toggler(dark_mode)
-            .on_toggle(RightPaneEvent::ToggleTheme)
-            .style(primary_toggler)
-            .size(18),
+        toggle_group("Dark theme", dark_mode, RightPaneEvent::ToggleTheme),
     ]
     .align_y(Alignment::Center)
     .padding(padding::top(12).right(16).left(16));
+    let mut header = column![toggles].spacing(4);
+    if acp.enabled {
+        let (status, color) = match (&acp.error, acp.running) {
+            (Some(error), _) => (error.clone(), CRABOT_DANGER),
+            (None, true) => (
+                format!("http://{}", acp.addr),
+                Color::from_rgb(0.4, 0.7, 0.4),
+            ),
+            (None, false) => ("Starting…".to_string(), Color::from_rgb(0.6, 0.6, 0.6)),
+        };
+        header = header.push(
+            container(text(status).size(12).color(color)).padding(padding::left(16).right(16)),
+        );
+    }
 
     let footer = container(
         button(text("Restart").size(14))
@@ -379,7 +409,7 @@ pub(crate) fn right_pane<'a>(
             .height(Fill)
             .into();
 
-    container(column![theme_toggle, body, footer])
+    container(column![header, body, footer])
         .width(Length::Fixed(pane_width))
         .height(Fill)
         .style(pane_side)

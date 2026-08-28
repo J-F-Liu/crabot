@@ -418,6 +418,8 @@ pub(crate) struct App {
     /// Running-process snapshot shown in the right pane, refreshed once per
     /// registry change via [`Message::ProcessTick`].
     pub running_processes: Vec<tools::process::RunningProcess>,
+    /// ACP HTTP server state (toggle, bind address, shutdown handle).
+    pub(crate) acp: crate::acp::AcpState,
     pub overlay: OverlayState,
     /// Per-workspace shared snapshot locks held until exit (see `snapshot::retain_workspace_lock`).
     pub(crate) snapshot_locks: HashMap<PathBuf, File>,
@@ -598,6 +600,8 @@ pub(crate) enum CenterPaneEvent {
 /// Events emitted by the right pane.
 #[derive(Clone)]
 pub(crate) enum RightPaneEvent {
+    /// Toggle the ACP HTTP server.
+    ToggleAcpServer(bool),
     ToggleTheme(bool),
     Restart,
     /// Restore the file from its snapshot.
@@ -633,6 +637,8 @@ pub(crate) enum Message {
     TogglePaneSection(PaneSection),
     /// Managed process started/exited; refresh the cached right-pane list.
     ProcessTick,
+    /// ACP HTTP server bridge events.
+    Acp(crate::acp::AcpMessage),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
@@ -697,6 +703,7 @@ impl App {
         let window_pos = Point::new(saved.window_pos.0, saved.window_pos.1);
         let tools_enabled = saved.tools_enabled;
         let dark_mode = saved.dark_mode;
+        let acp_server_enabled = saved.acp_server_enabled;
         theme::set_dark_mode(dark_mode);
 
         let initial_selected_model = saved.selected_model.clone();
@@ -757,6 +764,7 @@ impl App {
             settings_dialog: crate::views::SettingsState::default(),
             pane_sections: PaneSections::default(),
             running_processes: Vec::new(),
+            acp: crate::acp::AcpState::new(acp_server_enabled),
             snapshot_locks: HashMap::new(),
             overlay: OverlayState {
                 show_workspace_dialog: false,
@@ -798,10 +806,22 @@ impl App {
             } else {
                 Task::none()
             };
+        // Resume the ACP HTTP server when it was enabled at shutdown.
+        let acp_task = if app.settings.acp_server_enabled {
+            crate::acp::start(&mut app)
+        } else {
+            Task::none()
+        };
         // Run workspace scan, session refresh, MCP discovery, and version check in parallel.
         (
             app,
-            Task::batch([session_task, workspace_task, discover_task, update_task]),
+            Task::batch([
+                session_task,
+                workspace_task,
+                discover_task,
+                update_task,
+                acp_task,
+            ]),
         )
     }
 
@@ -830,6 +850,7 @@ impl App {
             },
             Message::RestartApp => {
                 self.conversation.stop();
+                crate::acp::stop(self);
                 self.save_settings();
                 snapshot::cleanup_snapshots(self);
                 tools::process::shutdown();
@@ -887,6 +908,7 @@ impl App {
                 self.running_processes = tools::process::running_processes();
                 Task::none()
             }
+            Message::Acp(event) => crate::acp::update(self, event),
         }
     }
 
@@ -923,6 +945,7 @@ impl App {
         );
         self.settings.user_prompt = self.prompt.user_prompt.text();
         self.settings.dark_mode = theme::is_dark();
+        self.settings.acp_server_enabled = self.acp.enabled;
         self.settings.save();
     }
 
@@ -1055,6 +1078,7 @@ impl App {
                 &self.pane_sections,
                 &self.running_processes,
                 self.settings.dark_mode,
+                &self.acp,
             )
             .map(|event| match event {
                 RightPaneEvent::ToggleTheme(dark) =>
@@ -1064,6 +1088,9 @@ impl App {
                 RightPaneEvent::RevertAll => Message::RevertAll,
                 RightPaneEvent::DismissRevertError => Message::DismissRevertError,
                 RightPaneEvent::ToggleSection(section) => Message::TogglePaneSection(section),
+                RightPaneEvent::ToggleAcpServer(enabled) => {
+                    Message::Acp(crate::acp::AcpMessage::Toggle(enabled))
+                }
             }),
         ]
         .spacing(0)

@@ -61,6 +61,10 @@ pub struct Settings {
     pub last_update_version: Option<String>,
     /// Whether the dark color theme is active.
     pub dark_mode: bool,
+    /// Whether the built-in ACP HTTP server is enabled.
+    pub acp_server_enabled: bool,
+    /// Loopback port for the ACP HTTP server.
+    pub acp_server_port: u16,
 }
 
 impl Default for Settings {
@@ -97,6 +101,8 @@ impl Default for Settings {
             use_system_proxy_for_tools: true,
             last_update_version: None,
             dark_mode: false,
+            acp_server_enabled: false,
+            acp_server_port: 8787,
         }
     }
 }

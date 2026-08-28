@@ -38,6 +38,27 @@ pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Stream yielding one tick on subscribe plus one tick per broadcast ping on
+/// `sender`, so a subscriber stays consistent even if it missed a ping while
+/// unsubscribed. Lagged pings coalesce. Safe to subscribe permanently.
+pub fn broadcast_ticks(
+    sender: &tokio::sync::broadcast::Sender<()>,
+) -> futures::stream::BoxStream<'static, ()> {
+    use futures::StreamExt;
+    use tokio::sync::broadcast::error::RecvError;
+    let changes = futures::stream::unfold(sender.subscribe(), |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(()) => return Some(((), rx)),
+                // Coalesce lagged pings instead of ending the stream.
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => return None,
+            }
+        }
+    });
+    futures::stream::iter([()]).chain(changes).boxed()
+}
+
 // ── Bounded output capture ─────────────────────────────────────────
 
 /// Retains the first and last `keep` bytes of a stream and counts the total,
