@@ -35,7 +35,7 @@ fn main() {
 
     if input.is_dir() {
         // Workspace mode: convert every session under .agent/sessions/.
-        let paths = match session::list_session_paths(&input) {
+        let paths = match session::list_session_paths(&input, None) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error listing sessions: {e}");

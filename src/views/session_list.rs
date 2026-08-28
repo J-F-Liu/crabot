@@ -155,7 +155,7 @@ fn read_meta(path: &Path) -> Option<SessionMeta> {
 /// List session metadata for a workspace, skipping unreadable/corrupt files.
 /// Groups entries by year-month and inserts header entries between groups.
 pub(crate) fn list_entries(workspace: &Path) -> Result<Vec<SessionEntry>, String> {
-    let paths = crabot::session::list_session_paths(workspace)?;
+    let paths = crabot::session::list_session_paths(workspace, None)?;
     let mut entries: Vec<SessionEntry> = paths
         .into_iter()
         .filter_map(|path| {

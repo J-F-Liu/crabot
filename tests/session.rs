@@ -246,7 +246,7 @@ fn list_dedupes_by_stem() {
     let json_path = jsonl_path.with_extension("json");
     std::fs::write(&json_path, format!("{{\"id\":\"{}\"}}\n", session.id)).unwrap();
 
-    let paths = list_session_paths(&ws).expect("list");
+    let paths = list_session_paths(&ws, None).expect("list");
     let file_names: Vec<_> = paths
         .iter()
         .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())

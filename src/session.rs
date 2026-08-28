@@ -815,28 +815,35 @@ pub fn year_month_from_id(id: &str) -> String {
     }
 }
 
-/// List saved session file paths for a workspace (newest first),
-/// scanning the last 3 months' year-month subdirectories and the
-/// legacy flat base directory. Prefers `.jsonl` over `.json` for the same id.
-pub fn list_session_paths(workspace: &Path) -> Result<Vec<PathBuf>, String> {
+/// List saved session file paths for a workspace (newest first). When `month`
+/// is given (`YYYY-MM`), only that year-month subdirectory is scanned;
+/// otherwise the last 3 months are scanned. The legacy flat base directory is
+/// always scanned. Prefers `.jsonl` over `.json` for the same id.
+pub fn list_session_paths(workspace: &Path, month: Option<&str>) -> Result<Vec<PathBuf>, String> {
     let base = workspace.join(".agent").join("sessions");
     if !base.exists() {
         return Ok(Vec::new());
     }
 
-    // Collect year-month dirs for the last 3 months.
-    let now = chrono::Local::now();
-    let (year, month) = (now.year(), now.month());
-    let mut year_months: Vec<String> = Vec::new();
-    for i in 0..3i32 {
-        let mut m = month as i32 - i;
-        let mut y = year;
-        while m <= 0 {
-            m += 12;
-            y -= 1;
+    // Year-month subdirectories to scan (None = last 3 months).
+    let year_months: Vec<String> = match month {
+        Some(month) => vec![month.to_string()],
+        None => {
+            let now = chrono::Local::now();
+            let (year, current_month) = (now.year(), now.month());
+            (0..3i32)
+                .map(|i| {
+                    let mut m = current_month as i32 - i;
+                    let mut y = year;
+                    while m <= 0 {
+                        m += 12;
+                        y -= 1;
+                    }
+                    format!("{:04}-{:02}", y, m)
+                })
+                .collect()
         }
-        year_months.push(format!("{:04}-{:02}", y, m));
-    }
+    };
 
     // Collect paths, preferring .jsonl over .json for the same session id.
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
