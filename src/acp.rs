@@ -1,4 +1,4 @@
-//! ACP (Agent Client Protocol) HTTP server bridge.
+//! ACP (Agent Client Protocol) server bridge over HTTP or host-spawned stdio.
 //!
 //! When enabled, crabot binds a loopback-only HTTP server speaking the
 //! [Agent Client Protocol](https://agentclientprotocol.com) v1, so ACP clients
@@ -27,7 +27,7 @@ use agent_client_protocol::schema::v1::{
     PromptRequest, PromptResponse, SessionId, SessionNotification, SessionUpdate,
     SetSessionModeRequest, SetSessionModeResponse, StopReason,
 };
-use agent_client_protocol::{Agent, Client, ConnectTo, Error, Handled};
+use agent_client_protocol::{Agent, Client, ConnectTo, Error, Handled, Stdio};
 use agent_client_protocol_http::AcpHttpServer;
 use futures::stream::BoxStream;
 use iced::Task;
@@ -234,21 +234,48 @@ fn build_agent_connection() -> impl ConnectTo<Client> {
         )
 }
 
+// ── Stdio transport (host-spawned mode) ──────────────────────────
+
+/// True in host-spawned stdio mode (`crabot acp`).
+fn stdio_mode() -> bool {
+    std::env::args().skip(1).any(|arg| arg == "acp")
+}
+
+/// Start the ACP agent over stdin/stdout; cancelled on toggle-off or exit.
+/// Commands flow through the same queue as the HTTP server.
+pub(crate) fn start_stdio(app: &mut App) -> Task<Message> {
+    let token = CancellationToken::new();
+    app.acp.shutdown = Some(token.clone());
+    Task::future(async move {
+        tokio::select! {
+            result = build_agent_connection().connect_to(Stdio::new()) => {
+                if let Err(error) = result {
+                    tracing::error!("acp stdio connection failed: {error}");
+                }
+            }
+            _ = token.cancelled() => tracing::info!("acp stdio connection closed"),
+        }
+    })
+    .discard()
+}
+
 // ── Server lifecycle ──────────────────────────────────────────────
 
 /// Live ACP server state shown in the right pane.
 #[derive(Debug, Default)]
 pub(crate) struct AcpState {
-    /// User toggle state (persisted in settings).
+    /// User toggle state (persisted in settings, except in stdio mode).
     pub(crate) enabled: bool,
+    /// Host-spawned `crabot acp` mode: the transport is stdio, not HTTP.
+    pub(crate) stdio: bool,
     /// Whether the HTTP listener is up.
     pub(crate) running: bool,
     /// Last bound address, e.g. `127.0.0.1:8787`.
     pub(crate) addr: String,
     /// Bind failure message, if the server could not start.
     pub(crate) error: Option<String>,
-    /// Cancels the HTTP server task on shutdown; the serve future is dropped
-    /// so the port is released without waiting for open connections.
+    /// Cancels the active transport (HTTP server or stdio connection);
+    /// dropping the HTTP serve future releases the port promptly.
     shutdown: Option<CancellationToken>,
     /// Bumped on every start/stop; stale bind results from superseded cycles
     /// carry an older generation and are ignored.
@@ -257,8 +284,11 @@ pub(crate) struct AcpState {
 
 impl AcpState {
     pub(crate) fn new(enabled: bool) -> Self {
+        // In stdio mode the host drives the connection: the toggle starts on.
+        let stdio = stdio_mode();
         Self {
-            enabled,
+            enabled: enabled || stdio,
+            stdio,
             ..Default::default()
         }
     }
@@ -305,10 +335,19 @@ pub(crate) fn toggle(app: &mut App, enabled: bool) -> Task<Message> {
         return Task::none();
     }
     app.acp.enabled = enabled;
+    // stdio mode is host-driven: no HTTP listener, nothing persisted.
+    if app.acp.stdio {
+        return if enabled {
+            start_stdio(app)
+        } else {
+            stop(app);
+            Task::none()
+        };
+    }
     app.settings.acp_server_enabled = enabled;
     // Persisted on exit via `App::save_settings`, like the theme toggle.
     if enabled {
-        start(app)
+        start_http(app)
     } else {
         stop(app);
         Task::none()
@@ -317,7 +356,7 @@ pub(crate) fn toggle(app: &mut App, enabled: bool) -> Task<Message> {
 
 /// Bind the loopback-only ACP HTTP server in the background. The address is
 /// reported through [`AcpMessage::ServerStarted`].
-pub(crate) fn start(app: &mut App) -> Task<Message> {
+pub(crate) fn start_http(app: &mut App) -> Task<Message> {
     app.acp.running = false;
     app.acp.error = None;
     app.acp.generation += 1;
@@ -363,7 +402,8 @@ pub(crate) fn start(app: &mut App) -> Task<Message> {
     )
 }
 
-/// Stop the HTTP server and release any prompt handlers still waiting on feeds.
+/// Stop the active transport and release any prompt handlers still waiting
+/// on feeds.
 pub(crate) fn stop(app: &mut App) {
     if let Some(token) = app.acp.shutdown.take() {
         token.cancel();

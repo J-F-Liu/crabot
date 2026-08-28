@@ -380,13 +380,21 @@ pub(crate) fn right_pane<'a>(
     .padding(padding::top(12).right(16).left(16));
     let mut header = column![toggles].spacing(4);
     if acp.enabled {
-        let (status, color) = match (&acp.error, acp.running) {
-            (Some(error), _) => (error.clone(), CRABOT_DANGER),
-            (None, true) => (
-                format!("http://{}", acp.addr),
-                Color::from_rgb(0.4, 0.7, 0.4),
-            ),
-            (None, false) => ("Starting…".to_string(), Color::from_rgb(0.6, 0.6, 0.6)),
+        let (status, color) = if acp.stdio {
+            // Host-spawned transport — no HTTP address to show.
+            (
+                "stdio (host-spawned)".to_string(),
+                Color::from_rgb(0.5, 0.6, 0.8),
+            )
+        } else {
+            match (&acp.error, acp.running) {
+                (Some(error), _) => (error.clone(), CRABOT_DANGER),
+                (None, true) => (
+                    format!("http://{}", acp.addr),
+                    Color::from_rgb(0.4, 0.7, 0.4),
+                ),
+                (None, false) => ("Starting…".to_string(), Color::from_rgb(0.6, 0.6, 0.6)),
+            }
         };
         header = header.push(
             container(text(status).size(12).color(color)).padding(padding::left(16).right(16)),

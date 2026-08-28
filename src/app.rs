@@ -806,9 +806,11 @@ impl App {
             } else {
                 Task::none()
             };
-        // Resume the ACP HTTP server when it was enabled at shutdown.
-        let acp_task = if app.settings.acp_server_enabled {
-            crate::acp::start(&mut app)
+        // HTTP mode resumes from settings; stdio mode starts its own transport.
+        let acp_task = if app.acp.stdio {
+            crate::acp::start_stdio(&mut app)
+        } else if app.settings.acp_server_enabled {
+            crate::acp::start_http(&mut app)
         } else {
             Task::none()
         };
@@ -945,7 +947,10 @@ impl App {
         );
         self.settings.user_prompt = self.prompt.user_prompt.text();
         self.settings.dark_mode = theme::is_dark();
-        self.settings.acp_server_enabled = self.acp.enabled;
+        // stdio mode is host-driven; don't persist the toggle into settings.
+        if !self.acp.stdio {
+            self.settings.acp_server_enabled = self.acp.enabled;
+        }
         self.settings.save();
     }
 
