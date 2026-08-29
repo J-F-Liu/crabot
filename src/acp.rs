@@ -17,15 +17,16 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthenticateRequest, AuthenticateResponse, CancelNotification, ContentBlock,
-    ContentChunk, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-    PromptRequest, PromptResponse, SessionId, SessionNotification, SessionUpdate,
-    SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    ContentChunk, InitializeRequest, InitializeResponse, MessageId, NewSessionRequest,
+    NewSessionResponse, PromptRequest, PromptResponse, SessionId, SessionNotification,
+    SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
 };
 use agent_client_protocol::{Agent, Client, ConnectTo, Error, Handled, Stdio};
 use agent_client_protocol_http::AcpHttpServer;
@@ -63,10 +64,16 @@ enum AcpCommand {
 /// Events streamed from a session tab back to a waiting ACP prompt handler.
 #[derive(Clone)]
 pub(crate) enum AcpEvent {
-    /// Assistant text chunk.
-    Text(String),
-    /// Assistant reasoning chunk.
-    Thought(String),
+    /// Assistant text chunk, tagged with its ACP message id.
+    Text {
+        chunk: String,
+        message_id: MessageId,
+    },
+    /// Assistant reasoning chunk, tagged with its ACP message id.
+    Thought {
+        chunk: String,
+        message_id: MessageId,
+    },
     /// Abort the turn with a JSON-RPC error.
     Error(String),
     /// The turn ended; `cancelled` maps to `StopReason::Cancelled`.
@@ -85,6 +92,12 @@ static SERVE_HANDLE: LazyLock<Mutex<Option<JoinHandle<()>>>> = LazyLock::new(|| 
 /// Sessions whose turn an ACP client asked to cancel.
 static CANCELLED_SESSIONS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+/// Current assistant message id per session — all chunks between two message
+/// boundaries share it, so the ACP client renders them as one message and
+/// starts a new message when the id changes.
+static MESSAGE_STATE: LazyLock<Mutex<HashMap<String, MessageId>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT_MESSAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 fn push_command(command: AcpCommand) {
     lock(&COMMAND_QUEUE).push_back(command);
@@ -172,12 +185,16 @@ fn build_agent_connection() -> impl ConnectTo<Client> {
                         let mut stop_reason = StopReason::EndTurn;
                         while let Some(event) = feed_rx.recv().await {
                             let update = match event {
-                                AcpEvent::Text(chunk) => SessionUpdate::AgentMessageChunk(
-                                    ContentChunk::new(chunk.into()),
-                                ),
-                                AcpEvent::Thought(chunk) => SessionUpdate::AgentThoughtChunk(
-                                    ContentChunk::new(chunk.into()),
-                                ),
+                                AcpEvent::Text { chunk, message_id } => {
+                                    SessionUpdate::AgentMessageChunk(
+                                        ContentChunk::new(chunk.into()).message_id(message_id),
+                                    )
+                                }
+                                AcpEvent::Thought { chunk, message_id } => {
+                                    SessionUpdate::AgentThoughtChunk(
+                                        ContentChunk::new(chunk.into()).message_id(message_id),
+                                    )
+                                }
                                 AcpEvent::Error(message) => {
                                     let _ = responder
                                         .respond_with_error(Error::internal_error().data(message));
@@ -413,6 +430,7 @@ pub(crate) fn stop(app: &mut App) {
     // Invalidate bind results still in flight from the stopped server.
     app.acp.generation += 1;
     let registry = std::mem::take(&mut *lock(&FEED_REGISTRY));
+    lock(&MESSAGE_STATE).clear();
     resolve_feeds(
         registry.into_values().flatten(),
         &AcpEvent::Done { cancelled: true },
@@ -544,16 +562,62 @@ fn prompt(
 
 // ── Stream tap ────────────────────────────────────────────────────
 
+/// Return the current assistant message id for `session_id`, allocating a
+/// fresh one on first use. Every content/reasoning chunk between two message
+/// boundaries shares this id.
+fn current_message_id(session_id: &str) -> MessageId {
+    let mut state = lock(&MESSAGE_STATE);
+    if let Some(id) = state.get(session_id) {
+        return id.clone();
+    }
+    let n = NEXT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed);
+    let id = MessageId::new(format!("{session_id}-{n}"));
+    state.insert(session_id.to_string(), id.clone());
+    id
+}
+
+/// End the current assistant message so the next content chunk starts a new
+/// one. Called on message boundaries (a completed LLM message or a terminal
+/// event).
+fn end_message(session_id: &str) {
+    lock(&MESSAGE_STATE).remove(session_id);
+}
+
 /// Forward a session stream event to every ACP feed registered for the
 /// session. Called from the stream callback in `conversation::start_dialog`;
 /// never blocks (feeds are unbounded channels).
 pub(crate) fn forward_event(session_id: &str, event: &SessionEvent) {
+    // Plain UI sessions have no registered feed — skip message-id bookkeeping.
+    if !lock(&FEED_REGISTRY).contains_key(session_id) {
+        return;
+    }
     let event = match event {
-        SessionEvent::Content(chunk) => AcpEvent::Text(chunk.clone()),
-        SessionEvent::Reasoning(chunk) => AcpEvent::Thought(chunk.clone()),
-        SessionEvent::Done => AcpEvent::Done { cancelled: false },
-        SessionEvent::Cancelled => AcpEvent::Done { cancelled: true },
-        SessionEvent::Error(message) => AcpEvent::Error(message.clone()),
+        SessionEvent::Content(chunk) => AcpEvent::Text {
+            chunk: chunk.clone(),
+            message_id: current_message_id(session_id),
+        },
+        SessionEvent::Reasoning(chunk) => AcpEvent::Thought {
+            chunk: chunk.clone(),
+            message_id: current_message_id(session_id),
+        },
+        SessionEvent::Done => {
+            end_message(session_id);
+            AcpEvent::Done { cancelled: false }
+        }
+        SessionEvent::Cancelled => {
+            end_message(session_id);
+            AcpEvent::Done { cancelled: true }
+        }
+        SessionEvent::Error(message) => {
+            end_message(session_id);
+            AcpEvent::Error(message.clone())
+        }
+        // `MessageReady` marks a recorded message boundary (system, user,
+        // tool, or assistant); the next content chunk starts a new ACP message.
+        SessionEvent::MessageReady(_) => {
+            end_message(session_id);
+            return;
+        }
         _ => return,
     };
     let mut registry = lock(&FEED_REGISTRY);
@@ -580,6 +644,7 @@ pub(crate) fn end_session(session_id: &str, cancelled: bool, error: Option<Strin
         None => AcpEvent::Done { cancelled },
     };
     let feeds = lock(&FEED_REGISTRY).remove(session_id);
+    end_message(session_id);
     if let Some(feeds) = feeds {
         resolve_feeds(feeds, &event);
     }
