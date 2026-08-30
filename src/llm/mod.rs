@@ -74,23 +74,23 @@ async fn record_msg(
     true
 }
 
-/// Inject a user prompt stashed during streaming; `false` stops the stream.
+/// Inject a user prompt stashed during streaming.
+/// `None`: nothing pending. `Some(true)`: injected — keep the agent loop
+/// running so a follow-up request answers it. `Some(false)`: stopped.
 async fn inject_user_prompt(
     pending: &Mutex<Option<String>>,
     chat_req: &mut ChatRequest,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-) -> bool {
-    let Some(prompt) = lock(pending).take() else {
-        return true;
-    };
+) -> Option<bool> {
+    let prompt = lock(pending).take()?;
     if !record_msg(chat_req, ChatMessage::user(prompt.clone()), on_event).await {
-        return false;
+        return Some(false);
     }
     if !on_event(SessionEvent::UserPrompt(prompt)).await {
         on_event(SessionEvent::Cancelled).await;
-        return false;
+        return Some(false);
     }
-    true
+    Some(true)
 }
 
 /// Stream an LLM interaction with a tool-execution loop.
@@ -291,8 +291,11 @@ pub async fn send_stream(
 
         if tool_calls.is_empty() {
             // Check for a user prompt sent during LlmLoading / LlmThinking.
-            if !inject_user_prompt(&injected_prompt, &mut chat_req, on_event).await {
-                return;
+            match inject_user_prompt(&injected_prompt, &mut chat_req, on_event).await {
+                // A prompt was injected — loop again so the next request answers it.
+                Some(true) => continue,
+                Some(false) => return,
+                None => {}
             }
             // Final assistant response — no more tool calls.
             tracing::debug!(
@@ -412,7 +415,7 @@ pub async fn send_stream(
         }
 
         // Inject any user prompt sent during tool execution.
-        if !inject_user_prompt(&injected_prompt, &mut chat_req, on_event).await {
+        if inject_user_prompt(&injected_prompt, &mut chat_req, on_event).await == Some(false) {
             return;
         }
     }
