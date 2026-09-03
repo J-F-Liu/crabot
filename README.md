@@ -10,6 +10,10 @@
 
 A pure-Rust native GUI coding agent using [iced](https://iced.rs) and [genai](https://crates.io/crates/genai) for multi-provider LLM.
 
+Most coding agents today run inside a terminal as TUIs. Crabot is built on the belief that a carefully designed GUI is easier and more efficient to operate: switch the AI model, toggle the work mode, and turn tools on/off with one click, with dropdown menus for preamble, skills, workspaces, AGENTS.md, session list, and prompt recipes.
+
+<img src="doc/images/screenshot.webp" alt="screen shot" width="800">
+
 ## Highlights
 
 - [x] No TUI — just a GUI, easy for everyone to use.
@@ -24,7 +28,6 @@ A pure-Rust native GUI coding agent using [iced](https://iced.rs) and [genai](ht
 If you know the structure of the LLM context window, you will appreciate the UI design of crabot.
 <p align="center">
 <img src="doc/images/Context%20Window%20Components.webp" alt="Context Window Components" width="600">
-<img src="doc/images/screenshot.webp" alt="screen shot" width="800">
 </p>
 
 ## Built-in Tools
@@ -45,6 +48,16 @@ If you know the structure of the LLM context window, you will appreciate the UI 
 | `fetch`   | `url`, `format`                                                                           | Download web pages and convert them to clean Markdown                                                                            |
 
 Beyond the built-ins, you can add your own **custom CLI tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session.
+
+## Context Window & Sessions
+
+Crabot's most distinctive feature is the explicit context window: every component — preamble, skills, tools, workspace, rules, date — is visible and independently toggleable. Requests are append-only, keeping the request prefix stable across turns so the provider's server-side prompt cache is reused. The center-pane conversation view also lets you follow the model's chain of thought, which is handy for important tasks.
+
+To keep context lean, a few habits help:
+
+- Start a new session when the context fill ratio reaches about 20%~25%, or whenever you start a new topic.
+- For the rare long task that cannot fit a single session, the `renew` tool hands off to a fresh session seeded with a summary of the progress — the task then finishes like a relay race, with the context compressed at each hand-off.
+- The `task` tool is like calling a function in a program: pass a prompt and get the final report back, while the subtask runs in a separate session without polluting the parent context.
 
 ## Keyboard Shortcuts
 
