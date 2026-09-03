@@ -1,7 +1,7 @@
 use super::icons;
 use super::styles::styled_pick_list;
 use super::theme::{color_border, color_surface};
-use crabot::model::{Model, ModelList};
+use crabot::model::{Model, ModelConfig, ModelList};
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Length,
     border::Radius,
@@ -220,33 +220,36 @@ pub(crate) fn update(
             }
         }
         Event::SelectProvider(id) => {
-            let Some(p) = provided_models.providers.get(&id) else {
+            // Provider change: defaults come from its first model.
+            let Some(model) = provided_models
+                .providers
+                .get(&id)
+                .and_then(|p| p.models.first())
+                .cloned()
+            else {
                 return false;
             };
-            let Some(m) = p.models.first() else {
+            let Some(cfg) = provided_models.get_config_mut(selected_model) else {
                 return false;
             };
-            // Clone the defaults first — `m` borrows `provided_models`.
-            let defaults = m.clone();
-            if let Some(cfg) = provided_models.get_config_mut(selected_model) {
-                cfg.provider_id = id;
-                cfg.apply_model(&defaults);
-                return true;
-            }
+            cfg.provider_id = id;
+            switch_model(cfg, &model);
+            return true;
         }
         Event::SelectModel(id) => {
-            // Look up the model in the current provider to get thinking defaults.
-            if let Some(provider) = provided_models.get_provider(selected_model)
-                && let Some(m) = provider.models.iter().find(|m| m.id == *id)
-            {
-                // Clone the defaults first — `m` borrows `provided_models`.
-                let defaults = m.clone();
-                if let Some(cfg) = provided_models.get_config_mut(selected_model) {
-                    cfg.model_id = id;
-                    cfg.apply_model(&defaults);
-                    return true;
-                }
-            }
+            // Model change: `apply_model` copies the model id; keep the provider.
+            let Some(model) = provided_models
+                .get_provider(selected_model)
+                .and_then(|p| p.models.iter().find(|m| m.id == *id))
+                .cloned()
+            else {
+                return false;
+            };
+            let Some(cfg) = provided_models.get_config_mut(selected_model) else {
+                return false;
+            };
+            switch_model(cfg, &model);
+            return true;
         }
         Event::ToggleThinking(enabled) => {
             if let Some(cfg) = provided_models.get_config_mut(selected_model)
@@ -269,4 +272,13 @@ pub(crate) fn update(
         }
     }
     false
+}
+
+/// Apply `model`'s defaults, keeping the previous thinking level if offered.
+fn switch_model(cfg: &mut ModelConfig, model: &Model) {
+    let previous = cfg.thinking_level.clone();
+    cfg.apply_model(model);
+    if !previous.is_empty() && model.thinking_levels.contains(&previous) {
+        cfg.thinking_level = previous;
+    }
 }
