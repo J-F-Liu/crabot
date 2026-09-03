@@ -163,8 +163,7 @@ impl Session {
         session
     }
 
-    /// Fork: fresh copy with its own usage accounting. System-prompt records
-    /// are dropped — the fork starts its own audit trail.
+    /// Fork: fresh copy with its own usage accounting and audit trail.
     pub fn fork(&self) -> Self {
         let mut session = self.fresh_copy();
         // Keep only cumulative prompt/output counts.
@@ -173,6 +172,10 @@ impl Session {
             output: session.tokens.output,
             ..Default::default()
         };
+        // Drop system-prompt audit records, then rebuild dialogs from history
+        // so dialog-only turns (error/notice messages) don't carry over.
+        session.history.retain(|m| m.role != ChatRole::System);
+        session.rebuild_dialogs();
         // Save the forked session; failures are logged inside `save`.
         if session.workspace.is_dir() {
             let _ = session.save();
@@ -424,7 +427,6 @@ impl Session {
 
         let mut accessed: Vec<String> = Vec::new();
         let mut modified: Vec<String> = Vec::new();
-
         let mut dialogs: Vec<Dialog> = Vec::new();
 
         /// Append `turn` to the last dialog, or start a new one if none exists.
@@ -631,18 +633,26 @@ impl Session {
         Ok(())
     }
 
-    /// Load a session from disk. Prefers the `.jsonl` sibling when given a
-    /// legacy `.json` path.
+    /// Load a session from disk, preferring the `.jsonl` sibling of a legacy
+    /// `.json` path.
+    ///
+    /// The workspace is re-resolved from the file's own location — not its
+    /// `Meta` record — so sessions survive the project being moved or renamed;
+    /// the stale `saved_meta` makes the next save rewrite the `Meta` line.
     pub fn load(path: &Path) -> Result<Self, String> {
         tracing::debug!(path = %path.display(), "loading session");
         let path = match path.extension().and_then(|e| e.to_str()) {
             Some("json") if path.with_extension("jsonl").exists() => path.with_extension("jsonl"),
             _ => path.to_path_buf(),
         };
-        match path.extension().and_then(|e| e.to_str()) {
+        let mut session = match path.extension().and_then(|e| e.to_str()) {
             Some("jsonl") => Self::load_jsonl(&path),
             _ => Self::load_legacy_json(&path),
+        }?;
+        if let Some(workspace) = workspace_from_path(&path) {
+            session.workspace = workspace;
         }
+        Ok(session)
     }
 
     /// Load from a jsonl file — merge all records line-by-line.
@@ -785,6 +795,24 @@ impl Session {
             created_at: self.created_at.clone(),
         }
     }
+}
+
+/// Workspace root of a session file — the grandparent of the innermost
+/// `.agent`/`sessions` ancestor (the layout written by [`Session::save_path`]).
+/// `None` keeps the workspace recorded in the file.
+fn workspace_from_path(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .skip(1) // the file itself
+        .find(|dir| {
+            dir.file_name().is_some_and(|n| n == "sessions")
+                && dir
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|n| n == ".agent")
+        })
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
 }
 
 /// Where a [`SearchHit`] matched.
