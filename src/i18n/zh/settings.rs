@@ -17,6 +17,14 @@ pub static TABLE: &[(&str, &str)] = &[
     ("+ Add", "+ 添加"),
     ("parameter", "参数"),
     ("recipe", "配方"),
+    // ── User Interface page (user_interface.rs) ──
+    ("User Interface", "用户界面"),
+    ("Language", "语言"),
+    ("Font scale", "字体缩放"),
+    (
+        "Chat text size; Ctrl + and Ctrl - also zoom.",
+        "会话文字大小；也可用 Ctrl + / Ctrl - 缩放。",
+    ),
     // ── About page (about.rs) ──
     ("Version", "版本"),
     ("Check for Updates", "检查更新"),

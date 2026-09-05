@@ -7,6 +7,17 @@ use crate::i18n::Lang;
 use crate::model::TaskModels;
 use crate::tools::{ToolLimits, ToolRegistry};
 
+/// Chat text-size zoom bounds, shared by the settings slider and Ctrl+/-.
+pub const FONT_SCALE_MIN: f32 = 0.5;
+pub const FONT_SCALE_MAX: f32 = 2.0;
+/// Chat text-size zoom step (5%), used by Ctrl+/- and the settings slider.
+pub const FONT_SCALE_STEP: f32 = 0.05;
+
+/// Snap a font scale to the 5% step grid within the supported range.
+pub fn snap_font_scale(scale: f32) -> f32 {
+    ((scale / FONT_SCALE_STEP).round() * FONT_SCALE_STEP).clamp(FONT_SCALE_MIN, FONT_SCALE_MAX)
+}
+
 /// All persistable app-level state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

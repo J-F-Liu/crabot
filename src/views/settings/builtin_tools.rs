@@ -3,7 +3,9 @@ use iced::{
     widget::{column, container, row, text, text_input, toggler},
 };
 
-use super::{BOLD, SettingsEvent, SettingsState, SettingsTab, form_card_style, section_header};
+use super::{
+    SettingsEvent, SettingsState, SettingsTab, form_card_style, section_header, section_title,
+};
 use crate::views::model_config::ProviderEntry;
 use crate::views::styles::styled_pick_list;
 use crate::views::theme::color_muted;
@@ -496,12 +498,6 @@ fn tier_row<'a>(
     .spacing(8)
     .align_y(Alignment::Center)
     .into()
-}
-
-// ── Shared ─────────────────────────────────────────────────────────
-
-fn section_title(title: &'static str) -> Element<'static, SettingsEvent> {
-    text(title).size(12).font(BOLD).color(color_muted()).into()
 }
 
 // ── Update ─────────────────────────────────────────────────────────

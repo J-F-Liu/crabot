@@ -29,6 +29,7 @@ pub mod custom_tools;
 pub mod mcp_servers;
 pub mod prompt_recipes;
 pub mod tool_playground;
+pub mod user_interface;
 
 /// Widget id of the new-label text input — used to focus it and detect blur.
 pub(crate) const NEW_LABEL_INPUT_ID: &str = "settings-new-label-input";
@@ -46,6 +47,7 @@ pub(super) const BOLD: iced::Font = iced::Font {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 #[strum(serialize_all = "title_case")]
 pub(crate) enum SettingsTab {
+    UserInterface,
     #[strum(serialize = "AI Models")]
     AiModels,
     PromptRecipes,
@@ -66,6 +68,8 @@ pub(crate) enum SettingsEvent {
     SelectTab(SettingsTab),
     /// Switch the UI language (applied immediately, persisted to settings).
     SetLanguage(Lang),
+    /// Change the chat font scale, clamped to 0.5–2.0 (applied immediately).
+    SetFontScale(f32),
     Close,
     /// Events for the AI Models tab (providers, models, labels).
     Models(ai_models::ModelsEvent),
@@ -93,6 +97,8 @@ pub(crate) struct SettingsState {
     pub(crate) selected_tab: SettingsTab,
     /// UI language of the dialog; mirrors `app.settings.language` while open.
     pub(crate) language: crabot::i18n::Lang,
+    /// Chat font scale of the dialog; mirrors `app.settings.font_scale` while open.
+    pub(crate) font_scale: f32,
     // Provider editing
     pub(super) selected_provider_id: String,
     pub(super) provider_name: String,
@@ -193,8 +199,9 @@ impl Default for SettingsState {
     fn default() -> Self {
         Self {
             open: false,
-            selected_tab: SettingsTab::AiModels,
+            selected_tab: SettingsTab::UserInterface,
             language: crabot::i18n::Lang::default(),
+            font_scale: 1.0,
             selected_provider_id: String::new(),
             provider_name: String::new(),
             provider_base_url: String::new(),
@@ -417,6 +424,9 @@ impl SettingsState {
             SettingsEvent::SetLanguage(lang) => {
                 self.language = lang;
             }
+            SettingsEvent::SetFontScale(v) => {
+                self.font_scale = crabot::settings::snap_font_scale(v);
+            }
             SettingsEvent::Close => {
                 // Drop any in-progress label editing / dragging.
                 self.adding_label = false;
@@ -587,27 +597,10 @@ impl SettingsState {
 
 // ── View ────────────────────────────────────────────────────────────
 
-/// En/中文 quick-toggle buttons in the settings dialog header.
-fn language_toggle(current: Lang) -> Element<'static, SettingsEvent> {
-    let mut toggle = row![].spacing(4);
-    for option in Lang::ALL {
-        let active = option == current;
-        let btn = button(text(option.label()).size(13))
-            .padding([4, 10])
-            .style(if active {
-                crate::views::styles::primary_button
-            } else {
-                crate::views::styles::secondary_button
-            })
-            .on_press(SettingsEvent::SetLanguage(option));
-        toggle = toggle.push(btn);
-    }
-    toggle.align_y(Alignment::Center).into()
-}
-
 /// Translated sidebar label of a settings tab.
 fn tab_title(tab: SettingsTab, lang: Lang) -> &'static str {
     match tab {
+        SettingsTab::UserInterface => lang.tr("User Interface"),
         SettingsTab::AiModels => lang.tr("AI Models"),
         SettingsTab::PromptRecipes => lang.tr("Prompt Recipes"),
         SettingsTab::BuiltinTools => lang.tr("Builtin Tools"),
@@ -630,7 +623,6 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
                 .font(BOLD)
                 .color(CRABOT_PRIMARY),
             iced::widget::Space::new().width(Length::Fill),
-            language_toggle(lang),
             button(
                 svg(svg::Handle::from_memory(icons::CLOSE))
                     .width(16)
@@ -648,6 +640,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
 
     // ── Sidebar ────────────────────────────────────────────────────
     let tabs = [
+        SettingsTab::UserInterface,
         SettingsTab::AiModels,
         SettingsTab::PromptRecipes,
         SettingsTab::BuiltinTools,
@@ -679,6 +672,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
 
     // ── Tab content ────────────────────────────────────────────────
     let tab_content: Element<'a, SettingsEvent> = match state.selected_tab {
+        SettingsTab::UserInterface => user_interface::user_interface_page(state),
         SettingsTab::AiModels => ai_models::ai_models_page(state),
         SettingsTab::PromptRecipes => prompt_recipes::prompt_recipes_page(state),
         SettingsTab::BuiltinTools => builtin_tools::builtin_tools_page(state),
@@ -862,6 +856,11 @@ pub(super) fn delete_button_style(_theme: &iced::Theme, status: button::Status) 
 /// Bold primary-colored section heading.
 pub(super) fn section_header(title: &'static str) -> Element<'static, SettingsEvent> {
     text(title).size(13).font(BOLD).color(CRABOT_PRIMARY).into()
+}
+
+/// Muted bold section title inside a settings card.
+pub(super) fn section_title(title: &'static str) -> Element<'static, SettingsEvent> {
+    text(title).size(12).font(BOLD).color(color_muted()).into()
 }
 
 /// Muted hint paragraph for an empty list.

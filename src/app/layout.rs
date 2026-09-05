@@ -47,12 +47,7 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
         }
         LayoutEvent::UndoRedo(message) => undo_redo(app, message),
         LayoutEvent::EscapePressed => escape(app),
-        LayoutEvent::Zoom(delta) => {
-            app.settings.font_scale = (app.settings.font_scale + delta).clamp(0.5, 2.0);
-            for tab in &mut app.conversation.session_tabs {
-                tab.search.invalidate_offsets();
-            }
-        }
+        LayoutEvent::Zoom(delta) => app.set_font_scale(app.settings.font_scale + delta),
         LayoutEvent::ToggleTheme(dark) => {
             views::theme::set_dark_mode(dark);
             app.layout.theme = views::theme::theme_for(dark);

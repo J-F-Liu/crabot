@@ -13,6 +13,7 @@ use iced::widget::{column, container, row, text_editor};
 use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
 
 use crabot::model::{self, ModelConfig, ModelList};
+use crabot::settings::{FONT_SCALE_MAX, FONT_SCALE_MIN};
 use crabot::setup;
 use crabot::tools;
 use crabot::user::{UserPrompt, WorkMode};
@@ -919,6 +920,14 @@ impl App {
     /// Confirm a pending new-label input (Enter or focus loss).
     pub(crate) fn confirm_pending_label(&mut self) {
         settings::confirm_pending_label(self);
+    }
+
+    /// Apply a chat font scale; cached search highlight offsets depend on text sizes.
+    pub(crate) fn set_font_scale(&mut self, scale: f32) {
+        self.settings.font_scale = scale.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX);
+        for tab in &mut self.conversation.session_tabs {
+            tab.search.invalidate_offsets();
+        }
     }
 
     /// Sync derived fields back into `settings` and persist to disk.

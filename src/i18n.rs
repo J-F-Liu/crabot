@@ -60,3 +60,10 @@ impl Lang {
         }
     }
 }
+
+/// Native name (see [`Lang::label`]), so `Lang` works directly as a picker option.
+impl std::fmt::Display for Lang {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}

@@ -8,6 +8,7 @@ use iced::window;
 use iced::{Event, Point, Subscription};
 
 use crate::widgets::textarea;
+use crabot::settings::FONT_SCALE_STEP;
 use crabot::tools::process;
 
 use super::{App, ConversationEvent, LayoutEvent, Message};
@@ -105,8 +106,12 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
                 keyboard::Key::Character("e") => Some(Message::Conversation(
                     ConversationEvent::ToggleAllDialogsExpand,
                 )),
-                keyboard::Key::Character("=") => Some(Message::Layout(LayoutEvent::Zoom(0.05))),
-                keyboard::Key::Character("-") => Some(Message::Layout(LayoutEvent::Zoom(-0.05))),
+                keyboard::Key::Character("=") => {
+                    Some(Message::Layout(LayoutEvent::Zoom(FONT_SCALE_STEP)))
+                }
+                keyboard::Key::Character("-") => {
+                    Some(Message::Layout(LayoutEvent::Zoom(-FONT_SCALE_STEP)))
+                }
                 keyboard::Key::Character(
                     digit @ ("0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"),
                 ) => {
