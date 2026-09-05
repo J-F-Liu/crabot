@@ -12,6 +12,7 @@ use super::theme::{CRABOT_DANGER, thin_horizontal, thin_vertical};
 use crate::RightPaneEvent;
 use crate::acp::AcpState;
 use crate::app::SessionTab;
+use crabot::i18n::Lang;
 use crabot::model::ModelConfig;
 use crabot::tools::{
     process,
@@ -98,16 +99,24 @@ fn collapsible_header(
     title: Cow<'static, str>,
     expanded: bool,
     section: PaneSection,
+    lang: Lang,
 ) -> Element<'static, RightPaneEvent> {
-    with_trailing(section_header(title), collapse_toggle(expanded, section))
+    with_trailing(
+        section_header(title),
+        collapse_toggle(expanded, section, lang),
+    )
 }
 
 /// Expand/collapse chevron button used by collapsible sections.
-fn collapse_toggle(expanded: bool, section: PaneSection) -> Element<'static, RightPaneEvent> {
+fn collapse_toggle(
+    expanded: bool,
+    section: PaneSection,
+    lang: Lang,
+) -> Element<'static, RightPaneEvent> {
     let (icon, tip) = if expanded {
-        (&icons::CHEVRONS_DOWN, "Collapse")
+        (&icons::CHEVRONS_DOWN, lang.tr("Collapse"))
     } else {
-        (&icons::CHEVRONS_RIGHT, "Expand")
+        (&icons::CHEVRONS_RIGHT, lang.tr("Expand"))
     };
     icons::icon_action(icon, tip, RightPaneEvent::ToggleSection(section))
 }
@@ -120,7 +129,7 @@ fn file_row<'a>(path: &'a str) -> Element<'a, RightPaneEvent> {
 }
 
 /// Build the todo-list section, returning `None` when the list is empty.
-fn todo_section(todo_items: &[TodoItem]) -> Option<Element<'static, RightPaneEvent>> {
+fn todo_section(todo_items: &[TodoItem], lang: Lang) -> Option<Element<'static, RightPaneEvent>> {
     if todo_items.is_empty() {
         return None;
     }
@@ -141,7 +150,7 @@ fn todo_section(todo_items: &[TodoItem]) -> Option<Element<'static, RightPaneEve
     Some(
         column![
             rule::horizontal(1),
-            section_header(Cow::Borrowed("Todo List")),
+            section_header(Cow::Borrowed(lang.tr("Todo List"))),
             column(rows).spacing(3),
         ]
         .spacing(8)
@@ -151,15 +160,18 @@ fn todo_section(todo_items: &[TodoItem]) -> Option<Element<'static, RightPaneEve
 
 /// Running-processes rows: one per process tagged with its owning session,
 /// horizontally scrollable when wider than the pane.
-fn process_section(processes: &[process::RunningProcess]) -> Element<'static, RightPaneEvent> {
+fn process_section(
+    processes: &[process::RunningProcess],
+    lang: Lang,
+) -> Element<'static, RightPaneEvent> {
     let rows: Vec<Element<'static, RightPaneEvent>> = processes
         .iter()
         .map(|p| {
             // Processes started outside the LLM loop (tool playground) carry
             // no owner tag; tab numbers match the tab-bar "Session N" labels.
-            let owner = p
-                .tab
-                .map_or_else(String::new, |n| format!("Session {n} · "));
+            let owner = p.tab.map_or_else(String::new, |n| {
+                lang.tr("Session {n} · ").replace("{n}", &n.to_string())
+            });
             container(
                 text(format!("{owner}{}: {}", p.pid, p.command))
                     .size(14)
@@ -177,6 +189,9 @@ fn process_section(processes: &[process::RunningProcess]) -> Element<'static, Ri
         .into()
 }
 
+/// The pane entry takes many narrow state slices; the signature is shared
+/// with `app.rs`, so keep the parameter list as-is.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn right_pane<'a>(
     pane_width: f32,
     model: Option<&ModelConfig>,
@@ -185,6 +200,7 @@ pub(crate) fn right_pane<'a>(
     processes: &[process::RunningProcess],
     dark_mode: bool,
     acp: &AcpState,
+    lang: Lang,
 ) -> Element<'a, RightPaneEvent> {
     let token_amount = &tab.latest_tokens;
     let session = &tab.session;
@@ -202,29 +218,33 @@ pub(crate) fn right_pane<'a>(
     let expanded = sections.context_window;
     // Collapsed shows only the fill ratio; expanded shows the raw size.
     let header = match cw {
-        Some(cw) if !expanded => {
-            format!(
-                "Context window: {:.1}%",
-                token_amount.context_fill_ratio(cw)
-            )
-        }
-        Some(cw) => format!("Context window ({cw})"),
-        None => "Context window".to_string(),
+        Some(cw) if !expanded => lang.tr("Context window: {:.1}%").replace(
+            "{:.1}%",
+            &format!("{:.1}%", token_amount.context_fill_ratio(cw)),
+        ),
+        Some(cw) => lang
+            .tr("Context window ({cw})")
+            .replace("{cw}", &cw.to_string()),
+        None => lang.tr("Context window").to_string(),
     };
     items.push(collapsible_header(
         Cow::from(header),
         expanded,
         PaneSection::ContextWindow,
+        lang,
     ));
     if expanded {
-        items.push(token_row("Prompt tokens:", token_amount.prompt.to_string()));
         items.push(token_row(
-            "Cached tokens:",
+            lang.tr("Prompt tokens:"),
+            token_amount.prompt.to_string(),
+        ));
+        items.push(token_row(
+            lang.tr("Cached tokens:"),
             (token_amount.cache_read + token_amount.cache_write).to_string(),
         ));
         if let Some(cw) = cw {
             items.push(token_row(
-                "Fill ratio:",
+                lang.tr("Fill ratio:"),
                 format!("{:.1}%", token_amount.context_fill_ratio(cw)),
             ));
         }
@@ -235,40 +255,56 @@ pub(crate) fn right_pane<'a>(
     let expanded = sections.token_usage;
     items.push(collapsible_header(
         if expanded {
-            Cow::Borrowed("Token Usage")
+            Cow::Borrowed(lang.tr("Token Usage"))
         } else {
             // Collapsed shows only the session cost.
-            Cow::from(format!("Token Usage: {}", session.formatted_cost()))
+            Cow::from(
+                lang.tr("Token Usage: {}")
+                    .replace("{}", &session.formatted_cost()),
+            )
         },
         expanded,
         PaneSection::TokenUsage,
+        lang,
     ));
     if expanded {
-        items.push(token_row("Input tokens:", session.tokens.input.to_string()));
         items.push(token_row(
-            "Output tokens:",
+            lang.tr("Input tokens:"),
+            session.tokens.input.to_string(),
+        ));
+        items.push(token_row(
+            lang.tr("Output tokens:"),
             session.tokens.output.to_string(),
         ));
         items.push(token_row(
-            "Cache read:",
+            lang.tr("Cache read:"),
             session.tokens.cache_read.to_string(),
         ));
         if session.tokens.cache_write > 0 {
             items.push(token_row(
-                "Cache write:",
+                lang.tr("Cache write:"),
                 session.tokens.cache_write.to_string(),
             ));
         }
-        items.push(token_row("Session cost:", session.formatted_cost()));
+        items.push(token_row(
+            lang.tr("Session cost:"),
+            session.formatted_cost(),
+        ));
         items.push(rule::horizontal(1).into());
-        items.push(token_row("Num Requests:", session.requests.to_string()));
+        items.push(token_row(
+            lang.tr("Num Requests:"),
+            session.requests.to_string(),
+        ));
         if !session.updated_at.is_empty() {
-            items.push(token_row("Last Response:", session.updated_at_time()));
+            items.push(token_row(
+                lang.tr("Last Response:"),
+                session.updated_at_time(),
+            ));
         }
     }
 
     // ── todo items ──
-    if let Some(section) = todo_section(&todo_items) {
+    if let Some(section) = todo_section(&todo_items, lang) {
         items.push(section);
     }
 
@@ -278,16 +314,20 @@ pub(crate) fn right_pane<'a>(
         items.push(rule::horizontal(1).into());
         items.push(collapsible_header(
             if expanded {
-                Cow::Borrowed("Running Processes")
+                Cow::Borrowed(lang.tr("Running Processes"))
             } else {
                 // Collapsed shows only the live count.
-                Cow::from(format!("Running Processes: {}", processes.len()))
+                Cow::from(
+                    lang.tr("Running Processes: {}")
+                        .replace("{}", &processes.len().to_string()),
+                )
             },
             expanded,
             PaneSection::Processes,
+            lang,
         ));
         if expanded {
-            items.push(process_section(processes));
+            items.push(process_section(processes, lang));
         }
     }
 
@@ -296,9 +336,10 @@ pub(crate) fn right_pane<'a>(
         let expanded = sections.accessed_files;
         items.push(rule::horizontal(1).into());
         items.push(collapsible_header(
-            Cow::Borrowed("Accessed Files"),
+            Cow::Borrowed(lang.tr("Accessed Files")),
             expanded,
             PaneSection::AccessedFiles,
+            lang,
         ));
         if expanded {
             let files: Vec<_> = session.accessed_files.iter().map(|p| file_row(p)).collect();
@@ -314,12 +355,12 @@ pub(crate) fn right_pane<'a>(
         // idle; then the list is always shown expanded.
         let show_revert_all = !tab.snapshot_files.is_empty() && !tab.running();
         let trailing: Element<RightPaneEvent> = if show_revert_all {
-            revert_button("Revert All", RightPaneEvent::RevertAll)
+            revert_button(lang.tr("Revert All"), RightPaneEvent::RevertAll)
         } else {
-            collapse_toggle(expanded, PaneSection::ModifiedFiles)
+            collapse_toggle(expanded, PaneSection::ModifiedFiles, lang)
         };
         items.push(with_trailing(
-            section_header(Cow::Borrowed("Modified Files")),
+            section_header(Cow::Borrowed(lang.tr("Modified Files"))),
             trailing,
         ));
         if expanded || show_revert_all {
@@ -331,7 +372,7 @@ pub(crate) fn right_pane<'a>(
                     if can_revert(p) {
                         with_trailing(
                             file_row(p),
-                            revert_button("Revert", RightPaneEvent::RevertFile(p.clone())),
+                            revert_button(lang.tr("Revert"), RightPaneEvent::RevertFile(p.clone())),
                         )
                     } else {
                         file_row(p)
@@ -372,9 +413,17 @@ pub(crate) fn right_pane<'a>(
         .into()
     }
     let toggles = row![
-        toggle_group("ACP Server", acp.enabled, RightPaneEvent::ToggleAcpServer),
+        toggle_group(
+            lang.tr("ACP Server"),
+            acp.enabled,
+            RightPaneEvent::ToggleAcpServer,
+        ),
         Space::new().width(Fill),
-        toggle_group("Dark theme", dark_mode, RightPaneEvent::ToggleTheme),
+        toggle_group(
+            lang.tr("Dark theme"),
+            dark_mode,
+            RightPaneEvent::ToggleTheme,
+        ),
     ]
     .align_y(Alignment::Center)
     .padding(padding::top(12).right(16).left(16));
@@ -383,7 +432,7 @@ pub(crate) fn right_pane<'a>(
         let (status, color) = if acp.stdio {
             // Host-spawned transport — no HTTP address to show.
             (
-                "stdio (host-spawned)".to_string(),
+                lang.tr("stdio (host-spawned)").to_string(),
                 Color::from_rgb(0.5, 0.6, 0.8),
             )
         } else {
@@ -393,7 +442,10 @@ pub(crate) fn right_pane<'a>(
                     format!("http://{}", acp.addr),
                     Color::from_rgb(0.4, 0.7, 0.4),
                 ),
-                (None, false) => ("Starting…".to_string(), Color::from_rgb(0.6, 0.6, 0.6)),
+                (None, false) => (
+                    lang.tr("Starting…").to_string(),
+                    Color::from_rgb(0.6, 0.6, 0.6),
+                ),
             }
         };
         header = header.push(
@@ -402,7 +454,7 @@ pub(crate) fn right_pane<'a>(
     }
 
     let footer = container(
-        button(text("Restart").size(14))
+        button(text(lang.tr("Restart")).size(14))
             .on_press(RightPaneEvent::Restart)
             .style(primary_button)
             .width(Length::Shrink),

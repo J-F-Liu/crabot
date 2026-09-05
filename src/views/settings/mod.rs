@@ -20,6 +20,8 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
+use crabot::i18n::Lang;
+
 pub mod about;
 pub mod ai_models;
 pub mod builtin_tools;
@@ -62,6 +64,8 @@ pub(crate) enum SettingsTab {
 #[derive(Debug, Clone)]
 pub(crate) enum SettingsEvent {
     SelectTab(SettingsTab),
+    /// Switch the UI language (applied immediately, persisted to settings).
+    SetLanguage(Lang),
     Close,
     /// Events for the AI Models tab (providers, models, labels).
     Models(ai_models::ModelsEvent),
@@ -87,6 +91,8 @@ pub(crate) struct SettingsState {
     pub(crate) open: bool,
     /// Currently active tab in the settings sidebar.
     pub(crate) selected_tab: SettingsTab,
+    /// UI language of the dialog; mirrors `app.settings.language` while open.
+    pub(crate) language: crabot::i18n::Lang,
     // Provider editing
     pub(super) selected_provider_id: String,
     pub(super) provider_name: String,
@@ -188,6 +194,7 @@ impl Default for SettingsState {
         Self {
             open: false,
             selected_tab: SettingsTab::AiModels,
+            language: crabot::i18n::Lang::default(),
             selected_provider_id: String::new(),
             provider_name: String::new(),
             provider_base_url: String::new(),
@@ -407,6 +414,9 @@ impl SettingsState {
             SettingsEvent::SelectTab(tab) => {
                 self.selected_tab = tab;
             }
+            SettingsEvent::SetLanguage(lang) => {
+                self.language = lang;
+            }
             SettingsEvent::Close => {
                 // Drop any in-progress label editing / dragging.
                 self.adding_label = false;
@@ -577,14 +587,50 @@ impl SettingsState {
 
 // ── View ────────────────────────────────────────────────────────────
 
+/// En/中文 quick-toggle buttons in the settings dialog header.
+fn language_toggle(current: Lang) -> Element<'static, SettingsEvent> {
+    let mut toggle = row![].spacing(4);
+    for option in Lang::ALL {
+        let active = option == current;
+        let btn = button(text(option.label()).size(13))
+            .padding([4, 10])
+            .style(if active {
+                crate::views::styles::primary_button
+            } else {
+                crate::views::styles::secondary_button
+            })
+            .on_press(SettingsEvent::SetLanguage(option));
+        toggle = toggle.push(btn);
+    }
+    toggle.align_y(Alignment::Center).into()
+}
+
+/// Translated sidebar label of a settings tab.
+fn tab_title(tab: SettingsTab, lang: Lang) -> &'static str {
+    match tab {
+        SettingsTab::AiModels => lang.tr("AI Models"),
+        SettingsTab::PromptRecipes => lang.tr("Prompt Recipes"),
+        SettingsTab::BuiltinTools => lang.tr("Builtin Tools"),
+        SettingsTab::CustomTools => lang.tr("Custom Tools"),
+        SettingsTab::McpServers => lang.tr("MCP Servers"),
+        SettingsTab::ToolPlayground => lang.tr("Tool Playground"),
+        SettingsTab::About => lang.tr("About"),
+    }
+}
+
 /// Returns the settings dialog content with a left sidebar of vertical tabs
 /// and a content area that switches between tab pages.
 /// The caller is responsible for placing it inside a modal structure.
 pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     let header = container(
         row![
-            text("Settings").size(18).font(BOLD).color(CRABOT_PRIMARY),
+            text(lang.tr("Settings"))
+                .size(18)
+                .font(BOLD)
+                .color(CRABOT_PRIMARY),
             iced::widget::Space::new().width(Length::Fill),
+            language_toggle(lang),
             button(
                 svg(svg::Handle::from_memory(icons::CLOSE))
                     .width(16)
@@ -614,7 +660,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
         .iter()
         .map(|&tab| {
             let is_active = state.selected_tab == tab;
-            button(text(tab.to_string()).size(13))
+            button(text(tab_title(tab, lang)).size(13))
                 .width(Length::Fill)
                 .style(sidebar_tab_style(is_active))
                 .on_press(SettingsEvent::SelectTab(tab))
@@ -707,10 +753,11 @@ pub(super) fn save_action_row<'a>(
     tab: SettingsTab,
     on_save: SettingsEvent,
 ) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     let label = if state.save_feedback == Some(tab) {
-        "Saved ✓"
+        lang.tr("Saved ✓")
     } else {
-        "Save"
+        lang.tr("Save")
     };
     let save_button = button(text(label).size(13))
         .style(crate::views::styles::primary_button)
@@ -854,6 +901,7 @@ pub(super) fn collapsible_header<'a>(
 /// Section with a right-aligned label, a "+ Add" button, and optional
 /// indented sub-cards beneath.
 pub(super) fn add_section<'a>(
+    lang: Lang,
     label: &'static str,
     on_add: SettingsEvent,
     cards: Vec<Element<'a, SettingsEvent>>,
@@ -862,7 +910,7 @@ pub(super) fn add_section<'a>(
         container(text(label).size(14))
             .width(90)
             .align_x(Alignment::End),
-        button(text("+ Add").size(12))
+        button(text(lang.tr("+ Add")).size(12))
             .padding([4, 10])
             .style(crate::views::styles::secondary_button)
             .on_press(on_add),
@@ -884,8 +932,12 @@ pub(super) fn add_section<'a>(
 }
 
 /// `{n} {word}` with an `s` plural when `n != 1`.
-pub(super) fn count_label(n: usize, word: &str) -> String {
-    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+/// Chinese has no plural forms; counts read as `{n} 个{word}`.
+pub(super) fn count_label(lang: Lang, n: usize, word: &str) -> String {
+    match lang {
+        Lang::En => format!("{n} {word}{}", if n == 1 { "" } else { "s" }),
+        Lang::Zh => format!("{n} 个{word}"),
+    }
 }
 
 /// First `{base}`, `{base}_2`, `{base}_3`, … name not already `taken`.

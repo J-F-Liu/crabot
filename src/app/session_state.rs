@@ -119,16 +119,20 @@ impl SessionState {
     }
 
     /// Human-readable status label for the current streaming phase.
-    pub(crate) fn status(&self, session_empty: bool) -> Cow<'static, str> {
+    pub(crate) fn status(
+        &self,
+        lang: crabot::i18n::Lang,
+        session_empty: bool,
+    ) -> Cow<'static, str> {
         // While auto-retrying, surface the countdown in the status bar.
         if let Some(retry) = self.retry {
-            return Cow::Owned(format!(
-                "Retry in {} second{} ({}/{})",
-                retry.seconds_left,
-                if retry.seconds_left == 1 { "" } else { "s" },
-                retry.attempt,
-                retry.max_attempts
-            ));
+            return Cow::Owned(
+                lang.tr("Retry in {seconds} second{s} ({attempt}/{max})")
+                    .replace("{seconds}", &retry.seconds_left.to_string())
+                    .replace("{s}", if retry.seconds_left == 1 { "" } else { "s" })
+                    .replace("{attempt}", &retry.attempt.to_string())
+                    .replace("{max}", &retry.max_attempts.to_string()),
+            );
         }
         match self.phase {
             DialogPhase::LlmLoading => Cow::Borrowed("⏳ Loading LLM…"),

@@ -78,6 +78,7 @@ pub(crate) fn session_view<'a>(
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
     loading: bool,
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, ConversationEvent> {
     let selected = session_options.iter().find(|e| e.id == current_session_id);
 
@@ -88,7 +89,7 @@ pub(crate) fn session_view<'a>(
 
     let picker: Element<'a, ConversationEvent> = if loading {
         container(
-            text("Loading…")
+            text(lang.tr("Loading…"))
                 .size(13)
                 .color(crate::views::theme::color_muted()),
         )
@@ -117,9 +118,9 @@ pub(crate) fn session_view<'a>(
 
     column![
         row![
-            text("Session").size(14).font(header_font),
+            text(lang.tr("Session")).size(14).font(header_font),
             picker,
-            button(text("New").size(13).align_x(Alignment::Center))
+            button(text(lang.tr("New")).size(13).align_x(Alignment::Center))
                 .on_press(ConversationEvent::NewSession)
                 .style(crate::views::primary_button),
         ]

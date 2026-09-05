@@ -62,6 +62,7 @@ pub(crate) enum AboutEvent {
 /// Renders the About page with logo, version info, homepage link,
 /// update check button, and auto-check toggle.
 pub(crate) fn about_page<'a>(state: &'a super::SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     let logo = image(logo_handle())
         .width(80)
         .height(80)
@@ -69,7 +70,7 @@ pub(crate) fn about_page<'a>(state: &'a super::SettingsState) -> Element<'a, Set
 
     let name = text(APP_NAME).size(24).font(BOLD).color(CRABOT_PRIMARY);
 
-    let version = text(format!("Version {VERSION}"))
+    let version = text(format!("{} {VERSION}", lang.tr("Version")))
         .size(16)
         .color(color_text_strong());
 
@@ -79,7 +80,7 @@ pub(crate) fn about_page<'a>(state: &'a super::SettingsState) -> Element<'a, Set
         .on_press(SettingsEvent::About(AboutEvent::OpenHomepage));
 
     // Update check section.
-    let check_update_btn = button(text("Check for Updates").size(13))
+    let check_update_btn = button(text(lang.tr("Check for Updates")).size(13))
         .style(styles::secondary_button)
         .on_press_maybe(if matches!(state.update_check, UpdateCheck::Checking) {
             None
@@ -88,11 +89,16 @@ pub(crate) fn about_page<'a>(state: &'a super::SettingsState) -> Element<'a, Set
         });
 
     let update_status = match &state.update_check {
-        UpdateCheck::Checking => text("Checking…").size(13).color(color_muted()),
-        UpdateCheck::UpToDate => text("You're up to date!").size(13).color(color_muted()),
-        UpdateCheck::Available(version) => text(format!("v{version} available"))
+        UpdateCheck::Checking => text(lang.tr("Checking…")).size(13).color(color_muted()),
+        UpdateCheck::UpToDate => text(lang.tr("You're up to date!"))
             .size(13)
-            .color(Color::from_rgb(0.2, 0.7, 0.3)),
+            .color(color_muted()),
+        UpdateCheck::Available(version) => text(
+            lang.tr("v{version} available")
+                .replace("{version}", version),
+        )
+        .size(13)
+        .color(Color::from_rgb(0.2, 0.7, 0.3)),
         UpdateCheck::Idle => text(""),
     };
 
@@ -104,7 +110,7 @@ pub(crate) fn about_page<'a>(state: &'a super::SettingsState) -> Element<'a, Set
         .on_toggle(move |v| SettingsEvent::About(AboutEvent::ToggleAutoCheckUpdates(v)))
         .size(18);
 
-    let auto_check_label = text("Automatically check for new versions on startup")
+    let auto_check_label = text(lang.tr("Automatically check for new versions on startup"))
         .size(13)
         .color(color_text_strong());
 

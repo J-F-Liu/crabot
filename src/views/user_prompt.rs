@@ -18,6 +18,8 @@ use crate::widgets::textarea::TextArea;
 use crate::{FocusedTarget, PromptEvent};
 use crabot::user::WorkMode;
 
+// 8 params: input state, mode, recipes, files, and the UI language.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn user_prompt_view<'a>(
     user_prompt: &'a TextArea,
     workmode: WorkMode,
@@ -26,6 +28,7 @@ pub(crate) fn user_prompt_view<'a>(
     recipe_dropdown_expanded: bool,
     files: &'a FileTreePane,
     workspace_set: bool,
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, PromptEvent> {
     let mut tab_bar_builder = TabBar::new(PromptEvent::SelectWorkMode);
     for mode in WorkMode::all() {
@@ -56,7 +59,7 @@ pub(crate) fn user_prompt_view<'a>(
 
     // ── Recipe dropdown ──────────────────────────────────────────
     // 按钮自适应宽度，下拉菜单固定360px
-    let underlay = button(text("Recipes ▾").size(14))
+    let underlay = button(text(lang.tr("Recipes ▾")).size(14))
         .on_press(PromptEvent::ToggleRecipeDropdown)
         .padding([4, 8])
         .style(crate::views::secondary_button);
@@ -88,7 +91,7 @@ pub(crate) fn user_prompt_view<'a>(
     column![
         row![
             checkbox(workmode_enabled)
-                .label("Work mode")
+                .label(lang.tr("Work mode"))
                 .width(Length::Fill)
                 .on_toggle(PromptEvent::ToggleWorkMode)
                 .style(crate::views::primary_checkbox)
@@ -97,14 +100,14 @@ pub(crate) fn user_prompt_view<'a>(
         ]
         .spacing(8)
         .align_y(Alignment::Center),
-        files_field_view(files, workspace_set),
+        files_field_view(files, workspace_set, lang),
         user_prompt
             .view(|msg| PromptEvent::EditTextArea(FocusedTarget::UserPrompt, msg))
             .height(120),
         row![
             recipe_dropdown,
             iced::widget::Space::new().width(Length::Fill),
-            button(text("Send").size(13).align_x(Alignment::Center))
+            button(text(lang.tr("Send")).size(13).align_x(Alignment::Center))
                 .width(80)
                 .on_press(PromptEvent::SendPrompt)
                 .style(crate::views::primary_button),
@@ -119,18 +122,22 @@ pub(crate) fn user_prompt_view<'a>(
 
 // ── Workspace tree view ──────────────────────────────────────────
 
-fn files_field_view<'a>(files: &'a FileTreePane, workspace_set: bool) -> Element<'a, PromptEvent> {
+fn files_field_view<'a>(
+    files: &'a FileTreePane,
+    workspace_set: bool,
+    lang: crabot::i18n::Lang,
+) -> Element<'a, PromptEvent> {
     let name = WORKSPACE_TREE;
-    let header = expandable_header(name, files.enabled, files.expanded);
+    let header = expandable_header(name, files.enabled, files.expanded, lang);
 
     use iced::widget::scrollable::{Direction, Scrollbar};
 
     if files.expanded {
         let body: Element<'_, PromptEvent> = if files.tree.is_empty() {
             text(if workspace_set {
-                "Loading…"
+                lang.tr("Loading…")
             } else {
-                "No workspace selected."
+                lang.tr("No workspace selected.")
             })
             .size(12)
             .style(|_| text::Style {

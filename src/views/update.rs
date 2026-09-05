@@ -12,6 +12,7 @@ use iced::{
 use semver::Version;
 
 use crate::OverlayEvent;
+use crabot::i18n::Lang;
 
 /// Version of the running binary.
 pub(crate) const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -245,34 +246,48 @@ fn walkdir(dir: &std::path::Path, depth: u32) -> Vec<Result<std::fs::DirEntry, s
 pub(crate) fn update_banner(
     latest: &str,
     download_state: &UpdateDownloadState,
+    lang: Lang,
 ) -> Element<'static, OverlayEvent> {
     let action = match download_state {
-        UpdateDownloadState::Idle => {
-            banner_button("Install New Version", 13.0, OverlayEvent::InstallUpdate)
-        }
-        UpdateDownloadState::Failed => {
-            banner_button("Download Failed", 13.0, OverlayEvent::InstallUpdate)
-        }
+        UpdateDownloadState::Idle => banner_button(
+            lang.tr("Install New Version"),
+            13.0,
+            OverlayEvent::InstallUpdate,
+        ),
+        UpdateDownloadState::Failed => banner_button(
+            lang.tr("Download Failed"),
+            13.0,
+            OverlayEvent::InstallUpdate,
+        ),
         UpdateDownloadState::InProgress { downloaded, total } => {
+            let prefix = lang.tr("⏳ Downloading…");
             let label = match progress_percent(*downloaded, *total) {
-                Some(pct) => format!("⏳ Downloading… {pct}%"),
-                None => format!("⏳ Downloading… {:.1} MB", *downloaded as f64 / 1_048_576.0),
+                Some(pct) => format!("{prefix} {pct}%"),
+                None => format!("{prefix} {:.1} MB", *downloaded as f64 / 1_048_576.0),
             };
             banner_button_disabled(label, 13.0)
         }
-        UpdateDownloadState::ReadyToRestart(_) => {
-            banner_button("Restart to Update", 13.0, OverlayEvent::RestartFromUpdate)
-        }
+        UpdateDownloadState::ReadyToRestart(_) => banner_button(
+            lang.tr("Restart to Update"),
+            13.0,
+            OverlayEvent::RestartFromUpdate,
+        ),
     };
     container(
         row![
-            text(format!(
-                "🆕  Crabot v{latest} is available! (current: v{CURRENT_VERSION})"
-            ))
+            text(
+                lang.tr("🆕  Crabot v{latest} is available! (current: v{CURRENT_VERSION})")
+                    .replace("{latest}", latest)
+                    .replace("{CURRENT_VERSION}", CURRENT_VERSION),
+            )
             .size(13)
             .color(Color::WHITE),
             Space::new().width(Length::Fill),
-            banner_button("View Release Notes", 13.0, OverlayEvent::OpenReleaseNotes),
+            banner_button(
+                lang.tr("View Release Notes"),
+                13.0,
+                OverlayEvent::OpenReleaseNotes
+            ),
             Space::new().width(8),
             action,
             Space::new().width(8),

@@ -7,6 +7,7 @@ use crate::views::theme::{
     CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_surface,
     color_text_strong,
 };
+use crabot::i18n::Lang;
 use crabot::model::{Model, currency_symbol};
 use crabot::model_database::ModelDatabase;
 use iced::{
@@ -261,6 +262,7 @@ impl std::fmt::Display for ProviderPickEntry {
 // ── Provider section ────────────────────────────────────────────────
 
 pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     let entries: Vec<ProviderPickEntry> = state
         .working_models
         .providers
@@ -306,18 +308,18 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
 
         let form_body = column![
             field_row(
-                "Name",
+                lang.tr("Name"),
                 &state.provider_name,
-                "Provider name",
+                lang.tr("Provider name"),
                 false,
                 Some(NEW_PROVIDER_NAME_INPUT_ID),
                 None,
                 move |v| SettingsEvent::Models(ModelsEvent::EditProviderName(v)),
             ),
             field_row(
-                "Base URL",
+                lang.tr("Base URL"),
                 &state.provider_base_url,
-                "Base URL of the provider, press Enter to fetch model list",
+                lang.tr("Base URL of the provider, press Enter to fetch model list"),
                 false,
                 None,
                 Some(SettingsEvent::Models(ModelsEvent::RefreshModels)),
@@ -325,12 +327,12 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             ),
             {
                 row![
-                    label_col("API Type"),
+                    label_col(lang.tr("API Type")),
                     styled_pick_list(API_TYPES, selected_api_type, |v| {
                         SettingsEvent::Models(ModelsEvent::EditProviderApiType(v.to_string()))
                     })
                     .width(Length::Fill),
-                    label_col("Auth Type"),
+                    label_col(lang.tr("Auth Type")),
                     styled_pick_list(AUTH_TYPES, selected_auth, |v| {
                         SettingsEvent::Models(ModelsEvent::EditProviderAuth(v.to_string()))
                     })
@@ -340,9 +342,9 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                 .align_y(Alignment::Center)
             },
             field_row(
-                "API Key",
+                lang.tr("API Key"),
                 &state.provider_api_key,
-                "API Key or its enviroment variable name",
+                lang.tr("API Key or its enviroment variable name"),
                 false,
                 None,
                 None,
@@ -355,7 +357,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                     && (!state.model_filter.is_empty()
                         || state.available_model_ids.len() > MODEL_LIST_SCROLL_ROWS))
                     .then(|| {
-                        text_input("Search models…", &state.model_search)
+                        text_input(lang.tr("Search models…"), &state.model_search)
                             .on_input(|v| SettingsEvent::Models(ModelsEvent::EditModelSearch(v)))
                             .on_submit(SettingsEvent::Models(ModelsEvent::ApplyModelFilter))
                             .size(12)
@@ -364,7 +366,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                             .into()
                     });
                 checkbox_row(
-                    "Strict Mode",
+                    lang.tr("Strict Mode"),
                     state.provider_strict_mode,
                     |v| SettingsEvent::Models(ModelsEvent::ToggleProviderStrictMode(v)),
                     search,
@@ -381,11 +383,11 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             .into()
     } else {
         column![
-            text("Select a provider to edit, or create a new one.")
+            text(lang.tr("Select a provider to edit, or create a new one."))
                 .size(13)
                 .color(Color::from_rgb8(0x66, 0x66, 0x66)),
             iced::widget::Space::new().height(Length::Fill),
-            button(text("New"))
+            button(text(lang.tr("New")))
                 .style(crate::views::styles::primary_button)
                 .on_press(SettingsEvent::Models(ModelsEvent::NewProvider)),
         ]
@@ -396,12 +398,12 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
     };
 
     let action_button: Element<'_, SettingsEvent> = if state.is_new_provider {
-        button(text("Cancel"))
+        button(text(lang.tr("Cancel")))
             .style(crate::views::styles::secondary_button)
             .on_press(SettingsEvent::Models(ModelsEvent::CancelNewProvider))
             .into()
     } else if !state.selected_provider_id.is_empty() {
-        button(text("Delete"))
+        button(text(lang.tr("Delete")))
             .style(|theme: &iced::Theme, status| {
                 let mut s = crate::views::styles::secondary_button(theme, status);
                 s.text_color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
@@ -417,10 +419,10 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
 
     column![
         row![
-            section_header("Model Providers"),
+            section_header(lang.tr("Model Providers")),
             picker,
             row![
-                button(text("New"))
+                button(text(lang.tr("New")))
                     .style(crate::views::styles::primary_button)
                     .on_press(SettingsEvent::Models(ModelsEvent::NewProvider)),
                 action_button,
@@ -441,7 +443,8 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
 /// The trailing "+" capsule opens a blank input capsule; the new label is
 /// confirmed with Enter or when the input loses focus.
 pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
-    let header = section_header("Model Labels");
+    let lang = state.language;
+    let header = section_header(lang.tr("Model Labels"));
 
     let dragging = state.dragging_label();
 
@@ -481,7 +484,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
 
     if chips.is_empty() && !state.is_adding_label() {
         chips.push(
-            text("No labels yet. Click + to add one.")
+            text(lang.tr("No labels yet. Click + to add one."))
                 .size(13)
                 .color(color_muted())
                 .into(),
@@ -490,7 +493,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
 
     if state.is_adding_label() {
         chips.push(
-            text_input("Label name", &state.new_label_name)
+            text_input(lang.tr("Label name"), &state.new_label_name)
                 .id(NEW_LABEL_INPUT_ID)
                 .on_input(move |v| SettingsEvent::Models(ModelsEvent::NewLabelName(v)))
                 .on_submit(SettingsEvent::Models(ModelsEvent::AddLabel))
@@ -518,7 +521,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
         ))
         .width(Length::Fill);
 
-    let hint = text("Drag labels to reorder · Click + to add a new label")
+    let hint = text(lang.tr("Drag labels to reorder · Click + to add a new label"))
         .size(12)
         .color(color_muted());
     column![
@@ -599,7 +602,8 @@ fn checkbox_row<'a>(
 
 /// Renders the models section with a table of checkboxes and model IDs.
 fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
-    let header = label_col("Models");
+    let lang = state.language;
+    let header = label_col(lang.tr("Models"));
 
     // All IDs, narrowed by the applied filter when set.
     let all_ids = display_model_ids(state);
@@ -614,9 +618,12 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
 
     // Body: status or table + details
     let body: Element<'_, SettingsEvent> = if state.fetching_models {
-        text("Loading models…").size(12).color(color_muted()).into()
+        text(lang.tr("Loading models…"))
+            .size(12)
+            .color(color_muted())
+            .into()
     } else if all_ids.is_empty() {
-        let fetch = button(text("Fetch Models").size(12))
+        let fetch = button(text(lang.tr("Fetch Models")).size(12))
             .style(crate::views::styles::primary_button)
             .on_press_maybe(
                 (!state.provider_base_url.trim().is_empty())
@@ -631,7 +638,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
         }
     } else if display_ids.is_empty() {
         container(
-            text("No models match the search filter.")
+            text(lang.tr("No models match the search filter."))
                 .size(11)
                 .color(color_muted()),
         )
@@ -698,77 +705,71 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
         });
 
         // ── Details panel ────────────────────────────────────────
-        let details: Element<'_, SettingsEvent> =
-            if let Some(selected_id) = &state.selected_model_id {
-                if let Some(model) =
-                    provider_models(state).and_then(|ms| ms.iter().find(|m| &m.id == selected_id))
-                {
-                    // Checked model: show the editable parameter form.
-                    match state.model_edit.as_ref() {
-                        Some(draft) => model_edit_panel(model, draft),
-                        None => readonly_model_detail(model),
-                    }
-                } else if let Some(details) = state.model_db.get(selected_id) {
-                    // Pick the active offer: user-selected source, or first.
-                    let active_cost = state
+        let details: Element<'_, SettingsEvent> = if let Some(selected_id) =
+            &state.selected_model_id
+        {
+            if let Some(model) =
+                provider_models(state).and_then(|ms| ms.iter().find(|m| &m.id == selected_id))
+            {
+                // Checked model: show the editable parameter form.
+                match state.model_edit.as_ref() {
+                    Some(draft) => model_edit_panel(model, draft, lang),
+                    None => readonly_model_detail(model, lang),
+                }
+            } else if let Some(details) = state.model_db.get(selected_id) {
+                // Pick the active offer: user-selected source, or first.
+                let active_cost = state
+                    .selected_offer_source
+                    .as_deref()
+                    .and_then(|src| details.offers.iter().find(|o| o.source == src))
+                    .unwrap_or_else(|| details.offers.first().unwrap_or(&details.cost));
+
+                let header = base_header(lang, &details.name, details.thinking, &[]);
+
+                let detail = model_detail_panel(
+                    active_cost,
+                    &details.input,
+                    details.context_window,
+                    details.max_tokens,
+                    header,
+                    lang,
+                );
+
+                // Show offer-source picker when multiple offers exist.
+                if details.offers.len() > 1 {
+                    let sources: Vec<String> =
+                        details.offers.iter().map(|o| o.source.clone()).collect();
+                    let selected_source = state
                         .selected_offer_source
-                        .as_deref()
-                        .and_then(|src| details.offers.iter().find(|o| o.source == src))
-                        .unwrap_or_else(|| details.offers.first().unwrap_or(&details.cost));
-
-                    let header = base_header(&details.name, details.thinking, &[]);
-
-                    let detail = model_detail_panel(
-                        active_cost,
-                        &details.input,
-                        details.context_window,
-                        details.max_tokens,
-                        header,
-                    );
-
-                    // Show offer-source picker when multiple offers exist.
-                    if details.offers.len() > 1 {
-                        let sources: Vec<String> =
-                            details.offers.iter().map(|o| o.source.clone()).collect();
-                        let selected_source = state
-                            .selected_offer_source
-                            .clone()
-                            .unwrap_or_else(|| active_cost.source.clone());
-                        column![
-                            container(
-                                row![
-                                    text("Offer").size(12).color(color_muted()).width(60),
-                                    styled_pick_list(sources, Some(selected_source), |src| {
-                                        SettingsEvent::Models(ModelsEvent::SelectOfferSource(src))
-                                    })
-                                    .text_size(12)
-                                    .width(Length::Fill),
-                                ]
-                                .spacing(10)
-                                .align_y(Alignment::Center),
-                            )
-                            .padding([4, 0]),
-                            detail,
-                        ]
-                        .spacing(4)
-                        .into()
-                    } else {
-                        detail
-                    }
-                } else {
-                    container(
-                        text("Check the box to add this model,\nthen save to see parameters.")
-                            .size(11)
-                            .color(color_muted()),
-                    )
-                    .padding(8)
-                    .style(form_card_style)
-                    .width(Length::FillPortion(1))
+                        .clone()
+                        .unwrap_or_else(|| active_cost.source.clone());
+                    column![
+                        container(
+                            row![
+                                text(lang.tr("Offer"))
+                                    .size(12)
+                                    .color(color_muted())
+                                    .width(60),
+                                styled_pick_list(sources, Some(selected_source), |src| {
+                                    SettingsEvent::Models(ModelsEvent::SelectOfferSource(src))
+                                })
+                                .text_size(12)
+                                .width(Length::Fill),
+                            ]
+                            .spacing(10)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([4, 0]),
+                        detail,
+                    ]
+                    .spacing(4)
                     .into()
+                } else {
+                    detail
                 }
             } else {
                 container(
-                    text("Click a model ID to see details.")
+                    text(lang.tr("Check the box to add this model,\nthen save to see parameters."))
                         .size(11)
                         .color(color_muted()),
                 )
@@ -776,7 +777,18 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                 .style(form_card_style)
                 .width(Length::FillPortion(1))
                 .into()
-            };
+            }
+        } else {
+            container(
+                text(lang.tr("Click a model ID to see details."))
+                    .size(11)
+                    .color(color_muted()),
+            )
+            .padding(8)
+            .style(form_card_style)
+            .width(Length::FillPortion(1))
+            .into()
+        };
         row![table, details].spacing(10).into()
     };
     row![header, body]
@@ -792,6 +804,7 @@ fn model_detail_panel<'a>(
     context_window: u32,
     max_tokens: u32,
     header: Vec<Element<'a, SettingsEvent>>,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let sym = currency_symbol(&cost.currency);
     let ctx = if context_window > 0 {
@@ -807,22 +820,25 @@ fn model_detail_panel<'a>(
 
     let mut rows = header;
     if !input.is_empty() {
-        rows.push(detail_row("Input Modes", input.join(", ")));
+        rows.push(detail_row(lang.tr("Input Modes"), input.join(", ")));
     }
-    rows.push(detail_row("Context", ctx));
-    rows.push(detail_row("Max Tokens", max_tok));
-    rows.push(detail_row("Cost (in)", format!("{sym}{:.4}/M", cost.input)));
+    rows.push(detail_row(lang.tr("Context"), ctx));
+    rows.push(detail_row(lang.tr("Max Tokens"), max_tok));
     rows.push(detail_row(
-        "Cost (out)",
+        lang.tr("Cost (in)"),
+        format!("{sym}{:.4}/M", cost.input),
+    ));
+    rows.push(detail_row(
+        lang.tr("Cost (out)"),
         format!("{sym}{:.4}/M", cost.output),
     ));
     if cost.cache_read > 0.0 || cost.cache_write > 0.0 {
         rows.push(detail_row(
-            "Cache read",
+            lang.tr("Cache read"),
             format!("{sym}{:.4}/M", cost.cache_read),
         ));
         rows.push(detail_row(
-            "Cache write",
+            lang.tr("Cache write"),
             format!("{sym}{:.4}/M", cost.cache_write),
         ));
     }
@@ -836,13 +852,14 @@ fn model_detail_panel<'a>(
 
 /// Shared Name/Thinking(/Levels) rows for model detail panels.
 fn base_header(
+    lang: Lang,
     name: &str,
     thinking: bool,
     levels: &[String],
 ) -> Vec<Element<'static, SettingsEvent>> {
     let mut header = vec![
         detail_row(
-            "Name",
+            lang.tr("Name"),
             if name.is_empty() {
                 "—".into()
             } else {
@@ -850,30 +867,39 @@ fn base_header(
             },
         ),
         detail_row(
-            "Thinking",
-            if thinking { "yes".into() } else { "no".into() },
+            lang.tr("Thinking"),
+            if thinking {
+                lang.tr("yes").to_string()
+            } else {
+                lang.tr("no").to_string()
+            },
         ),
     ];
     if !levels.is_empty() {
-        header.push(detail_row("Think Levels", levels.join(", ")));
+        header.push(detail_row(lang.tr("Think Levels"), levels.join(", ")));
     }
     header
 }
 
 /// Read-only fallback for a checked model whose editor drafts aren't seeded.
-fn readonly_model_detail(model: &Model) -> Element<'static, SettingsEvent> {
-    let header = base_header(&model.name, model.thinking, &model.thinking_levels);
+fn readonly_model_detail(model: &Model, lang: Lang) -> Element<'static, SettingsEvent> {
+    let header = base_header(lang, &model.name, model.thinking, &model.thinking_levels);
     model_detail_panel(
         &model.cost,
         &model.input,
         model.context_window,
         model.max_tokens,
         header,
+        lang,
     )
 }
 
 /// Editable parameter form shown on the right for a checked model.
-fn model_edit_panel<'a>(model: &'a Model, d: &'a ModelEditDraft) -> Element<'a, SettingsEvent> {
+fn model_edit_panel<'a>(
+    model: &'a Model,
+    d: &'a ModelEditDraft,
+    lang: Lang,
+) -> Element<'a, SettingsEvent> {
     // Right-aligned muted tag of fixed width (row labels and sub-labels).
     let tag = |t: &'static str, w: f32| {
         container(text(t).size(11).color(color_muted()))
@@ -914,64 +940,64 @@ fn model_edit_panel<'a>(model: &'a Model, d: &'a ModelEditDraft) -> Element<'a, 
 
     let form = column![
         form_row(
-            "Name",
+            lang.tr("Name"),
             row![input(
                 &d.name,
-                "Display name",
+                lang.tr("Display name"),
                 Length::Fill,
                 ModelParam::Name
             )],
         ),
         form_row(
-            "Thinking",
+            lang.tr("Thinking"),
             row![
                 cb(model.thinking, ModelParam::Thinking),
-                text("Levels").size(11).color(color_muted()),
+                text(lang.tr("Levels")).size(11).color(color_muted()),
                 input(
                     &d.thinking_levels,
-                    "comma separated",
+                    lang.tr("comma separated"),
                     Length::Fill,
                     ModelParam::ThinkingLevels
                 ),
             ],
         ),
         form_row(
-            "Input Modes",
+            lang.tr("Input Modes"),
             row![input(
                 &d.input,
-                "comma separated",
+                lang.tr("comma separated"),
                 Length::Fill,
                 ModelParam::Input
             )],
         ),
         form_row(
-            "Context",
+            lang.tr("Context"),
             row![
                 num(&d.context_window, ModelParam::ContextWindow),
-                text("Max Tokens").size(11).color(color_muted()),
+                text(lang.tr("Max Tokens")).size(11).color(color_muted()),
                 num(&d.max_tokens, ModelParam::MaxTokens),
             ],
         ),
         form_row(
-            "Cost /M",
+            lang.tr("Cost /M"),
             row![
-                tag("Input", 46.0),
+                tag(lang.tr("Input"), 46.0),
                 num(&d.cost_input, ModelParam::CostInput),
-                tag("Output", 46.0),
+                tag(lang.tr("Output"), 46.0),
                 num(&d.cost_output, ModelParam::CostOutput),
             ],
         ),
         form_row(
-            "Cache /M",
+            lang.tr("Cache /M"),
             row![
-                tag("Read", 46.0),
+                tag(lang.tr("Read"), 46.0),
                 num(&d.cost_cache_read, ModelParam::CostCacheRead),
-                tag("Write", 46.0),
+                tag(lang.tr("Write"), 46.0),
                 num(&d.cost_cache_write, ModelParam::CostCacheWrite),
             ],
         ),
         form_row(
-            "Currency",
+            lang.tr("Currency"),
             row![
                 styled_pick_list(currencies, selected_currency, |c: String| {
                     SettingsEvent::Models(ModelsEvent::EditModelParam(ModelParam::Currency(c)))
@@ -979,7 +1005,7 @@ fn model_edit_panel<'a>(model: &'a Model, d: &'a ModelEditDraft) -> Element<'a, 
                 .text_size(11)
                 .padding([2, 4])
                 .width(Length::Fixed(90.0)),
-                text("Peak ×2").size(11).color(color_muted()),
+                text(lang.tr("Peak ×2")).size(11).color(color_muted()),
                 cb(model.cost.double_on_peak_hour, ModelParam::DoubleOnPeakHour),
             ],
         ),

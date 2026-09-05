@@ -7,6 +7,7 @@ use super::{BOLD, SettingsEvent, SettingsState, SettingsTab, form_card_style, se
 use crate::views::model_config::ProviderEntry;
 use crate::views::styles::styled_pick_list;
 use crate::views::theme::color_muted;
+use crabot::i18n::Lang;
 use crabot::model::{Model, ModelConfig};
 use crabot::tools::ToolLimits;
 
@@ -72,20 +73,20 @@ impl ToolLimitField {
         ToolLimitField::McpCallTimeoutMs,
     ];
 
-    fn label(self) -> &'static str {
+    fn label(self, lang: Lang) -> &'static str {
         match self {
-            ToolLimitField::CommandTimeoutMs => "bash timeout (ms)",
-            ToolLimitField::MaxCommandTimeoutMs => "bash max timeout (ms)",
-            ToolLimitField::HeadTailBytes => "truncation head+tail bytes (each)",
-            ToolLimitField::MaxOutputBytes => "max output bytes",
-            ToolLimitField::ReadMaxLines => "read max lines",
-            ToolLimitField::ReadMaxBytes => "read max bytes",
-            ToolLimitField::FindMaxLines => "find max lines",
-            ToolLimitField::SearchMaxLines => "search max lines",
-            ToolLimitField::FetchMaxBodyBytes => "fetch max body bytes",
-            ToolLimitField::FetchTimeoutMs => "fetch timeout (ms)",
-            ToolLimitField::McpConnectTimeoutMs => "mcp connect timeout (ms)",
-            ToolLimitField::McpCallTimeoutMs => "mcp call timeout (ms)",
+            ToolLimitField::CommandTimeoutMs => lang.tr("bash timeout (ms)"),
+            ToolLimitField::MaxCommandTimeoutMs => lang.tr("bash max timeout (ms)"),
+            ToolLimitField::HeadTailBytes => lang.tr("truncation head+tail bytes (each)"),
+            ToolLimitField::MaxOutputBytes => lang.tr("max output bytes"),
+            ToolLimitField::ReadMaxLines => lang.tr("read max lines"),
+            ToolLimitField::ReadMaxBytes => lang.tr("read max bytes"),
+            ToolLimitField::FindMaxLines => lang.tr("find max lines"),
+            ToolLimitField::SearchMaxLines => lang.tr("search max lines"),
+            ToolLimitField::FetchMaxBodyBytes => lang.tr("fetch max body bytes"),
+            ToolLimitField::FetchTimeoutMs => lang.tr("fetch timeout (ms)"),
+            ToolLimitField::McpConnectTimeoutMs => lang.tr("mcp connect timeout (ms)"),
+            ToolLimitField::McpCallTimeoutMs => lang.tr("mcp call timeout (ms)"),
         }
     }
 }
@@ -217,7 +218,8 @@ where
 const TIERS: [(&str, &str); 3] = [("easy", "Easy"), ("medium", "Medium"), ("hard", "Hard")];
 
 pub(super) fn builtin_tools_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
-    let header = section_header("Builtin Tools");
+    let lang = state.language;
+    let header = section_header(lang.tr("Builtin Tools"));
 
     column![
         header,
@@ -268,29 +270,30 @@ fn num_input<'a>(
 }
 
 fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
+    let lang = state.language;
     container(
         column![
-            section_title("Agent"),
+            section_title(lang.tr("Agent")),
             setting_row(
-                "Max iterations",
+                lang.tr("Max iterations"),
                 num_input("100", &state.working_max_iterations, move |v| {
                     SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditMaxIterations(v))
                 },),
-                "Tool-calling rounds before the agent gives up.",
+                lang.tr("Tool-calling rounds before the agent gives up."),
             ),
             setting_row(
-                "Renew threshold (%)",
+                lang.tr("Renew threshold (%)"),
                 num_input("25", &state.working_fill_ratio_threshold, move |v| {
                     SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditFillRatioThreshold(v))
                 },),
-                "Context fill ratio that triggers a renew reminder.",
+                lang.tr("Context fill ratio that triggers a renew reminder."),
             ),
             setting_row(
-                "Stream stall timeout (s)",
+                lang.tr("Stream stall timeout (s)"),
                 num_input("120", &state.working_stream_stall_timeout, move |v| {
                     SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditStreamStallTimeout(v))
                 },),
-                "Seconds with no stream data before giving up. 0 = off.",
+                lang.tr("Seconds with no stream data before giving up. 0 = off."),
             ),
         ]
         .spacing(6),
@@ -324,22 +327,23 @@ fn proxy_toggle_row(
 }
 
 fn network_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
+    let lang = state.language;
     container(
         column![
-            section_title("Network"),
+            section_title(lang.tr("Network")),
             proxy_toggle_row(
                 state.working_use_system_proxy_llm,
-                "LLM traffic via system proxy",
-                "Windows system proxy; HTTP(S)_PROXY env elsewhere.",
+                lang.tr("LLM traffic via system proxy"),
+                lang.tr("Windows system proxy; HTTP(S)_PROXY env elsewhere."),
                 BuiltinToolsEvent::ToggleUseSystemProxyLlm,
             ),
             proxy_toggle_row(
                 state.working_use_system_proxy_tools,
-                "Tools traffic via system proxy",
-                "Fetch, bash curl/wget, and child processes.",
+                lang.tr("Tools traffic via system proxy"),
+                lang.tr("Fetch, bash curl/wget, and child processes."),
                 BuiltinToolsEvent::ToggleUseSystemProxyTools,
             ),
-            text("Takes effect on restart.")
+            text(lang.tr("Takes effect on restart."))
                 .size(11)
                 .color(color_muted()),
         ]
@@ -354,11 +358,12 @@ fn network_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
 // ── Tool limits card ───────────────────────────────────────────────
 
 fn limit_row(state: &SettingsState, field: ToolLimitField) -> Element<'_, SettingsEvent> {
+    let lang = state.language;
     let value = state.working_tool_limits.get(field);
     let input = num_input("", value, move |v| {
         SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditToolLimit(field, v))
     });
-    row![text(field.label()).size(13).width(180.0), input,]
+    row![text(field.label(lang)).size(13).width(180.0), input,]
         .spacing(8)
         .align_y(Alignment::Center)
         .into()
@@ -367,6 +372,7 @@ fn limit_row(state: &SettingsState, field: ToolLimitField) -> Element<'_, Settin
 fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
     // Two columns, each holding one related pair group stacked vertically:
     // left = bash / truncation / read, right = find+search / fetch / mcp.
+    let lang = state.language;
     let (left_fields, right_fields) = ToolLimitField::ALL.split_at(6);
     let column_rows = |fields: &[ToolLimitField]| {
         column(fields.iter().copied().map(|f| limit_row(state, f)))
@@ -376,7 +382,7 @@ fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
 
     container(
         column![
-            section_title("Tool Limits"),
+            section_title(lang.tr("Tool Limits")),
             row![column_rows(left_fields), column_rows(right_fields)].spacing(12),
         ]
         .spacing(6),
@@ -390,6 +396,7 @@ fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
 // ── Sub-agent task models card ─────────────────────────────────────
 
 fn task_models_card<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     let providers: Vec<ProviderEntry> = state
         .working_models
         .providers
@@ -407,10 +414,12 @@ fn task_models_card<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> 
 
     container(
         column![
-            section_title("Sub-agent Models"),
-            text("Models used by the task tool per difficulty tier. Inherit uses the parent session's model.")
-                .size(11)
-                .color(color_muted()),
+            section_title(lang.tr("Sub-agent Models")),
+            text(lang.tr(
+                "Models used by the task tool per difficulty tier. Inherit uses the parent session's model."
+            ))
+            .size(11)
+            .color(color_muted()),
             column(rows).spacing(4),
         ]
         .spacing(6),
@@ -430,9 +439,10 @@ fn tier_row<'a>(
     let cfg = state.working_task_models.get_config(tier);
     let inherit = cfg.is_empty();
     let no_providers = providers.is_empty();
+    let lang = state.language;
 
     let pickers: Element<'a, SettingsEvent> = if inherit {
-        text("Inherit parent model")
+        text(lang.tr("Inherit parent model"))
             .size(12)
             .color(color_muted())
             .into()
@@ -463,13 +473,13 @@ fn tier_row<'a>(
     let toggle: Element<'a, SettingsEvent> = if no_providers {
         // Nothing to pick without a provider — lock the toggle ON.
         toggler(true)
-            .label("Inherit")
+            .label(lang.tr("Inherit"))
             .text_size(12)
             .style(crate::views::primary_toggler)
             .into()
     } else {
         toggler(inherit)
-            .label("Inherit")
+            .label(lang.tr("Inherit"))
             .text_size(12)
             .on_toggle(move |v| {
                 SettingsEvent::BuiltinTools(BuiltinToolsEvent::TaskModelInherit(tier, v))
@@ -479,7 +489,7 @@ fn tier_row<'a>(
     };
 
     row![
-        text(label).size(13).width(60.0),
+        text(lang.tr(label)).size(13).width(60.0),
         toggle,
         container(pickers).width(Length::Fill),
     ]

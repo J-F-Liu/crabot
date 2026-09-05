@@ -6,6 +6,7 @@ use iced::{
 };
 
 use crate::OverlayEvent;
+use crabot::i18n::Lang;
 
 use super::styles::{danger_button, primary_button, secondary_button};
 use super::theme::{CRABOT_DIALOG_RADIUS, CRABOT_MODAL_SCRIM, CRABOT_PRIMARY, color_dialog_bg};
@@ -68,20 +69,20 @@ fn modal<'a>(
     .into()
 }
 
-pub fn workspace_modal(default_path: &Path) -> Element<'_, OverlayEvent> {
+pub fn workspace_modal(default_path: &Path, lang: Lang) -> Element<'_, OverlayEvent> {
     modal(
         OverlayEvent::EmptyWorkspaceConfirm(None),
-        "Empty Workspace",
-        text(format!(
-            "Workspace path is empty.\n\nContinue with the default workspace?\n{}",
-            default_path.display()
-        ))
+        lang.tr("Empty Workspace"),
+        text(
+            lang.tr("Workspace path is empty.\n\nContinue with the default workspace?\n{}")
+                .replace("{}", &default_path.display().to_string()),
+        )
         .size(14),
         row![
-            button(text("Yes")).style(primary_button).on_press(
+            button(text(lang.tr("Yes"))).style(primary_button).on_press(
                 OverlayEvent::EmptyWorkspaceConfirm(Some(default_path.to_path_buf()))
             ),
-            button(text("No"))
+            button(text(lang.tr("No")))
                 .style(secondary_button)
                 .on_press(OverlayEvent::EmptyWorkspaceConfirm(None)),
         ]
@@ -91,21 +92,19 @@ pub fn workspace_modal(default_path: &Path) -> Element<'_, OverlayEvent> {
 }
 
 /// Confirmation dialog for Revert All — destructive, requires explicit confirmation.
-pub fn revert_all_modal() -> Element<'static, OverlayEvent> {
+pub fn revert_all_modal(lang: Lang) -> Element<'static, OverlayEvent> {
     modal(
         OverlayEvent::RevertAllConfirm(false),
-        "Revert All Files",
-        text(
-            "Revert all files modified by this session?\n\n\
+        lang.tr("Revert All Files"),
+        text(lang.tr("Revert all files modified by this session?\n\n\
              Modified files are restored to their original content and files \
-             created by the session are deleted. This cannot be undone.",
-        )
+             created by the session are deleted. This cannot be undone."))
         .size(14),
         row![
-            button(text("Revert All"))
+            button(text(lang.tr("Revert All")))
                 .style(danger_button)
                 .on_press(OverlayEvent::RevertAllConfirm(true)),
-            button(text("Cancel"))
+            button(text(lang.tr("Cancel")))
                 .style(secondary_button)
                 .on_press(OverlayEvent::RevertAllConfirm(false)),
         ]

@@ -16,6 +16,7 @@ use crate::app::session_state::ASK_EXTEND_SECS;
 use crate::tools::edit::EditParam;
 use crate::tools::todo::{TodoItem, TodoStatus};
 use crate::{AskAction, AskRequest, ConversationEvent};
+use crabot::i18n::Lang;
 use iced::widget::{button, text_input};
 
 /// Shared container style for ask tool views (active and completed).
@@ -75,8 +76,8 @@ fn ask_option_list(
 }
 
 /// Free-text answer input shared by both ask layouts.
-fn ask_answer_input(input: &str) -> Element<'static, ConversationEvent> {
-    text_input("Type your answer…", input)
+fn ask_answer_input(input: &str, lang: Lang) -> Element<'static, ConversationEvent> {
+    text_input(lang.tr("Type your answer…"), input)
         .id(ASK_INPUT.clone())
         .on_input(ConversationEvent::AskInputChanged)
         .on_submit_maybe((!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok)))
@@ -90,23 +91,34 @@ pub(crate) fn ask_view(
     custom_input: bool,
     seconds_left: u64,
     font_scale: f32,
+    lang: Lang,
 ) -> Element<'static, ConversationEvent> {
     let countdown: Element<'static, ConversationEvent> = row![
-        text(format!("⏳ {seconds_left}s left"))
-            .size(12.0 * font_scale)
-            .color(color_muted()),
-        button(text(format!("Extend +{} min", ASK_EXTEND_SECS / 60)))
-            .style(secondary_button)
-            // Dead at 0s — the timeout result is already in flight.
-            .on_press_maybe(
-                (seconds_left > 0).then_some(ConversationEvent::AskAction(AskAction::Extend))
-            ),
+        text(lang.tr("⏳ {seconds_left}s left").replacen(
+            "{seconds_left}",
+            &seconds_left.to_string(),
+            1
+        ),)
+        .size(12.0 * font_scale)
+        .color(color_muted()),
+        button(text(lang.tr("Extend +{} min").replacen(
+            "{}",
+            &(ASK_EXTEND_SECS / 60).to_string(),
+            1
+        ),))
+        .style(secondary_button)
+        // Dead at 0s — the timeout result is already in flight.
+        .on_press_maybe(
+            (seconds_left > 0).then_some(ConversationEvent::AskAction(AskAction::Extend))
+        ),
     ]
     .spacing(8)
     .align_y(Alignment::Center)
     .into();
     let header = row![
-        text("🤖 LLM asks:").size(13.0).color(CRABOT_TOOL_ACCENT),
+        text(lang.tr("🤖 LLM asks:"))
+            .size(13.0)
+            .color(CRABOT_TOOL_ACCENT),
         Space::new().width(Fill),
         countdown
     ];
@@ -114,18 +126,20 @@ pub(crate) fn ask_view(
         SelectableText::new(request.question.clone())
             .style(sel_default)
             .into();
-    let enter_answer = button(text("Enter my answer"))
+    let enter_answer = button(text(lang.tr("Enter my answer")))
         .style(secondary_button)
         .on_press(ConversationEvent::AskAction(AskAction::EnterAnswer));
-    let you_decide = button(text("You decide"))
+    let you_decide = button(text(lang.tr("You decide")))
         .style(secondary_button)
         .on_press(ConversationEvent::AskAction(AskAction::YouDecide));
     let controls: Element<'static, ConversationEvent> = if request.options.is_empty() {
         row![
-            ask_answer_input(input),
-            button(text("Ok")).style(primary_button).on_press_maybe(
-                (!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok))
-            ),
+            ask_answer_input(input, lang),
+            button(text(lang.tr("Ok")))
+                .style(primary_button)
+                .on_press_maybe(
+                    (!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok))
+                ),
             you_decide
         ]
         .spacing(8)
@@ -134,12 +148,14 @@ pub(crate) fn ask_view(
         let mut options_col =
             column(ask_option_list(&request.options, input, font_scale, true)).spacing(8);
         if custom_input {
-            options_col = options_col.push(ask_answer_input(input));
+            options_col = options_col.push(ask_answer_input(input, lang));
         }
         let action_row = row![
-            button(text("Ok")).style(primary_button).on_press_maybe(
-                (!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok))
-            ),
+            button(text(lang.tr("Ok")))
+                .style(primary_button)
+                .on_press_maybe(
+                    (!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok))
+                ),
             enter_answer,
             you_decide
         ]
@@ -157,6 +173,7 @@ pub(crate) fn ask_result_view(
     args: &serde_json::Value,
     result: &Result<String, String>,
     font_scale: f32,
+    lang: Lang,
 ) -> Element<'static, ConversationEvent> {
     let question = args
         .get("question")
@@ -182,7 +199,7 @@ pub(crate) fn ask_result_view(
             .style(sel_default)
             .into();
 
-    let answer_label = if is_ok { "Answer" } else { "Error" };
+    let answer_label = lang.tr(if is_ok { "Answer" } else { "Error" });
     let answer_color = if is_ok { CRABOT_SUCCESS } else { CRABOT_DANGER };
 
     let mut answer_col = column![];
@@ -205,7 +222,7 @@ pub(crate) fn ask_result_view(
             // show the actual answer text so it isn't lost.
             answer_col = answer_col
                 .push(
-                    text("Options:")
+                    text(lang.tr("Options:"))
                         .size(12.0 * font_scale)
                         .color(answer_color)
                         .font(bold_font()),
@@ -414,6 +431,7 @@ fn edits_table<'a, M: Clone + 'static>(
     edits: &'a [serde_json::Value],
     font_scale: f32,
     search_query: &str,
+    lang: Lang,
 ) -> Element<'a, M> {
     let header = row![
         text(format!("{}:", key))
@@ -421,9 +439,12 @@ fn edits_table<'a, M: Clone + 'static>(
             .color(color_muted())
             .font(bold_font()),
         Space::new().width(8),
-        text(format!("{} edit(s)", edits.len()))
-            .size(12.0 * font_scale)
-            .color(color_muted()),
+        text(
+            lang.tr("{} edit(s)")
+                .replacen("{}", &edits.len().to_string(), 1),
+        )
+        .size(12.0 * font_scale)
+        .color(color_muted()),
     ]
     .spacing(0);
 
@@ -432,7 +453,7 @@ fn edits_table<'a, M: Clone + 'static>(
         .enumerate()
         .flat_map(|(i, edit)| {
             let idx = container(
-                text(format!("Edit #{}", i + 1))
+                text(lang.tr("Edit #{}").replacen("{}", &(i + 1).to_string(), 1))
                     .size(11.0 * font_scale)
                     .color(color_muted()),
             )
@@ -535,20 +556,21 @@ fn todo_item_row<M: Clone + 'static>(
     item: &serde_json::Value,
     font_scale: f32,
     search_query: &str,
+    lang: Lang,
 ) -> Element<'static, M> {
     match serde_json::from_value::<TodoItem>(item.clone()) {
         Ok(todo) => {
             let (status, color) = match todo.status {
-                TodoStatus::Pending => ("pending", TODO_STATUS_PENDING),
-                TodoStatus::InProgress => ("in progress", TODO_STATUS_IN_PROGRESS),
-                TodoStatus::Completed => ("completed", CRABOT_SUCCESS),
+                TodoStatus::Pending => (lang.tr("pending"), TODO_STATUS_PENDING),
+                TodoStatus::InProgress => (lang.tr("in progress"), TODO_STATUS_IN_PROGRESS),
+                TodoStatus::Completed => (lang.tr("completed"), CRABOT_SUCCESS),
             };
             let content = format!("{}{}", "  ".repeat(todo.depth as usize), todo.text);
             todo_row(content, status, color, font_scale, search_query)
         }
         Err(_) => todo_row(
             item.to_string(),
-            "⚠ invalid",
+            lang.tr("⚠ invalid"),
             CRABOT_DANGER,
             font_scale,
             search_query,
@@ -561,10 +583,11 @@ fn todo_table<M: Clone + 'static>(
     items: &[serde_json::Value],
     font_scale: f32,
     search_query: &str,
+    lang: Lang,
 ) -> Element<'static, M> {
     let col_header = row![
         container(
-            text("Text")
+            text(lang.tr("Text"))
                 .size(11.0 * font_scale)
                 .color(color_muted())
                 .font(bold_font()),
@@ -572,7 +595,7 @@ fn todo_table<M: Clone + 'static>(
         .width(Fill)
         .padding(2),
         container(
-            text("Status")
+            text(lang.tr("Status"))
                 .size(11.0 * font_scale)
                 .color(color_muted())
                 .font(bold_font())
@@ -595,7 +618,7 @@ fn todo_table<M: Clone + 'static>(
                     .into(),
             );
         }
-        elements.push(todo_item_row(item, font_scale, search_query));
+        elements.push(todo_item_row(item, font_scale, search_query, lang));
     }
 
     container(column(elements).spacing(0).width(Fill))
@@ -618,6 +641,7 @@ pub(super) fn args_rows<'a, M: Clone + 'static>(
     args: &'a serde_json::Value,
     font_scale: f32,
     search_query: &str,
+    lang: Lang,
 ) -> Vec<Element<'a, M>> {
     let Some(map) = args.as_object() else {
         return Vec::new();
@@ -627,7 +651,7 @@ pub(super) fn args_rows<'a, M: Clone + 'static>(
     if tool_name == "todo"
         && let Some(items) = map.get("items").and_then(|v| v.as_array())
     {
-        return vec![todo_table(items, font_scale, search_query)];
+        return vec![todo_table(items, font_scale, search_query, lang)];
     }
 
     let mut rows: Vec<Element<'_, M>> = Vec::new();
@@ -674,7 +698,7 @@ pub(super) fn args_rows<'a, M: Clone + 'static>(
         if k == "edits"
             && let Some(arr) = v.as_array()
         {
-            rows.push(edits_table(k, arr, font_scale, search_query));
+            rows.push(edits_table(k, arr, font_scale, search_query, lang));
             continue;
         }
         let val = v
@@ -736,10 +760,11 @@ fn tail_window(s: &str, window: usize) -> (&str, usize) {
 pub(super) fn streaming_result_text<'a, M: Clone + 'static>(
     buffer: &'a str,
     font_scale: f32,
+    lang: Lang,
 ) -> Element<'a, M> {
     let (shown, skipped) = tail_window(buffer, STREAMING_RENDER_WINDOW);
     let mut body = column![
-        text("Running…")
+        text(lang.tr("Running…"))
             .size(11.0 * font_scale)
             .color(CRABOT_TOOL_ACCENT)
             .font(bold_font())
@@ -748,10 +773,13 @@ pub(super) fn streaming_result_text<'a, M: Clone + 'static>(
     .width(Fill);
     if skipped > 0 {
         body = body.push(
-            text(format!("… {skipped} bytes of earlier output hidden …"))
-                .size(11.0 * font_scale)
-                .color(color_muted())
-                .font(mono_font()),
+            text(
+                lang.tr("… {skipped} bytes of earlier output hidden …")
+                    .replacen("{skipped}", &skipped.to_string(), 1),
+            )
+            .size(11.0 * font_scale)
+            .color(color_muted())
+            .font(mono_font()),
         );
     }
     body = body.push(text(shown).size(13.0 * font_scale).font(mono_font()));
@@ -768,6 +796,7 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
     result: &'a Result<String, String>,
     font_scale: f32,
     search_query: &str,
+    lang: Lang,
 ) -> Element<'a, M> {
     let display: &str = result
         .as_ref()
@@ -795,7 +824,7 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
 
     container(
         column![
-            text(if is_ok { "Result" } else { "Error" })
+            text(lang.tr(if is_ok { "Result" } else { "Error" }))
                 .size(11.0 * font_scale)
                 .color(accent)
                 .font(bold_font()),

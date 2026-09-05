@@ -10,6 +10,7 @@ use super::styles::{bordered_bar_style, session_tab_style, tab_close_button_styl
 use super::theme;
 use crate::app::{ConversationState, SessionEndStatus, SessionTab, conversation::TabBarDirection};
 use crate::{CenterPaneEvent, ConversationEvent};
+use crabot::i18n::Lang;
 
 /// Height of the tab bar, in logical pixels.
 const BAR_HEIGHT: f32 = 30.0;
@@ -36,12 +37,15 @@ pub(crate) fn scroll_tab_bar_to(target_x: f32) -> Task<()> {
 }
 
 /// Build the session tab bar displayed at the top of the center pane.
-pub(crate) fn session_tabs(conversation: &ConversationState) -> Element<'_, CenterPaneEvent> {
+pub(crate) fn session_tabs(
+    conversation: &ConversationState,
+    lang: Lang,
+) -> Element<'_, CenterPaneEvent> {
     let viewing_number = conversation.viewing_tab_number();
     let tabs = conversation
         .session_tabs
         .iter()
-        .map(|tab| tab_button(tab, tab.number == viewing_number));
+        .map(|tab| tab_button(tab, tab.number == viewing_number, lang));
 
     let bar = scrollable(row(tabs).spacing(4).align_y(Alignment::Center))
         .direction(Direction::Horizontal(
@@ -67,8 +71,18 @@ pub(crate) fn session_tabs(conversation: &ConversationState) -> Element<'_, Cent
     .into()
 }
 
+/// Localize a fixed "Session N"-style tab label ("Session 2", "Session 1-2")
+/// for display. English is the identity; other languages translate the
+/// label only — tab labels are never persisted, so this is pure rendering.
+pub(super) fn localize_tab_label(label: &str, lang: Lang) -> String {
+    match label.strip_prefix("Session ") {
+        Some(rest) => lang.tr("Session {}").replacen("{}", rest, 1),
+        None => label.to_string(),
+    }
+}
+
 /// Build a single session tab: status dot, label with tooltip, close button.
-fn tab_button<'a>(tab: &'a SessionTab, active: bool) -> Element<'a, CenterPaneEvent> {
+fn tab_button<'a>(tab: &'a SessionTab, active: bool, lang: Lang) -> Element<'a, CenterPaneEvent> {
     let number = tab.number;
     let running = tab.running();
 
@@ -86,14 +100,16 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool) -> Element<'a, CenterPaneEv
         );
     }
 
-    let label = text(tab.tab_label()).size(12.0).font(Font {
-        weight: if active {
-            font::Weight::Bold
-        } else {
-            font::Weight::Normal
-        },
-        ..Font::DEFAULT
-    });
+    let label = text(localize_tab_label(&tab.tab_label(), lang))
+        .size(12.0)
+        .font(Font {
+            weight: if active {
+                font::Weight::Bold
+            } else {
+                font::Weight::Normal
+            },
+            ..Font::DEFAULT
+        });
 
     // Tooltip with session info — title, falling back to the session id.
     let tip = if tab.session.title.is_empty() {

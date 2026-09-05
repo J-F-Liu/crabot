@@ -10,6 +10,7 @@ use super::{
 use crate::views::styles::styled_pick_list;
 use crate::views::theme::color_muted;
 use crate::widgets::textarea::TextArea;
+use crabot::i18n::Lang;
 use crabot::tools::mcp::{McpServer, McpTransport};
 use iced::{
     Alignment, Element, Length,
@@ -53,10 +54,11 @@ const TRANSPORT_KINDS: &[&str] = &["stdio", "http"];
 // ── Page ───────────────────────────────────────────────────────────
 
 pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     let header = row![
-        section_header("MCP Servers"),
+        section_header(lang.tr("MCP Servers")),
         iced::widget::Space::new().width(Length::Fill),
-        button(text("+ New Server").size(12))
+        button(text(lang.tr("+ New Server")).size(12))
             .padding([4, 10])
             .style(crate::views::styles::primary_button)
             .on_press(SettingsEvent::Mcp(McpEvent::NewMcp)),
@@ -64,7 +66,7 @@ pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Sett
     .align_y(Alignment::Center);
 
     let body: Element<'a, SettingsEvent> = if state.working_mcp.servers.is_empty() {
-        empty_hint("No MCP servers yet. Click + New Server to configure one.")
+        empty_hint(lang.tr("No MCP servers yet. Click + New Server to configure one."))
     } else {
         let cards: Vec<Element<'a, SettingsEvent>> = state
             .working_mcp
@@ -77,6 +79,7 @@ pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Sett
                     server,
                     state.expanded_mcp == Some(i),
                     &state.mcp_prompt_area,
+                    lang,
                 )
             })
             .collect();
@@ -101,9 +104,10 @@ fn server_card<'a>(
     server: &'a McpServer,
     expanded: bool,
     prompt_area: &'a TextArea,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let display_name = if server.name.trim().is_empty() {
-        "untitled"
+        lang.tr("untitled")
     } else {
         &server.name
     };
@@ -126,7 +130,7 @@ fn server_card<'a>(
         column![
             header_row,
             card_rule(),
-            server_form(index, server, prompt_area)
+            server_form(index, server, prompt_area, lang)
         ]
         .spacing(10)
     } else {
@@ -169,33 +173,34 @@ fn server_form<'a>(
     index: usize,
     server: &'a McpServer,
     prompt_area: &'a TextArea,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let transport_fields: Element<'a, SettingsEvent> = match &server.transport {
         McpTransport::Stdio { cmd, env_vars } => column![
             field_row(
-                "Command",
+                lang.tr("Command"),
                 cmd,
-                "Command to spawn, e.g. npx -y @org/server",
+                lang.tr("Command to spawn, e.g. npx -y @org/server"),
                 true,
                 None,
                 None,
                 move |v| SettingsEvent::Mcp(McpEvent::EditMcpCmd(index, v)),
             ),
-            map_section(index, "Env Vars", "NAME", env_vars),
+            map_section(index, lang.tr("Env Vars"), "NAME", env_vars, lang),
         ]
         .spacing(8)
         .into(),
         McpTransport::Http { url, headers } => column![
             field_row(
-                "URL",
+                lang.tr("URL"),
                 url,
-                "Server URL, e.g. http://localhost:8000/mcp",
+                lang.tr("Server URL, e.g. http://localhost:8000/mcp"),
                 true,
                 None,
                 None,
                 move |v| SettingsEvent::Mcp(McpEvent::EditMcpUrl(index, v)),
             ),
-            map_section(index, "Headers", "Header-Name", headers),
+            map_section(index, lang.tr("Headers"), "Header-Name", headers, lang),
         ]
         .spacing(8)
         .into(),
@@ -203,27 +208,27 @@ fn server_form<'a>(
 
     column![
         field_row(
-            "Name",
+            lang.tr("Name"),
             &server.name,
-            "Unique name for this server",
+            lang.tr("Unique name for this server"),
             false,
             None,
             None,
             move |v| SettingsEvent::Mcp(McpEvent::EditMcpName(index, v)),
         ),
-        transport_row(index, &server.transport),
+        transport_row(index, &server.transport, lang),
         transport_fields,
-        qualify_row(index, server),
+        qualify_row(index, server, lang),
         textarea_field_row(
-            "Prompt",
+            lang.tr("Prompt"),
             prompt_area,
-            "System-prompt text injected when this server is enabled",
+            lang.tr("System-prompt text injected when this server is enabled"),
             move |msg| SettingsEvent::Mcp(McpEvent::McpTextArea(msg)),
         ),
-        text(
+        text(lang.tr(
             "Prompt is added to the system prompt when the server is enabled and \
-              at least one of its tools is selected."
-        )
+              at least one of its tools is selected.",
+        ))
         .size(11)
         .color(color_muted()),
     ]
@@ -232,7 +237,11 @@ fn server_form<'a>(
 }
 
 /// Transport kind picker row.
-fn transport_row<'a>(index: usize, transport: &'a McpTransport) -> Element<'a, SettingsEvent> {
+fn transport_row<'a>(
+    index: usize,
+    transport: &'a McpTransport,
+    lang: Lang,
+) -> Element<'a, SettingsEvent> {
     let selected = match transport {
         McpTransport::Stdio { .. } => Some("stdio"),
         McpTransport::Http { .. } => Some("http"),
@@ -242,25 +251,28 @@ fn transport_row<'a>(index: usize, transport: &'a McpTransport) -> Element<'a, S
     })
     .text_size(12)
     .width(Length::Fixed(110.0));
-    row![label_col("Transport"), picker]
+    row![label_col(lang.tr("Transport")), picker]
         .spacing(10)
         .align_y(Alignment::Center)
         .into()
 }
 
 /// Checkbox controlling whether tool names are prefixed with the server name.
-fn qualify_row<'a>(index: usize, server: &'a McpServer) -> Element<'a, SettingsEvent> {
+fn qualify_row<'a>(index: usize, server: &'a McpServer, lang: Lang) -> Element<'a, SettingsEvent> {
     let name = if server.name.trim().is_empty() {
         "server"
     } else {
         server.name.trim()
     };
     let toggle = checkbox(server.qualify_tool_names)
-        .label(format!("Prefix tool names with \"{name}_\""))
+        .label(
+            lang.tr("Prefix tool names with \"{name}_\"")
+                .replace("{name}", name),
+        )
         .text_size(12)
         .on_toggle(move |v| SettingsEvent::Mcp(McpEvent::ToggleMcpQualify(index, v)))
         .style(crate::views::primary_checkbox);
-    row![label_col("Qualify"), toggle]
+    row![label_col(lang.tr("Qualify")), toggle]
         .spacing(10)
         .align_y(Alignment::Center)
         .into()
@@ -275,14 +287,16 @@ fn map_section<'a>(
     label: &'static str,
     key_placeholder: &'static str,
     map: &'a IndexMap<String, String>,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let cards: Vec<Element<'a, SettingsEvent>> = map
         .iter()
         .enumerate()
-        .map(|(i, (key, value))| map_entry_card(server_index, i, key, value, key_placeholder))
+        .map(|(i, (key, value))| map_entry_card(server_index, i, key, value, key_placeholder, lang))
         .collect();
 
     add_section(
+        lang,
         label,
         SettingsEvent::Mcp(McpEvent::AddMcpMapEntry(server_index)),
         cards,
@@ -296,6 +310,7 @@ fn map_entry_card<'a>(
     key: &'a str,
     value: &'a str,
     key_placeholder: &'static str,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let remove = button(text("✕").size(10))
         .padding([2, 6])
@@ -314,7 +329,7 @@ fn map_entry_card<'a>(
                 .padding(4)
                 .size(13)
                 .width(Length::FillPortion(2)),
-            text_input("value", value)
+            text_input(lang.tr("value"), value)
                 .on_input(move |v| {
                     SettingsEvent::Mcp(McpEvent::EditMcpMapValue(server_index, index, v))
                 })

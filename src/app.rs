@@ -351,10 +351,10 @@ impl ConversationState {
     }
 
     /// Human-readable status for the viewing tab.
-    pub(crate) fn status(&self) -> Cow<'static, str> {
+    pub(crate) fn status(&self, lang: crabot::i18n::Lang) -> Cow<'static, str> {
         self.viewing()
             .session_state
-            .status(self.viewing().session.is_empty())
+            .status(lang, self.viewing().session.is_empty())
     }
 
     /// Whether the viewing tab has an active stream.
@@ -1022,13 +1022,19 @@ impl App {
         } else if self.overlay.show_workspace_dialog {
             iced::widget::stack![
                 main,
-                crate::views::workspace_modal(&self.overlay.default_workspace_path)
-                    .map(Message::Overlay),
+                crate::views::workspace_modal(
+                    &self.overlay.default_workspace_path,
+                    self.settings.language,
+                )
+                .map(Message::Overlay),
             ]
             .into()
         } else if self.overlay.show_revert_all_confirm {
-            iced::widget::stack![main, crate::views::revert_all_modal().map(Message::Overlay)]
-                .into()
+            iced::widget::stack![
+                main,
+                crate::views::revert_all_modal(self.settings.language).map(Message::Overlay)
+            ]
+            .into()
         } else {
             iced::widget::stack![main].into()
         }
@@ -1057,6 +1063,7 @@ impl App {
                 &self.conversation,
                 &self.layout.theme,
                 self.settings.font_scale,
+                self.settings.language,
             )
             .map(|event| match event {
                 CenterPaneEvent::Conversation(e) => Message::Conversation(e),
@@ -1084,6 +1091,7 @@ impl App {
                 &self.running_processes,
                 self.settings.dark_mode,
                 &self.acp,
+                self.settings.language,
             )
             .map(|event| match event {
                 RightPaneEvent::ToggleTheme(dark) =>
@@ -1106,8 +1114,12 @@ impl App {
     fn view_with_banner<'a>(&'a self, body: Element<'a, Message>) -> Element<'a, Message> {
         if let Some(latest) = &self.overlay.update_available {
             column![
-                crate::views::update::update_banner(latest, &self.overlay.download_state)
-                    .map(Message::Overlay),
+                crate::views::update::update_banner(
+                    latest,
+                    &self.overlay.download_state,
+                    self.settings.language,
+                )
+                .map(Message::Overlay),
                 body
             ]
             .spacing(0)

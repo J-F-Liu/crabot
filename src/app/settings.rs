@@ -35,6 +35,7 @@ pub(crate) fn open_settings(app: &mut App) -> Task<Message> {
     }
     // Load About tab state.
     app.settings_dialog.auto_check_updates = app.settings.auto_check_updates;
+    app.settings_dialog.language = app.settings.language;
     app.settings_dialog.update_check = app
         .overlay
         .update_available
@@ -61,6 +62,10 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             app.settings_dialog.update(event);
             app.settings.auto_check_updates = app.settings_dialog.auto_check_updates;
             app.settings_dialog.open = false;
+        }
+        SettingsEvent::SetLanguage(lang) => {
+            app.settings_dialog.update(event);
+            app.settings.language = lang;
         }
         SettingsEvent::Models(ModelsEvent::SaveModels) => {
             app.settings_dialog.update(event);

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::i18n::Lang;
 use crate::model::TaskModels;
 use crate::tools::{ToolLimits, ToolRegistry};
 
@@ -61,6 +62,8 @@ pub struct Settings {
     pub last_update_version: Option<String>,
     /// Whether the dark color theme is active.
     pub dark_mode: bool,
+    /// UI language.
+    pub language: Lang,
     /// Whether the built-in ACP HTTP server is enabled.
     pub acp_server_enabled: bool,
     /// Loopback port for the ACP HTTP server.
@@ -101,6 +104,7 @@ impl Default for Settings {
             use_system_proxy_for_tools: true,
             last_update_version: None,
             dark_mode: false,
+            language: Lang::default(),
             acp_server_enabled: false,
             acp_server_port: 8787,
         }

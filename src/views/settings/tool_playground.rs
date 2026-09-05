@@ -15,6 +15,7 @@ use crate::views::theme::{
 };
 use crate::views::{primary_button, secondary_button, secondary_dropdown_style};
 use crate::widgets::dropdown::DropDown;
+use crabot::i18n::Lang;
 
 use super::{SettingsEvent, SettingsState, form_card_style};
 
@@ -93,13 +94,19 @@ impl PartialEq for SelectorEntry {
 
 /// Build a flat list of [`SelectorEntry`] from the sorted tool list,
 /// inserting group headers whenever the group changes.
-fn build_selector_entries(tools: &[ToolInfo]) -> Vec<SelectorEntry> {
+fn build_selector_entries(tools: &[ToolInfo], lang: Lang) -> Vec<SelectorEntry> {
     let mut entries: Vec<SelectorEntry> = Vec::new();
     let mut last_group: Option<&str> = None;
 
     for (i, tool) in tools.iter().enumerate() {
         if last_group.is_none_or(|g| g != tool.group) {
-            entries.push(SelectorEntry::Header(tool.group.clone()));
+            let label = match tool.group.as_str() {
+                "Builtin" => lang.tr("Builtin").to_string(),
+                "Custom" => lang.tr("Custom").to_string(),
+                // "MCP: <server>" keeps the server name untranslated.
+                other => other.to_string(),
+            };
+            entries.push(SelectorEntry::Header(label));
             last_group = Some(&tool.group);
         }
         entries.push(SelectorEntry::Tool(i, tool.name.clone()));
@@ -285,6 +292,7 @@ fn render_param_field<'a>(
     p: &ParamDef,
     current_value: &str,
     array_drafts: &ArrayDrafts,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     match p.param_type.as_str() {
         "boolean" => {
@@ -363,7 +371,7 @@ fn render_param_field<'a>(
             }
 
             let add_name = name.clone();
-            let add_btn = button(text("＋ Add item").size(12).color(color_muted()))
+            let add_btn = button(text(lang.tr("＋ Add item")).size(12).color(color_muted()))
                 .style(secondary_button)
                 .padding([2, 8])
                 .on_press(SettingsEvent::Playground(
@@ -373,7 +381,11 @@ fn render_param_field<'a>(
             column(item_rows).spacing(4).push(add_btn).into()
         }
         _ => {
-            let placeholder = if p.required { "required" } else { "optional" };
+            let placeholder = if p.required {
+                lang.tr("required")
+            } else {
+                lang.tr("optional")
+            };
             let name = p.name.clone();
             let is_mono = p.param_type == "object";
             let mut input = text_input(placeholder, current_value)
@@ -425,6 +437,7 @@ fn result_box<'a>(
 }
 
 fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     match &state.playground_result {
         Some(Ok(output)) => result_box(
             result_text(pretty_json_or_raw(output)),
@@ -440,9 +453,9 @@ fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEve
         ),
         None => result_box(
             text(if state.playground_running {
-                "Executing…"
+                lang.tr("Executing…")
             } else {
-                "Result will appear here."
+                lang.tr("Result will appear here.")
             })
             .size(13)
             .color(color_muted()),
@@ -456,8 +469,9 @@ fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEve
 // ── View ────────────────────────────────────────────────────────────
 
 pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     // Build selector entries with group headers.
-    let entries = build_selector_entries(&state.playground_tools);
+    let entries = build_selector_entries(&state.playground_tools, lang);
 
     // Determine the currently selected entry (for the trigger display).
     let selected_entry = state
@@ -482,7 +496,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         }
     })
     .width(Length::Fill)
-    .placeholder("Choose a tool to test…")
+    .placeholder(lang.tr("Choose a tool to test…"))
     .text_size(13)
     .menu_width(300.0)
     .item_is_header(move |i| header_flags.get(i).copied().unwrap_or(false))
@@ -501,7 +515,9 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
 
         // Tool description
         let desc = if info.description.is_empty() {
-            text("(no description)").size(13).color(color_muted())
+            text(lang.tr("(no description)"))
+                .size(13)
+                .color(color_muted())
         } else {
             text(info.description.clone())
                 .size(13)
@@ -510,7 +526,10 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         };
 
         let desc_row = row![
-            text("Description:").size(13).color(color_muted()).width(80),
+            text(lang.tr("Description:"))
+                .size(13)
+                .color(color_muted())
+                .width(80),
             desc,
         ]
         .spacing(8)
@@ -519,7 +538,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         // Parameter form fields
         let param_section: Element<_> = if params.is_empty() {
             container(
-                text("This tool takes no parameters.")
+                text(lang.tr("This tool takes no parameters."))
                     .size(13)
                     .color(color_muted()),
             )
@@ -528,7 +547,9 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
             .width(Length::Fill)
             .into()
         } else {
-            let param_label = text("Parameters:").size(13).color(color_text_strong());
+            let param_label = text(lang.tr("Parameters:"))
+                .size(13)
+                .color(color_text_strong());
 
             let fields: Vec<Element<'_, SettingsEvent>> = params
                 .iter()
@@ -544,7 +565,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
                         .unwrap_or_default();
 
                     let field =
-                        render_param_field(p, &current_value, &state.playground_array_drafts);
+                        render_param_field(p, &current_value, &state.playground_array_drafts, lang);
 
                     let type_badge = text(format!("[{}]", p_type)).size(11).color(color_muted());
 
@@ -586,8 +607,8 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         // Execute / Cancel buttons
         let exec_row: Element<_> = if state.playground_running {
             row![
-                button(text("⏳ Running…").size(13)).style(secondary_button),
-                button(text("✕ Cancel").size(13))
+                button(text(lang.tr("⏳ Running…")).size(13)).style(secondary_button),
+                button(text(lang.tr("✕ Cancel")).size(13))
                     .style(secondary_button)
                     .on_press(SettingsEvent::Playground(
                         PlaygroundEvent::CancelPlaygroundTool,
@@ -597,7 +618,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
             .into()
         } else {
             row![
-                button(text("▶ Execute").size(13))
+                button(text(lang.tr("▶ Execute")).size(13))
                     .style(primary_button)
                     .on_press(SettingsEvent::Playground(
                         PlaygroundEvent::ExecutePlaygroundTool,
@@ -611,7 +632,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         // Result area
         let result_widget = render_result_widget(state);
 
-        let result_label = text("Result:").size(13).color(color_text_strong());
+        let result_label = text(lang.tr("Result:")).size(13).color(color_text_strong());
 
         column![
             desc_row,
@@ -624,10 +645,12 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         .into()
     } else {
         container(
-            text("Select a tool from the list above to see its description and test it with custom arguments.")
-                .size(13)
-                .color(color_muted())
-                .wrapping(Wrapping::Word),
+            text(lang.tr(
+                "Select a tool from the list above to see its description and test it with custom arguments.",
+            ))
+            .size(13)
+            .color(color_muted())
+            .wrapping(Wrapping::Word),
         )
         .style(form_card_style)
         .padding(16)
@@ -636,11 +659,11 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
     };
 
     column![
-        text("Tool Playground")
+        text(lang.tr("Tool Playground"))
             .size(16)
             .font(super::BOLD)
             .color(CRABOT_PRIMARY),
-        text("Select a tool, fill in parameters, and execute it directly.")
+        text(lang.tr("Select a tool, fill in parameters, and execute it directly."))
             .size(12)
             .color(color_muted()),
         selector,

@@ -2,6 +2,7 @@
 #![warn(clippy::significant_drop_in_scrutinee)]
 
 pub mod chat;
+pub mod i18n;
 pub mod model;
 pub mod model_database;
 pub mod session;

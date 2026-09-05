@@ -13,6 +13,7 @@ use crate::ConversationEvent;
 use crate::app::SessionTab;
 use crate::views::{SEARCH_INPUT, measure_turn_offsets, scroll_to};
 use crabot::chat::TurnBody;
+use crabot::i18n::Lang;
 use crabot::session::{SearchHit, Session};
 
 /// UI state and widget bookkeeping for center-pane search.
@@ -251,6 +252,7 @@ pub(crate) fn view<'a>(
     query: &'a str,
     results: &[SearchHit],
     current: usize,
+    lang: Lang,
 ) -> Element<'a, SearchEvent> {
     let total = results.len();
     let label = if query.is_empty() {
@@ -261,7 +263,7 @@ pub(crate) fn view<'a>(
         format!("{}/{}", current + 1, total)
     };
 
-    let input = text_input("Search…", query)
+    let input = text_input(lang.tr("Search…"), query)
         .id(SEARCH_INPUT.clone())
         .on_input(SearchEvent::QueryChanged)
         .on_submit(SearchEvent::Navigate(1))

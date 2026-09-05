@@ -31,6 +31,7 @@ pub(crate) fn left_pane<'a>(
     tools: &'a ToolState,
     models: &'a crabot::model::ModelList,
 ) -> Element<'a, LeftPaneEvent> {
+    let lang = settings.language;
     let left_w: f32 = settings.left_pane_width;
     let selected_model: &String = &conversation.viewing().selected_model;
     let selected_preamble: &str = &conversation.viewing().selected_preamble;
@@ -62,15 +63,18 @@ pub(crate) fn left_pane<'a>(
     let enabled_mcp_servers: &HashSet<String> = &tools.enabled_mcp_servers;
     container(
         column![
-            container(model_config_view(models, selected_model).map(LeftPaneEvent::ModelConfig),)
-                .padding([2, 10]),
+            container(
+                model_config_view(models, selected_model, lang).map(LeftPaneEvent::ModelConfig),
+            )
+            .padding([2, 10]),
             scrollable(
                 column![
-                    label("System Prompt", 140.0),
+                    label(lang.tr("System Prompt"), 140.0),
                     preamble_picker_view(
                         prompt.preamble_enabled,
                         preamble_options,
                         selected_preamble,
+                        lang,
                     )
                     .map(LeftPaneEvent::Prompt),
                     skills_picker_view(
@@ -78,25 +82,27 @@ pub(crate) fn left_pane<'a>(
                         prompt.skills_menu_expanded,
                         skills_options,
                         selected_skills,
+                        lang,
                     )
                     .map(LeftPaneEvent::Prompt),
-                    tools_field_view(&prompt.tools).map(LeftPaneEvent::Prompt),
-                    workspace_field_view(&prompt.workspace, workspace_options)
+                    tools_field_view(&prompt.tools, lang).map(LeftPaneEvent::Prompt),
+                    workspace_field_view(&prompt.workspace, workspace_options, lang)
                         .map(LeftPaneEvent::Prompt),
                     if agents_md_exists {
                         agents_md_field_view(&prompt.agents_md).map(LeftPaneEvent::Prompt)
                     } else {
                         column![].into()
                     },
-                    date_field_view(&prompt.date).map(LeftPaneEvent::Prompt),
+                    date_field_view(&prompt.date, lang).map(LeftPaneEvent::Prompt),
                     session_view(
                         streaming,
                         session_options,
                         current_session_id,
                         conversation.session_list_loading,
+                        lang,
                     )
                     .map(LeftPaneEvent::Conversation),
-                    label("User Prompt", 140.0),
+                    label(lang.tr("User Prompt"), 140.0),
                     user_prompt_view(
                         user_prompt,
                         workmode,
@@ -105,6 +111,7 @@ pub(crate) fn left_pane<'a>(
                         recipe_dropdown_expanded,
                         files,
                         workspace_set,
+                        lang,
                     )
                     .map(LeftPaneEvent::Prompt),
                     tools_section(
@@ -112,6 +119,7 @@ pub(crate) fn left_pane<'a>(
                         tool_list_state.builtin_expanded,
                         enabled_tools,
                         &tool_registry.builtin_names,
+                        lang,
                     )
                     .map(map_tool_list_event),
                     tools_section(
@@ -119,6 +127,7 @@ pub(crate) fn left_pane<'a>(
                         tool_list_state.custom_expanded,
                         enabled_tools,
                         &tool_registry.custom_names,
+                        lang,
                     )
                     .map(map_tool_list_event),
                     mcp_tools_section(
@@ -126,6 +135,7 @@ pub(crate) fn left_pane<'a>(
                         enabled_tools,
                         &tool_registry.mcp,
                         enabled_mcp_servers,
+                        lang,
                     )
                     .map(map_tool_list_event),
                 ]

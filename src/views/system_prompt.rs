@@ -8,6 +8,7 @@ use iced::{
 
 use crate::PromptEvent;
 use crate::{AGENTS_MD, DATE, FilepathEntry, PREAMBLE, SKILLS, TOOLS, WORKSPACE};
+use crabot::i18n::Lang;
 
 use super::styles::{menu_container_style, styled_pick_list};
 use super::theme::thin_vertical;
@@ -23,11 +24,12 @@ pub(crate) fn expandable_header<'a>(
     name: &'static str,
     checked: bool,
     expanded: bool,
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, PromptEvent> {
     let arrow = if expanded { "▼" } else { "⯈" };
     row![
         checkbox(checked)
-            .label(name)
+            .label(lang.tr(name))
             .style(crate::views::primary_checkbox)
             .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v)),
         Space::new().width(Length::Fill),
@@ -44,6 +46,7 @@ pub(crate) fn preamble_picker_view<'a>(
     checked: bool,
     options: &'a [FilepathEntry],
     selected_display: &'a str,
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, PromptEvent> {
     let selected = if selected_display.is_empty() {
         None
@@ -56,7 +59,7 @@ pub(crate) fn preamble_picker_view<'a>(
 
     row![
         checkbox(checked)
-            .label(PREAMBLE)
+            .label(lang.tr(PREAMBLE))
             .style(crate::views::primary_checkbox)
             .on_toggle(move |v| PromptEvent::ToggleEnabled(PREAMBLE, v))
             .width(Fill),
@@ -73,13 +76,17 @@ pub(crate) fn skills_picker_view<'a>(
     expanded: bool,
     options: &'a [FilepathEntry],
     selected: &'a [String],
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, PromptEvent> {
     let summary = if selected.is_empty() {
-        "None selected".to_string()
+        lang.tr("None selected").to_string()
     } else if selected.len() <= 2 {
         selected.join(", ")
     } else {
-        format!("{} +{} more", selected[..2].join(", "), selected.len() - 2)
+        // `{}` placeholders: first the joined names, then the extra count.
+        let mut summary = lang.tr("{} +{} more").to_string();
+        summary = summary.replacen("{}", &selected[..2].join(", "), 1);
+        summary.replacen("{}", &(selected.len() - 2).to_string(), 1)
     };
 
     let trigger = button(
@@ -121,7 +128,7 @@ pub(crate) fn skills_picker_view<'a>(
 
     row![
         checkbox(enabled)
-            .label(SKILLS)
+            .label(lang.tr(SKILLS))
             .style(crate::views::primary_checkbox)
             .on_toggle(move |v| PromptEvent::ToggleEnabled(SKILLS, v))
             .width(Fill),
@@ -132,9 +139,12 @@ pub(crate) fn skills_picker_view<'a>(
     .into()
 }
 
-pub(crate) fn tools_field_view<'a>(tools: &'a ExpandableEditor) -> Element<'a, PromptEvent> {
+pub(crate) fn tools_field_view<'a>(
+    tools: &'a ExpandableEditor,
+    lang: crabot::i18n::Lang,
+) -> Element<'a, PromptEvent> {
     let name = TOOLS;
-    let header = expandable_header(name, tools.enabled, tools.expanded);
+    let header = expandable_header(name, tools.enabled, tools.expanded, lang);
 
     if tools.expanded {
         column![
@@ -156,6 +166,7 @@ pub(crate) fn tools_field_view<'a>(tools: &'a ExpandableEditor) -> Element<'a, P
 pub(crate) fn workspace_field_view<'a>(
     field: &'a (bool, PathBuf),
     options: &'a [FilepathEntry],
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, PromptEvent> {
     let checked = field.0;
     let name = WORKSPACE;
@@ -180,9 +191,25 @@ pub(crate) fn workspace_field_view<'a>(
         options.iter().find(|e| e.path == field.1).cloned()
     };
 
+    // Localize display labels: real paths pass through unchanged (`tr` falls
+    // back to the key); only UI pseudo-entries like "📁 Select new..." match.
+    let options: Cow<'a, [FilepathEntry]> = if lang == Lang::Zh {
+        Cow::Owned(
+            options
+                .iter()
+                .map(|e| FilepathEntry {
+                    display: lang.tr(&e.display).to_string(),
+                    path: e.path.clone(),
+                })
+                .collect(),
+        )
+    } else {
+        options
+    };
+
     row![
         checkbox(checked)
-            .label(name)
+            .label(lang.tr(name))
             .style(crate::views::primary_checkbox)
             .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
             .width(Fill),
@@ -266,13 +293,16 @@ pub(crate) fn agents_md_field_view<'a>(field: &'a (bool, String)) -> Element<'a,
         .into()
 }
 
-pub(crate) fn date_field_view<'a>(field: &'a (bool, String)) -> Element<'a, PromptEvent> {
+pub(crate) fn date_field_view<'a>(
+    field: &'a (bool, String),
+    lang: crabot::i18n::Lang,
+) -> Element<'a, PromptEvent> {
     let checked = field.0;
     let name = DATE;
 
     row![
         checkbox(checked)
-            .label(name)
+            .label(lang.tr(name))
             .style(crate::views::primary_checkbox)
             .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v)),
         text_input("YYYY-MM-DD", &field.1)

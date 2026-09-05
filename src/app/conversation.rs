@@ -96,12 +96,18 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         ConversationEvent::ExportSessionHtmlDone(outcome) => match outcome {
             export::ExportOutcome::Cancelled | export::ExportOutcome::Saved => {}
             export::ExportOutcome::SavedButNotOpened(error) => {
-                return show_message_dialog(rfd::MessageLevel::Warning, "Export saved", &error);
+                let lang = app.settings.language;
+                return show_message_dialog(
+                    rfd::MessageLevel::Warning,
+                    lang.tr("Export saved"),
+                    &error,
+                );
             }
             export::ExportOutcome::Failed(error) => {
+                let lang = app.settings.language;
                 return show_message_dialog(
                     rfd::MessageLevel::Error,
-                    "Export session failed",
+                    lang.tr("Export session failed"),
                     &error,
                 );
             }
@@ -257,6 +263,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
 
 /// Open a save dialog and export the viewing session to an HTML file.
 fn export_session_html(app: &App) -> Task<Message> {
+    let lang = app.settings.language;
     let tab = app.conversation.viewing();
     let title = tab.center_pane_title.clone();
     let file_name = export::default_export_filename(&title);
@@ -280,25 +287,30 @@ fn export_session_html(app: &App) -> Task<Message> {
                 let html = export::render_session_html(
                     &session,
                     &title,
+                    lang,
                     &expanded_dialogs,
                     &expanded_turns,
                 );
                 if let Err(e) = std::fs::write(&path, html) {
-                    return export::ExportOutcome::Failed(format!(
-                        "Failed to write {}: {e}",
-                        path.display()
-                    ));
+                    return export::ExportOutcome::Failed(
+                        lang.tr("Failed to write {}: {e}")
+                            .replacen("{}", &path.display().to_string(), 1)
+                            .replacen("{e}", &e.to_string(), 1),
+                    );
                 }
                 match open::that(&path) {
                     Ok(()) => export::ExportOutcome::Saved,
-                    Err(e) => export::ExportOutcome::SavedButNotOpened(format!(
-                        "Wrote {} but could not open it in a browser: {e}",
-                        path.display()
-                    )),
+                    Err(e) => export::ExportOutcome::SavedButNotOpened(
+                        lang.tr("Wrote {} but could not open it in a browser: {e}")
+                            .replacen("{}", &path.display().to_string(), 1)
+                            .replacen("{e}", &e.to_string(), 1),
+                    ),
                 }
             })
             .await
-            .unwrap_or_else(|e| export::ExportOutcome::Failed(format!("Export task failed: {e}")))
+            .unwrap_or_else(|e| {
+                export::ExportOutcome::Failed(format!("{}: {e}", lang.tr("Export task failed")))
+            })
         },
         |result| Message::Conversation(ConversationEvent::ExportSessionHtmlDone(result)),
     )

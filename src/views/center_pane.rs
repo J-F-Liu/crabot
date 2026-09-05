@@ -24,8 +24,10 @@ use crate::llm::DialogPhase;
 use crate::views::search_bar::SearchState;
 use crate::widgets::popup_menu::PopupMenu;
 use crate::{AskRequest, CenterPaneEvent, ConversationEvent};
+use crabot::i18n::Lang;
 
 use super::icons;
+use super::session_tabs::localize_tab_label;
 use super::styles::{
     assistant_bubble_style, bordered_bar_style, icon_button_style, menu_container_style,
     menu_item_style, pane_center, reasoning_box_style, role_badge_style, sel_default,
@@ -242,27 +244,26 @@ fn work_mode_badge(
 }
 
 /// Small turn-count pill.
-fn turn_count_badge(count: usize, font_scale: f32) -> Element<'static, CenterPaneEvent> {
-    container(
-        text(format!(
-            "{} turn{}",
-            count,
-            if count == 1 { "" } else { "s" }
-        ))
-        .size(10.0 * font_scale)
-        .center(),
-    )
-    .padding([2, 8])
-    .style(|_theme: &Theme| container::Style {
-        background: Some(color_surface().into()),
-        border: Border {
-            radius: 10.0.into(),
-            ..Default::default()
-        },
-        text_color: Some(color_muted()),
-        ..container::Style::default()
-    })
-    .into()
+fn turn_count_badge(
+    count: usize,
+    font_scale: f32,
+    lang: Lang,
+) -> Element<'static, CenterPaneEvent> {
+    let label = lang
+        .tr(if count == 1 { "{} turn" } else { "{} turns" })
+        .replacen("{}", &count.to_string(), 1);
+    container(text(label).size(10.0 * font_scale).center())
+        .padding([2, 8])
+        .style(|_theme: &Theme| container::Style {
+            background: Some(color_surface().into()),
+            border: Border {
+                radius: 10.0.into(),
+                ..Default::default()
+            },
+            text_color: Some(color_muted()),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// Shared context for building turn blocks.
@@ -271,6 +272,8 @@ struct TurnView<'a> {
     selectable_msgs: &'a HashSet<usize>,
     theme: &'a Theme,
     font_scale: f32,
+    /// Active UI language for the fixed labels rendered inside turn blocks.
+    lang: Lang,
     search_query: &'a str,
     /// Lowercased `search_query`, precomputed once per frame.
     search_lower: String,
@@ -327,13 +330,14 @@ fn args_preview<'a>(
     args: &'a Value,
     font_scale: f32,
     search_query: &str,
+    lang: Lang,
 ) -> Vec<Element<'a, CenterPaneEvent>> {
     if name == "edit" || name == "write" {
         path_arg_row(args, font_scale, search_query)
             .into_iter()
             .collect()
     } else {
-        args_rows(name, args, font_scale, search_query)
+        args_rows(name, args, font_scale, search_query, lang)
     }
 }
 
@@ -407,11 +411,18 @@ fn tool_turn_block<'a>(
         // control; the placeholder is replaced by the final result on finish.
         if streaming {
             elements.push(tool_header_row(badge, status_text, ts_text));
-            elements.extend(args_rows(name, args, ctx.font_scale, ctx.search_query));
+            elements.extend(args_rows(
+                name,
+                args,
+                ctx.font_scale,
+                ctx.search_query,
+                ctx.lang,
+            ));
             if let Some(Ok(buffer)) = result {
                 elements.push(super::tool_message::streaming_result_text(
                     buffer,
                     ctx.font_scale,
+                    ctx.lang,
                 ));
             }
             continue;
@@ -421,7 +432,7 @@ fn tool_turn_block<'a>(
         if name == "ask" && completed {
             elements.push(tool_header_row(badge, status_text, ts_text));
             elements.push(
-                ask_result_view(args, result.unwrap(), ctx.font_scale)
+                ask_result_view(args, result.unwrap(), ctx.font_scale, ctx.lang)
                     .map(CenterPaneEvent::Conversation),
             );
             continue;
@@ -455,14 +466,27 @@ fn tool_turn_block<'a>(
         }
 
         if expanded {
-            elements.extend(args_rows(name, args, ctx.font_scale, ctx.search_query));
+            elements.extend(args_rows(
+                name,
+                args,
+                ctx.font_scale,
+                ctx.search_query,
+                ctx.lang,
+            ));
             elements.push(result_text(
                 result.unwrap(),
                 ctx.font_scale,
                 ctx.search_query,
+                ctx.lang,
             ));
         } else {
-            elements.extend(args_preview(name, args, ctx.font_scale, ctx.search_query));
+            elements.extend(args_preview(
+                name,
+                args,
+                ctx.font_scale,
+                ctx.search_query,
+                ctx.lang,
+            ));
         }
     }
 
@@ -518,7 +542,9 @@ fn text_turn_block<'a>(
         ChatRole::User => user_bubble_style,
         _ => assistant_bubble_style,
     };
-    let badge = role_badge(role_label, role_label, ctx.font_scale, "");
+    // Only the displayed label is localized; `style_label` stays English
+    // because `role_badge_style` keys its palette on it.
+    let badge = role_badge(ctx.lang.tr(role_label), role_label, ctx.font_scale, "");
     let ts_text = ctx.timestamp(&msg.timestamp);
     let mut content_col = column![].spacing(8).width(Fill);
 
@@ -621,13 +647,14 @@ pub(crate) fn center_pane<'a>(
     conversation: &'a ConversationState,
     theme: &'a Theme,
     font_scale: f32,
+    lang: Lang,
 ) -> Element<'a, CenterPaneEvent> {
     let tab: &SessionTab = conversation.viewing();
     let title: &str = &tab.center_pane_title;
     let dialogs: &[Dialog] = tab.session.dialogs.as_slice();
     let expanded_turns: &HashSet<(usize, usize)> = &tab.expanded_turns;
     let expanded_dialogs: &HashSet<usize> = &tab.expanded_dialogs;
-    let status = conversation.status();
+    let status = conversation.status(lang);
     let streaming: DialogPhase = tab.session_state.phase;
     let selectable_msgs: &HashSet<usize> = &tab.selectable_msgs;
     let pending_user_prompt: Option<&str> = tab
@@ -664,6 +691,7 @@ pub(crate) fn center_pane<'a>(
         selectable_msgs,
         theme,
         font_scale,
+        lang,
         search_query,
         search_lower: search_query.to_lowercase(),
     };
@@ -676,7 +704,13 @@ pub(crate) fn center_pane<'a>(
             let dialog_start = flat_idx; // First flat turn index of this dialog.
             let collapsed = !expanded_dialogs.contains(&di);
             let indicator = if collapsed { "⊞" } else { "⊟" };
-            let title = dialog.display_title(di);
+            let title = if dialog.title.is_empty() {
+                // "Dialog N" is a fixed header fallback — localize at render.
+                lang.tr("Dialog {}")
+                    .replacen("{}", &(di + 1).to_string(), 1)
+            } else {
+                dialog.display_title(di)
+            };
             let turn_count = dialog.turns.len();
 
             // ── clickable header ──────────────────────────────────
@@ -704,7 +738,7 @@ pub(crate) fn center_pane<'a>(
                 search_hit_style(search_state, SearchHitKind::DialogHeader, dialog_start);
             let header = mouse_area(
                 container(
-                    row![title_row, turn_count_badge(turn_count, font_scale)]
+                    row![title_row, turn_count_badge(turn_count, font_scale, lang)]
                         .spacing(10)
                         .align_y(Alignment::Center)
                         .width(Fill),
@@ -761,19 +795,20 @@ pub(crate) fn center_pane<'a>(
 
     mouse_area(
         container(column![
-            super::session_tabs::session_tabs(conversation),
-            session_header(title, conversation),
+            super::session_tabs::session_tabs(conversation, lang),
+            session_header(title, conversation, lang),
             pending_header(pending_user_prompt),
             if search_state.visible {
-                super::search_bar::view(search_query, search_results, search_state.current).map(
-                    |event| CenterPaneEvent::Conversation(ConversationEvent::SearchEvent(event)),
-                )
+                super::search_bar::view(search_query, search_results, search_state.current, lang)
+                    .map(|event| {
+                        CenterPaneEvent::Conversation(ConversationEvent::SearchEvent(event))
+                    })
             } else {
                 row![].into()
             },
             scrollable(
                 column![
-                    session_info(&tab.session, font_scale, conversation),
+                    session_info(&tab.session, font_scale, conversation, lang),
                     column(dialog_blocks).spacing(8),
                 ]
                 .spacing(8)
@@ -793,11 +828,19 @@ pub(crate) fn center_pane<'a>(
                         ask_custom_input,
                         tab.session_state.ask_seconds_left,
                         font_scale,
+                        lang,
                     )
                     .map(CenterPaneEvent::Conversation)
                 })
                 .unwrap_or_else(|| Space::new().into()),
-            status_line(status, streaming, &running_tabs, viewing_number, font_scale),
+            status_line(
+                status,
+                streaming,
+                &running_tabs,
+                viewing_number,
+                font_scale,
+                lang,
+            ),
         ])
         .width(Fill)
         .height(Fill)
@@ -815,10 +858,18 @@ pub(crate) fn center_pane<'a>(
 fn session_header<'a>(
     prompt: &'a str,
     conversation: &'a ConversationState,
+    lang: Lang,
 ) -> Element<'a, CenterPaneEvent> {
+    // The default "New session" heading is a fixed UI label; real session
+    // titles are content and pass through untranslated.
+    let title = if prompt == "New session" {
+        lang.tr("New session")
+    } else {
+        prompt
+    };
     let header = row![
         header_container(
-            SelectableText::new(prompt)
+            SelectableText::new(title)
                 .size(14.0)
                 .style(|theme: &Theme| {
                     let p = theme.extended_palette();
@@ -829,7 +880,7 @@ fn session_header<'a>(
                 }),
             200.0,
         ),
-        header_actions_menu(conversation),
+        header_actions_menu(conversation, lang),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -842,7 +893,10 @@ fn session_header<'a>(
 }
 
 /// The "…" trigger and its copy/resend/fork/compact/export popup menu.
-fn header_actions_menu(conversation: &ConversationState) -> Element<'static, CenterPaneEvent> {
+fn header_actions_menu(
+    conversation: &ConversationState,
+    lang: Lang,
+) -> Element<'static, CenterPaneEvent> {
     let menu_open = conversation.header_menu_open;
     let idle = !conversation.viewing_is_streaming();
     let has_reply = conversation.viewing().session.has_reply();
@@ -850,27 +904,27 @@ fn header_actions_menu(conversation: &ConversationState) -> Element<'static, Cen
     let items = [
         (
             icons::COPY,
-            "Copy title",
+            lang.tr("Copy title"),
             Some(ConversationEvent::CopySessionTitle),
         ),
         (
             icons::RESEND,
-            "Resend session",
+            lang.tr("Resend session"),
             idle.then_some(ConversationEvent::ResendSessionHistory),
         ),
         (
             icons::FORK,
-            "Fork session",
+            lang.tr("Fork session"),
             has_reply.then_some(ConversationEvent::ForkSession),
         ),
         (
             icons::COMPACT,
-            "Compact session",
+            lang.tr("Compact session"),
             (idle && has_reply).then_some(ConversationEvent::CompactSession),
         ),
         (
             icons::DOWNLOAD,
-            "Export as HTML",
+            lang.tr("Export as HTML"),
             Some(ConversationEvent::ExportSessionHtml),
         ),
     ];
@@ -916,6 +970,7 @@ fn session_info<'a>(
     session: &'a Session,
     font_scale: f32,
     conversation: &'a ConversationState,
+    lang: Lang,
 ) -> Element<'a, CenterPaneEvent> {
     let model_id = session.model.as_ref().map(|m| m.model_id.as_str());
     let parent = session.parent.as_str();
@@ -929,24 +984,32 @@ fn session_info<'a>(
     let mut info = row![].spacing(8).align_y(Alignment::Center);
     if let Some(model_id) = model_id {
         info = info.push(
-            SelectableText::new(format!("Model: {model_id}"))
-                .size(12.0 * font_scale)
-                .style(muted_selectable),
+            SelectableText::new(
+                lang.tr("Model: {model_id}")
+                    .replacen("{model_id}", model_id, 1),
+            )
+            .size(12.0 * font_scale)
+            .style(muted_selectable),
         );
     }
     if !parent.is_empty() {
         info = info.push(Space::new().width(Length::Fill)).push(
-            SelectableText::new(format!(
-                "Spawned from {}",
-                parent_label(conversation, parent)
+            SelectableText::new(lang.tr("Spawned from {}").replacen(
+                "{}",
+                &parent_label(conversation, parent, lang),
+                1,
             ))
             .size(12.0 * font_scale)
             .style(muted_selectable),
         );
     }
-    let time_text = SelectableText::new(format!("Created: {}", session.created_at))
-        .size(12.0 * font_scale)
-        .style(muted_selectable);
+    let time_text = SelectableText::new(lang.tr("Created: {}").replacen(
+        "{}",
+        &session.created_at,
+        1,
+    ))
+    .size(12.0 * font_scale)
+    .style(muted_selectable);
     container(
         info.push(Space::new().width(Length::Fill))
             .push(time_text)
@@ -962,13 +1025,13 @@ fn session_info<'a>(
 }
 
 /// Parent reference: the open tab's label ("Session 2"), else the raw session id.
-fn parent_label(conversation: &ConversationState, parent: &str) -> String {
+fn parent_label(conversation: &ConversationState, parent: &str, lang: Lang) -> String {
     conversation
         .session_tabs
         .iter()
         .find(|t| t.session.id == parent)
-        .map(|t| t.tab_label())
-        .unwrap_or_else(|| format!("session {parent}"))
+        .map(|t| localize_tab_label(&t.tab_label(), lang))
+        .unwrap_or_else(|| lang.tr("session {}").replacen("{}", parent, 1))
 }
 
 /// Scrollable container that fills width and scrolls vertically past `max_h`.
@@ -1019,18 +1082,19 @@ fn status_line(
     running_tabs: &[usize],
     viewing_number: usize,
     font_scale: f32,
+    lang: Lang,
 ) -> Element<'static, CenterPaneEvent> {
     let mut row = row![].align_y(Alignment::Center).spacing(8);
 
     // Viewing tab status; stop button while streaming.
     row = row.push(
-        text(status_text)
+        text(lang.tr(status_text.as_ref()).to_string())
             .size(12.0 * font_scale)
             .color(color_muted()),
     );
     if phase != DialogPhase::Idle {
         row = row.push(
-            button(text("⏹ Stop").size(11.0 * font_scale))
+            button(text(lang.tr("⏹ Stop")).size(11.0 * font_scale))
                 .on_press(CenterPaneEvent::Conversation(
                     ConversationEvent::SessionEvent(viewing_number, SessionEvent::Stop),
                 ))
@@ -1041,11 +1105,16 @@ fn status_line(
 
     // Background running sessions indicator with per-tab stop buttons.
     if !running_tabs.is_empty() {
+        let nums: String = running_tabs
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
         let label = if running_tabs.len() == 1 {
-            format!("Session {} running…", running_tabs[0])
+            lang.tr("Session {} running…")
+                .replacen("{}", &running_tabs[0].to_string(), 1)
         } else {
-            let nums: Vec<String> = running_tabs.iter().map(|n| n.to_string()).collect();
-            format!("Sessions {} running…", nums.join(", "))
+            lang.tr("Sessions {} running…").replacen("{}", &nums, 1)
         };
         row = row.push(text(label).size(12.0 * font_scale).color(color_muted()));
     }

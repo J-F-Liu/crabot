@@ -8,6 +8,7 @@ use super::{
     delete_button_style, empty_hint, form_card_style, section_header, toggle_expanded,
 };
 use crate::views::theme::color_muted;
+use crabot::i18n::Lang;
 use crabot::user::WorkMode;
 
 // ── Events ──────────────────────────────────────────────────────────
@@ -30,11 +31,12 @@ pub(crate) enum RecipesEvent {
 // ── Page ───────────────────────────────────────────────────────────
 
 pub(super) fn prompt_recipes_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
-    let header = section_header("Prompt Recipes");
+    let lang = state.language;
+    let header = section_header(lang.tr("Prompt Recipes"));
 
     let work_modes = WorkMode::all();
     let body: Element<'a, SettingsEvent> = if work_modes.is_empty() {
-        empty_hint("No work modes found. Ensure workmode.md is configured.")
+        empty_hint(lang.tr("No work modes found. Ensure workmode.md is configured."))
     } else {
         let cards: Vec<Element<'a, SettingsEvent>> = work_modes
             .iter()
@@ -47,7 +49,7 @@ pub(super) fn prompt_recipes_page<'a>(state: &'a SettingsState) -> Element<'a, S
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 let expanded = state.expanded_recipe_mode == Some(i);
-                mode_card(i, mode.name.to_string(), mode_key, recipes, expanded)
+                mode_card(i, mode.name.to_string(), mode_key, recipes, expanded, lang)
             })
             .collect();
         column(cards).spacing(8).into()
@@ -72,18 +74,24 @@ fn mode_card<'a>(
     mode_key: String,
     recipes: &'a [String],
     expanded: bool,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let title = collapsible_header(
         expanded,
         display_name,
-        count_label(recipes.len(), "recipe"),
+        count_label(lang, recipes.len(), lang.tr("recipe")),
         SettingsEvent::Recipes(RecipesEvent::ToggleRecipeMode(index)),
     );
 
     let header_row = row![title].spacing(4).align_y(Alignment::Center);
 
     container(if expanded {
-        column![header_row, card_rule(), recipe_list(&mode_key, recipes)].spacing(10)
+        column![
+            header_row,
+            card_rule(),
+            recipe_list(&mode_key, recipes, lang)
+        ]
+        .spacing(10)
     } else {
         column![header_row]
     })
@@ -95,15 +103,19 @@ fn mode_card<'a>(
 
 // ── Recipe list within an expanded mode ────────────────────────────
 
-fn recipe_list<'a>(mode_key: &str, recipes: &'a [String]) -> Element<'a, SettingsEvent> {
+fn recipe_list<'a>(
+    mode_key: &str,
+    recipes: &'a [String],
+    lang: Lang,
+) -> Element<'a, SettingsEvent> {
     let mk = mode_key.to_string();
 
     if recipes.is_empty() {
         return column![
-            text("No recipes for this mode. Click + Add Recipe to create one.")
+            text(lang.tr("No recipes for this mode. Click + Add Recipe to create one."))
                 .size(12)
                 .color(color_muted()),
-            add_recipe_button(mk),
+            add_recipe_button(mk, lang),
         ]
         .spacing(8)
         .into();
@@ -112,16 +124,16 @@ fn recipe_list<'a>(mode_key: &str, recipes: &'a [String]) -> Element<'a, Setting
     let items: Vec<Element<'a, SettingsEvent>> = recipes
         .iter()
         .enumerate()
-        .map(|(i, recipe)| recipe_row(mk.clone(), i, recipe.as_str()))
+        .map(|(i, recipe)| recipe_row(mk.clone(), i, recipe.as_str(), lang))
         .collect();
 
-    column![column(items).spacing(8), add_recipe_button(mk),]
+    column![column(items).spacing(8), add_recipe_button(mk, lang),]
         .spacing(8)
         .into()
 }
 
-fn add_recipe_button(mode_key: String) -> Element<'static, SettingsEvent> {
-    button(text("+ Add Recipe").size(12))
+fn add_recipe_button(mode_key: String, lang: Lang) -> Element<'static, SettingsEvent> {
+    button(text(lang.tr("+ Add Recipe")).size(12))
         .padding([4, 10])
         .style(crate::views::styles::primary_button)
         .on_press(SettingsEvent::Recipes(RecipesEvent::NewRecipe(mode_key)))
@@ -130,8 +142,13 @@ fn add_recipe_button(mode_key: String) -> Element<'static, SettingsEvent> {
 
 // ── Recipe row ────────────────────────────────────────────────────
 
-fn recipe_row<'a>(mode_key: String, index: usize, recipe: &'a str) -> Element<'a, SettingsEvent> {
-    let label_text = format!("Recipe {}", index + 1);
+fn recipe_row<'a>(
+    mode_key: String,
+    index: usize,
+    recipe: &'a str,
+    lang: Lang,
+) -> Element<'a, SettingsEvent> {
+    let label_text = format!("{} {}", lang.tr("Recipe"), index + 1);
     let label = container(text(label_text).size(12).color(color_muted()))
         .width(Length::Fixed(70.0))
         .align_x(Alignment::End)
@@ -147,7 +164,7 @@ fn recipe_row<'a>(mode_key: String, index: usize, recipe: &'a str) -> Element<'a
             mk_del, index,
         )));
 
-    let input: Element<'a, SettingsEvent> = text_input("Enter recipe prompt...", recipe)
+    let input: Element<'a, SettingsEvent> = text_input(lang.tr("Enter recipe prompt..."), recipe)
         .on_input(move |v| {
             SettingsEvent::Recipes(RecipesEvent::EditRecipe(mk_edit.clone(), index, v))
         })

@@ -60,11 +60,15 @@ impl ToolListState {
 }
 
 /// Clickable header row for a collapsible section.
-fn section_header<'a>(title: &'static str, expanded: bool) -> Element<'a, ToolListEvent> {
+fn section_header<'a>(
+    title: &'static str,
+    expanded: bool,
+    lang: crabot::i18n::Lang,
+) -> Element<'a, ToolListEvent> {
     let arrow = if expanded { "▼" } else { "⯈" };
     mouse_area(
         row![
-            text(title).size(14),
+            text(lang.tr(title)).size(14),
             Space::new().width(Length::Fill),
             text(arrow).size(12),
         ]
@@ -80,12 +84,13 @@ pub(crate) fn tools_section<'a>(
     expanded: bool,
     selected: &'a HashSet<String>,
     names: &'a [String],
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, ToolListEvent> {
     if names.is_empty() {
         return column![].into();
     }
 
-    let header = section_header(title, expanded);
+    let header = section_header(title, expanded, lang);
     if expanded {
         column![header, tools_view(selected, names)]
             .spacing(4)
@@ -146,12 +151,13 @@ pub(crate) fn mcp_tools_section<'a>(
     selected: &'a HashSet<String>,
     groups: &'a [(String, Vec<McpTool>)],
     enabled_mcp_servers: &'a HashSet<String>,
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, ToolListEvent> {
     if groups.is_empty() {
         return column![].into();
     }
 
-    let header = section_header(MCP_TOOLS, expanded);
+    let header = section_header(MCP_TOOLS, expanded, lang);
     if expanded {
         let group_cols: Vec<Element<'a, ToolListEvent>> = groups
             .iter()

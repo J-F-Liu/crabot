@@ -40,6 +40,7 @@ pub(crate) enum Event {
 pub(crate) fn model_config_view<'a>(
     provided_models: &'a ModelList,
     selected: &'a String,
+    lang: crabot::i18n::Lang,
 ) -> Element<'a, Event> {
     // Derived provider pick-list entries (rebuilt each frame; cheap).
     let providers: Vec<ProviderEntry> = provided_models
@@ -98,7 +99,7 @@ pub(crate) fn model_config_view<'a>(
             .padding([2, 6])
             .style(crate::views::styles::secondary_button)
             .on_press(Event::OpenSettings),
-        text("Open Settings").size(11).color(Color::WHITE),
+        text(lang.tr("Open Settings")).size(11).color(Color::WHITE),
         tooltip::Position::Bottom,
     )
     .gap(4)
@@ -153,9 +154,9 @@ pub(crate) fn model_config_view<'a>(
                 .into()
         };
         row![
-            text("Thinking").size(14).width(60.0),
+            text(lang.tr("Thinking")).size(14).width(60.0),
             toggle,
-            text("Level").size(14),
+            text(lang.tr("Level")).size(14),
             level_picker,
         ]
         .spacing(8)
@@ -163,7 +164,7 @@ pub(crate) fn model_config_view<'a>(
         .into()
     } else {
         row![
-            text("Thinking").size(14).width(60.0),
+            text(lang.tr("Thinking")).size(14).width(60.0),
             toggle,
             iced::widget::Space::new().width(Fill).height(30.0),
         ]

@@ -16,6 +16,7 @@ use iced::Task;
 use super::session_tab::SessionTab;
 use super::{App, Message};
 use crabot::chat::ToolCall;
+use crabot::i18n::Lang;
 use crabot::tools::{arg_path, resolve_path_partial};
 
 /// Outcome of a single background revert — `Ok(raw)` unlists the file, `Err` shows the message.
@@ -155,29 +156,49 @@ pub(crate) async fn capture_tool_targets(
 }
 
 /// Restore the original content of `path` (Revert action).
-fn restore(workspace: &Path, session_id: &str, path: &str) -> Result<(), String> {
-    let key =
-        canonical_key(workspace, path).ok_or_else(|| format!("Failed to resolve path '{path}'"))?;
+fn restore(workspace: &Path, session_id: &str, path: &str, lang: Lang) -> Result<(), String> {
+    let key = canonical_key(workspace, path).ok_or_else(|| {
+        lang.tr("Failed to resolve path '{path}'")
+            .replacen("{path}", path, 1)
+            .to_string()
+    })?;
     let dir = snapshot_dir(workspace, session_id);
     let (existed_file, created_file) = snapshot_paths(&dir, &key);
     if existed_file.exists() {
-        let content = std::fs::read_to_string(&existed_file)
-            .map_err(|e| format!("Failed to read snapshot for '{path}': {e}"))?;
+        let content = std::fs::read_to_string(&existed_file).map_err(|e| {
+            lang.tr("Failed to read snapshot for '{path}': {e}")
+                .replacen("{path}", path, 1)
+                .replacen("{e}", &e.to_string(), 1)
+        })?;
         if let Some(parent) = Path::new(&key).parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create parent dir: {e}"))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                lang.tr("Failed to create parent dir: {e}")
+                    .replacen("{e}", &e.to_string(), 1)
+            })?;
         }
-        std::fs::write(&key, content).map_err(|e| format!("Failed to restore '{path}': {e}"))?;
+        std::fs::write(&key, content).map_err(|e| {
+            lang.tr("Failed to restore '{path}': {e}")
+                .replacen("{path}", path, 1)
+                .replacen("{e}", &e.to_string(), 1)
+        })?;
         let _ = std::fs::remove_file(&existed_file);
     } else if created_file.exists() {
         match std::fs::remove_file(&key) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("Failed to delete '{path}': {e}")),
+            Err(e) => {
+                return Err(lang
+                    .tr("Failed to delete '{path}': {e}")
+                    .replacen("{path}", path, 1)
+                    .replacen("{e}", &e.to_string(), 1));
+            }
         }
         let _ = std::fs::remove_file(&created_file);
     } else {
-        return Err(format!("No snapshot for '{path}' — nothing to revert"));
+        return Err(lang
+            .tr("No snapshot for '{path}' — nothing to revert")
+            .replacen("{path}", path, 1)
+            .to_string());
     }
     Ok(())
 }
@@ -248,10 +269,20 @@ fn clear_dir(dir: &Path) -> std::io::Result<()> {
 // ── Background revert ──────────────────────────────────────────────
 
 /// Revert one file off the UI thread.
-async fn revert_one(workspace: PathBuf, session_id: String, raw: String) -> RevertOutcome {
-    tokio::task::spawn_blocking(move || restore(&workspace, &session_id, &raw).map(|()| raw))
+async fn revert_one(
+    workspace: PathBuf,
+    session_id: String,
+    raw: String,
+    lang: Lang,
+) -> RevertOutcome {
+    tokio::task::spawn_blocking(move || restore(&workspace, &session_id, &raw, lang).map(|()| raw))
         .await
-        .unwrap_or_else(|e| Err(format!("Revert task failed: {e}")))
+        .unwrap_or_else(|e| {
+            Err(lang
+                .tr("Revert task failed: {e}")
+                .replacen("{e}", &e.to_string(), 1)
+                .to_string())
+        })
 }
 
 /// Revert all `raws` off the UI thread; outcomes stay ordered for the UI.
@@ -259,29 +290,40 @@ async fn revert_many(
     workspace: PathBuf,
     session_id: String,
     raws: Vec<String>,
+    lang: Lang,
 ) -> Vec<RevertOutcome> {
     tokio::task::spawn_blocking(move || {
         raws.into_iter()
-            .map(|raw| restore(&workspace, &session_id, &raw).map(|()| raw))
+            .map(|raw| restore(&workspace, &session_id, &raw, lang).map(|()| raw))
             .collect()
     })
     .await
-    .unwrap_or_else(|e| vec![Err(format!("Revert task failed: {e}"))])
+    .unwrap_or_else(|e| {
+        vec![Err(lang
+            .tr("Revert task failed: {e}")
+            .replacen("{e}", &e.to_string(), 1)
+            .to_string())]
+    })
 }
 
 /// Revert a single file (Revert button) — restores in the background.
 pub(crate) fn revert(app: &mut App, raw: String) -> Task<Message> {
+    let lang = app.settings.language;
     let number = app.conversation.viewing_tab_number();
     let workspace = app.conversation.viewing().session.workspace.clone();
     let session_id = app.conversation.viewing().session.id.clone();
     if workspace.as_os_str().is_empty() {
-        app.conversation.viewing_mut().modified_files_error =
-            Some(format!("No workspace set — cannot revert '{raw}'"));
+        app.conversation.viewing_mut().modified_files_error = Some(
+            lang.tr("No workspace set — cannot revert '{raw}'")
+                .replacen("{raw}", &raw, 1)
+                .to_string(),
+        );
         return Task::none();
     }
-    Task::perform(revert_one(workspace, session_id, raw), move |outcome| {
-        Message::RevertDone(number, outcome)
-    })
+    Task::perform(
+        revert_one(workspace, session_id, raw, lang),
+        move |outcome| Message::RevertDone(number, outcome),
+    )
 }
 
 /// Open the Revert-All confirmation dialog. The owning tab is captured up
@@ -306,14 +348,18 @@ pub(crate) fn revert_all(app: &mut App) -> Task<Message> {
         .iter()
         .cloned()
         .collect();
+    let lang = app.settings.language;
     if workspace.as_os_str().is_empty() {
-        app.conversation.session_tabs[pos].modified_files_error =
-            Some("No workspace set — cannot revert files.".into());
+        app.conversation.session_tabs[pos].modified_files_error = Some(
+            lang.tr("No workspace set — cannot revert files.")
+                .to_string(),
+        );
         return Task::none();
     }
-    Task::perform(revert_many(workspace, session_id, raws), move |outcomes| {
-        Message::RevertAllDone(number, outcomes)
-    })
+    Task::perform(
+        revert_many(workspace, session_id, raws, lang),
+        move |outcomes| Message::RevertAllDone(number, outcomes),
+    )
 }
 
 /// Apply revert outcomes: unlist restored files, surface errors.

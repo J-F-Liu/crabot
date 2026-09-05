@@ -10,6 +10,7 @@ use super::{
 use crate::views::styles::styled_pick_list;
 use crate::views::theme::color_muted;
 use crate::widgets::textarea::TextArea;
+use crabot::i18n::Lang;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolParameter};
 use iced::{
     Alignment, Element, Length,
@@ -54,10 +55,11 @@ pub(crate) enum CustomToolsEvent {
 // ── Page ───────────────────────────────────────────────────────────
 
 pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
     let header = row![
-        section_header("Custom Tools"),
+        section_header(lang.tr("Custom Tools")),
         iced::widget::Space::new().width(Length::Fill),
-        button(text("+ New Tool").size(12))
+        button(text(lang.tr("+ New Tool")).size(12))
             .padding([4, 10])
             .style(crate::views::styles::primary_button)
             .on_press(SettingsEvent::CustomTools(CustomToolsEvent::NewTool)),
@@ -65,7 +67,7 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Set
     .align_y(Alignment::Center);
 
     let body: Element<'a, SettingsEvent> = if state.working_tools.custom_tools.is_empty() {
-        empty_hint("No custom tools yet. Click + New Tool to define a command-line tool.")
+        empty_hint(lang.tr("No custom tools yet. Click + New Tool to define a command-line tool."))
     } else {
         let cards: Vec<Element<'a, SettingsEvent>> = state
             .working_tools
@@ -80,6 +82,7 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Set
                     expanded,
                     &state.tool_desc_area,
                     &state.tool_instr_area,
+                    lang,
                 )
             })
             .collect();
@@ -105,13 +108,14 @@ fn tool_card<'a>(
     expanded: bool,
     desc_area: &'a TextArea,
     instr_area: &'a TextArea,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let display_name = if tool.name.trim().is_empty() {
-        "untitled"
+        lang.tr("untitled")
     } else {
         &tool.name
     };
-    let summary = count_label(tool.parameters.len(), "parameter");
+    let summary = count_label(lang, tool.parameters.len(), lang.tr("parameter"));
 
     let title = collapsible_header(
         expanded,
@@ -133,7 +137,7 @@ fn tool_card<'a>(
         column![
             header_row,
             card_rule(),
-            tool_form(index, tool, desc_area, instr_area)
+            tool_form(index, tool, desc_area, instr_area, lang)
         ]
         .spacing(10)
     } else {
@@ -152,21 +156,22 @@ fn tool_form<'a>(
     tool: &'a CustomTool,
     desc_area: &'a TextArea,
     instr_area: &'a TextArea,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     column![
         field_row(
-            "Name",
+            lang.tr("Name"),
             &tool.name,
-            "snake_case name used by the model",
+            lang.tr("snake_case name used by the model"),
             false,
             None,
             None,
             move |v| SettingsEvent::CustomTools(CustomToolsEvent::EditToolName(index, v))
         ),
         textarea_field_row(
-            "Description",
+            lang.tr("Description"),
             desc_area,
-            "What the tool does — shown to the model",
+            lang.tr("What the tool does — shown to the model"),
             move |msg| {
                 SettingsEvent::CustomTools(CustomToolsEvent::ToolTextArea(
                     ToolTextField::Description,
@@ -175,9 +180,9 @@ fn tool_form<'a>(
             },
         ),
         textarea_field_row(
-            "Instruction",
+            lang.tr("Instruction"),
             instr_area,
-            "When and how the model should use this tool",
+            lang.tr("When and how the model should use this tool"),
             move |msg| {
                 SettingsEvent::CustomTools(CustomToolsEvent::ToolTextArea(
                     ToolTextField::Instruction,
@@ -186,19 +191,19 @@ fn tool_form<'a>(
             },
         ),
         field_row(
-            "Command",
+            lang.tr("Command"),
             &tool.command,
-            "Command template, e.g. git log {args}",
+            lang.tr("Command template, e.g. git log {args}"),
             true,
             None,
             None,
             move |v| SettingsEvent::CustomTools(CustomToolsEvent::EditToolCommand(index, v)),
         ),
-        params_section(index, tool),
-        text(
+        params_section(index, tool, lang),
+        text(lang.tr(
             "Command uses TinyTemplate syntax: {param} inserts a value, \
-              {{ if param }}…{{ endif }} adds conditional arguments."
-        )
+              {{ if param }}…{{ endif }} adds conditional arguments.",
+        ))
         .size(11)
         .color(color_muted()),
     ]
@@ -208,16 +213,21 @@ fn tool_form<'a>(
 
 // ── Parameters ────────────────────────────────────────────────────
 
-fn params_section<'a>(tool_index: usize, tool: &'a CustomTool) -> Element<'a, SettingsEvent> {
+fn params_section<'a>(
+    tool_index: usize,
+    tool: &'a CustomTool,
+    lang: Lang,
+) -> Element<'a, SettingsEvent> {
     let cards: Vec<Element<'a, SettingsEvent>> = tool
         .parameters
         .iter()
         .enumerate()
-        .map(|(i, param)| param_card(tool_index, i, param))
+        .map(|(i, param)| param_card(tool_index, i, param, lang))
         .collect();
 
     add_section(
-        "Parameters",
+        lang,
+        lang.tr("Parameters"),
         SettingsEvent::CustomTools(CustomToolsEvent::AddToolParam(tool_index)),
         cards,
     )
@@ -229,6 +239,7 @@ fn param_card<'a>(
     tool_index: usize,
     index: usize,
     param: &'a ToolParameter,
+    lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let kind_picker = styled_pick_list(PARAM_KINDS, simple_kind(&param.kind), move |kind| {
         SettingsEvent::CustomTools(CustomToolsEvent::EditParamKind(
@@ -242,7 +253,7 @@ fn param_card<'a>(
     .width(Length::Fixed(110.0));
 
     let required = checkbox(param.required)
-        .label("required")
+        .label(lang.tr("required"))
         .text_size(12)
         .on_toggle(move |v| {
             SettingsEvent::CustomTools(CustomToolsEvent::ToggleParamRequired(tool_index, index, v))
@@ -259,7 +270,7 @@ fn param_card<'a>(
     container(
         column![
             row![
-                text_input("Parameter name", &param.name)
+                text_input(lang.tr("Parameter name"), &param.name)
                     .on_input(move |v| {
                         SettingsEvent::CustomTools(CustomToolsEvent::EditParamName(
                             tool_index, index, v,
@@ -275,7 +286,7 @@ fn param_card<'a>(
             .spacing(8)
             .align_y(Alignment::Center),
             text_input(
-                "Parameter description — shown to the model",
+                lang.tr("Parameter description — shown to the model"),
                 &param.description
             )
             .on_input(move |v| {

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use crabot::chat::{Dialog, Turn, TurnBody, markdown_options, streaming_tool_ids, tool_items};
+use crabot::i18n::Lang;
 use crabot::session::Session;
 use crabot::tools::edit::EditParam;
 use crabot::tools::todo::{TodoItem, TodoStatus};
@@ -43,18 +44,21 @@ pub(crate) enum ExportOutcome {
 struct RenderCtx<'a> {
     expanded_dialogs: &'a HashSet<usize>,
     expanded_turns: &'a HashSet<(usize, usize)>,
+    lang: Lang,
 }
 
 /// Render the whole session as a standalone HTML document.
 pub(crate) fn render_session_html(
     session: &Session,
     title: &str,
+    lang: Lang,
     expanded_dialogs: &HashSet<usize>,
     expanded_turns: &HashSet<(usize, usize)>,
 ) -> String {
     let ctx = RenderCtx {
         expanded_dialogs,
         expanded_turns,
+        lang,
     };
     let mut body = String::new();
 
@@ -63,9 +67,17 @@ pub(crate) fn render_session_html(
     w!(body, "<h1>{}</h1>", escape_html(title));
     let mut meta = Vec::new();
     if let Some(model) = session.model.as_ref() {
-        meta.push(format!("Model: {}", escape_html(&model.model_id)));
+        meta.push(
+            lang.tr("Model: {model_id}")
+                .replacen("{model_id}", &escape_html(&model.model_id), 1)
+                .to_string(),
+        );
     }
-    meta.push(format!("Created: {}", escape_html(&session.created_at)));
+    meta.push(
+        lang.tr("Created: {}")
+            .replacen("{}", &escape_html(&session.created_at), 1)
+            .to_string(),
+    );
     if !meta.is_empty() {
         w!(
             body,
@@ -126,7 +138,15 @@ fn render_dialog(
     let indicator = if collapsed { "⊞" } else { "⊟" };
     let title = dialog.display_title(di);
     let turn_count = dialog.turns.len();
-    let turn_label = if turn_count == 1 { "turn" } else { "turns" };
+    let turn_label = if turn_count == 1 {
+        ctx.lang
+            .tr("{} turn")
+            .replacen("{}", &turn_count.to_string(), 1)
+    } else {
+        ctx.lang
+            .tr("{} turns")
+            .replacen("{}", &turn_count.to_string(), 1)
+    };
 
     let open = if collapsed { "" } else { " open" };
     w!(out, "<details class=\"dialog\"{open}>");
@@ -144,10 +164,7 @@ fn render_dialog(
         "<span class=\"dialog-title\">{}</span>",
         escape_html(&title)
     );
-    w!(
-        out,
-        "<span class=\"turn-count\">{turn_count} {turn_label}</span>"
-    );
+    w!(out, "<span class=\"turn-count\">{turn_label}</span>");
     w!(out, "</summary>");
 
     // Always emit the body so the native `<details>` element can expand a
@@ -188,6 +205,8 @@ fn render_text_turn(turn: &Turn, i: usize, ctx: &RenderCtx<'_>, out: &mut String
     let role_label = turn.role_label();
     // Bubble and badge CSS classes both match the lowercased role label.
     let css_class = role_label.to_lowercase();
+    // Display label follows the UI language; the CSS class stays English.
+    let display_label = ctx.lang.tr(role_label);
 
     w!(out, "<div class=\"bubble {css_class}\">");
     if let Some(reasoning) = tc.reasoning.as_deref() {
@@ -198,7 +217,7 @@ fn render_text_turn(turn: &Turn, i: usize, ctx: &RenderCtx<'_>, out: &mut String
         w!(out, "<details class=\"reasoning\"{open}>");
         w!(out, "<summary class=\"turn-header\">");
         render_turn_header(
-            role_label,
+            display_label,
             &css_class,
             Some(indicator),
             &turn.timestamp,
@@ -213,7 +232,7 @@ fn render_text_turn(turn: &Turn, i: usize, ctx: &RenderCtx<'_>, out: &mut String
         w!(out, "</details>");
     } else {
         w!(out, "<div class=\"turn-header\">");
-        render_turn_header(role_label, &css_class, None, &turn.timestamp, out);
+        render_turn_header(display_label, &css_class, None, &turn.timestamp, out);
         w!(out, "</div>");
     }
     w!(
@@ -269,7 +288,7 @@ fn render_tool_turn(
             w!(out, "<div class=\"tool-spacer\"></div>");
         }
 
-        let badge = format!("Tool - {name}");
+        let badge = ctx.lang.tr("Tool - {name}").replacen("{name}", name, 1);
         let completed = result.is_some() && !streaming;
         let (status_icon, status_class) = match (result, streaming) {
             (Some(Ok(_)), false) => ("✓", "ok"),
@@ -282,9 +301,9 @@ fn render_tool_turn(
             w!(out, "<div class=\"tool-header\">");
             render_tool_header(&badge, status_icon, status_class, ts, None, out);
             w!(out, "</div>");
-            render_args_rows(name, args, out);
+            render_args_rows(name, args, ctx.lang, out);
             if let Some(Ok(buffer)) = result {
-                render_streaming_result(buffer, out);
+                render_streaming_result(buffer, ctx.lang, out);
             }
             continue;
         }
@@ -294,7 +313,7 @@ fn render_tool_turn(
             w!(out, "<div class=\"tool-header\">");
             render_tool_header(&badge, status_icon, status_class, ts, None, out);
             w!(out, "</div>");
-            render_ask_result(args, result.unwrap(), out);
+            render_ask_result(args, result.unwrap(), ctx.lang, out);
             continue;
         }
 
@@ -308,20 +327,20 @@ fn render_tool_turn(
             render_tool_header(&badge, status_icon, status_class, ts, Some(indicator), out);
             w!(out, "</summary>");
             w!(out, "<div class=\"tool-detail\">");
-            render_args_rows(name, args, out);
-            render_result(result.unwrap(), out);
+            render_args_rows(name, args, ctx.lang, out);
+            render_result(result.unwrap(), ctx.lang, out);
             w!(out, "</div>");
             w!(out, "</details>");
             // Shown only while the adjacent `<details>` is collapsed.
             w!(out, "<div class=\"tool-preview\">");
-            render_args_preview(name, args, out);
+            render_args_preview(name, args, ctx.lang, out);
             w!(out, "</div>");
         } else {
             // Pending call: plain header + compact args, no expand control.
             w!(out, "<div class=\"tool-header\">");
             render_tool_header(&badge, status_icon, status_class, ts, None, out);
             w!(out, "</div>");
-            render_args_preview(name, args, out);
+            render_args_preview(name, args, ctx.lang, out);
         }
     }
     w!(out, "</div>");
@@ -350,7 +369,7 @@ fn render_tool_header(
 
 // ── tool arguments / results ──────────────────────────────────────
 
-fn render_args_preview(name: &str, args: &Value, out: &mut String) {
+fn render_args_preview(name: &str, args: &Value, lang: Lang, out: &mut String) {
     if name == "edit" || name == "write" {
         if let Some(path) = args
             .as_object()
@@ -360,11 +379,11 @@ fn render_args_preview(name: &str, args: &Value, out: &mut String) {
             render_arg_row("path", path, out);
         }
     } else {
-        render_args_rows(name, args, out);
+        render_args_rows(name, args, lang, out);
     }
 }
 
-fn render_args_rows(tool_name: &str, args: &Value, out: &mut String) {
+fn render_args_rows(tool_name: &str, args: &Value, lang: Lang, out: &mut String) {
     let Some(map) = args.as_object() else {
         return;
     };
@@ -372,7 +391,7 @@ fn render_args_rows(tool_name: &str, args: &Value, out: &mut String) {
     if tool_name == "todo"
         && let Some(items) = map.get("items").and_then(|v| v.as_array())
     {
-        render_todo_table(items, out);
+        render_todo_table(items, lang, out);
         return;
     }
 
@@ -390,7 +409,7 @@ fn render_args_rows(tool_name: &str, args: &Value, out: &mut String) {
         if key == "edits"
             && let Some(edits) = value.as_array()
         {
-            render_edits_table(key, edits, out);
+            render_edits_table(key, edits, lang, out);
             continue;
         }
         let display = value
@@ -418,19 +437,24 @@ fn render_arg_line(value: &str, out: &mut String) {
     );
 }
 
-fn render_edits_table(key: &str, edits: &[Value], out: &mut String) {
+fn render_edits_table(key: &str, edits: &[Value], lang: Lang, out: &mut String) {
     w!(out, "<div class=\"edits\">");
+    let count = lang
+        .tr("{} edit(s)")
+        .replacen("{}", &edits.len().to_string(), 1);
     w!(
         out,
-        "<div class=\"edits-header\"><span class=\"arg-key\">{}:</span><span class=\"arg-value muted\">{} edit(s)</span></div>",
+        "<div class=\"edits-header\"><span class=\"arg-key\">{}:</span><span class=\"arg-value muted\">{}</span></div>",
         escape_html(key),
-        edits.len()
+        count
     );
     for (idx, edit) in edits.iter().enumerate() {
+        let index = lang
+            .tr("Edit #{}")
+            .replacen("{}", &(idx + 1).to_string(), 1);
         w!(
             out,
-            "<div class=\"edit-block\"><span class=\"edit-index\">Edit #{}</span>",
-            idx + 1
+            "<div class=\"edit-block\"><span class=\"edit-index\">{index}</span>"
         );
         match serde_json::from_value::<EditParam>(edit.clone()) {
             Ok(param) => {
@@ -452,11 +476,13 @@ fn render_diff_row(marker: &str, class: &str, content: &str, out: &mut String) {
     );
 }
 
-fn render_todo_table(items: &[Value], out: &mut String) {
+fn render_todo_table(items: &[Value], lang: Lang, out: &mut String) {
     w!(out, "<div class=\"todo-table\">");
     w!(
         out,
-        "<div class=\"todo-header\"><span class=\"todo-text\">Text</span><span class=\"todo-status\">Status</span></div>"
+        "<div class=\"todo-header\"><span class=\"todo-text\">{}</span><span class=\"todo-status\">{}</span></div>",
+        lang.tr("Text"),
+        lang.tr("Status")
     );
     for (idx, item) in items.iter().enumerate() {
         if idx > 0 {
@@ -465,9 +491,9 @@ fn render_todo_table(items: &[Value], out: &mut String) {
         match serde_json::from_value::<TodoItem>(item.clone()) {
             Ok(todo) => {
                 let (status, class) = match todo.status {
-                    TodoStatus::Pending => ("pending", "todo-pending"),
-                    TodoStatus::InProgress => ("in progress", "todo-in-progress"),
-                    TodoStatus::Completed => ("completed", "todo-completed"),
+                    TodoStatus::Pending => (lang.tr("pending"), "todo-pending"),
+                    TodoStatus::InProgress => (lang.tr("in progress"), "todo-in-progress"),
+                    TodoStatus::Completed => (lang.tr("completed"), "todo-completed"),
                 };
                 let content = format!("{}{}", "  ".repeat(todo.depth as usize), todo.text);
                 w!(
@@ -476,31 +502,34 @@ fn render_todo_table(items: &[Value], out: &mut String) {
                     escape_html(&content)
                 );
             }
-            Err(_) => w!(
-                out,
-                "<div class=\"todo-row\"><span class=\"todo-text\">{}</span><span class=\"todo-status todo-invalid\">⚠ invalid</span></div>",
-                escape_html(&item.to_string())
-            ),
+            Err(_) => {
+                let invalid = lang.tr("⚠ invalid");
+                w!(
+                    out,
+                    "<div class=\"todo-row\"><span class=\"todo-text\">{}</span><span class=\"todo-status todo-invalid\">{invalid}</span></div>",
+                    escape_html(&item.to_string())
+                );
+            }
         }
     }
     w!(out, "</div>");
 }
 
-fn render_result(result: &Result<String, String>, out: &mut String) {
+fn render_result(result: &Result<String, String>, lang: Lang, out: &mut String) {
     let (display, is_ok) = match result {
         Ok(s) => (s.as_str(), true),
         Err(e) => (e.as_str(), false),
     };
     let (label, class) = if is_ok {
-        ("Result", "ok")
+        (lang.tr("Result"), "ok")
     } else {
-        ("Error", "err")
+        (lang.tr("Error"), "err")
     };
     render_result_box(label, class, display, out);
 }
 
-fn render_streaming_result(buffer: &str, out: &mut String) {
-    render_result_box("Running…", "ok", buffer, out);
+fn render_streaming_result(buffer: &str, lang: Lang, out: &mut String) {
+    render_result_box(lang.tr("Running…"), "ok", buffer, out);
 }
 
 fn render_result_box(label: &str, class: &str, text: &str, out: &mut String) {
@@ -511,7 +540,7 @@ fn render_result_box(label: &str, class: &str, text: &str, out: &mut String) {
     );
 }
 
-fn render_ask_result(args: &Value, result: &Result<String, String>, out: &mut String) {
+fn render_ask_result(args: &Value, result: &Result<String, String>, lang: Lang, out: &mut String) {
     let question = args
         .get("question")
         .and_then(|v| v.as_str())
@@ -525,7 +554,11 @@ fn render_ask_result(args: &Value, result: &Result<String, String>, out: &mut St
         Ok(s) => (s.as_str(), true),
         Err(e) => (e.as_str(), false),
     };
-    let label = if is_ok { "Answer" } else { "Error" };
+    let label = if is_ok {
+        lang.tr("Answer")
+    } else {
+        lang.tr("Error")
+    };
     let class = if is_ok { "ok" } else { "err" };
 
     w!(out, "<div class=\"ask-result\">");
@@ -541,7 +574,7 @@ fn render_ask_result(args: &Value, result: &Result<String, String>, out: &mut St
         let header = if matched {
             format!("{label}:")
         } else {
-            "Options:".to_string()
+            lang.tr("Options:").to_string()
         };
         w!(out, "<div class=\"result-label {class}\">{header}</div>");
         w!(out, "<div class=\"ask-options\">");
