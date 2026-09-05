@@ -738,6 +738,11 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
         return Task::none();
     }
 
+    // Idle send starts a new dialog: reset the snapshot scope so write/edit re-captures.
+    if !app.conversation.viewing_is_streaming() {
+        snapshot::clear_snapshots(app.conversation.viewing_mut());
+    }
+
     // Capture everything needed before touching the input state.
     let mode = app.prompt.workmode_enabled.then_some(app.prompt.workmode);
     let with_tree = app.prompt.files.enabled;

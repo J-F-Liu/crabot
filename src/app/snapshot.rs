@@ -182,7 +182,17 @@ fn restore(workspace: &Path, session_id: &str, path: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Delete the session's snapshot files (tab closed).
+/// Reset the snapshot scope for a new dialog — clears the in-memory Revert
+/// set and this session's snapshots so the next `write`/`edit` re-captures.
+pub(crate) fn clear_snapshots(tab: &mut SessionTab) {
+    if !tab.snapshot_files.is_empty() {
+        tab.snapshot_files.clear();
+        tab.modified_files_error = None;
+        cleanup(&tab.session.workspace, &tab.session.id);
+    }
+}
+
+/// Delete the session's snapshot files (tab closed / snapshot scope reset).
 pub(crate) fn cleanup(workspace: &Path, session_id: &str) {
     if !workspace.as_os_str().is_empty()
         && let Err(e) = std::fs::remove_dir_all(snapshot_dir(workspace, session_id))
