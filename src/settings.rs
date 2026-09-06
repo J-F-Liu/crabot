@@ -75,6 +75,8 @@ pub struct Settings {
     pub dark_mode: bool,
     /// UI language.
     pub language: Lang,
+    /// Renderer backend (`ICED_BACKEND` value); `auto`/empty = wgpu → tiny-skia.
+    pub iced_backend: String,
     /// Whether the built-in ACP HTTP server is enabled.
     pub acp_server_enabled: bool,
     /// Loopback port for the ACP HTTP server.
@@ -116,6 +118,7 @@ impl Default for Settings {
             last_update_version: None,
             dark_mode: false,
             language: Lang::default(),
+            iced_backend: String::from("auto"),
             acp_server_enabled: false,
             acp_server_port: 8787,
         }

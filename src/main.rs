@@ -25,12 +25,30 @@ pub(crate) use app::{
 
 use crate::views::theme::MIN_W;
 
+/// Apply the stored backend choice to `ICED_BACKEND` before iced starts:
+/// auto/empty leaves it unset, anything else (trimmed) is set verbatim.
+fn apply_iced_backend(backend: &str) {
+    let value = backend.trim();
+    // SAFETY: single-threaded startup, before iced reads the var in `run()`.
+    if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+        unsafe { std::env::remove_var("ICED_BACKEND") };
+    } else {
+        unsafe { std::env::set_var("ICED_BACKEND", value) };
+    }
+}
+
 pub fn main() -> iced::Result {
     let _log_guard = setup::init_logging();
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "crabot starting");
+    let saved = crabot::settings::Settings::load();
+    // Iced reads `ICED_BACKEND` once in `run()`, so apply it beforehand.
+    apply_iced_backend(&saved.iced_backend);
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        iced_backend = %saved.iced_backend,
+        "crabot starting"
+    );
     setup::ensure_default_files();
     fonts::load_system_fonts();
-    let saved = crabot::settings::Settings::load();
     // Apply system-proxy settings before any HTTP client is built.
     tools::configure_proxy(
         saved.use_system_proxy_for_llm,

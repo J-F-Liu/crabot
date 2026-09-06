@@ -70,6 +70,8 @@ pub(crate) enum SettingsEvent {
     SetLanguage(Lang),
     /// Change the chat font scale, clamped to 0.5–2.0 (applied immediately).
     SetFontScale(f32),
+    /// Choose the renderer backend (`ICED_BACKEND` value); takes effect after a restart.
+    SetIcedBackend(String),
     Close,
     /// Events for the AI Models tab (providers, models, labels).
     Models(ai_models::ModelsEvent),
@@ -99,6 +101,8 @@ pub(crate) struct SettingsState {
     pub(crate) language: crabot::i18n::Lang,
     /// Chat font scale of the dialog; mirrors `app.settings.font_scale` while open.
     pub(crate) font_scale: f32,
+    /// Renderer backend of the dialog; mirrors `app.settings.iced_backend` while open.
+    pub(crate) iced_backend: String,
     // Provider editing
     pub(super) selected_provider_id: String,
     pub(super) provider_name: String,
@@ -202,6 +206,7 @@ impl Default for SettingsState {
             selected_tab: SettingsTab::UserInterface,
             language: crabot::i18n::Lang::default(),
             font_scale: 1.0,
+            iced_backend: String::from("auto"),
             selected_provider_id: String::new(),
             provider_name: String::new(),
             provider_base_url: String::new(),
@@ -426,6 +431,9 @@ impl SettingsState {
             }
             SettingsEvent::SetFontScale(v) => {
                 self.font_scale = crabot::settings::snap_font_scale(v);
+            }
+            SettingsEvent::SetIcedBackend(backend) => {
+                self.iced_backend = backend;
             }
             SettingsEvent::Close => {
                 // Drop any in-progress label editing / dragging.

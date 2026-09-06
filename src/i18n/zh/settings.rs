@@ -20,6 +20,8 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── User Interface page (user_interface.rs) ──
     ("User Interface", "用户界面"),
     ("Language", "语言"),
+    ("Renderer backend", "渲染器后端"),
+    ("Takes effect after a restart.", "重启后生效。"),
     ("Font scale", "字体缩放"),
     (
         "Chat text size; Ctrl + and Ctrl - also zoom.",
