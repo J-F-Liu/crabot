@@ -63,7 +63,9 @@ pub(crate) fn preamble_picker_view<'a>(
             .style(crate::views::primary_checkbox)
             .on_toggle(move |v| PromptEvent::ToggleEnabled(PREAMBLE, v))
             .width(Fill),
-        styled_pick_list(options, selected, PromptEvent::SelectPreamble).width(Fill),
+        styled_pick_list(options, selected, PromptEvent::SelectPreamble)
+            .padding([4, 8])
+            .width(Fill),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
@@ -83,17 +85,15 @@ pub(crate) fn skills_picker_view<'a>(
     } else if selected.len() <= 2 {
         selected.join(", ")
     } else {
-        // `{}` placeholders: first the joined names, then the extra count.
-        let mut summary = lang.tr("{} +{} more").to_string();
-        summary = summary.replacen("{}", &selected[..2].join(", "), 1);
-        summary.replacen("{}", &(selected.len() - 2).to_string(), 1)
+        // Truncate long selections: first two names, then an ellipsis.
+        selected[..2].join(", ") + "..."
     };
 
     let trigger = button(
         row![
-            text(summary).size(13).wrapping(Wrapping::None),
+            text(summary).wrapping(Wrapping::None),
             Space::new().width(Length::Fill),
-            text("▾").size(12),
+            text("▾").size(16),
         ]
         .align_y(Alignment::Center),
     )
@@ -213,7 +213,9 @@ pub(crate) fn workspace_field_view<'a>(
             .style(crate::views::primary_checkbox)
             .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
             .width(Fill),
-        styled_pick_list(options, selected, PromptEvent::SelectWorkspace).width(Fill),
+        styled_pick_list(options, selected, PromptEvent::SelectWorkspace)
+            .padding([4, 8])
+            .width(Fill),
     ]
     .spacing(4)
     .align_y(Alignment::Center)
