@@ -13,6 +13,7 @@ A pure-Rust native GUI coding agent using [iced](https://iced.rs) and [genai](ht
 Most coding agents today run inside a terminal as TUIs. Crabot is built on the belief that a carefully designed GUI is easier and more efficient to operate: switch the AI model, toggle the work mode, and turn tools on/off with one click, with dropdown menus for preamble, skills, workspaces, AGENTS.md, session list, and prompt recipes.
 
 <img src="doc/images/screenshot.webp" alt="screen shot" width="800">
+<img src="doc/images/screenshot-zh.webp" alt="screen shot" width="800">
 
 ## Highlights
 
