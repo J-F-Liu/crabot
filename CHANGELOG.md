@@ -1,3 +1,18 @@
+# Crabot v0.9.0
+
+- **Agent Client Protocol (ACP) support** — crabot can now act as an ACP agent. Enable the built-in ACP HTTP server from the right pane (loopback-only, default port 8787) so ACP clients such as Zed or VS Code ACP extensions can create sessions, send prompts, and stream assistant replies. Each ACP session maps to a foreground session tab, and message-id-tagged chunks keep different turns distinguishable.
+- **`crabot acp` stdio transport** — hosts can spawn crabot as a subprocess agent via the `crabot acp` command, speaking ACP over stdio with no HTTP server needed.
+- **Chinese UI** — the entire interface can now be switched to Chinese from the new **User Interface** tab in the settings dialog.
+- **User Interface settings tab** — a new settings page holds the language picker, a chat font-scale slider (Ctrl + / Ctrl − zoom too), and the iced renderer backend selector (auto → wgpu → tiny-skia).
+- **Rules renamed to Skills, multi-selectable** — the system-prompt "Rules" section is now "Skills", and any number of skill files can be selected; their contents are combined in order into the system prompt.
+- **System proxy routing** — LLM and tool HTTP requests can be routed through the system proxy, with independent toggles for LLM traffic and tool traffic.
+- **AI Models search box** — filter the long model list quickly by ID or name in the AI Models settings page.
+- **Relocation-proof sessions** — loading a session resolves the workspace from the session file's own `.agent/sessions` location, so sessions keep working after the project folder is moved or renamed.
+- **Fork while streaming** — a session can be forked from the header menu even while a reply is still streaming.
+- **Other fixes** — the user's thinking-level choice is preserved when switching provider or model; a pending user prompt can be sent while the agent is streaming its final message; tool results match the call_id of temp turns correctly; the Restart button works again on Linux; the `bash` tool rewrites host-style paths in builtin arguments to VFS form on Windows; `Tool - {name}` turn headers are now searchable; the snapshot scope resets at each new dialog; settings-dialog dropdowns are restyled; genai upgraded to 0.7.0-beta.22.
+
+**Full Changelog**: [`v0.8.4...v0.9.0`](https://github.com/J-F-Liu/crabot/compare/v0.8.4...v0.9.0)
+
 # Crabot v0.8.4
 
 - **Fresh workspace file tree at send time** — the workspace files tree offered to the model is rebuilt when a message is sent, instead of relying on a stale startup snapshot.

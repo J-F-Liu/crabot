@@ -1,6 +1,6 @@
 [package]
 name = "crabot"
-version = "0.8.4"
+version = "0.9.0"
 edition = "2024"
 description = "A smart and powerful coding agent with native GUI."
 license = "MIT"
@@ -17,7 +17,13 @@ rfd = "0.17"
 home = "0.5"
 genai = "=0.7.0-beta.22"
 futures = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+] }
 iced = { version = "0.14.0", features = [
     "advanced",
     "tokio",
