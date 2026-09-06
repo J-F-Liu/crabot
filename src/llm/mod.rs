@@ -120,7 +120,22 @@ pub async fn send_stream(
         stream_stall_timeout_secs,
     } = config;
 
-    let client = build_client(&model.base_url, &model.api_key, &model.api_type);
+    let client = match build_client(&model.base_url, &model.api_key, &model.api_type) {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::error!(
+                model = %model.model_id,
+                session = %session_id,
+                error = %error,
+                "failed to build LLM client"
+            );
+            on_event(SessionEvent::Error(format!(
+                "Failed to set up the LLM client: {error}"
+            )))
+            .await;
+            return;
+        }
+    };
 
     // Build chat request from genai history directly.
     // System prompt as a message with 1h cache TTL (rarely changes, large).
