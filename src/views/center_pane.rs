@@ -295,6 +295,7 @@ impl<'a> TurnView<'a> {
 
 /// Colored role badge in a turn header. Tool-name badges highlight `query`
 /// matches; plain role labels ("User"/"Assistant") pass an empty query.
+/// `badge_text` is caller-localized; `style_label` stays English (style key).
 fn role_badge(
     badge_text: &str,
     style_label: &'static str,
@@ -379,12 +380,9 @@ fn tool_turn_block<'a>(
             elements.push(Space::new().height(8).into());
         }
 
-        let badge = role_badge(
-            &format!("Tool - {name}"),
-            "Tool",
-            ctx.font_scale,
-            ctx.search_query,
-        );
+        // Localize the chrome only; `name` stays raw for search highlighting.
+        let badge_label = ctx.lang.tr("Tool - {name}").replacen("{name}", name, 1);
+        let badge = role_badge(&badge_label, "Tool", ctx.font_scale, ctx.search_query);
         let completed = result.is_some() && !streaming;
 
         let (status_icon, status_color) = match (result, streaming) {

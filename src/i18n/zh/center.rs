@@ -11,6 +11,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("User", "用户"),
     ("Assistant", "助手"),
     ("System", "系统"),
+    ("Tool - {name}", "工具 - {name}"),
     // ── session header menu & info (center_pane.rs) ──
     ("Copy title", "复制标题"),
     ("Resend session", "重新发送"),
@@ -68,6 +69,4 @@ pub static TABLE: &[(&str, &str)] = &[
         "Retry in {seconds} second{s} ({attempt}/{max})",
         "将在 {seconds} 秒后重试（{attempt}/{max}）",
     ),
-    // ── static HTML export chrome (views/export.rs) ──
-    ("Tool - {name}", "工具 - {name}"),
 ];

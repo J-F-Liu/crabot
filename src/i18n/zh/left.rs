@@ -11,6 +11,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Skills", "技能"),
     ("Tools", "工具"),
     ("Workspace", "工作区"),
+    ("Date", "日期"),
     ("None selected", "未选择"),
     ("{} +{} more", "{} 及另外 {} 个"),
     // ── user prompt area (user_prompt.rs) ──
