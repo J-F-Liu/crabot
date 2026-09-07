@@ -75,6 +75,10 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Models", "模型"),
     ("Loading models…", "正在加载模型…"),
     ("Fetch Models", "获取模型列表"),
+    ("Add Model", "添加模型"),
+    ("+ Add Model", "+ 添加模型"),
+    ("Model ID", "模型 ID"),
+    ("Model already exists", "该模型已存在"),
     (
         "No models match the search filter.",
         "没有与搜索条件匹配的模型。",

@@ -1,6 +1,7 @@
 use super::{
-    NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState, SettingsTab,
-    delete_button_style, field_row, form_card_style, label_col, section_header,
+    NEW_LABEL_INPUT_ID, NEW_MODEL_ID_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent,
+    SettingsState, SettingsTab, delete_button_style, field_row, form_card_style, label_col,
+    section_header,
 };
 use crate::views::styles::styled_pick_list;
 use crate::views::theme::{
@@ -8,7 +9,7 @@ use crate::views::theme::{
     color_text_strong,
 };
 use crabot::i18n::Lang;
-use crabot::model::{Model, currency_symbol};
+use crabot::model::{Cost, Model, currency_symbol};
 use crabot::model_database::ModelDatabase;
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
@@ -36,6 +37,14 @@ pub(crate) enum ModelsEvent {
     ModelsFetched(String, Result<Vec<String>, String>),
     /// Manually refresh the available-model list for the current provider.
     RefreshModels,
+    /// Open the inline editor that adds a model by typing its ID (no fetch).
+    StartAddModel,
+    /// Raw text of the model ID being typed in the "Add Model" editor.
+    EditNewModelId(String),
+    /// Commit the typed ID as a checked model (Enter or the Add button).
+    AddModel,
+    /// Close the "Add Model" editor without adding.
+    CancelAddModel,
     /// Raw text of the model search box.
     EditModelSearch(String),
     /// Apply the search text as the model-list filter.
@@ -158,6 +167,12 @@ fn provider_models(state: &SettingsState) -> Option<&[Model]> {
         .map(|p| p.models.as_slice())
 }
 
+/// Whether the edited provider can accept models — a new provider must be
+/// named first. Gates checkboxes, the Add buttons, and Enter submit.
+fn provider_named(state: &SettingsState) -> bool {
+    !state.is_new_provider || !state.provider_name.trim().is_empty()
+}
+
 /// Rows visible in the 200px model list; longer lists show the search box.
 const MODEL_LIST_SCROLL_ROWS: usize = 8;
 
@@ -242,6 +257,95 @@ fn apply_model_param(state: &mut SettingsState, param: ModelParam) {
         if let Some(d) = state.model_edit.as_mut() {
             d.record(&param);
         }
+    }
+}
+
+/// The active offer of a DB model: the selected source, else the primary cost.
+fn active_offer<'a>(state: &SettingsState, model: &'a Model) -> &'a Cost {
+    state
+        .selected_offer_source
+        .as_deref()
+        .and_then(|src| model.offers.iter().find(|o| o.source == src))
+        .unwrap_or_else(|| model.offers.first().unwrap_or(&model.cost))
+}
+
+/// Build a model for an ID from the embedded DB, or a bare model named after it.
+fn model_for_id(state: &SettingsState, id: String) -> Model {
+    let Some(db) = state.model_db.get(&id) else {
+        return Model {
+            name: id.clone(),
+            id,
+            ..Default::default()
+        };
+    };
+    let mut model = db.clone();
+    model.id = id;
+    model.cost = active_offer(state, db).to_owned();
+    model
+}
+
+/// Outcome of [`add_checked_model`]: whether the model was added, and why not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddModelOutcome {
+    /// The model was pushed to the current provider's checked list.
+    Added,
+    /// A checked model with this ID already exists for the provider.
+    Duplicate,
+    /// The provider isn't in `working_models` (e.g. an unnamed new provider).
+    NoProvider,
+}
+
+/// Check a model ID for the current provider, flushing a new provider first.
+fn add_checked_model(state: &mut SettingsState, id: &str) -> AddModelOutcome {
+    if provider_models(state).is_some_and(|ms| ms.iter().any(|m| m.id == id)) {
+        return AddModelOutcome::Duplicate;
+    }
+    // Auto-flush a new provider so it exists in working_models.
+    if state.is_new_provider {
+        state.flush_current_provider();
+    }
+    let model = model_for_id(state, id.to_string());
+    let Some(provider) = state
+        .working_models
+        .providers
+        .get_mut(&state.selected_provider_id)
+    else {
+        return AddModelOutcome::NoProvider;
+    };
+    provider.models.push(model);
+    AddModelOutcome::Added
+}
+
+/// Seed the parameter editor for a checked model ID, if present.
+fn seed_model_edit(state: &mut SettingsState, id: &str) {
+    state.model_edit = provider_models(state)
+        .and_then(|ms| ms.iter().find(|m| m.id == id))
+        .map(ModelEditDraft::from_model);
+}
+
+/// Commit the typed ID from the "Add Model" editor as a checked model.
+fn add_manual_model(state: &mut SettingsState) {
+    let id = state.new_model_id.trim().to_string();
+    if id.is_empty() {
+        return;
+    }
+    // Mirror the Add button's `can_commit` guard: a new provider must be
+    // named first, or the flush below cannot create it.
+    if !provider_named(state) {
+        return;
+    }
+    match add_checked_model(state, &id) {
+        AddModelOutcome::Added => {
+            state.reset_model_add();
+            state.selected_model_id = Some(id.clone());
+            state.selected_offer_source = None;
+            seed_model_edit(state, &id);
+        }
+        AddModelOutcome::Duplicate => {
+            state.model_add_error = Some(state.language.tr("Model already exists").to_string());
+        }
+        // Unreachable behind the guard above; a defensive no-op.
+        AddModelOutcome::NoProvider => {}
     }
 }
 
@@ -600,6 +704,39 @@ fn checkbox_row<'a>(
     r.into()
 }
 
+/// Inline editor that adds a model by typing its ID; Enter or Add commits.
+fn manual_add_editor<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
+    // Committing needs an ID; a new provider also needs a name first.
+    let can_commit = !state.new_model_id.trim().is_empty() && provider_named(state);
+
+    let input = text_input(lang.tr("Model ID"), &state.new_model_id)
+        .id(NEW_MODEL_ID_INPUT_ID)
+        .font(iced::Font::MONOSPACE)
+        .size(12)
+        .padding([2, 6])
+        .width(Length::Fill)
+        .on_input(|v| SettingsEvent::Models(ModelsEvent::EditNewModelId(v)))
+        .on_submit_maybe(can_commit.then_some(SettingsEvent::Models(ModelsEvent::AddModel)));
+
+    let actions = row![
+        button(text(lang.tr("Add Model")).size(12))
+            .style(crate::views::styles::primary_button)
+            .on_press_maybe(can_commit.then_some(SettingsEvent::Models(ModelsEvent::AddModel))),
+        button(text(lang.tr("Cancel")).size(12))
+            .style(crate::views::styles::secondary_button)
+            .on_press(SettingsEvent::Models(ModelsEvent::CancelAddModel)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let mut col = column![input, actions].spacing(4).width(Length::Fill);
+    if let Some(err) = &state.model_add_error {
+        col = col.push(text(err).size(11).color(CRABOT_DANGER));
+    }
+    col.into()
+}
+
 /// Renders the models section with a table of checkboxes and model IDs.
 fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let lang = state.language;
@@ -623,18 +760,29 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
             .color(color_muted())
             .into()
     } else if all_ids.is_empty() {
-        let fetch = button(text(lang.tr("Fetch Models")).size(12))
-            .style(crate::views::styles::primary_button)
-            .on_press_maybe(
-                (!state.provider_base_url.trim().is_empty())
-                    .then_some(SettingsEvent::Models(ModelsEvent::RefreshModels)),
-            );
-        if let Some(err) = &state.models_fetch_error {
-            column![fetch, text(err).size(11).color(CRABOT_DANGER),]
-                .spacing(4)
-                .into()
+        if state.adding_model {
+            manual_add_editor(state)
         } else {
-            fetch.into()
+            let actions = row![
+                button(text(lang.tr("Fetch Models")).size(12))
+                    .style(crate::views::styles::primary_button)
+                    .on_press_maybe(
+                        (!state.provider_base_url.trim().is_empty())
+                            .then_some(SettingsEvent::Models(ModelsEvent::RefreshModels)),
+                    ),
+                button(text(lang.tr("Add Model")).size(12))
+                    .style(crate::views::styles::secondary_button)
+                    .on_press_maybe(
+                        provider_named(state)
+                            .then_some(SettingsEvent::Models(ModelsEvent::StartAddModel)),
+                    ),
+            ]
+            .spacing(8);
+            let mut content = column![actions].spacing(4);
+            if let Some(err) = &state.models_fetch_error {
+                content = content.push(text(err).size(11).color(CRABOT_DANGER));
+            }
+            content.into()
         }
     } else if display_ids.is_empty() {
         container(
@@ -654,8 +802,8 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                     provider_models(state).is_some_and(|ms| ms.iter().any(|m| m.id == id));
                 let is_selected = state.selected_model_id.as_deref() == Some(id);
 
-                // Disable checkbox when the new provider hasn't been named yet.
-                let can_toggle = !(state.is_new_provider && state.provider_name.trim().is_empty());
+                // Disable checkbox until a new provider is named.
+                let can_toggle = provider_named(state);
                 let mut cb = checkbox(checked).style(crate::views::primary_checkbox);
                 if can_toggle {
                     cb = cb.on_toggle(move |v| {
@@ -693,10 +841,29 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
             })
             .collect();
 
+        // Footer below the list: opens the manual-ID editor (fetch-free add).
+        let add_footer = container(if state.adding_model {
+            manual_add_editor(state)
+        } else {
+            button(text(lang.tr("+ Add Model")).size(12))
+                .padding([2, 8])
+                .style(crate::views::styles::secondary_button)
+                .on_press_maybe(
+                    provider_named(state)
+                        .then_some(SettingsEvent::Models(ModelsEvent::StartAddModel)),
+                )
+                .into()
+        })
+        .padding(1);
+
         let table = container(
-            scrollable(column(model_rows).spacing(1))
-                .height(Length::Fixed(200.0))
-                .width(Length::FillPortion(1)),
+            column![
+                scrollable(column(model_rows).spacing(1))
+                    .height(Length::Fill)
+                    .width(Length::FillPortion(1)),
+                add_footer
+            ]
+            .spacing(2),
         )
         .padding(2)
         .style(|_: &iced::Theme| container::Style {
@@ -717,12 +884,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                     None => readonly_model_detail(model, lang),
                 }
             } else if let Some(details) = state.model_db.get(selected_id) {
-                // Pick the active offer: user-selected source, or first.
-                let active_cost = state
-                    .selected_offer_source
-                    .as_deref()
-                    .and_then(|src| details.offers.iter().find(|o| o.source == src))
-                    .unwrap_or_else(|| details.offers.first().unwrap_or(&details.cost));
+                let active_cost = active_offer(state, details);
 
                 let header = base_header(lang, &details.name, details.thinking, &[]);
 
@@ -1075,6 +1237,7 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             state.cached_model_ids.remove(&state.selected_provider_id);
             state.available_model_ids.clear();
             state.models_fetch_error = None;
+            state.reset_model_add();
             state.provider_base_url = v;
         }
         ModelsEvent::EditProviderApiType(v) => state.provider_api_type = v,
@@ -1086,7 +1249,19 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             state.available_model_ids.clear();
             state.models_fetch_error = None;
             state.fetching_models = true;
+            state.reset_model_add();
         }
+        ModelsEvent::StartAddModel => {
+            state.reset_model_add();
+            state.adding_model = true;
+        }
+        ModelsEvent::EditNewModelId(v) => {
+            state.new_model_id = v;
+            // Clear the error while the user retypes.
+            state.model_add_error = None;
+        }
+        ModelsEvent::AddModel => add_manual_model(state),
+        ModelsEvent::CancelAddModel => state.reset_model_add(),
         ModelsEvent::EditModelSearch(v) => {
             state.model_search = v;
             // Clearing the box drops the applied filter immediately so the
@@ -1110,6 +1285,8 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
                     // Only update display if we're still looking at this provider.
                     if provider_id == state.selected_provider_id {
                         state.available_model_ids = ids;
+                        // A fetched list replaces the manual-add editor.
+                        state.reset_model_add();
                     }
                 }
                 Err(e) => {
@@ -1120,50 +1297,23 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             }
         }
         ModelsEvent::ToggleModel(id, checked) => {
-            // Auto-flush new provider so it exists in working_models.
-            if state.is_new_provider {
-                state.flush_current_provider();
-            }
-            if let Some(provider) = state
-                .working_models
-                .providers
-                .get_mut(&state.selected_provider_id)
-            {
-                if checked {
-                    if !provider.models.iter().any(|m| m.id == id) {
-                        let model = if let Some(db_model) = state.model_db.get(&id) {
-                            let cost = state
-                                .selected_offer_source
-                                .as_deref()
-                                .and_then(|src| db_model.offers.iter().find(|o| o.source == src))
-                                .cloned()
-                                .unwrap_or_else(|| db_model.cost.clone());
-                            Model {
-                                id,
-                                name: db_model.name.clone(),
-                                thinking: db_model.thinking,
-                                thinking_levels: db_model.thinking_levels.clone(),
-                                input: db_model.input.clone(),
-                                context_window: db_model.context_window,
-                                max_tokens: db_model.max_tokens,
-                                cost,
-                                offers: db_model.offers.clone(),
-                            }
-                        } else {
-                            let name = id.clone();
-                            Model {
-                                id,
-                                name,
-                                ..Default::default()
-                            }
-                        };
-                        // Seed the editor if this model is being viewed.
-                        if state.selected_model_id.as_deref() == Some(&model.id) {
-                            state.model_edit = Some(ModelEditDraft::from_model(&model));
-                        }
-                        provider.models.push(model);
-                    }
-                } else {
+            if checked {
+                // add_checked_model auto-flushes a new provider.
+                if add_checked_model(state, &id) == AddModelOutcome::Added
+                    && state.selected_model_id.as_deref() == Some(id.as_str())
+                {
+                    seed_model_edit(state, &id);
+                }
+            } else {
+                // Auto-flush new provider so it exists in working_models.
+                if state.is_new_provider {
+                    state.flush_current_provider();
+                }
+                if let Some(provider) = state
+                    .working_models
+                    .providers
+                    .get_mut(&state.selected_provider_id)
+                {
                     provider.models.retain(|m| m.id != id);
                     if state.selected_model_id.as_deref() == Some(&id) {
                         state.selected_model_id = None;
@@ -1180,10 +1330,7 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             } else {
                 state.selected_model_id = Some(id.clone());
                 state.selected_offer_source = None;
-                // Seed the parameter editor when the clicked model is checked.
-                state.model_edit = provider_models(state)
-                    .and_then(|models| models.iter().find(|m| m.id == id))
-                    .map(ModelEditDraft::from_model);
+                seed_model_edit(state, &id);
             }
         }
         ModelsEvent::EditModelParam(param) => apply_model_param(state, param),

@@ -35,6 +35,8 @@ pub mod user_interface;
 pub(crate) const NEW_LABEL_INPUT_ID: &str = "settings-new-label-input";
 /// Widget id of the new-provider name input — used to focus it.
 pub(crate) const NEW_PROVIDER_NAME_INPUT_ID: &str = "settings-new-provider-name-input";
+/// Widget id of the manual model-ID input — used to focus it when opened.
+pub(crate) const NEW_MODEL_ID_INPUT_ID: &str = "settings-new-model-id-input";
 
 /// Bold font for headings.
 pub(super) const BOLD: iced::Font = iced::Font {
@@ -120,6 +122,12 @@ pub(crate) struct SettingsState {
     pub(super) model_search: String,
     /// Applied model-list filter; empty shows all.
     pub(super) model_filter: String,
+    /// Whether the inline "Add Model" editor is open.
+    pub(super) adding_model: bool,
+    /// Model ID draft typed in the "Add Model" editor.
+    pub(super) new_model_id: String,
+    /// Error shown by the "Add Model" editor (e.g. duplicate ID).
+    pub(super) model_add_error: Option<String>,
     /// Cache of fetched model IDs keyed by provider ID — avoids re-fetching on switch.
     cached_model_ids: HashMap<String, Vec<String>>,
     /// Which model ID is currently selected for detail display.
@@ -220,6 +228,9 @@ impl Default for SettingsState {
             models_fetch_error: None,
             model_search: String::new(),
             model_filter: String::new(),
+            adding_model: false,
+            new_model_id: String::new(),
+            model_add_error: None,
             cached_model_ids: HashMap::new(),
             selected_model_id: None,
             model_edit: None,
@@ -275,6 +286,7 @@ impl SettingsState {
         self.model_edit = None;
         self.model_search.clear();
         self.model_filter.clear();
+        self.reset_model_add();
         // Use cached model IDs if available, otherwise trigger a fetch.
         if let Some(cached) = self.cached_model_ids.get(&self.selected_provider_id) {
             self.available_model_ids = cached.clone();
@@ -298,6 +310,14 @@ impl SettingsState {
         self.is_new_provider = true;
         self.model_search.clear();
         self.model_filter.clear();
+        self.reset_model_add();
+    }
+
+    /// Close the inline "Add Model" editor and drop its draft.
+    pub(super) fn reset_model_add(&mut self) {
+        self.adding_model = false;
+        self.new_model_id.clear();
+        self.model_add_error = None;
     }
 
     /// Load custom tools into the dialog's working copy (on dialog open).

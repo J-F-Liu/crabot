@@ -16,7 +16,10 @@ use crate::views::settings::{
     tool_playground::PlaygroundEvent,
 };
 use crate::views::update;
-use crate::views::{NEW_LABEL_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent, SettingsState};
+use crate::views::{
+    NEW_LABEL_INPUT_ID, NEW_MODEL_ID_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent,
+    SettingsState,
+};
 
 /// Open the settings dialog, loading working copies of all state.
 pub(crate) fn open_settings(app: &mut App) -> Task<Message> {
@@ -216,16 +219,16 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             }
         }
         _ => {
-            let focus_new_label =
-                matches!(event, SettingsEvent::Models(ModelsEvent::StartAddLabel));
-            let focus_new_provider_name =
-                matches!(event, SettingsEvent::Models(ModelsEvent::NewProvider));
+            // Focus the input opened by these events, after the dialog updates.
+            let focus_id = match &event {
+                SettingsEvent::Models(ModelsEvent::StartAddLabel) => Some(NEW_LABEL_INPUT_ID),
+                SettingsEvent::Models(ModelsEvent::NewProvider) => Some(NEW_PROVIDER_NAME_INPUT_ID),
+                SettingsEvent::Models(ModelsEvent::StartAddModel) => Some(NEW_MODEL_ID_INPUT_ID),
+                _ => None,
+            };
             app.settings_dialog.update(event);
-            if focus_new_label {
-                return iced::widget::operation::focus(NEW_LABEL_INPUT_ID);
-            }
-            if focus_new_provider_name {
-                return iced::widget::operation::focus(NEW_PROVIDER_NAME_INPUT_ID);
+            if let Some(id) = focus_id {
+                return iced::widget::operation::focus(id);
             }
         }
     }
