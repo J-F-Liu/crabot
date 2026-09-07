@@ -135,6 +135,8 @@ pub(crate) fn left_pane<'a>(
                         enabled_tools,
                         &tool_registry.mcp,
                         enabled_mcp_servers,
+                        &tools.mcp_errors,
+                        &tools.mcp_pending,
                         lang,
                     )
                     .map(map_tool_list_event),

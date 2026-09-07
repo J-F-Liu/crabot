@@ -357,20 +357,15 @@ impl McpConnection {
 
 /// Drop the connection for `server_name`, killing its child process if any.
 pub fn drop_connection(server_name: &str) {
-    if let Ok(mut conns) = MCP_CONNECTIONS.lock() {
-        conns.remove(server_name);
-    }
+    crate::lock(&MCP_CONNECTIONS).remove(server_name);
 }
 
-/// Returns true if a live connection exists for `server_name`.
+/// Whether a live connection exists for `server_name`.
 pub fn has_connection(server_name: &str) -> bool {
-    MCP_CONNECTIONS
-        .lock()
-        .map(|conns| conns.contains_key(server_name))
-        .unwrap_or(false)
+    crate::lock(&MCP_CONNECTIONS).contains_key(server_name)
 }
 
-/// Helper to build a `ClientInfo` for the MCP handshake.
+/// Build a `ClientInfo` for the MCP handshake.
 fn make_client_info() -> ClientInfo {
     ClientInfo::new(
         ClientCapabilities::default(),
@@ -378,9 +373,51 @@ fn make_client_info() -> ClientInfo {
     )
 }
 
+/// Why discovery failed; shown in the UI instead of raw error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoverFailure {
+    /// Empty, unparsable, or missing command.
+    BadCommand,
+    /// Server process could not be spawned.
+    Spawn,
+    /// Transport connect or handshake failed.
+    Connect,
+    /// `tools/list` request failed.
+    List,
+    /// Server advertised no tools.
+    Empty,
+    /// Connect or listing timed out.
+    Timeout,
+}
+
+/// Discovery outcome: tools on success, failure category otherwise.
+pub type DiscoverResult = Result<Vec<McpTool>, DiscoverFailure>;
+
+/// Failed connect attempt: `(UI category, log detail)`.
+type ConnectError = (DiscoverFailure, String);
+
+impl DiscoverFailure {
+    fn with(self, detail: impl Into<String>) -> ConnectError {
+        (self, detail.into())
+    }
+}
+
+/// Wrap a live service as a retained connection.
+fn connection(
+    server: &McpServer,
+    service: RunningService<RoleClient, ClientInfo>,
+) -> McpConnection {
+    McpConnection {
+        peer: service.peer().clone(),
+        _service: service,
+        server_name: server.name.clone(),
+        qualify: server.qualify_tool_names,
+    }
+}
+
 impl McpServer {
-    /// Connect to this MCP server and return a `McpConnection`.
-    pub async fn connect(&self) -> Result<McpConnection, String> {
+    /// Categorized connect attempt.
+    async fn connect(&self) -> Result<McpConnection, ConnectError> {
         match &self.transport {
             McpTransport::Stdio { cmd, env_vars } => connect_stdio(self, cmd, env_vars).await,
             McpTransport::Http { url, headers } => connect_http(self, url, headers).await,
@@ -392,138 +429,114 @@ async fn connect_stdio(
     server: &McpServer,
     command: &str,
     env_vars: &IndexMap<String, String>,
-) -> Result<McpConnection, String> {
-    let parts =
-        split(command).map_err(|e| format!("Failed to parse command '{}': {e}", command))?;
+) -> Result<McpConnection, ConnectError> {
+    use DiscoverFailure as F;
+    let parts = split(command)
+        .map_err(|e| F::BadCommand.with(format!("Failed to parse '{command}': {e}")))?;
     let (exe, args) = parts
         .split_first()
-        .ok_or_else(|| format!("Empty command for server '{}'", server.name))?;
-
-    // Resolve the executable via PATH so that bare names like `npx` work
-    // reliably across all platforms (especially Windows `.cmd` shims).
-    let mut cmd = rmcp::transport::which_command(exe).map_err(|e| {
-        format!(
-            "Command '{}' not found in PATH for server '{}': {e}",
-            exe, server.name
-        )
-    })?;
+        .ok_or_else(|| F::BadCommand.with("Empty command"))?;
+    // Resolve via PATH so bare names like `npx` work (esp. Windows `.cmd` shims).
+    let mut cmd = rmcp::transport::which_command(exe)
+        .map_err(|e| F::BadCommand.with(format!("Command '{exe}' not found: {e}")))?;
     cmd.args(args);
     for (k, v) in env_vars {
         cmd.env(k, v);
     }
-    // Prevent a visible console window from flashing on Windows.
     #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-    // Use the builder so we can force stderr to null.
-    // TokioChildProcess::new() defaults stderr to inherit(), which would
-    // leak child process errors into the parent console.
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW: no console flash.
+    // Builder forces stderr to null; `::new()` would inherit into our console.
     let transport = TokioChildProcess::builder(cmd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map(|(proc, _stderr)| proc)
-        .map_err(|e| format!("Failed to spawn '{}': {e}", server.name))?;
-
+        .map(|(proc, _)| proc)
+        .map_err(|e| F::Spawn.with(format!("Spawn failed: {e}")))?;
     let service = make_client_info()
         .serve(transport)
         .await
-        .map_err(|e| format!("Failed to connect to '{}': {e}", server.name))?;
-
-    let peer = service.peer().clone();
-    Ok(McpConnection {
-        _service: service,
-        peer,
-        server_name: server.name.clone(),
-        qualify: server.qualify_tool_names,
-    })
+        .map_err(|e| F::Connect.with(format!("Handshake failed: {e}")))?;
+    Ok(connection(server, service))
 }
 
 async fn connect_http(
     server: &McpServer,
     url: &str,
     headers: &IndexMap<String, String>,
-) -> Result<McpConnection, String> {
+) -> Result<McpConnection, ConnectError> {
     use http::{HeaderName, HeaderValue};
-
-    let custom_headers: HashMap<HeaderName, HeaderValue> = headers
-        .iter()
-        .filter_map(|(k, v)| {
-            let name = HeaderName::from_bytes(k.as_bytes()).ok()?;
-            let value = HeaderValue::from_str(v).ok()?;
-            Some((name, value))
-        })
-        .collect();
-
+    let mut custom_headers: HashMap<HeaderName, HeaderValue> =
+        HashMap::with_capacity(headers.len());
+    for (k, v) in headers {
+        let name = match HeaderName::from_bytes(k.as_bytes()) {
+            Ok(name) => name,
+            Err(e) => {
+                tracing::warn!(server = %server.name, header = %k, "dropping invalid MCP header name: {e}");
+                continue;
+            }
+        };
+        let value = match HeaderValue::from_str(v) {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::warn!(server = %server.name, header = %k, "dropping invalid MCP header value: {e}");
+                continue;
+            }
+        };
+        custom_headers.insert(name, value);
+    }
     let config =
         rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig::with_uri(url)
             .custom_headers(custom_headers);
-
     let transport = StreamableHttpClientTransport::from_config(config);
-
     let service = make_client_info()
         .serve(transport)
         .await
-        .map_err(|e| format!("Failed to connect to '{}': {e}", server.name))?;
-
-    let peer = service.peer().clone();
-    Ok(McpConnection {
-        _service: service,
-        peer,
-        server_name: server.name.clone(),
-        qualify: server.qualify_tool_names,
-    })
+        .map_err(|e| DiscoverFailure::Connect.with(format!("Handshake failed: {e}")))?;
+    Ok(connection(server, service))
 }
 
-/// Connect to a single MCP server, discover its tools, and return
-/// `McpTool` wrappers grouped under the server name.
-pub async fn discover_mcp_server(server: McpServer) -> (String, Vec<McpTool>) {
-    let server_name = server.name.clone();
-    let qualify = server.qualify_tool_names;
-    let connect_timeout = Duration::from_millis(tool_limits().mcp_connect_timeout_ms);
-    let connect_secs = connect_timeout.as_secs();
-    let connect_result = tokio::time::timeout(connect_timeout, server.connect()).await;
-    let conn = match connect_result {
+/// Connect to one MCP server and discover its tools, reporting `(server_name, outcome)`.
+pub async fn discover_mcp_server(server: McpServer) -> (String, DiscoverResult) {
+    use DiscoverFailure as F;
+    let name = server.name.clone();
+    let timeout = Duration::from_millis(tool_limits().mcp_connect_timeout_ms);
+    let secs = timeout.as_secs();
+    let conn = match tokio::time::timeout(timeout, server.connect()).await {
         Ok(Ok(conn)) => conn,
-        Ok(Err(e)) => {
-            tracing::warn!("Failed to connect to MCP server '{server_name}': {e}");
-            return (server_name, vec![]);
+        Ok(Err((failure, detail))) => {
+            tracing::warn!("MCP '{name}' connect failed: {detail}");
+            return (name, Err(failure));
         }
         Err(_) => {
-            tracing::warn!(
-                "Timed out connecting to MCP server '{server_name}' after {connect_secs}s",
-            );
-            return (server_name, vec![]);
+            tracing::warn!("MCP '{name}' connect timed out after {secs}s");
+            return (name, Err(F::Timeout));
         }
     };
-
-    let list_result = tokio::time::timeout(connect_timeout, conn.list_tools()).await;
-    match list_result {
+    match tokio::time::timeout(timeout, conn.list_tools()).await {
+        Ok(Ok(tools)) if tools.is_empty() => {
+            tracing::warn!("MCP '{name}' advertised no tools");
+            (name, Err(F::Empty))
+        }
         Ok(Ok(tools)) => {
             let peer = conn.peer();
-            let mcp_tools: Vec<McpTool> = tools
+            let qualify = server.qualify_tool_names;
+            let discovered = tools
                 .into_iter()
-                .map(|remote_tool| McpTool::new(&server_name, qualify, remote_tool, peer.clone()))
-                .collect();
-            tracing::debug!(server = %server_name, tools = mcp_tools.len(), "MCP tools discovered");
-            // Keep the connection alive for the lifetime of the tools.
-            // HashMap::insert drops any previous connection for this server,
-            // killing its child process via RunningService's Drop.
-            if let Ok(mut conns) = MCP_CONNECTIONS.lock() {
-                conns.insert(server_name.clone(), conn);
-            }
-            (server_name, mcp_tools)
+                .map(|t| McpTool::new(&name, qualify, t, peer.clone()))
+                .collect::<Vec<_>>();
+            tracing::debug!(server = %name, tools = discovered.len(), "MCP tools discovered");
+            // Retain the connection; insert drops the old one (killing its child via Drop).
+            crate::lock(&MCP_CONNECTIONS).insert(name.clone(), conn);
+            (name, Ok(discovered))
         }
         Ok(Err(e)) => {
-            tracing::warn!("Failed to list tools from MCP server '{server_name}': {e}");
-            (server_name, vec![])
+            tracing::warn!("MCP '{name}' tools/list failed: {e}");
+            (name, Err(F::List))
         }
         Err(_) => {
-            tracing::warn!(
-                "Timed out listing tools from MCP server '{server_name}' after {connect_secs}s",
-            );
-            (server_name, vec![])
+            tracing::warn!("MCP '{name}' tools/list timed out after {secs}s");
+            (name, Err(F::Timeout))
         }
     }
 }

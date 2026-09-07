@@ -197,10 +197,50 @@ pub(crate) struct ToolState {
     pub(crate) tool_registry: tools::ToolRegistry,
     pub(crate) enabled_tools: HashSet<String>,
     pub(crate) enabled_mcp_servers: HashSet<String>,
+    /// Latest failure per MCP server, shown next to its name in the left pane.
+    pub(crate) mcp_errors: HashMap<String, tools::mcp::DiscoverFailure>,
+    /// Servers with an in-flight discovery; shown as "Reconnect..." while retrying.
+    pub(crate) mcp_pending: HashSet<String>,
+    /// Per-server discovery counter; results tagged with an older epoch are stale.
+    pub(crate) mcp_discovery_epoch: HashMap<String, u64>,
     pub(crate) tool_list_state: ToolListState,
 }
 
 impl ToolState {
+    /// Bump the discovery epoch for `server`, returning it for the spawned task.
+    pub(crate) fn next_epoch(&mut self, server: &str) -> u64 {
+        let epoch = self
+            .mcp_discovery_epoch
+            .entry(server.to_string())
+            .or_insert(0);
+        *epoch += 1;
+        *epoch
+    }
+
+    /// Drop a server's discovery state (connection, error, pending, tools) and
+    /// bump its epoch so in-flight discoveries for the old config are stale.
+    pub(crate) fn drop_mcp_server(&mut self, server: &str) {
+        tools::mcp::drop_connection(server);
+        self.enabled_mcp_servers.remove(server);
+        self.mcp_errors.remove(server);
+        self.mcp_pending.remove(server);
+        self.next_epoch(server);
+        for name in self.tool_registry.unregister_mcp_group(server) {
+            self.enabled_tools.remove(&name);
+        }
+    }
+
+    /// Build a discovery task tagged with `epoch` (boot tasks use epoch 0).
+    pub(crate) fn discover_task(server: tools::mcp::McpServer, epoch: u64) -> Task<Message> {
+        Task::perform(
+            async move { tools::mcp::discover_mcp_server(server).await },
+            // Boot tasks carry epoch 0; retries bump it and supersede them.
+            move |(name, result)| {
+                Message::Tools(ToolEvent::McpToolsDiscovered((name, epoch, result)))
+            },
+        )
+    }
+
     /// Generate an XML-formatted summary of enabled tools.
     pub(crate) fn summary(&self) -> String {
         let all_tools = self
@@ -483,7 +523,7 @@ pub(crate) enum PromptEvent {
 pub(crate) enum ToolEvent {
     ToggleMcpServer(String, bool),
     ToggleAgentTool(String, bool),
-    McpToolsDiscovered((String, Vec<crabot::tools::mcp::McpTool>)),
+    McpToolsDiscovered((String, u64, crabot::tools::mcp::DiscoverResult)),
 }
 
 /// Events from the conversation, session management, and streaming.
@@ -686,6 +726,9 @@ impl App {
             tool_registry,
             enabled_tools,
             enabled_mcp_servers: enabled_mcp_servers.clone(),
+            mcp_errors: HashMap::new(),
+            mcp_pending: HashSet::new(),
+            mcp_discovery_epoch: HashMap::new(),
             tool_list_state: ToolListState::default(),
         };
         let tools_summary = tools.summary();
@@ -791,12 +834,7 @@ impl App {
         let discover_task = mcp_list
             .servers
             .into_iter()
-            .map(|s| {
-                Task::perform(
-                    async move { tools::mcp::discover_mcp_server(s).await },
-                    |result| Message::Tools(ToolEvent::McpToolsDiscovered(result)),
-                )
-            })
+            .map(|s| ToolState::discover_task(s, 0))
             .fold(Task::none(), Task::chain);
         // Skip the network check when auto-check is disabled or a cached update is already available.
         let update_task =

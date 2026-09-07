@@ -133,8 +133,7 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             // Persist MCP servers and sync the tool registry.
             app.settings_dialog.working_mcp.save();
             app.tools.tool_registry.mcp_servers = app.settings_dialog.working_mcp.servers.clone();
-            // Drop live connections whose server was removed or whose
-            // connection-affecting config changed.
+            // Drop servers that were removed or reconfigured.
             for old in &old_servers {
                 let stale = match app
                     .tools
@@ -150,12 +149,7 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
                     None => true,
                 };
                 if stale {
-                    tools::mcp::drop_connection(&old.name);
-                    app.tools.enabled_mcp_servers.remove(&old.name);
-                    let stale_names = app.tools.tool_registry.unregister_mcp_group(&old.name);
-                    for name in &stale_names {
-                        app.tools.enabled_tools.remove(name);
-                    }
+                    app.tools.drop_mcp_server(&old.name);
                 }
             }
             app.refresh_tools_summary();

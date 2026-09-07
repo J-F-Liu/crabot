@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use iced::{
     Alignment, Element, Length, padding,
     widget::{Space, checkbox, column, container, mouse_area, row, text, text::Wrapping},
 };
 
-use crate::tools::mcp::McpTool;
+use crate::tools::mcp::{DiscoverFailure, McpTool};
 
 pub const BUILTIN_TOOLS: &str = "Builtin Tools";
 pub const CUSTOM_TOOLS: &str = "Custom Tools";
@@ -127,72 +127,116 @@ pub(crate) fn tools_view<'a>(
     selected: &'a HashSet<String>,
     names: &'a [String],
 ) -> Element<'a, ToolListEvent> {
-    // Build actual iced columns: each column naturally sizes to its widest
-    // checkbox, giving pixel-perfect alignment without width estimation.
-    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let cols: Vec<Element<'a, ToolListEvent>> = distribute_into_columns(&name_refs)
-        .into_iter()
-        .map(|names| {
-            let checkboxes: Vec<Element<'a, ToolListEvent>> = names
-                .into_iter()
-                .map(|name| checkbox_cell(name, None, selected, true))
-                .collect();
-            column(checkboxes).spacing(4).into()
-        })
-        .collect();
-
-    checkbox_grid(cols)
+    // Each column sizes to its widest checkbox, no width estimation needed.
+    checkbox_grid_by(names.iter().map(String::as_str).collect(), |name| {
+        checkbox_cell(name, None, selected, true)
+    })
 }
 
-/// A labelled section for MCP tools, with server sub-groups nested under a
-/// single collapsible "MCP Tools" header.
+/// Collapsible "MCP Tools" section; failed servers show the reason and
+/// retry by re-checking their box (label switches to "Reconnect..." meanwhile).
 pub(crate) fn mcp_tools_section<'a>(
     expanded: bool,
     selected: &'a HashSet<String>,
     groups: &'a [(String, Vec<McpTool>)],
     enabled_mcp_servers: &'a HashSet<String>,
+    errors: &'a HashMap<String, DiscoverFailure>,
+    pending: &'a HashSet<String>,
     lang: crabot::i18n::Lang,
 ) -> Element<'a, ToolListEvent> {
-    if groups.is_empty() {
-        return column![].into();
-    }
-
     let header = section_header(MCP_TOOLS, expanded, lang);
-    if expanded {
-        let group_cols: Vec<Element<'a, ToolListEvent>> = groups
-            .iter()
-            .map(|(server, tools)| {
-                let enabled = enabled_mcp_servers.contains(server);
-                mcp_server_group_view(server, enabled, selected, tools)
-            })
-            .collect();
-        column![
-            header,
-            column(group_cols).spacing(4).padding(padding::left(4))
-        ]
+    if !expanded || (groups.is_empty() && errors.is_empty()) {
+        return column![header].into();
+    }
+    let mut rows: Vec<Element<'a, ToolListEvent>> = groups
+        .iter()
+        .map(|(server, tools)| {
+            mcp_server_group_view(
+                server,
+                Some(tools.as_slice()),
+                errors.get(server).copied(),
+                pending.contains(server),
+                enabled_mcp_servers.contains(server),
+                selected,
+                lang,
+            )
+        })
+        .collect();
+    // Error-only servers have no group yet (e.g. failed at boot).
+    let mut missing: Vec<&str> = errors
+        .keys()
+        .filter(|name| !groups.iter().any(|(g, _)| g == *name))
+        .map(String::as_str)
+        .collect();
+    missing.sort_unstable();
+    rows.extend(missing.into_iter().map(|server| {
+        mcp_server_group_view(
+            server,
+            None,
+            errors.get(server).copied(),
+            pending.contains(server),
+            enabled_mcp_servers.contains(server),
+            selected,
+            lang,
+        )
+    }));
+    column![header, column(rows).spacing(4).padding(padding::left(4))]
         .spacing(4)
         .into()
+}
+
+/// One MCP server row: checkbox (annotated on failure) plus its tools, if any.
+/// A failed error-only server stays checked while its retry is in flight.
+fn mcp_server_group_view<'a>(
+    server: &'a str,
+    tools: Option<&'a [McpTool]>,
+    error: Option<DiscoverFailure>,
+    pending: bool,
+    enabled: bool,
+    selected: &'a HashSet<String>,
+    lang: crabot::i18n::Lang,
+) -> Element<'a, ToolListEvent> {
+    let label = if pending {
+        format!("{server} ({})", lang.tr("Reconnect..."))
     } else {
-        column![header].into()
+        match error {
+            Some(failure) => format!("{server} ({})", failure_label(failure, lang)),
+            None => server.to_string(),
+        }
+    };
+    let server_cb = server_checkbox(server, label, enabled);
+    match tools {
+        Some(tools) => column![server_cb, mcp_tools_view(selected, tools, enabled)]
+            .spacing(2)
+            .into(),
+        None => server_cb.into(),
     }
 }
 
-fn mcp_server_group_view<'a>(
-    server: &'a str,
+/// Server checkbox toggling an MCP server on/off.
+fn server_checkbox(
+    server: &str,
+    label: String,
     enabled: bool,
-    selected: &'a HashSet<String>,
-    tools: &'a [McpTool],
-) -> Element<'a, ToolListEvent> {
-    if tools.is_empty() {
-        return column![].into();
-    }
-    let server_cb = checkbox(enabled)
-        .label(server)
+) -> iced::widget::Checkbox<'_, ToolListEvent> {
+    checkbox(enabled)
+        .label(label)
         .style(crate::views::primary_checkbox)
         .text_wrapping(Wrapping::None)
-        .on_toggle(move |v| ToolListEvent::ToggleMcpServer(server.to_string(), v));
-    let checkboxes = mcp_tools_view(selected, tools, enabled);
-    column![server_cb, checkboxes].spacing(2).into()
+        .on_toggle(move |v| ToolListEvent::ToggleMcpServer(server.to_string(), v))
+}
+
+/// Short, translated label for a discovery failure category.
+fn failure_label(failure: DiscoverFailure, lang: crabot::i18n::Lang) -> &'static str {
+    let key = match failure {
+        DiscoverFailure::BadCommand => "command not found",
+        DiscoverFailure::Spawn => "failed to launch",
+        DiscoverFailure::Connect => "connection failed",
+        DiscoverFailure::List => "tool listing failed",
+        DiscoverFailure::Empty => "no tools",
+        DiscoverFailure::Timeout => "timed out",
+    };
+    lang.tr(key)
 }
 
 fn mcp_tools_view<'a>(
@@ -200,19 +244,26 @@ fn mcp_tools_view<'a>(
     tools: &'a [McpTool],
     enabled: bool,
 ) -> Element<'a, ToolListEvent> {
-    let tool_refs: Vec<&McpTool> = tools.iter().collect();
-    let cols: Vec<Element<'a, ToolListEvent>> = distribute_into_columns(&tool_refs)
-        .into_iter()
-        .map(|tools| {
-            let checkboxes: Vec<Element<'a, ToolListEvent>> = tools
-                .into_iter()
-                .map(|tool| checkbox_cell(&tool.name, tool.title.as_deref(), selected, enabled))
-                .collect();
-            column(checkboxes).spacing(4).into()
-        })
-        .collect();
+    checkbox_grid_by(tools.iter().collect(), |tool| {
+        checkbox_cell(&tool.name, tool.title.as_deref(), selected, enabled)
+    })
+}
 
-    checkbox_grid(cols)
+/// Lay out cells in a 3-column grid.
+fn checkbox_grid_by<'a, T: Copy>(
+    items: Vec<T>,
+    mut cell: impl FnMut(T) -> Element<'a, ToolListEvent>,
+) -> Element<'a, ToolListEvent> {
+    checkbox_grid(
+        distribute_into_columns(&items)
+            .into_iter()
+            .map(|col| {
+                column(col.into_iter().map(&mut cell).collect::<Vec<_>>())
+                    .spacing(4)
+                    .into()
+            })
+            .collect(),
+    )
 }
 
 fn checkbox_cell<'a>(

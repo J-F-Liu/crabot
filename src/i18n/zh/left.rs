@@ -27,6 +27,13 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Level", "级别"),
     // ── tool sections (tool_list.rs) ──
     ("MCP Tools", "MCP 工具"),
+    ("Reconnect...", "重连中…"),
+    ("command not found", "找不到命令"),
+    ("failed to launch", "启动失败"),
+    ("connection failed", "连接失败"),
+    ("tool listing failed", "工具列表失败"),
+    ("no tools", "无工具"),
+    ("timed out", "超时"),
     // ── workspace picker pseudo-entry (system_prompt.rs) ──
     ("📁 Select new...", "📁 选择新文件…"),
 ];
