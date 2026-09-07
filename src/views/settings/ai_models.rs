@@ -34,7 +34,8 @@ pub(crate) enum ModelsEvent {
     NewProvider,
     DeleteProvider(String),
     CancelNewProvider,
-    ModelsFetched(String, Result<Vec<String>, String>),
+    /// Model-list fetch result; the `u64` generation discards stale responses.
+    ModelsFetched(String, u64, Result<Vec<String>, String>),
     /// Manually refresh the available-model list for the current provider.
     RefreshModels,
     /// Open the inline editor that adds a model by typing its ID (no fetch).
@@ -171,6 +172,23 @@ fn provider_models(state: &SettingsState) -> Option<&[Model]> {
 /// named first. Gates checkboxes, the Add buttons, and Enter submit.
 fn provider_named(state: &SettingsState) -> bool {
     !state.is_new_provider || !state.provider_name.trim().is_empty()
+}
+
+/// Whether the provider form has a base URL to fetch a model list from.
+fn can_fetch_models(state: &SettingsState) -> bool {
+    !state.provider_base_url.trim().is_empty()
+}
+
+/// Small secondary-styled button (Add / Refresh actions in the model list).
+fn small_button(
+    label: &'static str,
+    on_press: Option<SettingsEvent>,
+) -> Element<'static, SettingsEvent> {
+    button(text(label).size(12))
+        .padding([2, 8])
+        .style(crate::views::styles::secondary_button)
+        .on_press_maybe(on_press)
+        .into()
 }
 
 /// Rows visible in the 200px model list; longer lists show the search box.
@@ -423,10 +441,10 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             field_row(
                 lang.tr("Base URL"),
                 &state.provider_base_url,
-                lang.tr("Base URL of the provider, press Enter to fetch model list"),
+                lang.tr("Base URL of the provider"),
                 false,
                 None,
-                Some(SettingsEvent::Models(ModelsEvent::RefreshModels)),
+                None,
                 move |v| SettingsEvent::Models(ModelsEvent::EditProviderBaseUrl(v)),
             ),
             {
@@ -767,7 +785,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                 button(text(lang.tr("Fetch Models")).size(12))
                     .style(crate::views::styles::primary_button)
                     .on_press_maybe(
-                        (!state.provider_base_url.trim().is_empty())
+                        can_fetch_models(state)
                             .then_some(SettingsEvent::Models(ModelsEvent::RefreshModels)),
                     ),
                 button(text(lang.tr("Add Model")).size(12))
@@ -841,18 +859,24 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
             })
             .collect();
 
-        // Footer below the list: opens the manual-ID editor (fetch-free add).
+        // Footer: manual-ID editor while adding, else Add + Refresh buttons.
         let add_footer = container(if state.adding_model {
             manual_add_editor(state)
         } else {
-            button(text(lang.tr("+ Add Model")).size(12))
-                .padding([2, 8])
-                .style(crate::views::styles::secondary_button)
-                .on_press_maybe(
+            row![
+                small_button(
+                    lang.tr("+ Add Model"),
                     provider_named(state)
                         .then_some(SettingsEvent::Models(ModelsEvent::StartAddModel)),
-                )
-                .into()
+                ),
+                small_button(
+                    lang.tr("Refresh List"),
+                    can_fetch_models(state)
+                        .then_some(SettingsEvent::Models(ModelsEvent::RefreshModels)),
+                ),
+            ]
+            .spacing(8)
+            .into()
         })
         .padding(1);
 
@@ -1233,11 +1257,9 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
         }
         ModelsEvent::EditProviderName(v) => state.provider_name = v,
         ModelsEvent::EditProviderBaseUrl(v) => {
-            // Clear cached models — the URL changed, old list is stale.
-            state.cached_model_ids.remove(&state.selected_provider_id);
-            state.available_model_ids.clear();
-            state.models_fetch_error = None;
-            state.reset_model_add();
+            // URL changed: cached list and any in-flight fetch are stale.
+            state.invalidate_models_fetch();
+            state.clear_cached_models();
             state.provider_base_url = v;
         }
         ModelsEvent::EditProviderApiType(v) => state.provider_api_type = v,
@@ -1245,11 +1267,9 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
         ModelsEvent::EditProviderApiKey(v) => state.provider_api_key = v,
         ModelsEvent::ToggleProviderStrictMode(v) => state.provider_strict_mode = v,
         ModelsEvent::RefreshModels => {
-            state.cached_model_ids.remove(&state.selected_provider_id);
-            state.available_model_ids.clear();
-            state.models_fetch_error = None;
+            state.bump_models_fetch_generation();
+            state.clear_cached_models();
             state.fetching_models = true;
-            state.reset_model_add();
         }
         ModelsEvent::StartAddModel => {
             state.reset_model_add();
@@ -1273,7 +1293,11 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
         ModelsEvent::ApplyModelFilter => {
             state.model_filter = state.model_search.trim().to_lowercase();
         }
-        ModelsEvent::ModelsFetched(provider_id, result) => {
+        ModelsEvent::ModelsFetched(provider_id, generation, result) => {
+            // Stale: superseded by a newer refresh, URL edit, or provider switch.
+            if generation != state.models_fetch_generation {
+                return;
+            }
             state.fetching_models = false;
             match result {
                 Ok(ids) => {
@@ -1282,10 +1306,9 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
                             .cached_model_ids
                             .insert(provider_id.clone(), ids.clone());
                     }
-                    // Only update display if we're still looking at this provider.
+                    // Only update display if we're still on this provider.
                     if provider_id == state.selected_provider_id {
                         state.available_model_ids = ids;
-                        // A fetched list replaces the manual-add editor.
                         state.reset_model_add();
                     }
                 }
@@ -1346,6 +1369,8 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             state.available_model_ids.clear();
             state.selected_provider_id.clear();
             state.models_fetch_error = None;
+            // In-flight fetch belongs to the previous provider form.
+            state.invalidate_models_fetch();
         }
         ModelsEvent::CancelNewProvider => {
             state.is_new_provider = false;

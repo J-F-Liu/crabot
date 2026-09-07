@@ -116,6 +116,8 @@ pub(crate) struct SettingsState {
     pub(super) is_new_provider: bool,
     // Model fetching from /models endpoint
     pub(super) fetching_models: bool,
+    /// Generation of the current model fetch; mismatched results are stale.
+    pub(crate) models_fetch_generation: u64,
     pub(super) available_model_ids: Vec<String>,
     pub(super) models_fetch_error: Option<String>,
     /// Raw model-search text, applied as the filter on Enter.
@@ -224,6 +226,7 @@ impl Default for SettingsState {
             provider_strict_mode: false,
             is_new_provider: false,
             fetching_models: false,
+            models_fetch_generation: 0,
             available_model_ids: Vec::new(),
             models_fetch_error: None,
             model_search: String::new(),
@@ -287,16 +290,33 @@ impl SettingsState {
         self.model_search.clear();
         self.model_filter.clear();
         self.reset_model_add();
-        // Use cached model IDs if available, otherwise trigger a fetch.
-        if let Some(cached) = self.cached_model_ids.get(&self.selected_provider_id) {
-            self.available_model_ids = cached.clone();
-            self.fetching_models = false;
-            self.models_fetch_error = None;
-        } else {
-            self.available_model_ids.clear();
-            self.fetching_models = true;
-            self.models_fetch_error = None;
-        }
+        // Cache only, no auto-fetch; drop any in-flight fetch from the previous provider.
+        self.invalidate_models_fetch();
+        self.models_fetch_error = None;
+        self.available_model_ids = self
+            .cached_model_ids
+            .get(&self.selected_provider_id)
+            .cloned()
+            .unwrap_or_default();
+    }
+
+    /// Bump the fetch generation so pending results are dropped as stale.
+    fn bump_models_fetch_generation(&mut self) {
+        self.models_fetch_generation = self.models_fetch_generation.wrapping_add(1);
+    }
+
+    /// Cancel the current fetch: bump its generation and clear the loading flag.
+    fn invalidate_models_fetch(&mut self) {
+        self.bump_models_fetch_generation();
+        self.fetching_models = false;
+    }
+
+    /// Clear the cached model list and display state for the current provider.
+    fn clear_cached_models(&mut self) {
+        self.cached_model_ids.remove(&self.selected_provider_id);
+        self.available_model_ids.clear();
+        self.models_fetch_error = None;
+        self.reset_model_add();
     }
 
     /// Reset provider fields to defaults (for new provider).

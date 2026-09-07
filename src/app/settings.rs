@@ -291,14 +291,15 @@ fn maybe_fetch_models(state: &SettingsState) -> Option<Task<Message>> {
     }
     let api_key = state.provider_api_key().to_string();
     let provider_id = state.current_provider_id().to_string();
+    let generation = state.models_fetch_generation;
     Some(Task::perform(
         async move {
             let models = crabot::model::fetch_available_models(&base_url, &api_key).await;
-            (provider_id, models)
+            (provider_id, generation, models)
         },
-        |(provider_id, result)| {
+        |(provider_id, generation, result)| {
             Message::ModelSettings(ModelSettingsEvent::Settings(SettingsEvent::Models(
-                ModelsEvent::ModelsFetched(provider_id, result),
+                ModelsEvent::ModelsFetched(provider_id, generation, result),
             )))
         },
     ))
