@@ -656,7 +656,6 @@ pub(crate) fn center_pane<'a>(
     lang: Lang,
 ) -> Element<'a, CenterPaneEvent> {
     let tab: &SessionTab = conversation.viewing();
-    let title: &str = &tab.center_pane_title;
     let dialogs: &[Dialog] = tab.session.dialogs.as_slice();
     let expanded_turns: &HashSet<(usize, usize)> = &tab.expanded_turns;
     let expanded_dialogs: &HashSet<usize> = &tab.expanded_dialogs;
@@ -802,7 +801,7 @@ pub(crate) fn center_pane<'a>(
     mouse_area(
         container(column![
             super::session_tabs::session_tabs(conversation, lang),
-            session_header(title, conversation, lang),
+            session_header(tab.header_title(), conversation, lang),
             pending_header(pending_user_prompt),
             if search_state.visible {
                 super::search_bar::view(search_query, search_results, search_state.current, lang)
@@ -866,10 +865,9 @@ fn session_header<'a>(
     conversation: &'a ConversationState,
     lang: Lang,
 ) -> Element<'a, CenterPaneEvent> {
-    // The default "New session" heading is a fixed UI label; real session
-    // titles are content and pass through untranslated.
-    let title = if prompt == "New session" {
-        lang.tr("New session")
+    // Localize the untitled placeholder; real session titles pass through.
+    let title = if prompt == SessionTab::NEW_SESSION_TITLE {
+        lang.tr(SessionTab::NEW_SESSION_TITLE)
     } else {
         prompt
     };

@@ -34,6 +34,18 @@ fn close_header_menu(app: &mut App) {
     app.conversation.header_menu_open = false;
 }
 
+/// Localized header title for copy/export: the session title passes through
+/// untranslated, while the untitled placeholder is translated like the header.
+fn localized_header_title(app: &App) -> String {
+    let lang = app.settings.language;
+    let title = app.conversation.viewing().header_title();
+    if title == SessionTab::NEW_SESSION_TITLE {
+        lang.tr(SessionTab::NEW_SESSION_TITLE).to_string()
+    } else {
+        title.to_string()
+    }
+}
+
 /// Show an async message dialog (the sync `show()` would block the UI thread).
 /// The mapped message lands in the no-op `Cancelled` arm of `ExportSessionHtmlDone`.
 fn show_message_dialog(level: rfd::MessageLevel, title: &str, description: &str) -> Task<Message> {
@@ -74,7 +86,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         }
         ConversationEvent::CopySessionTitle => {
             close_header_menu(app);
-            return iced::clipboard::write(app.conversation.viewing().center_pane_title.clone());
+            return iced::clipboard::write(localized_header_title(app));
         }
         ConversationEvent::ResendSessionHistory => {
             close_header_menu(app);
@@ -264,7 +276,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
 fn export_session_html(app: &App) -> Task<Message> {
     let lang = app.settings.language;
     let tab = app.conversation.viewing();
-    let title = tab.center_pane_title.clone();
+    let title = localized_header_title(app);
     let file_name = export::default_export_filename(&title);
     let session = tab.session.clone();
     let expanded_dialogs = tab.expanded_dialogs.clone();
@@ -725,7 +737,6 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     // Prefer the tool-provided title for the tab heading when available.
     if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
         let tab = &mut app.conversation.session_tabs[tab_pos];
-        tab.center_pane_title = title.clone();
         tab.session.title = title;
     }
     workspace_task.chain(launch_task)
@@ -847,10 +858,10 @@ fn launch_dialog(
     system_prompt_override: Option<String>,
 ) -> Task<Message> {
     let tab = &mut app.conversation.session_tabs[tab_pos];
-    tab.center_pane_title = user_prompt.content.clone();
     let dialog_index = tab.session.dialogs.len();
     tab.expanded_dialogs.clear();
     tab.expanded_dialogs.insert(dialog_index);
+    // The session title (header) is set from this first dialog's derived title.
     tab.session.add_dialog(
         Session::derive_title(&user_prompt.content),
         user_prompt.mode,

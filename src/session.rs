@@ -222,7 +222,8 @@ impl Session {
 
     // ── Dialog / turn helpers ────────────────────────────────────────
 
-    /// Add a new empty dialog with the given title and optional work mode.
+    /// Add a new empty dialog with the given title and optional work mode;
+    /// the title becomes the session title when the session has none yet.
     pub fn add_dialog(&mut self, title: String, mode: Option<WorkMode>) {
         if self.title.is_empty() {
             self.title = title.clone();
@@ -316,11 +317,15 @@ impl Session {
         }
     }
 
-    /// Derive a short title from text content.
+    /// Derive a short title from text content: the first non-blank line,
+    /// truncated to 144 characters.
     pub fn derive_title(text: &str) -> String {
-        let trimmed = text.trim();
-        // Take up to the first newline, or first 144 chars.
-        let first_line = trimmed.lines().next().unwrap_or("");
+        // Skip whitespace-only lines so the title reflects real content.
+        let first_line = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("");
         if let Some((idx, _)) = first_line.char_indices().nth(144) {
             format!("{}…", &first_line[..idx])
         } else {

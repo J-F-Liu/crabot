@@ -24,8 +24,6 @@ pub(crate) struct SessionTab {
     pub(crate) session: Session,
     /// Per-tab streaming lifecycle.
     pub(crate) session_state: SessionState,
-    /// Heading displayed in the center-pane header.
-    pub(crate) center_pane_title: String,
     /// Token usage for the most recent request in this tab.
     pub(crate) latest_tokens: TokenAmount,
     /// Expanded (turn, sub-item) keys for tool-call details.
@@ -59,50 +57,19 @@ pub(crate) struct SessionTab {
 }
 
 impl SessionTab {
-    /// Create a fresh (unsaved, empty) tab with the given number.
-    pub(crate) fn new(number: usize, selected_model: String, selected_preamble: String) -> Self {
-        let session = Session::new();
-        Self {
-            number,
-            session,
-            session_state: SessionState::new(),
-            center_pane_title: "New session".into(),
-            latest_tokens: TokenAmount::default(),
-            expanded_turns: HashSet::new(),
-            expanded_dialogs: HashSet::new(),
-            selectable_msgs: HashSet::new(),
-            search: SearchState::default(),
-            todo_items: TodoList::default(),
-            scroll_offset: None,
-            selected_model,
-            selected_preamble,
-            end_status: None,
-            task_path: None,
-            task_call_id: None,
-            snapshot_files: HashSet::new(),
-            modified_files_error: None,
-        }
-    }
-
-    /// Build a tab from a previously-saved session loaded from disk.
-    pub(crate) fn from_session(
+    /// Shared body of [`Self::new`] and [`Self::from_session`].
+    fn from_parts(
         number: usize,
         session: Session,
         selected_model: String,
         selected_preamble: String,
+        latest_tokens: TokenAmount,
+        todo_items: TodoList,
     ) -> Self {
-        let latest_tokens = TokenAmount {
-            prompt: session.tokens.prompt,
-            output: session.tokens.output,
-            ..Default::default()
-        };
-        let title = session.title.clone();
-        let todo_items = todo::create_todo_list(session.last_todo_items());
         Self {
             number,
             session,
             session_state: SessionState::new(),
-            center_pane_title: title,
             latest_tokens,
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
@@ -120,9 +87,57 @@ impl SessionTab {
         }
     }
 
+    /// Create a fresh (unsaved, empty) tab with the given number.
+    pub(crate) fn new(number: usize, selected_model: String, selected_preamble: String) -> Self {
+        Self::from_parts(
+            number,
+            Session::new(),
+            selected_model,
+            selected_preamble,
+            TokenAmount::default(),
+            TodoList::default(),
+        )
+    }
+
+    /// Build a tab from a previously-saved session loaded from disk.
+    pub(crate) fn from_session(
+        number: usize,
+        session: Session,
+        selected_model: String,
+        selected_preamble: String,
+    ) -> Self {
+        let latest_tokens = TokenAmount {
+            prompt: session.tokens.prompt,
+            output: session.tokens.output,
+            ..Default::default()
+        };
+        let todo_items = todo::create_todo_list(session.last_todo_items());
+        Self::from_parts(
+            number,
+            session,
+            selected_model,
+            selected_preamble,
+            latest_tokens,
+            todo_items,
+        )
+    }
+
     /// Whether this tab has an active LLM stream.
     pub(crate) fn running(&self) -> bool {
         self.session_state.phase != DialogPhase::Idle
+    }
+
+    /// Untitled placeholder for [`Self::header_title`]; views localize it.
+    pub(crate) const NEW_SESSION_TITLE: &str = "New session";
+
+    /// Center-pane header title (also used by copy/export): the session title,
+    /// set once by the first dialog, or [`Self::NEW_SESSION_TITLE`] while untitled.
+    pub(crate) fn header_title(&self) -> &str {
+        if self.session.title.is_empty() {
+            Self::NEW_SESSION_TITLE
+        } else {
+            &self.session.title
+        }
     }
 
     /// "Session 1-2-3" for task subtasks, "Session N" for user-created tabs.
