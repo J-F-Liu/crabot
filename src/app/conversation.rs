@@ -7,7 +7,6 @@ use crabot::session::{Session, fix_history};
 use crabot::user::{UserPrompt, WorkMode};
 use futures::{SinkExt, future::FutureExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -561,7 +560,12 @@ fn navigate_session(app: &mut App, up: bool) -> Task<Message> {
     let is_picker_focused = app.layout.focused == Some(FocusedTarget::SessionPicker);
 
     if !is_picker_focused || viewing_is_streaming || list_empty {
-        return views::scroll_by(if up { -SCROLL_STEP } else { SCROLL_STEP }).discard();
+        let task = views::scroll_by(if up { -SCROLL_STEP } else { SCROLL_STEP });
+        return if up {
+            session_state::pause_and_scroll(app, task)
+        } else {
+            task.discard()
+        };
     }
 
     let current = app
@@ -1049,7 +1053,7 @@ pub(crate) fn start_dialog(
     let session_id = tab.session.id.clone();
     // Backfill placeholders from this stream's first turn.
     tab.session_state.backfill_from = tab.session.total_turns();
-    tab.session_state.auto_scroll.store(true, Ordering::Relaxed);
+    tab.session_state.set_auto_scroll(true);
 
     // Fresh ask-response / task-report channels and a fresh ask deadline for this stream.
     let (ask_tx, ask_rx) = tokio::sync::mpsc::unbounded_channel();

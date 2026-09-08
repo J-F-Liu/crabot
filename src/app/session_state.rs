@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -62,8 +61,13 @@ pub(crate) struct SessionState {
     /// Sender for task-tool reports, tagged with the originating call_id so
     /// parallel task calls can be correlated.
     pub(crate) task_sender: Option<mpsc::UnboundedSender<(String, Result<String, String>)>>,
-    /// Whether to auto-scroll the message view to the bottom during streaming.
-    pub(crate) auto_scroll: Arc<AtomicBool>,
+    /// Whether to auto-scroll the message view to the bottom during streaming (UI thread only).
+    pub(crate) auto_scroll: Cell<bool>,
+    /// Last notified `(offset_y, distance_from_bottom)` — baseline for detecting upward user scrolls.
+    pub(crate) last_scroll: Cell<Option<(f32, f32)>>,
+    /// Whether content overflows the viewport; scroll keys pause auto-scroll only then.
+    /// Sticky once set: iced sends no viewport notification while the content fits.
+    pub(crate) content_overflows: Cell<bool>,
     /// Timestamp of the last auto-scroll snap, throttled to avoid jitter.
     pub(crate) scroll_throttle: Cell<Instant>,
     /// Cooldown counter for renew hints — only inject every N ToolExecuting phases.
@@ -88,7 +92,9 @@ impl SessionState {
             ask_seconds_left: 0,
             ask_sender: None,
             task_sender: None,
-            auto_scroll: Arc::new(AtomicBool::new(true)),
+            auto_scroll: Cell::new(true),
+            last_scroll: Cell::new(None),
+            content_overflows: Cell::new(false),
             scroll_throttle: Cell::new(Instant::now()),
             renew_hint_cooldown: Cell::new(0),
             retry: None,
@@ -98,6 +104,18 @@ impl SessionState {
     /// Signal this session to stop streaming.
     pub(crate) fn stop(&self) {
         self.cancel_token.cancel();
+    }
+
+    /// Enable or pause auto-scroll for this session.
+    pub(crate) fn set_auto_scroll(&self, enabled: bool) {
+        self.auto_scroll.set(enabled);
+    }
+
+    /// Pause auto-scroll on a scroll-up intent; no-op when the view does not overflow.
+    pub(crate) fn pause_auto_scroll(&self) {
+        if self.content_overflows.get() {
+            self.set_auto_scroll(false);
+        }
     }
 
     /// Push the ask deadline back by `ASK_EXTEND_SECS` and refresh the
@@ -469,14 +487,46 @@ pub(crate) fn update(
     Task::none()
 }
 
-/// Handle session-view scroll tracking — while streaming, toggle auto-scroll
-/// based on whether the user has scrolled away from / back to the bottom.
+/// Track a session-view scroll: pause auto-scroll away from the bottom, resume at it.
 pub(crate) fn handle_scroll(state: &SessionState, viewport: Viewport) {
-    if state.phase != DialogPhase::Idle {
-        let y = viewport.relative_offset().y;
-        let at_bottom = if y.is_nan() { true } else { y >= 0.99 };
-        state.auto_scroll.store(at_bottom, Ordering::Relaxed);
+    let offset_y = viewport.absolute_offset().y;
+    let distance_y = viewport.absolute_offset_reversed().y;
+    state
+        .content_overflows
+        .set(viewport.content_bounds().height > viewport.bounds().height);
+    // Track while idle too, so the baseline is never stale at stream start.
+    let previous = state.last_scroll.replace(Some((offset_y, distance_y)));
+    if state.phase != DialogPhase::Idle
+        && let Some(auto_scroll) = auto_scroll_after(previous, offset_y, distance_y)
+    {
+        state.set_auto_scroll(auto_scroll);
     }
+}
+
+/// Pause auto-scroll on the viewing tab — the viewport notification arrives too
+/// late (next redraw) for a streaming chunk, so pause eagerly.
+pub(crate) fn pause_and_scroll(app: &mut App, task: Task<()>) -> Task<Message> {
+    app.conversation
+        .viewing_mut()
+        .session_state
+        .pause_auto_scroll();
+    task.discard()
+}
+
+/// Pixels from the bottom within which the view counts as at the end.
+/// Wide enough to resume auto-scroll near the bottom, narrow enough that a wheel notch pauses.
+const BOTTOM_EPSILON: f32 = 4.0;
+
+/// Next auto-scroll state from the viewport offsets, or `None` to keep the current one.
+fn auto_scroll_after(previous: Option<(f32, f32)>, offset_y: f32, distance_y: f32) -> Option<bool> {
+    // Pause only on a genuine upward move: content growth never lowers the offset.
+    if let Some((prev_offset, prev_distance)) = previous
+        && offset_y < prev_offset
+        && distance_y > prev_distance
+    {
+        return Some(false);
+    }
+    (distance_y <= BOTTOM_EPSILON).then_some(true)
 }
 
 // ── private helpers ───────────────────────────────────────────────
@@ -513,8 +563,8 @@ fn clear_pending_with_notice(state: &mut SessionState, session: &mut Session) {
 /// Minimum interval between auto-scroll snaps during streaming.
 const SCROLL_THROTTLE: Duration = Duration::from_millis(500);
 
-fn maybe_scroll_to_end(auto_scroll: &AtomicBool) -> Task<()> {
-    if auto_scroll.load(Ordering::Relaxed) {
+fn maybe_scroll_to_end(auto_scroll: &Cell<bool>) -> Task<()> {
+    if auto_scroll.get() {
         scroll_to_end()
     } else {
         Task::none()
@@ -522,8 +572,8 @@ fn maybe_scroll_to_end(auto_scroll: &AtomicBool) -> Task<()> {
 }
 
 /// Throttled variant for scroll to end, preventing jitter from rapid-fire updates.
-fn maybe_scroll_to_end_throttled(auto_scroll: &AtomicBool, last: &Cell<Instant>) -> Task<()> {
-    if !auto_scroll.load(Ordering::Relaxed) {
+fn maybe_scroll_to_end_throttled(auto_scroll: &Cell<bool>, last: &Cell<Instant>) -> Task<()> {
+    if !auto_scroll.get() {
         return Task::none();
     }
     let now = Instant::now();

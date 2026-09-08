@@ -37,12 +37,17 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
             return views::scroll_page_down(app.layout.scroll_viewport_height).discard();
         }
         LayoutEvent::ScrollPageUp => {
-            return views::scroll_page_up(app.layout.scroll_viewport_height).discard();
+            let height = app.layout.scroll_viewport_height;
+            return session_state::pause_and_scroll(app, views::scroll_page_up(height));
         }
         LayoutEvent::ScrollToHome => {
-            return views::scroll_to_start().discard();
+            return session_state::pause_and_scroll(app, views::scroll_to_start());
         }
         LayoutEvent::ScrollToEnd => {
+            app.conversation
+                .viewing_mut()
+                .session_state
+                .set_auto_scroll(true);
             return views::scroll_to_end().discard();
         }
         LayoutEvent::UndoRedo(message) => undo_redo(app, message),
