@@ -336,6 +336,28 @@ pub(super) fn highlighted_text_font<M: Clone + 'static>(
         .into()
 }
 
+/// Selectable text with inline search-keyword highlighting (plain when the query is empty).
+pub(super) fn highlighted_selectable<M: Clone + 'static>(
+    content: &str,
+    query: &str,
+    size: f32,
+    font: Font,
+    style: impl Fn(&Theme) -> SelectionStyle + 'static,
+) -> Element<'static, M> {
+    if query.trim().is_empty() {
+        return SelectableText::new(content.to_string())
+            .size(size)
+            .font(font)
+            .style(style)
+            .into();
+    }
+    iced_selection::rich_text(highlighted_spans(content, query))
+        .size(size)
+        .font(font)
+        .style(style)
+        .into()
+}
+
 /// Monospace font stack for paths and code snippets.
 fn mono_font() -> Font {
     Font {
@@ -373,15 +395,13 @@ fn diff_row<'a, M: Clone + 'static>(
                 .color(marker_color)
                 .font(bold_font()),
             Space::new().width(6),
-            if search_query.trim().is_empty() {
-                SelectableText::new(content)
-                    .size(12.0 * font_scale)
-                    .style(sel_style)
-                    .font(mono_font())
-                    .into()
-            } else {
-                highlighted_text(&content, search_query, 12.0 * font_scale)
-            },
+            highlighted_selectable(
+                &content,
+                search_query,
+                12.0 * font_scale,
+                mono_font(),
+                sel_style,
+            ),
         ]
         .spacing(0),
     )
@@ -411,15 +431,13 @@ pub(super) fn arg_row<'a, M: Clone + 'static>(
             .color(CRABOT_TOOL_ACCENT)
             .font(bold_font()),
         Space::new().width(8),
-        if search_query.trim().is_empty() {
-            SelectableText::new(value)
-                .size(12.0 * font_scale)
-                .style(sel_default)
-                .font(mono_font())
-                .into()
-        } else {
-            highlighted_text(&value, search_query, 12.0 * font_scale)
-        },
+        highlighted_selectable(
+            &value,
+            search_query,
+            12.0 * font_scale,
+            mono_font(),
+            sel_default
+        ),
     ]
     .spacing(0)
     .into()
@@ -516,15 +534,13 @@ fn todo_text_cell<M: Clone + 'static>(
     font_scale: f32,
     search_query: &str,
 ) -> Element<'static, M> {
-    if search_query.trim().is_empty() {
-        SelectableText::new(content)
-            .size(12.0 * font_scale)
-            .style(sel_default)
-            .font(mono_font())
-            .into()
-    } else {
-        highlighted_text(&content, search_query, 12.0 * font_scale)
-    }
+    highlighted_selectable(
+        &content,
+        search_query,
+        12.0 * font_scale,
+        mono_font(),
+        sel_default,
+    )
 }
 
 fn todo_row<M: Clone + 'static>(
@@ -665,15 +681,13 @@ pub(super) fn args_rows<'a, M: Clone + 'static>(
         let combined = format!("offset: {}  limit: {}", off, lim);
         rows.push(
             container(
-                row![if search_query.trim().is_empty() {
-                    SelectableText::new(combined)
-                        .size(12.0 * font_scale)
-                        .style(sel_secondary)
-                        .font(mono_font())
-                        .into()
-                } else {
-                    highlighted_text(&combined, search_query, 12.0 * font_scale)
-                },]
+                row![highlighted_selectable(
+                    &combined,
+                    search_query,
+                    12.0 * font_scale,
+                    mono_font(),
+                    sel_secondary,
+                ),]
                 .spacing(0),
             )
             .padding([4, 8])
@@ -809,18 +823,16 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
         CRABOT_DANGER
     };
 
-    let body: Element<'_, M> = if search_query.trim().is_empty() {
-        SelectableText::new(display)
-            .size(13.0 * font_scale)
-            .style(move |theme: &Theme| SelectionStyle {
-                color: Some(color_text(theme)),
-                selection: accent,
-            })
-            .font(mono_font())
-            .into()
-    } else {
-        highlighted_text(display, search_query, 13.0 * font_scale)
-    };
+    let body: Element<'_, M> = highlighted_selectable(
+        display,
+        search_query,
+        13.0 * font_scale,
+        mono_font(),
+        move |theme: &Theme| SelectionStyle {
+            color: Some(color_text(theme)),
+            selection: accent,
+        },
+    );
 
     container(
         column![

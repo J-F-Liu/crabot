@@ -38,8 +38,8 @@ use super::theme::{
     color_dialog_bg, color_muted, color_surface, color_text, color_text_strong, thin_vertical,
 };
 use super::tool_message::{
-    args_rows, ask_result_view, bold_font, highlighted_text, highlighted_text_font, path_arg_row,
-    result_text,
+    args_rows, ask_result_view, bold_font, highlighted_selectable, highlighted_text,
+    highlighted_text_font, path_arg_row, result_text,
 };
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
@@ -580,8 +580,14 @@ fn text_turn_block<'a>(
         if !ctx.expanded_turns.contains(&(i, 0)) {
             let reasoning_body: Element<'_, CenterPaneEvent> =
                 if !ctx.search_query.trim().is_empty() {
-                    // When searching, use highlighted plain text instead of markdown.
-                    highlighted_text(reasoning, ctx.search_query, 13.0 * ctx.font_scale)
+                    // Keep matches selectable while searching.
+                    highlighted_selectable(
+                        reasoning,
+                        ctx.search_query,
+                        13.0 * ctx.font_scale,
+                        Font::DEFAULT,
+                        sel_secondary,
+                    )
                 } else if !ctx.selectable_msgs.contains(&i)
                     && let Some(md) = &tc.reasoning_md
                     && (!is_plain_text(md) || tc.reasoning_has_url)
@@ -607,10 +613,12 @@ fn text_turn_block<'a>(
         }
     }
     if !ctx.search_query.trim().is_empty() {
-        content_col = content_col.push(highlighted_text(
+        content_col = content_col.push(highlighted_selectable(
             &tc.content,
             ctx.search_query,
             14.0 * ctx.font_scale,
+            Font::DEFAULT,
+            sel_default,
         ));
     } else if !ctx.selectable_msgs.contains(&i)
         && let Some(md) = &tc.content_md

@@ -166,6 +166,11 @@ pub(crate) fn update_on(
             if state.visible {
                 return iced::widget::operation::focus(SEARCH_INPUT.clone());
             }
+            // Re-measure after the re-render and keep the current match in view.
+            if let Some(target) = state.results.get(state.current).map(|h| h.flat_idx) {
+                let total = session.total_turns();
+                return state.measure_and_scroll(tab_number, total, target);
+            }
         }
         SearchEvent::QueryChanged(q) => {
             state.set_query(q);

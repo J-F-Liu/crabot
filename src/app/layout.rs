@@ -46,7 +46,7 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
             return views::scroll_to_end().discard();
         }
         LayoutEvent::UndoRedo(message) => undo_redo(app, message),
-        LayoutEvent::EscapePressed => escape(app),
+        LayoutEvent::EscapePressed => return escape(app),
         LayoutEvent::Zoom(delta) => app.set_font_scale(app.settings.font_scale + delta),
         LayoutEvent::ToggleTheme(dark) => {
             views::theme::set_dark_mode(dark);
@@ -137,7 +137,7 @@ fn undo_redo(app: &mut App, message: textarea::Message) {
     }
 }
 
-fn escape(app: &mut App) {
+fn escape(app: &mut App) -> Task<Message> {
     if app.settings_dialog.open {
         if app.settings_dialog.is_adding_label() {
             app.confirm_pending_label();
@@ -146,8 +146,13 @@ fn escape(app: &mut App) {
             app.settings_dialog.open = false;
         }
     } else if app.conversation.viewing().search.visible {
-        app.conversation.viewing_mut().search.visible = false;
+        // Reuse the search-bar close path to keep the current match in view.
+        let tab_number = app.conversation.viewing_tab_number();
+        let tab = app.conversation.viewing_mut();
+        return views::search_bar::update_on(views::SearchEvent::ToggleSearch, tab, tab_number)
+            .map(Message::Conversation);
     } else {
         app.conversation.viewing_mut().selectable_msgs.clear();
     }
+    Task::none()
 }
