@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use crabot::tools::edit::{EditParam, build_line_starts, execute, line_number_at};
+use crabot::tools::edit::{
+    EditParam, NO_CHANGE_ALL_EDITS_MESSAGE, NO_CHANGE_MESSAGE, build_line_starts, execute,
+    format_edit_numbers, line_number_at,
+};
 use serde_json::json;
 
 /// Write a throwaway file in a unique temp dir and run [`execute`].
@@ -115,6 +118,105 @@ fn successful_edit_needs_no_line_index() {
         "one\ntwo bar\nthree\n"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn identical_old_and_new_reports_no_changes() {
+    let dir = std::env::temp_dir().join(format!("crabot_edit_noop_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let result = run_edit(
+        &dir,
+        "noop.txt",
+        "one\nfoo\n",
+        json!({ "edits": [{ "old_text": "foo", "new_text": "foo" }] }),
+    )
+    .unwrap();
+    assert_eq!(result, NO_CHANGE_MESSAGE);
+    // The file is left untouched instead of being rewritten with the same bytes.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("noop.txt")).unwrap(),
+        "one\nfoo\n"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn all_no_op_edits_report_no_changes_in_all_edits() {
+    let dir = std::env::temp_dir().join(format!("crabot_edit_noop_all_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let result = run_edit(
+        &dir,
+        "all.txt",
+        "one\n",
+        json!({
+            "edits": [
+                { "old_text": "one", "new_text": "one" },
+                { "old_text": "missing", "new_text": "missing" },
+                { "old_text": "gone", "new_text": "gone" }
+            ]
+        }),
+    )
+    .unwrap();
+    assert_eq!(result, NO_CHANGE_ALL_EDITS_MESSAGE);
+    // The file is never rewritten when nothing changes.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("all.txt")).unwrap(),
+        "one\n"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn mixed_no_op_edit_is_skipped_and_others_applied() {
+    let dir = std::env::temp_dir().join(format!("crabot_edit_mix_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let result = run_edit(
+        &dir,
+        "mixed.txt",
+        "one\ntwo foo\nthree\n",
+        json!({
+            "edits": [
+                { "old_text": "foo", "new_text": "foo" },
+                { "old_text": "three", "new_text": "four" },
+                { "old_text": "two", "new_text": "two" }
+            ]
+        }),
+    )
+    .unwrap();
+    assert!(result.contains("Applied 1 edits"), "got: {result}");
+    assert!(
+        result.contains("edits 1 and 3 skipped as no-op"),
+        "got: {result}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("mixed.txt")).unwrap(),
+        "one\ntwo foo\nfour\n"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn identical_old_and_new_with_missing_text_reports_no_changes() {
+    // A no-op edit is not a lookup failure, even when old_text is absent.
+    let dir = std::env::temp_dir().join(format!("crabot_edit_noop2_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let result = run_edit(
+        &dir,
+        "absent.txt",
+        "one\n",
+        json!({ "edits": [{ "old_text": "gone", "new_text": "gone" }] }),
+    )
+    .unwrap();
+    assert_eq!(result, NO_CHANGE_MESSAGE, "got: {result}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn format_edit_numbers_uses_natural_joining() {
+    assert_eq!(format_edit_numbers(&[]), "");
+    assert_eq!(format_edit_numbers(&[2]), "2");
+    assert_eq!(format_edit_numbers(&[2, 4]), "2 and 4");
+    assert_eq!(format_edit_numbers(&[1, 2, 5]), "1, 2 and 5");
 }
 
 #[test]

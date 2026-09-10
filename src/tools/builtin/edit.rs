@@ -37,7 +37,6 @@ pub fn build_line_starts(content: &str) -> Vec<usize> {
 
 /// 1-based line containing `byte_pos`.
 pub fn line_number_at(line_starts: &[usize], byte_pos: usize) -> usize {
-    // returns the number of elements in the prefix (the index of the first element of the second partition).
     line_starts.partition_point(|&s| s <= byte_pos)
 }
 
@@ -56,6 +55,29 @@ fn is_known_edit_key(key: &str) -> bool {
             | "new_string"
             | "replace"
     )
+}
+
+/// Reply when every requested edit replaces text with itself (nothing to write).
+pub const NO_CHANGE_MESSAGE: &str = "No changes made: old_text and new_text are identical.";
+
+/// Reply when a multi-edit call replaces text with itself everywhere.
+pub const NO_CHANGE_ALL_EDITS_MESSAGE: &str =
+    "No changes made: old_text and new_text are identical in all edits.";
+
+/// Render 1-based edit numbers as `1`, `1, 3`, or `1, 3 and 5`.
+pub fn format_edit_numbers(indices: &[usize]) -> String {
+    match indices {
+        [] => String::new(),
+        [only] => only.to_string(),
+        [rest @ .., last] => {
+            let head = rest
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{head} and {last}")
+        }
+    }
 }
 
 pub struct EditTool;
@@ -195,6 +217,8 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
         return Err(errors.join("\n"));
     };
     let mut located: Vec<LocatedEdit> = Vec::with_capacity(edits.len());
+    let mut no_op_edits: Vec<usize> = Vec::new(); // 1-based indices of edits with identical old/new text
+    let display = display_path.as_deref().unwrap_or_default();
     for (i, edit_value) in edits.iter().enumerate() {
         let idx = i + 1; // 1‑based for human‑readable messages
         // Validate JSON keys before deserialising to report unexpected fields with a clear message.
@@ -228,11 +252,16 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
             continue;
         }
 
+        // Replacing text with itself needs no lookup and no write.
+        if old_text.as_ref() == new_text.as_ref() {
+            no_op_edits.push(idx);
+            continue;
+        }
+
         // ── Content-dependent checks — only when the file was loaded ──
         let Some(content) = content.as_deref() else {
             continue; // file-level error already collected; skip per-edit lookups
         };
-        let display = display_path.as_deref().unwrap_or_default();
         let start = match content.find(old_text.as_ref()) {
             Some(s) => s,
             None => {
@@ -294,6 +323,15 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
         return Err(errors.join("\n"));
     }
 
+    // Every edit was a no-op: report it instead of rewriting the file unchanged.
+    if no_op_edits.len() == edits.len() {
+        return Ok(if edits.len() > 1 {
+            NO_CHANGE_ALL_EDITS_MESSAGE.to_string()
+        } else {
+            NO_CHANGE_MESSAGE.to_string()
+        });
+    }
+
     // Safe: invalid args always pushed an error above.
     let file_path = file_path.unwrap();
     let display_path = display_path.unwrap();
@@ -313,5 +351,17 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
 
     std::fs::write(&file_path, &result)
         .map_err(|e| format!("Failed to write {display_path}: {e}"))?;
-    Ok(format!("Applied {} edits in {display_path}", located.len(),))
+    let skipped = if no_op_edits.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; edit{} {} skipped as no-op (old_text and new_text are identical)",
+            if no_op_edits.len() > 1 { "s" } else { "" },
+            format_edit_numbers(&no_op_edits),
+        )
+    };
+    Ok(format!(
+        "Applied {} edits in {display_path}{skipped}",
+        located.len()
+    ))
 }
