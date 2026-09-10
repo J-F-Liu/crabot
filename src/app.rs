@@ -687,7 +687,7 @@ pub(crate) enum Message {
 impl App {
     pub(crate) fn boot(mut saved: crabot::settings::Settings) -> (Self, Task<Message>) {
         let models = model::load_models();
-        saved.selected_model = models.ensure_valid_name(&saved.selected_model);
+        saved.selected_model = models.ensure_valid_label(&saved.selected_model);
 
         tools::init_tool_limits(saved.tool_limits);
 

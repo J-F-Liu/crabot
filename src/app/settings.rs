@@ -84,14 +84,9 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             app.settings_dialog.update(event);
             app.models = app.settings_dialog.working_models.clone();
             app.models.save();
-            // Re-validate the selected model label.
-            {
-                let model = app.models.ensure_valid_name(&app.settings.selected_model);
-                app.settings.selected_model = model;
-            }
             // Validate every tab's selected_model against the updated model list.
             for tab in &mut app.conversation.session_tabs {
-                tab.selected_model = app.models.ensure_valid_name(&tab.selected_model);
+                tab.selected_model = app.models.ensure_valid_label(&tab.selected_model);
             }
         }
         SettingsEvent::Recipes(RecipesEvent::SavePromptRecipes) => {

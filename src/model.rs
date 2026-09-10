@@ -9,37 +9,40 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelList {
+    /// All known providers, keyed by `provider_id`.
     pub providers: IndexMap<String, Provider>,
+    /// All known model configs, keyed by the config label.
     pub models: IndexMap<String, ModelConfig>,
 }
 
 impl ModelList {
-    pub fn ensure_valid_name(&self, name: &str) -> String {
-        let valid_name = if self.models.contains_key(name) {
-            name
-        } else if let Some(name) = self.models.keys().next() {
-            name
-        } else {
-            if !name.is_empty() { name } else { "Model" }
-        };
-        valid_name.to_string()
+    pub fn ensure_valid_label(&self, label: &str) -> String {
+        if self.models.contains_key(label) {
+            return label.to_owned();
+        }
+        match self.models.keys().next() {
+            Some(label) => label.clone(),
+            None if label.is_empty() => "Model".to_owned(),
+            None => label.to_owned(),
+        }
     }
 
-    pub fn get_config(&self, name: &str) -> Option<&ModelConfig> {
+    pub fn get_config(&self, label: &str) -> Option<&ModelConfig> {
         self.models
-            .get(name)
+            .get(label)
             .or_else(|| self.models.values().next())
     }
 
-    pub fn get_config_mut(&mut self, name: &str) -> Option<&mut ModelConfig> {
-        if !name.is_empty() && !self.models.contains_key(name) {
-            self.models.insert(name.to_string(), ModelConfig::default());
+    pub fn get_config_mut(&mut self, label: &str) -> Option<&mut ModelConfig> {
+        if !label.is_empty() && !self.models.contains_key(label) {
+            self.models
+                .insert(label.to_string(), ModelConfig::default());
         }
-        self.models.get_mut(name)
+        self.models.get_mut(label)
     }
 
-    pub fn get_provider(&self, name: &str) -> Option<&Provider> {
-        let config = self.get_config(name)?;
+    pub fn get_provider(&self, label: &str) -> Option<&Provider> {
+        let config = self.get_config(label)?;
         self.providers.get(&config.provider_id)
     }
 
