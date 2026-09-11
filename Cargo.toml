@@ -96,6 +96,8 @@ encoding_rs = "0.8"
 chardetng = "1.0"
 hostname = "0.4.2"
 tempfile = "3.27.0"
+# Advisory file locks serializing settings read-merge-write between instances.
+fd-lock = "4.0.4"
 strum = { version = "0.28", features = ["derive"] }
 pulldown-cmark-escape = "0.11"
 agent-client-protocol = "2"

@@ -1,6 +1,7 @@
 // Deadlock trap: a mutex guard in an `if let` scrutinee is held for the whole branch.
 #![warn(clippy::significant_drop_in_scrutinee)]
 
+pub mod atomic;
 pub mod chat;
 pub mod i18n;
 pub mod model;

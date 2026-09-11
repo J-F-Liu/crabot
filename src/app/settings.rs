@@ -92,13 +92,15 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
         SettingsEvent::Recipes(RecipesEvent::SavePromptRecipes) => {
             app.settings_dialog.update(event);
             app.settings.prompt_recipes = app.settings_dialog.working_prompt_recipes.clone();
-            app.settings.save();
+            app.save_settings();
         }
         SettingsEvent::BuiltinTools(BuiltinToolsEvent::SaveBuiltinTools) => {
             app.settings_dialog.update(event);
-            // Apply parsed values, then persist + hot-swap tool limits.
+            // Apply parsed values, then persist + hot-swap tool limits. The
+            // explicit swap also covers a failed save, where the dialog value
+            // still differs from the process-wide static.
             app.settings_dialog.apply_builtin_tools(&mut app.settings);
-            app.settings.save();
+            app.save_settings();
             tools::init_tool_limits(app.settings.tool_limits);
         }
         SettingsEvent::CustomTools(CustomToolsEvent::SaveTools) => {

@@ -73,43 +73,18 @@ impl McpList {
         crate::setup::config_dir().join("mcp.ron")
     }
 
-    /// Load from disk, returning empty list if missing or malformed.
+    /// Load from disk; an unparsable file is moved aside and recovered from its
+    /// `.bak` when possible.
     pub fn load() -> Self {
-        let path = Self::path();
-        if !path.exists() {
-            return Self::default();
-        }
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match ron::from_str::<McpList>(&text) {
-                Ok(list) => list,
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), "failed to parse mcp.ron, using empty list: {e}");
-                    Self::default()
-                }
-            },
-            Err(e) => {
-                tracing::warn!(path = %path.display(), "failed to read mcp.ron: {e}");
-                Self::default()
-            }
-        }
+        crate::atomic::load_ron(&Self::path()).unwrap_or_default()
     }
 
     /// Save the server list to disk as RON text.
     pub fn save(&self) {
+        let config = ron::ser::PrettyConfig::default().escape_strings(false);
         let path = Self::path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match ron::ser::to_string_pretty(
-            self,
-            ron::ser::PrettyConfig::default().escape_strings(false),
-        ) {
-            Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
-                    tracing::error!(path = %path.display(), "failed to save mcp.ron: {e}");
-                }
-            }
-            Err(e) => tracing::error!("failed to serialize MCP server list: {e}"),
+        if let Err(e) = crate::atomic::save_ron(&path, self, config) {
+            tracing::error!(path = %path.display(), "failed to save mcp.ron: {e}");
         }
     }
 }

@@ -19,7 +19,7 @@ pub fn snap_font_scale(scale: f32) -> f32 {
 }
 
 /// All persistable app-level state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub left_pane_width: f32,
@@ -125,52 +125,54 @@ impl Default for Settings {
     }
 }
 
+/// Adopt each disk field that `ours` did not change since `baseline`. The list
+/// holds every setting not owned by live UI state (`App::synced_settings`); add
+/// new persistent fields here or they will never merge across instances.
+macro_rules! merge_untouched {
+    ($ours:expr, $baseline:expr, $disk:expr, $merged:expr; $($field:ident),* $(,)?) => {
+        $(
+            if $ours.$field == $baseline.$field {
+                $merged.$field = $disk.$field.clone();
+            }
+        )*
+    };
+}
+
 impl Settings {
     /// Path to `~/.crabot/settings.ron`.
     pub fn path() -> PathBuf {
         crate::setup::config_dir().join("settings.ron")
     }
 
-    /// Load settings from disk, returning defaults if file is missing or malformed.
+    /// Load settings from disk, returning defaults when the file is missing or
+    /// unparsable; a malformed file is moved aside and its `.bak` is used when
+    /// available.
     pub fn load() -> Self {
-        let path = Self::path();
-        if !path.exists() {
-            return Self::default();
-        }
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match ron::from_str::<Settings>(&text) {
-                Ok(settings) => settings,
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), "failed to parse settings, using defaults: {e}");
-                    Self::default()
-                }
-            },
-            Err(e) => {
-                tracing::warn!(path = %path.display(), "failed to read settings, using defaults: {e}");
-                Self::default()
-            }
-        }
+        crate::atomic::load_ron(&Self::path()).unwrap_or_default()
     }
 
-    /// Rebuild `mcp_servers` and `agent_tools` from live registry state.
+    /// Refresh `mcp_servers` / `agent_tools` from the live registry. Unknown
+    /// names stay while enabled (MCP tools appear only after discovery); stale
+    /// disabled ones are pruned so the file stops growing.
     pub fn sync_tools(
         &mut self,
         registry: &ToolRegistry,
         enabled_tools: &HashSet<String>,
         enabled_mcp_servers: &HashSet<String>,
     ) {
-        self.mcp_servers = registry
-            .mcp_servers
-            .iter()
-            .map(|s| (s.name.clone(), enabled_mcp_servers.contains(&s.name)))
-            .collect();
-        self.agent_tools = registry
-            .all_names()
-            .map(|name| {
-                let enabled = enabled_tools.contains(name);
-                (name.clone(), enabled)
-            })
-            .collect();
+        self.mcp_servers.retain(|name, enabled| {
+            *enabled || registry.mcp_servers.iter().any(|s| &s.name == name)
+        });
+        self.agent_tools
+            .retain(|name, enabled| *enabled || registry.all_names().any(|n| n == name));
+        for server in &registry.mcp_servers {
+            let enabled = enabled_mcp_servers.contains(&server.name);
+            self.mcp_servers.insert(server.name.clone(), enabled);
+        }
+        for name in registry.all_names() {
+            let enabled = enabled_tools.contains(name);
+            self.agent_tools.insert(name.clone(), enabled);
+        }
     }
 
     /// Look up whether a tool is enabled in saved agent-tool preferences.
@@ -187,19 +189,51 @@ impl Settings {
         }
     }
 
-    /// Save settings to disk as RON text.
-    pub fn save(&self) {
+    /// Save, merging concurrent edits from another instance: locally changed
+    /// fields win, untouched fields take the on-disk value. On error the file is
+    /// untouched, so the caller can retry with the same baseline.
+    pub fn save_merged(&self, baseline: &Settings) -> std::io::Result<Settings> {
         let path = Self::path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default()) {
-            Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
-                    tracing::error!(path = %path.display(), "failed to save settings: {e}");
-                }
+        crate::atomic::with_lock(&path, || {
+            // `load_ron` moves an unparsable file aside instead of overwriting it.
+            let disk = crate::atomic::load_ron::<Settings>(&path);
+            let merged = match &disk {
+                Some(disk) if disk != baseline => merge_settings(baseline, self, disk),
+                _ => self.clone(),
+            };
+            // Skip the write (and its mtime bump) when the file already holds this.
+            if disk.as_ref() != Some(&merged) {
+                crate::atomic::save_ron(&path, &merged, ron::ser::PrettyConfig::default())?;
             }
-            Err(e) => tracing::error!("failed to serialize settings: {e}"),
-        }
+            Ok(merged)
+        })
     }
+}
+
+/// Three-way merge: `ours` wins for locally changed fields, `disk` fills in the
+/// rest.
+fn merge_settings(baseline: &Settings, ours: &Settings, disk: &Settings) -> Settings {
+    let mut merged = ours.clone();
+    merge_untouched!(ours, baseline, disk, merged;
+        left_pane_width,
+        right_pane_width,
+        selected_skills,
+        recent_workspaces,
+        font_scale,
+        prompt_recipes,
+        fill_ratio_threshold,
+        max_iterations,
+        stream_stall_timeout,
+        tool_limits,
+        task_models,
+        auto_check_updates,
+        use_system_proxy_for_llm,
+        use_system_proxy_for_tools,
+        last_update_version,
+        language,
+        iced_backend,
+        // Read only when the ACP listener next starts; never auto-restarted.
+        acp_server_port,
+    );
+    merged
 }

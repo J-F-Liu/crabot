@@ -448,6 +448,8 @@ pub(crate) struct App {
     pub models: ModelList,
     /// Persisted configuration shared across domains.
     pub settings: crabot::settings::Settings,
+    /// Settings as last written to disk; baseline for the save merge.
+    pub settings_saved: crabot::settings::Settings,
     pub layout: LayoutState,
     pub prompt: PromptWorkspaceState,
     pub tools: ToolState,
@@ -687,6 +689,8 @@ pub(crate) enum Message {
 impl App {
     pub(crate) fn boot(mut saved: crabot::settings::Settings) -> (Self, Task<Message>) {
         let models = model::load_models();
+        // Baseline before boot-time fixups, so those count as local changes.
+        let settings_saved = saved.clone();
         saved.selected_model = models.ensure_valid_label(&saved.selected_model);
 
         tools::init_tool_limits(saved.tool_limits);
@@ -805,6 +809,7 @@ impl App {
             tools,
             conversation: ConversationState::new(initial_selected_model, initial_selected_preamble),
             models,
+            settings_saved,
             settings_dialog: crate::views::SettingsState::default(),
             pane_sections: PaneSections::default(),
             running_processes: Vec::new(),
@@ -953,7 +958,7 @@ impl App {
         }
     }
 
-    // ── Settings helpers (used by layout) ─────────────────────────
+    // ── Settings helpers ──────────────────────────────────────────
 
     /// Confirm a pending new-label input (Enter or focus loss).
     pub(crate) fn confirm_pending_label(&mut self) {
@@ -968,37 +973,77 @@ impl App {
         }
     }
 
-    /// Sync derived fields back into `settings` and persist to disk.
-    pub(crate) fn save_settings(&mut self) {
-        self.settings.selected_model = self.conversation.viewing().selected_model.clone();
-        self.settings.selected_preamble = self.conversation.viewing().selected_preamble.clone();
-        self.settings.window_size = (
+    /// `settings` with live UI values (window geometry, prompt text, tool
+    /// toggles, …) written back; these always win over the on-disk copy.
+    fn synced_settings(&self) -> crabot::settings::Settings {
+        let mut settings = self.settings.clone();
+        settings.selected_model = self.conversation.viewing().selected_model.clone();
+        settings.selected_preamble = self.conversation.viewing().selected_preamble.clone();
+        settings.window_size = (
             self.layout.window_size.width,
             self.layout.window_size.height,
         );
-        self.settings.window_pos = (
+        settings.window_pos = (
             self.layout.window_pos.x.max(0.0),
             self.layout.window_pos.y.max(0.0),
         );
-        self.settings.preamble_enabled = self.prompt.preamble_enabled;
-        self.settings.skills_enabled = self.prompt.skills_enabled;
-        self.settings.workspace_enabled = self.prompt.workspace.0;
-        self.settings.agents_md_enabled = self.prompt.agents_md.0;
-        self.settings.date_enabled = self.prompt.date.0;
-        self.settings.workspace = self.prompt.workspace.1.clone();
-        self.settings.tools_enabled = self.prompt.tools.enabled;
-        self.settings.sync_tools(
+        settings.preamble_enabled = self.prompt.preamble_enabled;
+        settings.skills_enabled = self.prompt.skills_enabled;
+        settings.workspace_enabled = self.prompt.workspace.0;
+        settings.agents_md_enabled = self.prompt.agents_md.0;
+        settings.date_enabled = self.prompt.date.0;
+        settings.workspace = self.prompt.workspace.1.clone();
+        settings.tools_enabled = self.prompt.tools.enabled;
+        settings.sync_tools(
             &self.tools.tool_registry,
             &self.tools.enabled_tools,
             &self.tools.enabled_mcp_servers,
         );
-        self.settings.user_prompt = self.prompt.user_prompt.text();
-        self.settings.dark_mode = theme::is_dark();
+        settings.user_prompt = self.prompt.user_prompt.text();
+        settings.dark_mode = theme::is_dark();
         // stdio mode is host-driven; don't persist the toggle into settings.
         if !self.acp.stdio {
-            self.settings.acp_server_enabled = self.acp.enabled;
+            settings.acp_server_enabled = self.acp.enabled;
         }
-        self.settings.save();
+        settings
+    }
+
+    /// Persist settings, merging other instances' concurrent edits, then
+    /// re-apply runtime state for values the merge adopted from disk. Called on
+    /// exit/restart and by explicit saves; there is no periodic auto-save.
+    pub(crate) fn save_settings(&mut self) {
+        self.settings = self.synced_settings();
+        // In-memory state already matches the last write.
+        if self.settings == self.settings_saved {
+            return;
+        }
+        let ours = self.settings.clone();
+        match self.settings.save_merged(&self.settings_saved) {
+            Ok(merged) => {
+                self.settings = merged.clone();
+                self.apply_merged_settings(&ours, &merged);
+                self.settings_saved = merged;
+            }
+            Err(e) => tracing::warn!("failed to save settings: {e}"),
+        }
+    }
+
+    /// Re-apply runtime state for settings `merged` adopted from disk, i.e. the
+    /// ones `ours` had not changed; live UI state stays per-instance. Runs once
+    /// `self.settings` already holds `merged`, so clamps applied here (font
+    /// scale) are what the next save persists. An adopted `acp_server_port`
+    /// takes effect only on the next manual ACP start.
+    fn apply_merged_settings(
+        &mut self,
+        ours: &crabot::settings::Settings,
+        merged: &crabot::settings::Settings,
+    ) {
+        if merged.tool_limits != ours.tool_limits {
+            tools::init_tool_limits(merged.tool_limits);
+        }
+        if merged.font_scale != ours.font_scale {
+            self.set_font_scale(merged.font_scale);
+        }
     }
 
     fn get_current_model(&self) -> Option<&ModelConfig> {

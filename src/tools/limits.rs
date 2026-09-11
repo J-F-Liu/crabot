@@ -7,7 +7,7 @@ use super::tool::OutputSink;
 use crate::lock;
 
 /// Configurable limits for the built-in tools.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolLimits {
     /// `bash`: default timeout (ms) when no explicit `timeout` argument is given.

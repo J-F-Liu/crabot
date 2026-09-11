@@ -128,7 +128,7 @@ impl PartialEq for Model {
 
 // ── ModelConfig / TaskModels ────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub provider_id: String,
     pub model_id: String,
@@ -156,7 +156,7 @@ impl ModelConfig {
 
 /// Model configurations used by the `task` tool to pick a sub-agent model per
 /// difficulty tier. An empty config means "inherit the parent session's model".
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskModels {
     pub easy: ModelConfig,
     pub medium: ModelConfig,
@@ -313,22 +313,16 @@ fn is_false(value: &bool) -> bool {
 
 /// Loads providers from `~/.crabot/models.ron`.
 pub fn load_models() -> ModelList {
-    if models_ron_path().exists() {
-        match try_load_models_from_ron() {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::warn!("failed to load models.ron, using defaults: {e}");
-                ModelList::default()
-            }
-        }
-    } else {
-        // First boot: seed the file with the compiled-in defaults.
-        let path = models_ron_path();
-        if let Err(e) = std::fs::write(&path, crate::setup::default_models()) {
-            tracing::warn!(path = %path.display(), "failed to seed default models.ron: {e}");
-        }
-        try_load_models_from_ron().unwrap_or_default()
+    let path = models_ron_path();
+    if let Some(models) = crate::atomic::load_ron(&path) {
+        return models;
     }
+    // First boot (or an unreadable file): seed the compiled-in defaults.
+    let defaults = crate::setup::default_models();
+    if let Err(e) = crate::atomic::write_atomic(&path, defaults.as_bytes()) {
+        tracing::warn!(path = %path.display(), "failed to seed default models.ron: {e}");
+    }
+    ron::from_str(defaults).unwrap_or_default()
 }
 
 /// If `api_key` is an environment variable name, resolve it to the actual value.
@@ -387,22 +381,9 @@ fn models_ron_path() -> PathBuf {
     crate::setup::config_dir().join("models.ron")
 }
 
-fn try_load_models_from_ron() -> Result<ModelList, Box<dyn std::error::Error>> {
-    let text = std::fs::read_to_string(models_ron_path())?;
-    Ok(ron::from_str(&text)?)
-}
-
 fn save_models_to_ron(list: &ModelList) {
     let path = models_ron_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match ron::ser::to_string_pretty(list, ron::ser::PrettyConfig::default()) {
-        Ok(text) => {
-            if let Err(e) = std::fs::write(&path, text) {
-                tracing::error!(path = %path.display(), "failed to save models.ron: {e}");
-            }
-        }
-        Err(e) => tracing::error!("failed to serialize models: {e}"),
+    if let Err(e) = crate::atomic::save_ron(&path, list, ron::ser::PrettyConfig::default()) {
+        tracing::error!(path = %path.display(), "failed to save models.ron: {e}");
     }
 }
