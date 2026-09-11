@@ -132,17 +132,6 @@ pub(crate) fn primary_button(_theme: &Theme, status: button::Status) -> button::
 
 /// Neutral / secondary button style — surface background with a border.
 pub(crate) fn secondary_button(_theme: &Theme, status: button::Status) -> button::Style {
-    let (hover_bg, pressed_bg) = if is_dark() {
-        (
-            Color::from_rgb8(0x33, 0x39, 0x44),
-            Color::from_rgb8(0x3B, 0x42, 0x4E),
-        )
-    } else {
-        (
-            Color::from_rgb8(0xD8, 0xD8, 0xD8),
-            Color::from_rgb8(0xC8, 0xC8, 0xC8),
-        )
-    };
     let base = button::Style {
         background: Some(color_surface().into()),
         text_color: color_text_strong(),
@@ -155,11 +144,11 @@ pub(crate) fn secondary_button(_theme: &Theme, status: button::Status) -> button
     match status {
         button::Status::Active => base,
         button::Status::Hovered => button::Style {
-            background: Some(hover_bg.into()),
+            background: Some(color_hover().into()),
             ..base
         },
         button::Status::Pressed => button::Style {
-            background: Some(pressed_bg.into()),
+            background: Some(color_pressed().into()),
             ..base
         },
         button::Status::Disabled => button::Style {
@@ -207,10 +196,8 @@ pub(crate) fn primary_toggler(_theme: &Theme, status: toggler::Status) -> toggle
             if matches!(status, toggler::Status::Hovered { .. }) {
                 style.background = if is_toggled {
                     CRABOT_PRIMARY_HOVER.into()
-                } else if is_dark() {
-                    Color::from_rgb8(0x33, 0x39, 0x44).into()
                 } else {
-                    Color::from_rgb8(0xD8, 0xD8, 0xD8).into()
+                    color_hover().into()
                 };
                 style.background_border_color = if is_toggled {
                     CRABOT_PRIMARY_HOVER
@@ -478,8 +465,12 @@ pub(crate) fn menu_item_style(_theme: &Theme, status: button::Status) -> button:
         ..button::Style::default()
     };
     match status {
-        button::Status::Hovered | button::Status::Pressed => button::Style {
-            background: Some(color_surface().into()),
+        button::Status::Hovered => button::Style {
+            background: Some(color_hover().into()),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(color_pressed().into()),
             ..base
         },
         button::Status::Disabled => button::Style {
@@ -505,7 +496,7 @@ pub(crate) fn disabled_dropdown_style(
     }
 }
 
-/// Shared trigger colors for [`pick_list_style`] and [`secondary_dropdown_style`].
+/// Hover/pressed trigger colors are shared with [`color_hover`] / [`color_pressed`].
 struct DropdownColors {
     hover: Color,
     pressed: Color,
@@ -513,22 +504,10 @@ struct DropdownColors {
     border: iced::Border,
 }
 
-/// Hover/pressed trigger colors for the dark theme.
-const DROPDOWN_HOVER_DARK: Color = Color::from_rgb8(0x33, 0x39, 0x44);
-const DROPDOWN_PRESSED_DARK: Color = Color::from_rgb8(0x3B, 0x42, 0x4E);
-/// Hover/pressed trigger colors for the light theme.
-const DROPDOWN_HOVER_LIGHT: Color = Color::from_rgb8(0xD8, 0xD8, 0xD8);
-const DROPDOWN_PRESSED_LIGHT: Color = Color::from_rgb8(0xC8, 0xC8, 0xC8);
-
 fn dropdown_colors() -> DropdownColors {
-    let (hover, pressed) = if is_dark() {
-        (DROPDOWN_HOVER_DARK, DROPDOWN_PRESSED_DARK)
-    } else {
-        (DROPDOWN_HOVER_LIGHT, DROPDOWN_PRESSED_LIGHT)
-    };
     DropdownColors {
-        hover,
-        pressed,
+        hover: color_hover(),
+        pressed: color_pressed(),
         surface: color_surface(),
         border: iced::Border::default()
             .rounded(6)

@@ -935,10 +935,14 @@ fn header_actions_menu(
 
     let overlay = container(
         column(items.into_iter().map(|(icon, label, event)| {
+            let enabled = event.is_some();
             let mut item = button(
-                row![icons::svg_icon(icon), text(label).size(13)]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
+                row![
+                    icons::svg_icon_with_hover(icon, enabled),
+                    text(label).size(13)
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
             )
             .padding([6, 12])
             .width(Fill)

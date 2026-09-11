@@ -19,6 +19,8 @@ pub(crate) const CRABOT_PRIMARY_PRESSED: Color = Color::from_rgb8(0x11, 0x7A, 0x
 pub(crate) const CRABOT_TEXT: Color = Color::from_rgb8(0x33, 0x33, 0x33);
 pub(crate) const CRABOT_TEXT_MUTED: Color = Color::from_rgb8(0x66, 0x66, 0x66);
 pub(crate) const CRABOT_BORDER: Color = Color::from_rgb8(0xE0, 0xE0, 0xE0);
+pub(crate) const CRABOT_HOVER: Color = Color::from_rgb8(0xD8, 0xD8, 0xD8);
+pub(crate) const CRABOT_PRESSED: Color = Color::from_rgb8(0xC8, 0xC8, 0xC8);
 pub(crate) const CRABOT_USER_BG: Color = Color::from_rgb8(0xEF, 0xF5, 0xFD);
 pub(crate) const CRABOT_ASSISTANT_BG: Color = Color::from_rgb8(0xF3, 0xF7, 0xF6);
 pub(crate) const CRABOT_TOOL_BG: Color = Color::from_rgb8(0xFB, 0xFB, 0xF8);
@@ -42,6 +44,8 @@ pub(crate) const DARK_SURFACE: Color = Color::from_rgb8(0x2A, 0x2F, 0x38);
 pub(crate) const DARK_TEXT: Color = Color::from_rgb8(0xE2, 0xE5, 0xEA);
 pub(crate) const DARK_TEXT_MUTED: Color = Color::from_rgb8(0x9B, 0xA1, 0xAB);
 pub(crate) const DARK_BORDER: Color = Color::from_rgb8(0x34, 0x39, 0x45);
+pub(crate) const DARK_HOVER: Color = Color::from_rgb8(0x33, 0x39, 0x44);
+pub(crate) const DARK_PRESSED: Color = Color::from_rgb8(0x3B, 0x42, 0x4E);
 pub(crate) const DARK_USER_BG: Color = Color::from_rgb8(0x1E, 0x29, 0x38);
 pub(crate) const DARK_ASSISTANT_BG: Color = Color::from_rgb8(0x21, 0x25, 0x2C);
 pub(crate) const DARK_TOOL_BG: Color = Color::from_rgb8(0x28, 0x25, 0x20);
@@ -151,12 +155,25 @@ pub(crate) fn color_panel() -> Color {
 pub(crate) fn color_card() -> Color {
     if is_dark() { DARK_CARD } else { Color::WHITE }
 }
-/// Neutral surface for buttons, menus, and hover highlights.
+/// Neutral surface for buttons and menus.
 pub(crate) fn color_surface() -> Color {
     if is_dark() {
         DARK_SURFACE
     } else {
         CRABOT_SURFACE
+    }
+}
+/// Hover background for menu items and neutral buttons; distinct from
+/// [`color_surface`], which it is drawn on top of.
+pub(crate) fn color_hover() -> Color {
+    if is_dark() { DARK_HOVER } else { CRABOT_HOVER }
+}
+/// Pressed background, a step stronger than [`color_hover`].
+pub(crate) fn color_pressed() -> Color {
+    if is_dark() {
+        DARK_PRESSED
+    } else {
+        CRABOT_PRESSED
     }
 }
 /// Primary text color.

@@ -48,12 +48,22 @@ pub(crate) const COMPACT: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" w
 
 /// A tinted 14×14 SVG icon (no button wrapper).
 pub(crate) fn svg_icon(icon: &'static [u8]) -> iced::widget::Svg<'static> {
+    svg_icon_with_hover(icon, true)
+}
+
+/// Like [`svg_icon`], but `hover_highlight` can be disabled for rows that
+/// are not actionable, so they do not react to the mouse.
+#[must_use]
+pub(crate) fn svg_icon_with_hover(
+    icon: &'static [u8],
+    hover_highlight: bool,
+) -> iced::widget::Svg<'static> {
     svg(svg::Handle::from_memory(icon))
         .width(14)
         .height(14)
-        .style(|_theme, status| svg::Style {
+        .style(move |_theme, status| svg::Style {
             color: Some(match status {
-                svg::Status::Hovered => color_text_strong(),
+                svg::Status::Hovered if hover_highlight => color_text_strong(),
                 _ => color_muted(),
             }),
         })
