@@ -22,6 +22,8 @@ pub(crate) struct SessionTab {
     pub(crate) number: usize,
     /// The session proper (provides the implicit `number → session.id` mapping).
     pub(crate) session: Session,
+    /// Dialog title of the most recent send in this run (see [`Self::header_title`]).
+    pub(crate) dialog_title: String,
     /// Per-tab streaming lifecycle.
     pub(crate) session_state: SessionState,
     /// Token usage for the most recent request in this tab.
@@ -69,6 +71,7 @@ impl SessionTab {
         Self {
             number,
             session,
+            dialog_title: String::new(),
             session_state: SessionState::new(),
             latest_tokens,
             expanded_turns: HashSet::new(),
@@ -130,9 +133,12 @@ impl SessionTab {
     /// Untitled placeholder for [`Self::header_title`]; views localize it.
     pub(crate) const NEW_SESSION_TITLE: &str = "New session";
 
-    /// Center-pane header title (also used by copy/export): the session title,
-    /// set once by the first dialog, or [`Self::NEW_SESSION_TITLE`] while untitled.
+    /// Center-pane header title (also used by copy/export): the newest dialog sent in this run.
     pub(crate) fn header_title(&self) -> &str {
+        // A lone dialog is named by the session title — the task tool may set it.
+        if self.session.dialogs.len() > 1 && !self.dialog_title.is_empty() {
+            return &self.dialog_title;
+        }
         if self.session.title.is_empty() {
             Self::NEW_SESSION_TITLE
         } else {

@@ -251,6 +251,7 @@ pub(crate) fn update(
     let SessionTab {
         session_state,
         session,
+        dialog_title,
         search,
         latest_tokens,
         expanded_dialogs,
@@ -365,8 +366,10 @@ pub(crate) fn update(
         SessionEvent::UserPrompt(content) => {
             // Take the mode from the pending prompt before clearing it.
             let mode = state.pending_prompt.as_ref().and_then(|p| p.mode);
-            // User message always create a new dialog.
-            session.add_dialog(Session::derive_title(&content), mode);
+            // A user message always creates a new dialog.
+            let title = Session::derive_title(&content);
+            session.add_dialog(title.clone(), mode);
+            *dialog_title = title;
             expanded_dialogs.insert(session.dialogs.len() - 1);
             session.push_turn(Turn::user(content));
             state.pending_prompt = None;

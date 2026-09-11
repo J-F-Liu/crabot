@@ -34,13 +34,11 @@ fn close_header_menu(app: &mut App) {
     app.conversation.header_menu_open = false;
 }
 
-/// Localized header title for copy/export: the session title passes through
-/// untranslated, while the untitled placeholder is translated like the header.
+/// Header title for copy/export, with the untitled placeholder localized.
 fn localized_header_title(app: &App) -> String {
-    let lang = app.settings.language;
     let title = app.conversation.viewing().header_title();
     if title == SessionTab::NEW_SESSION_TITLE {
-        lang.tr(SessionTab::NEW_SESSION_TITLE).to_string()
+        app.settings.language.tr(title).to_string()
     } else {
         title.to_string()
     }
@@ -731,14 +729,13 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
         tab.task_path = Some(task_path);
         tab.task_call_id = Some(call_id);
         tab.selected_model = tab_model_label;
+        // Set the tool-provided title before the first save so the Meta line carries it.
+        if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
+            tab.session.title = title;
+        }
     }
     let user_prompt = UserPrompt::new(None, spawn.prompt, spawn.workspace_tree);
     let launch_task = launch_dialog(app, tab_pos, &spawn.model, user_prompt, system_prompt);
-    // Prefer the tool-provided title for the tab heading when available.
-    if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
-        let tab = &mut app.conversation.session_tabs[tab_pos];
-        tab.session.title = title;
-    }
     workspace_task.chain(launch_task)
 }
 
@@ -861,11 +858,10 @@ fn launch_dialog(
     let dialog_index = tab.session.dialogs.len();
     tab.expanded_dialogs.clear();
     tab.expanded_dialogs.insert(dialog_index);
-    // The session title (header) is set from this first dialog's derived title.
-    tab.session.add_dialog(
-        Session::derive_title(&user_prompt.content),
-        user_prompt.mode,
-    );
+    // The newest dialog's title also heads the pane until the next send.
+    let title = Session::derive_title(&user_prompt.content);
+    tab.session.add_dialog(title.clone(), user_prompt.mode);
+    tab.dialog_title = title;
     tab.session
         .push_turn(Turn::user(user_prompt.content.clone()));
     // `tab` borrow ends here (NLL); start_dialog takes a fresh &mut App.
