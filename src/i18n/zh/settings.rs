@@ -89,7 +89,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Click a model ID to see details.", "点击模型 ID 查看详情。"),
     ("Input Modes", "输入模态"),
     ("Context", "上下文"),
-    ("Max Tokens", "最大 Token"),
+    ("Max Output Tokens", "最大输出词元数"),
     ("Cost (in)", "输入成本"),
     ("Cost (out)", "输出成本"),
     ("Cache read", "缓存读取"),

@@ -14,7 +14,8 @@ use crabot::model_database::ModelDatabase;
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
-        Row, button, checkbox, column, container, mouse_area, row, scrollable, text, text_input,
+        PickList, Row, button, checkbox, column, container, mouse_area, row, scrollable, text,
+        text_input,
     },
 };
 
@@ -54,7 +55,7 @@ pub(crate) enum ModelsEvent {
     SelectModelDetail(String),
     /// Edit one parameter of the currently-selected checked model.
     EditModelParam(ModelParam),
-    /// Choose which pricing offer to display / use when adding a model.
+    /// Choose the pricing offer to display (preview) or use (checked model).
     SelectOfferSource(String),
     // Label actions
     DeleteLabel(String),
@@ -116,18 +117,25 @@ pub(crate) struct ModelEditDraft {
 impl ModelEditDraft {
     /// Seed raw-text drafts from a model's current parameters.
     fn from_model(m: &Model) -> Self {
-        Self {
+        let mut draft = Self {
             name: m.name.clone(),
             thinking_levels: m.thinking_levels.join(", "),
             input: m.input.join(", "),
             context_window: m.context_window.to_string(),
             max_tokens: m.max_tokens.to_string(),
-            cost_input: m.cost.input.to_string(),
-            cost_output: m.cost.output.to_string(),
-            cost_cache_read: m.cost.cache_read.to_string(),
-            cost_cache_write: m.cost.cache_write.to_string(),
-            currency: m.cost.currency.to_string(),
-        }
+            ..Self::default()
+        };
+        draft.sync_cost(&m.cost);
+        draft
+    }
+
+    /// Copy a cost's prices into the price drafts.
+    fn sync_cost(&mut self, cost: &Cost) {
+        self.cost_input = cost.input.to_string();
+        self.cost_output = cost.output.to_string();
+        self.cost_cache_read = cost.cache_read.to_string();
+        self.cost_cache_write = cost.cache_write.to_string();
+        self.currency = cost.currency.to_string();
     }
 
     /// Record the raw text of an edited field (flags have no draft).
@@ -191,8 +199,11 @@ fn small_button(
         .into()
 }
 
-/// Rows visible in the 200px model list; longer lists show the search box.
-const MODEL_LIST_SCROLL_ROWS: usize = 8;
+/// Height of the models row: the ID list on the left, the editor on the right.
+const MODELS_SECTION_HEIGHT: f32 = 240.0;
+
+/// Rows visible in the model list; longer lists show the search box.
+const MODEL_LIST_SCROLL_ROWS: usize = 9;
 
 /// IDs shown in the model list: checked models first (configured order),
 /// then remaining fetched IDs.
@@ -285,6 +296,79 @@ fn active_offer<'a>(state: &SettingsState, model: &'a Model) -> &'a Cost {
         .as_deref()
         .and_then(|src| model.offers.iter().find(|o| o.source == src))
         .unwrap_or_else(|| model.offers.first().unwrap_or(&model.cost))
+}
+
+/// Pricing offers known for a model ID; empty for unknown (custom) IDs.
+fn offers_for<'a>(state: &'a SettingsState, id: &str) -> &'a [Cost] {
+    state.model_db.get(id).map_or(&[], |m| m.offers.as_slice())
+}
+
+/// Pick list of a model's pricing offers, wired to [`ModelsEvent::SelectOfferSource`].
+fn offer_picker(
+    offers: &[Cost],
+    selected: Option<String>,
+) -> PickList<'static, String, Vec<String>, String, SettingsEvent> {
+    let sources: Vec<String> = offers.iter().map(|o| o.source.clone()).collect();
+    styled_pick_list(sources, selected, |src| {
+        SettingsEvent::Models(ModelsEvent::SelectOfferSource(src))
+    })
+}
+
+/// Whether two costs carry the same prices and currency.
+fn same_prices(a: &Cost, b: &Cost) -> bool {
+    a.input == b.input
+        && a.output == b.output
+        && a.cache_read == b.cache_read
+        && a.cache_write == b.cache_write
+        && a.currency == b.currency
+}
+
+/// The offer behind a model's prices: the one named by `cost.source` when its
+/// prices match, else any offer with the same prices; `None` means custom.
+fn current_offer<'a>(offers: &'a [Cost], cost: &Cost) -> Option<&'a Cost> {
+    offers
+        .iter()
+        .find(|o| o.source == cost.source && same_prices(o, cost))
+        .or_else(|| offers.iter().find(|o| same_prices(o, cost)))
+}
+
+/// Copy an offer's prices and source onto a cost, keeping user-set flags.
+fn apply_offer(cost: &mut Cost, offer: &Cost) {
+    cost.input = offer.input;
+    cost.output = offer.output;
+    cost.cache_read = offer.cache_read;
+    cost.cache_write = offer.cache_write;
+    cost.currency = offer.currency;
+    cost.source = offer.source.clone();
+}
+
+/// Switch the selected checked model to another offer and refresh its drafts.
+fn switch_selected_offer(state: &mut SettingsState, source: &str) {
+    let Some(id) = state.selected_model_id.clone() else {
+        return;
+    };
+    // Copy the offer out before borrowing the model list mutably.
+    let Some(offer) = offers_for(state, &id)
+        .iter()
+        .find(|o| o.source == source)
+        .cloned()
+    else {
+        return;
+    };
+    let Some(provider) = state
+        .working_models
+        .providers
+        .get_mut(&state.selected_provider_id)
+    else {
+        return;
+    };
+    let Some(model) = provider.models.iter_mut().find(|m| m.id == id) else {
+        return;
+    };
+    apply_offer(&mut model.cost, &offer);
+    if let Some(d) = state.model_edit.as_mut() {
+        d.sync_cost(&model.cost);
+    }
 }
 
 /// Build a model for an ID from the embedded DB, or a bare model named after it.
@@ -903,8 +987,9 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                 provider_models(state).and_then(|ms| ms.iter().find(|m| &m.id == selected_id))
             {
                 // Checked model: show the editable parameter form.
+                let offers = offers_for(state, &model.id);
                 match state.model_edit.as_ref() {
-                    Some(draft) => model_edit_panel(model, draft, lang),
+                    Some(draft) => model_edit_panel(model, draft, offers, lang),
                     None => readonly_model_detail(model, lang),
                 }
             } else if let Some(details) = state.model_db.get(selected_id) {
@@ -923,12 +1008,6 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
 
                 // Show offer-source picker when multiple offers exist.
                 if details.offers.len() > 1 {
-                    let sources: Vec<String> =
-                        details.offers.iter().map(|o| o.source.clone()).collect();
-                    let selected_source = state
-                        .selected_offer_source
-                        .clone()
-                        .unwrap_or_else(|| active_cost.source.clone());
                     column![
                         container(
                             row![
@@ -936,11 +1015,9 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                                     .size(12)
                                     .color(color_muted())
                                     .width(60),
-                                styled_pick_list(sources, Some(selected_source), |src| {
-                                    SettingsEvent::Models(ModelsEvent::SelectOfferSource(src))
-                                })
-                                .text_size(12)
-                                .width(Length::Fill),
+                                offer_picker(&details.offers, Some(active_cost.source.clone()))
+                                    .text_size(12)
+                                    .width(Length::Fill),
                             ]
                             .spacing(10)
                             .align_y(Alignment::Center),
@@ -948,7 +1025,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                         .padding([4, 0]),
                         detail,
                     ]
-                    .spacing(4)
+                    .spacing(6)
                     .into()
                 } else {
                     detail
@@ -979,7 +1056,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
     };
     row![header, body]
         .spacing(10)
-        .height(Length::Fixed(200.0))
+        .height(Length::Fixed(MODELS_SECTION_HEIGHT))
         .into()
 }
 
@@ -1009,7 +1086,7 @@ fn model_detail_panel<'a>(
         rows.push(detail_row(lang.tr("Input Modes"), input.join(", ")));
     }
     rows.push(detail_row(lang.tr("Context"), ctx));
-    rows.push(detail_row(lang.tr("Max Tokens"), max_tok));
+    rows.push(detail_row(lang.tr("Max Output Tokens"), max_tok));
     rows.push(detail_row(
         lang.tr("Cost (in)"),
         format!("{sym}{:.4}/M", cost.input),
@@ -1084,6 +1161,7 @@ fn readonly_model_detail(model: &Model, lang: Lang) -> Element<'static, Settings
 fn model_edit_panel<'a>(
     model: &'a Model,
     d: &'a ModelEditDraft,
+    offers: &'a [Cost],
     lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     // Right-aligned muted tag of fixed width (row labels and sub-labels).
@@ -1106,12 +1184,14 @@ fn model_edit_panel<'a>(
             .style(crate::views::primary_checkbox)
     };
     // One form row: leading label + widget body.
-    let form_row = |label: &'static str, body: Row<'a, SettingsEvent>| -> Row<'a, SettingsEvent> {
-        row![tag(label, 74.0)]
-            .push(body.spacing(6).align_y(Alignment::Center))
-            .spacing(6)
-            .align_y(Alignment::Center)
-    };
+    let form_row =
+        |label: &'static str, body: Row<'a, SettingsEvent>| -> Element<'a, SettingsEvent> {
+            row![tag(label, 74.0)]
+                .push(body.spacing(6).align_y(Alignment::Center))
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .into()
+        };
     let num = |val: &'a str, mk: fn(String) -> ModelParam| input(val, "0", Length::Fixed(72.0), mk);
 
     // Known currencies first; keep any custom value already on the model.
@@ -1124,7 +1204,23 @@ fn model_edit_panel<'a>(
     }
     let selected_currency = currencies.iter().find(|c| **c == d.currency).cloned();
 
-    let form = column![
+    // Offer selector: the price fields below follow the chosen offer (which
+    // may use another currency); custom prices match no offer.
+    let offer_row = (offers.len() > 1).then(|| {
+        let selected = current_offer(offers, &model.cost).map(|o| o.source.clone());
+        form_row(
+            lang.tr("Offer"),
+            row![
+                offer_picker(offers, selected)
+                    .placeholder(lang.tr("Custom"))
+                    .text_size(11)
+                    .padding([2, 4])
+                    .width(Length::Fixed(120.0))
+            ],
+        )
+    });
+
+    let rows = [
         form_row(
             lang.tr("Name"),
             row![input(
@@ -1160,10 +1256,16 @@ fn model_edit_panel<'a>(
             lang.tr("Context"),
             row![
                 num(&d.context_window, ModelParam::ContextWindow),
-                text(lang.tr("Max Tokens")).size(11).color(color_muted()),
+                text(lang.tr("Max Output Tokens"))
+                    .size(11)
+                    .color(color_muted()),
                 num(&d.max_tokens, ModelParam::MaxTokens),
             ],
         ),
+    ]
+    .into_iter()
+    .chain(offer_row)
+    .chain([
         form_row(
             lang.tr("Cost /M"),
             row![
@@ -1195,8 +1297,9 @@ fn model_edit_panel<'a>(
                 cb(model.cost.double_on_peak_hour, ModelParam::DoubleOnPeakHour),
             ],
         ),
-    ]
-    .spacing(6);
+    ]);
+
+    let form = column(rows).spacing(6);
 
     container(scrollable(form).width(Length::Fill).height(Length::Fill))
         .padding(8)
@@ -1358,6 +1461,8 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
         }
         ModelsEvent::EditModelParam(param) => apply_model_param(state, param),
         ModelsEvent::SelectOfferSource(source) => {
+            // A checked model adopts the offer's prices right away.
+            switch_selected_offer(state, &source);
             state.selected_offer_source = Some(source);
         }
         ModelsEvent::NewProvider => {
