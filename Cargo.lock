@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "crabot"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-http",
