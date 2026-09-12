@@ -1,3 +1,17 @@
+# Crabot v0.9.1
+
+- **Auto-scroll pauses while you read** — scrolling up (wheel, PageUp, Home) pauses following of streamed replies, and the view resumes at the bottom (End also resumes).
+- **Latest prompt in the center-pane header** — the header, Copy title, and HTML export now follow the newest prompt of the run, while a lone dialog keeps its title (e.g. the one set by the `task` tool).
+- **Crash-safe, merge-friendly config writes** — settings and the other RON config files are written atomically (temp file renamed over the target, previous version kept as `.bak`); a malformed file is moved aside as `*.invalid-<timestamp>.ron` and recovered from the backup. Settings saves additionally take a short-wait advisory lock, so concurrently running instances merge their edits instead of overwriting each other.
+- **Add models without fetching** — the AI Models tab gains an inline "+ Add Model" editor: type a model ID and press Enter (or Add) to check it — known IDs pull details and multi-source pricing from the embedded database, unknown IDs become bare custom models, and duplicates are rejected with "Model already exists".
+- **"Refresh List" button** — the provider's model list can be refreshed manually, pressing Enter in Base URL no longer fetches, and stale fetch responses are discarded.
+- **Pricing offers in the model editor** — a checked model's editor now has an offer picker; choosing a source fills in its prices (currency included), and custom prices are recognized as custom.
+- **MCP failures visible and retryable** — the tool list shows why an MCP server failed (command not found, failed to launch, connection failed, tool listing failed, no tools, timed out), and re-toggling the server retries discovery with a "Reconnect..." label; superseded discoveries are discarded via an epoch counter.
+- **`edit` skips no-op edits** — an edit whose `old_text` and `new_text` are identical no longer rewrites the file; the result reports which edit numbers were skipped, and an all-no-op call reports it without touching the file.
+- **Other fixes** — mouse-hover effects on the recipe and session header menu items; "Max Tokens" labeled "Max Output Tokens" in model details; new Chinese translations for the added UI; bashkit updated to 0.18.0.
+
+**Full Changelog**: [`v0.9.0...v0.9.1`](https://github.com/J-F-Liu/crabot/compare/v0.9.0...v0.9.1)
+
 # Crabot v0.9.0
 
 - **Agent Client Protocol (ACP) support** — crabot can now act as an ACP agent. Enable the built-in ACP HTTP server from the right pane (loopback-only, default port 8787) so ACP clients such as Zed or VS Code ACP extensions can create sessions, send prompts, and stream assistant replies. Each ACP session maps to a foreground session tab, and message-id-tagged chunks keep different turns distinguishable.
