@@ -74,9 +74,11 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"
 linkify = "0.11.0"
-bashkit = { version = "=0.17.1", default-features = false, features = [
+bashkit = { version = "=0.18.0", default-features = false, features = [
     "http_client",
     "realfs",
+    # 0.18: the feature also pins monty =0.0.19 and get-size2 =0.10.1, so the
+    # embedded-Python graph cannot drift from the versions resolved here.
     "python",
     # 0.17: crypto backend is explicit now (ring = default, aws-lc-rs = FIPS).
     "ring",
@@ -87,8 +89,6 @@ tokio-util = "0.7.19"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.5"
-# Pin get-size2 so it keeps using compact_str 0.9, matching ruff_python_ast.
-get-size2 = "=0.10.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 globset = "0.4"
