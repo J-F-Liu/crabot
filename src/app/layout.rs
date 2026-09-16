@@ -54,9 +54,8 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
         LayoutEvent::EscapePressed => return escape(app),
         LayoutEvent::Zoom(delta) => app.set_font_scale(app.settings.font_scale + delta),
         LayoutEvent::ToggleTheme(dark) => {
-            views::theme::set_dark_mode(dark);
-            app.layout.theme = views::theme::theme_for(dark);
-            app.settings.dark_mode = dark;
+            // Preview only; the persisted appearance is untouched.
+            app.set_dark(dark);
         }
     }
     Task::none()

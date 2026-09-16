@@ -13,7 +13,7 @@ use iced::widget::{column, container, row, text_editor};
 use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
 
 use crabot::model::{self, ModelConfig, ModelList};
-use crabot::settings::{FONT_SCALE_MAX, FONT_SCALE_MIN};
+use crabot::settings::{Appearance, FONT_SCALE_MAX, FONT_SCALE_MIN};
 use crabot::setup;
 use crabot::tools;
 use crabot::user::{UserPrompt, WorkMode};
@@ -64,6 +64,7 @@ pub(crate) struct LayoutState {
     pub(crate) cursor: Point,
     pub(crate) left_divider: DividerState,
     pub(crate) right_divider: DividerState,
+    /// Active color theme; the matching dark flag lives in `views::theme`.
     pub(crate) theme: Theme,
     pub(crate) shift_held: bool,
     pub(crate) ctrl_held: bool,
@@ -680,6 +681,8 @@ pub(crate) enum Message {
     TogglePaneSection(PaneSection),
     /// Managed process started/exited; refresh the cached right-pane list.
     ProcessTick,
+    /// The OS switched between light and dark appearance.
+    SystemThemeChanged(bool),
     /// ACP HTTP server bridge events.
     Acp(crate::acp::AcpMessage),
 }
@@ -750,9 +753,9 @@ impl App {
         let window_size = Size::new(saved.window_size.0, saved.window_size.1);
         let window_pos = Point::new(saved.window_pos.0, saved.window_pos.1);
         let tools_enabled = saved.tools_enabled;
-        let dark_mode = saved.dark_mode;
+        let dark = saved.appearance.is_dark();
         let acp_server_enabled = saved.acp_server_enabled;
-        theme::set_dark_mode(dark_mode);
+        theme::set_dark_mode(dark);
 
         let initial_selected_model = saved.selected_model.clone();
         let initial_selected_preamble = if preamble_options.iter().any(|e| e.display == "crabot") {
@@ -798,7 +801,7 @@ impl App {
                 cursor: Point::ORIGIN,
                 left_divider: DividerState::default(),
                 right_divider: DividerState::default(),
-                theme: theme::theme_for(dark_mode),
+                theme: theme::theme_for(dark),
                 shift_held: false,
                 ctrl_held: false,
                 scroll_viewport_height: 0.0,
@@ -829,7 +832,7 @@ impl App {
             models = models_count,
             enabled_tools = enabled_tools_count,
             enabled_mcp_server_count = enabled_mcp_count,
-            dark_mode,
+            dark_mode = dark,
             "crabot boot complete"
         );
         // Boot-time session list scan: show the loading placeholder until it lands.
@@ -954,6 +957,13 @@ impl App {
                 self.running_processes = tools::process::running_processes();
                 Task::none()
             }
+            Message::SystemThemeChanged(dark) => {
+                // Only "follow system" tracks the OS; an explicit choice wins.
+                if self.settings.appearance == Appearance::System {
+                    self.set_dark(dark);
+                }
+                Task::none()
+            }
             Message::Acp(event) => crate::acp::update(self, event),
         }
     }
@@ -971,6 +981,17 @@ impl App {
         for tab in &mut self.conversation.session_tabs {
             tab.search.invalidate_offsets();
         }
+    }
+
+    /// Switch the live theme; the persisted appearance preference is unchanged.
+    pub(crate) fn set_dark(&mut self, dark: bool) {
+        theme::set_dark_mode(dark);
+        self.layout.theme = theme::theme_for(dark);
+    }
+
+    /// Apply a persisted appearance preference (`System` asks the OS now).
+    pub(crate) fn apply_appearance(&mut self, appearance: Appearance) {
+        self.set_dark(appearance.is_dark());
     }
 
     /// `settings` with live UI values (window geometry, prompt text, tool
@@ -1000,7 +1021,6 @@ impl App {
             &self.tools.enabled_mcp_servers,
         );
         settings.user_prompt = self.prompt.user_prompt.text();
-        settings.dark_mode = theme::is_dark();
         // stdio mode is host-driven; don't persist the toggle into settings.
         if !self.acp.stdio {
             settings.acp_server_enabled = self.acp.enabled;
@@ -1043,6 +1063,9 @@ impl App {
         }
         if merged.font_scale != ours.font_scale {
             self.set_font_scale(merged.font_scale);
+        }
+        if merged.appearance != ours.appearance {
+            self.apply_appearance(merged.appearance);
         }
     }
 
@@ -1181,7 +1204,7 @@ impl App {
                 self.conversation.viewing(),
                 &self.pane_sections,
                 &self.running_processes,
-                self.settings.dark_mode,
+                theme::is_dark(),
                 &self.acp,
                 self.settings.language,
             )

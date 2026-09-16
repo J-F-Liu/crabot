@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 use crabot::i18n::Lang;
+use crabot::settings::Appearance;
 
 pub mod about;
 pub mod ai_models;
@@ -70,6 +71,8 @@ pub(crate) enum SettingsEvent {
     SelectTab(SettingsTab),
     /// Switch the UI language (applied immediately, persisted to settings).
     SetLanguage(Lang),
+    /// Switch the color appearance (applied immediately, persisted to settings).
+    SetAppearance(Appearance),
     /// Change the chat font scale, clamped to 0.5–2.0 (applied immediately).
     SetFontScale(f32),
     /// Choose the renderer backend (`ICED_BACKEND` value); takes effect after a restart.
@@ -101,6 +104,8 @@ pub(crate) struct SettingsState {
     pub(crate) selected_tab: SettingsTab,
     /// UI language of the dialog; mirrors `app.settings.language` while open.
     pub(crate) language: crabot::i18n::Lang,
+    /// Color appearance of the dialog; mirrors `app.settings.appearance` while open.
+    pub(crate) appearance: Appearance,
     /// Chat font scale of the dialog; mirrors `app.settings.font_scale` while open.
     pub(crate) font_scale: f32,
     /// Renderer backend of the dialog; mirrors `app.settings.iced_backend` while open.
@@ -215,6 +220,7 @@ impl Default for SettingsState {
             open: false,
             selected_tab: SettingsTab::UserInterface,
             language: crabot::i18n::Lang::default(),
+            appearance: Appearance::default(),
             font_scale: 1.0,
             iced_backend: String::from("auto"),
             selected_provider_id: String::new(),
@@ -468,6 +474,9 @@ impl SettingsState {
             }
             SettingsEvent::SetLanguage(lang) => {
                 self.language = lang;
+            }
+            SettingsEvent::SetAppearance(appearance) => {
+                self.appearance = appearance;
             }
             SettingsEvent::SetFontScale(v) => {
                 self.font_scale = crabot::settings::snap_font_scale(v);

@@ -18,6 +18,79 @@ pub fn snap_font_scale(scale: f32) -> f32 {
     ((scale / FONT_SCALE_STEP).round() * FONT_SCALE_STEP).clamp(FONT_SCALE_MIN, FONT_SCALE_MAX)
 }
 
+/// Persisted color-appearance preference.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Appearance {
+    /// Follow the OS light/dark preference.
+    #[default]
+    System,
+    /// Always use the light theme.
+    Light,
+    /// Always use the dark theme.
+    Dark,
+}
+
+impl Appearance {
+    /// All appearances, in display order.
+    pub const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
+
+    /// English name of this appearance, also its translation key.
+    pub fn label(self) -> &'static str {
+        match self {
+            Appearance::System => "Follow system",
+            Appearance::Light => "Light mode",
+            Appearance::Dark => "Dark mode",
+        }
+    }
+
+    /// Resolve to light/dark; only [`Appearance::System`] asks the OS.
+    pub fn is_dark(self) -> bool {
+        match self {
+            Appearance::System => system_is_dark(),
+            Appearance::Light => false,
+            Appearance::Dark => true,
+        }
+    }
+}
+
+/// Whether the OS prefers dark; platforms that cannot be queried report light.
+fn system_is_dark() -> bool {
+    #[cfg(windows)]
+    fn detect() -> bool {
+        // HKCU\...\Themes\Personalize: `AppsUseLightTheme` = 0 means dark.
+        windows_registry::CURRENT_USER
+            .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            .and_then(|key| key.get_u32("AppsUseLightTheme"))
+            .is_ok_and(|light| light == 0)
+    }
+    #[cfg(target_os = "macos")]
+    fn detect() -> bool {
+        // `defaults` reports AppleInterfaceStyle only while dark mode is on.
+        command_stdout("defaults", &["read", "-g", "AppleInterfaceStyle"])
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("dark"))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    fn detect() -> bool {
+        // GNOME portals report the preference; older setups only name a theme.
+        const INTERFACE: &str = "org.gnome.desktop.interface";
+        command_stdout("gsettings", &["get", INTERFACE, "color-scheme"])
+            .or_else(|| command_stdout("gsettings", &["get", INTERFACE, "gtk-theme"]))
+            .is_some_and(|value| value.to_ascii_lowercase().contains("dark"))
+    }
+    detect()
+}
+
+/// Trimmed stdout of `program args...`; `None` when it fails or prints nothing.
+#[cfg(not(windows))]
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
 /// All persistable app-level state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -71,8 +144,8 @@ pub struct Settings {
     pub use_system_proxy_for_tools: bool,
     /// Latest version found in the last check, if newer than current.
     pub last_update_version: Option<String>,
-    /// Whether the dark color theme is active.
-    pub dark_mode: bool,
+    /// Color appearance: follow system, light, or dark.
+    pub appearance: Appearance,
     /// UI language.
     pub language: Lang,
     /// Renderer backend (`ICED_BACKEND` value); `auto`/empty = wgpu → tiny-skia.
@@ -116,7 +189,7 @@ impl Default for Settings {
             use_system_proxy_for_llm: true,
             use_system_proxy_for_tools: true,
             last_update_version: None,
-            dark_mode: false,
+            appearance: Appearance::default(),
             language: Lang::default(),
             iced_backend: String::from("auto"),
             acp_server_enabled: false,
@@ -230,6 +303,7 @@ fn merge_settings(baseline: &Settings, ours: &Settings, disk: &Settings) -> Sett
         use_system_proxy_for_llm,
         use_system_proxy_for_tools,
         last_update_version,
+        appearance,
         language,
         iced_backend,
         // Read only when the ACP listener next starts; never auto-restarted.

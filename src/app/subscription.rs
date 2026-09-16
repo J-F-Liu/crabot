@@ -173,6 +173,9 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
     Subscription::batch([
         event_sub,
         window::close_requests().map(|_id| Message::Conversation(ConversationEvent::AppClosing)),
+        // OS light/dark switch; ignored unless the appearance follows the system.
+        iced::system::theme_changes()
+            .map(|mode| Message::SystemThemeChanged(mode == iced::theme::Mode::Dark)),
         repeat_sub,
         // One tick per process start/exit; each tick refreshes the cached
         // process list in App state (plus one initial snapshot tick).

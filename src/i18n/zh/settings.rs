@@ -20,6 +20,14 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── User Interface page (user_interface.rs) ──
     ("User Interface", "用户界面"),
     ("Language", "语言"),
+    ("Appearance", "外观"),
+    ("Follow system", "跟随系统"),
+    ("Light mode", "浅色模式"),
+    ("Dark mode", "深色模式"),
+    (
+        "Follow system tracks the OS light/dark preference.",
+        "跟随操作系统的浅色/深色偏好。",
+    ),
     ("Renderer backend", "渲染器后端"),
     ("Takes effect after a restart.", "重启后生效。"),
     ("Font scale", "字体缩放"),
