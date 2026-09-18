@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -39,11 +40,241 @@ impl Clone for TextContent {
     }
 }
 
-/// Linkify `text` and parse it; returns the markdown and whether a URL was wrapped.
-fn linkified_md(text: &str) -> (Box<iced::widget::markdown::Content>, bool) {
-    let (linked, has_url) = linkify_urls(text);
-    let md = Box::new(iced::widget::markdown::Content::parse(&linked));
-    (md, has_url)
+/// Escape math pipes, linkify URLs, and parse the result as markdown.
+fn markdown_content(text: &str) -> (Box<iced::widget::markdown::Content>, bool) {
+    let (source, has_url) = markdown_source(text);
+    (
+        Box::new(iced::widget::markdown::Content::parse(&source)),
+        has_url,
+    )
+}
+
+/// Byte ranges of the GFM table blocks in `text`.
+fn table_ranges(text: &str) -> Vec<Range<usize>> {
+    Parser::new_ext(text, markdown_options())
+        .into_offset_iter()
+        .filter_map(|(event, range)| matches!(event, Event::Start(Tag::Table(_))).then_some(range))
+        .collect()
+}
+
+/// Escape `|` inside the code and math spans on GFM table lines. A row is split
+/// on *every* unescaped bar before inline parsing, so the bar in `` `a|b` ``
+/// would truncate the row; `\|` renders as a plain bar inside the cell.
+fn escape_table_pipes(text: &str) -> Cow<'_, str> {
+    let mut tables = table_ranges(text).into_iter().peekable();
+    if tables.peek().is_none() {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let (mut offset, mut changed) = (0, false);
+    for line in text.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        while tables.peek().is_some_and(|table| table.end <= start) {
+            let _ = tables.next();
+        }
+        // Overlap, not containment: a table in a blockquote/list starts after
+        // its `> ` / `- ` marker, mid-line.
+        let in_table = tables.peek().is_some_and(|table| table.start < offset);
+        if in_table && let Some(escaped) = escape_span_pipes(line) {
+            out.push_str(&escaped);
+            changed = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    if changed {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Escape unescaped `|` inside the code and math spans of one line; `None` when
+/// the line holds no such bar.
+fn escape_span_pipes(line: &str) -> Option<String> {
+    let mut out = String::new();
+    let (mut written, mut pos) = (0, 0);
+    while pos < line.len() {
+        let span = match line.as_bytes()[pos] {
+            b'`' if !is_escaped(line, pos) => code_span(line, pos),
+            b'$' if !is_escaped(line, pos) => math_span(line, pos).body(),
+            _ => None,
+        };
+        let Some((body, after)) = span else {
+            pos += unmatched_advance(line, pos);
+            continue;
+        };
+        if let Some(escaped) = escape_pipes(&line[body.start..body.end]) {
+            out.push_str(&line[written..body.start]);
+            out.push_str(&escaped);
+            written = body.end;
+        }
+        pos = after;
+    }
+    if out.is_empty() {
+        return None;
+    }
+    out.push_str(&line[written..]);
+    Some(out)
+}
+
+/// Bytes to advance when no span opens at `pos`. An unescaped `` ` `` or `$$` run
+/// that fails to close is kept literal as a whole (CommonMark skips the run);
+/// every other byte advances by one character.
+fn unmatched_advance(line: &str, pos: usize) -> usize {
+    match line.as_bytes()[pos] {
+        b'`' if !is_escaped(line, pos) => line[pos..].bytes().take_while(|&b| b == b'`').count(),
+        b'$' if !is_escaped(line, pos) && line[pos..].starts_with("$$") => 2,
+        _ => line[pos..].chars().next().map_or(1, char::len_utf8),
+    }
+}
+
+/// Content range of the inline code span opened by the backtick run at `open`,
+/// plus the offset just past its matching closing run.
+fn code_span(line: &str, open: usize) -> Option<(Range<usize>, usize)> {
+    let ticks = line[open..].bytes().take_while(|&b| b == b'`').count();
+    let mut pos = open + ticks;
+    loop {
+        let close = pos + line[pos..].find('`')?;
+        let run = line[close..].bytes().take_while(|&b| b == b'`').count();
+        if run == ticks {
+            return Some((open + ticks..close, close + ticks));
+        }
+        pos = close + run;
+    }
+}
+
+/// A math span opened by an unescaped `$`.
+enum MathSpan {
+    /// Body range plus the offset just past the closing delimiter.
+    Body(Range<usize>, usize),
+    /// Literal `$` next to whitespace, e.g. currency `$ 5`.
+    Literal,
+    /// No closing delimiter follows; no later `$` can close either.
+    Unclosed,
+}
+
+impl MathSpan {
+    /// Body range and end offset, if the span is closed.
+    fn body(self) -> Option<(Range<usize>, usize)> {
+        match self {
+            Self::Body(body, after) => Some((body, after)),
+            _ => None,
+        }
+    }
+}
+
+/// Opening delimiter of the math span at `open`: `("$$", true)` for display math.
+fn math_delim(text: &str, open: usize) -> (&'static str, bool) {
+    if text[open..].starts_with("$$") {
+        ("$$", true)
+    } else {
+        ("$", false)
+    }
+}
+
+/// Scan the math span opened at the unescaped `$` at `open`.
+fn math_span(text: &str, open: usize) -> MathSpan {
+    let (delim, display) = math_delim(text, open);
+    let start = open + delim.len();
+    if !display && text[start..].starts_with(char::is_whitespace) {
+        return MathSpan::Literal; // `$ 5` stays literal
+    }
+    match math_close(text, open, display) {
+        Some(close) => MathSpan::Body(start..close, close + delim.len()),
+        None => MathSpan::Unclosed,
+    }
+}
+
+/// Escape `|` inside `$...$` / `$$...$$` math spans, so formula bars are not read
+/// as GFM table column separators. `\$` never opens a span and `$` next to
+/// whitespace stays literal (currency like `$ 5`).
+fn escape_math_pipes(text: &str) -> Cow<'_, str> {
+    let mut out = String::new();
+    let (mut written, mut search) = (0, 0);
+    while let Some(open) = find_unescaped(text, '$', search) {
+        match math_span(text, open) {
+            MathSpan::Body(body, after) => {
+                if let Some(escaped) = escape_pipes(&text[body.start..body.end]) {
+                    out.push_str(&text[written..body.start]);
+                    out.push_str(&escaped);
+                    written = body.end;
+                }
+                search = after;
+            }
+            MathSpan::Literal => search = open + 1, // `$ 5` stays literal
+            MathSpan::Unclosed => break,            // no later `$` can close either
+        }
+    }
+    if written == 0 {
+        return Cow::Borrowed(text); // no bar inside any span
+    }
+    out.push_str(&text[written..]);
+    Cow::Owned(out)
+}
+
+/// Escape unescaped `|` in `content`, or `None` when there is no bar to escape.
+fn escape_pipes(content: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut pos = 0;
+    while let Some(bar) = find_unescaped(content, '|', pos) {
+        out.push_str(&content[pos..bar]);
+        out.push_str("\\|");
+        pos = bar + 1;
+    }
+    if pos == 0 {
+        return None;
+    }
+    out.push_str(&content[pos..]);
+    Some(out)
+}
+
+/// Byte index of the closing delimiter of the math span opened at `open`, if any.
+/// An inline closer must be preceded by a non-space (`$5 and $10` stays literal)
+/// and a span may not cross a block boundary — a table cell is single-line.
+fn math_close(text: &str, open: usize, display: bool) -> Option<usize> {
+    let delim_len = if display { 2 } else { 1 };
+    let mut pos = open + delim_len;
+    loop {
+        let close = find_unescaped(text, '$', pos)?;
+        let closes = if display {
+            text[close..].starts_with("$$")
+        } else {
+            !text[..close].ends_with(char::is_whitespace)
+        };
+        if !closes {
+            pos = close + 1;
+            continue;
+        }
+        // A blank line ends a display span, a line break an inline one; every
+        // later closer lies past that boundary too.
+        let span = &text[open..close + delim_len];
+        let split = if display {
+            span.lines().any(|line| line.trim().is_empty())
+        } else {
+            span.contains(['\n', '\r'])
+        };
+        return (!split).then_some(close);
+    }
+}
+
+/// Byte index of the next unescaped `ch` at or after `from`.
+fn find_unescaped(text: &str, ch: char, from: usize) -> Option<usize> {
+    let mut pos = from;
+    loop {
+        let idx = pos + text[pos..].find(ch)?;
+        if !is_escaped(text, idx) {
+            return Some(idx);
+        }
+        pos = idx + ch.len_utf8();
+    }
+}
+
+/// True if the character at `pos` is preceded by an odd number of backslashes.
+fn is_escaped(text: &str, pos: usize) -> bool {
+    let before = &text[..pos];
+    before.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1
 }
 
 impl TextContent {
@@ -62,12 +293,12 @@ impl TextContent {
 
     /// Ensure the markdown cache is up to date with the raw text content.
     pub fn refresh_md_cache(&mut self) {
-        let (md, has_url) = linkified_md(&self.content);
+        let (md, has_url) = markdown_content(&self.content);
         self.content_md = Some(md);
         self.has_url = has_url;
 
         if let Some(reasoning) = &self.reasoning {
-            let (md, has_url) = linkified_md(reasoning);
+            let (md, has_url) = markdown_content(reasoning);
             self.reasoning_md = Some(md);
             self.reasoning_has_url = has_url;
         } else {
@@ -405,7 +636,7 @@ fn transform_outside(
 }
 
 /// Replace `:emoji:` codes with Unicode, skipping the regions protected by
-/// `linkify_urls` so a link destination can't be corrupted.
+/// `markdown_source` so a link destination can't be corrupted.
 pub fn replace_emoji(text: &str) -> String {
     transform_outside(text, &protected_ranges(text), |s| {
         let replaced = EMOJI.replace_all(s);
@@ -465,10 +696,14 @@ fn protected_ranges(text: &str) -> Vec<Range<usize>> {
     merged
 }
 
-/// Wrap bare URLs in `<url>` autolink syntax. Code, links/images and raw HTML
-/// are untouched. Returns the string and whether any URL was wrapped.
-pub fn linkify_urls(text: &str) -> (String, bool) {
-    transform_outside(text, &protected_ranges(text), linkify_segment)
+/// Markdown source for `text`: table-cell and math pipes escaped, bare URLs
+/// wrapped (the flag reports whether a URL was wrapped). Code, links/images and
+/// raw HTML stay verbatim so a link destination can't be corrupted.
+pub fn markdown_source(text: &str) -> (String, bool) {
+    let text = escape_table_pipes(text);
+    transform_outside(&text, &protected_ranges(&text), |segment| {
+        linkify_segment(&escape_math_pipes(segment))
+    })
 }
 
 /// Wrap bare URLs in `segment` with `<url>` autolink syntax.

@@ -604,14 +604,14 @@ fn render_ask_answer(label: &str, class: &str, answer: &str, out: &mut String) {
 
 // ── markdown / escaping ───────────────────────────────────────────
 
-/// Linkify bare URLs (as the center pane does) then render markdown to HTML.
-/// Raw HTML is escaped and link/image destinations are restricted to safe
-/// schemes, so LLM output can't execute markup or navigate the exported page
-/// (opened in a real browser) to `javascript:`/`file:` URLs.
+/// Escape table-cell/math pipes and linkify bare URLs (as the center pane does),
+/// then render markdown to HTML. Raw HTML is escaped and link/image destinations
+/// are restricted to safe schemes, so LLM output can't execute markup or
+/// navigate the exported page to `javascript:`/`file:` URLs.
 fn markdown_to_html(text: &str) -> String {
-    let (linked, _) = crabot::chat::linkify_urls(text);
+    let (source, _) = crabot::chat::markdown_source(text);
     let parser =
-        pulldown_cmark::Parser::new_ext(&linked, markdown_options()).map(|event| match event {
+        pulldown_cmark::Parser::new_ext(&source, markdown_options()).map(|event| match event {
             Event::Html(text) => Event::Html(escape_html(&text).into()),
             Event::InlineHtml(text) => Event::InlineHtml(escape_html(&text).into()),
             // Neutralize unsafe destinations; CSP can't restrict link navigation.
