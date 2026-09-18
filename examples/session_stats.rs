@@ -8,12 +8,13 @@
 //! By default only the current month is counted; `--month YYYY-MM` counts a
 //! specific month instead.
 //!
-//! Usage:
-//!   cargo run --release --example session_stats -- [workspace_path] [--month YYYY-MM]
+//! Workspaces are read from `~/.crabot/settings.ron` (`recent_workspaces`) and
+//! their statistics are merged into a single report.
 //!
-//! Without a workspace path, the current directory is used.
+//! Usage:
+//!   cargo run --release --example session_stats -- [--month YYYY-MM]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -91,9 +92,8 @@ fn merge_costs(target: &mut BTreeMap<Currency, f64>, source: &BTreeMap<Currency,
     }
 }
 
-/// Parse command line arguments: optional workspace path and optional `--month YYYY-MM`.
-fn parse_args() -> (Option<PathBuf>, Option<String>) {
-    let mut workspace = None;
+/// Parse command line arguments: optional `--month YYYY-MM`.
+fn parse_args() -> Option<String> {
     let mut month = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -108,18 +108,13 @@ fn parse_args() -> (Option<PathBuf>, Option<String>) {
             _ if arg.starts_with("--month=") => {
                 month = Some(validate_month(&arg["--month=".len()..]));
             }
-            _ if arg.starts_with('-') => {
-                eprintln!("Unknown argument: {arg}");
-                std::process::exit(1);
-            }
-            _ if workspace.is_none() => workspace = Some(PathBuf::from(arg)),
             _ => {
-                eprintln!("Unexpected extra argument: {arg}");
+                eprintln!("Unknown argument: {arg}");
                 std::process::exit(1);
             }
         }
     }
-    (workspace, month)
+    month
 }
 
 /// Normalize a `YYYY-MM` month (e.g. `2026-7` → `2026-07`); exit if malformed.
@@ -165,27 +160,49 @@ fn session_model_stats(session: &Session, path: &Path) -> BTreeMap<String, PerMo
 }
 
 fn main() {
-    let (workspace_arg, month_arg) = parse_args();
+    let month_arg = parse_args();
 
-    let workspace = workspace_arg
-        .unwrap_or_else(|| env::current_dir().expect("cannot determine current directory"));
-    let workspace = dunce::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
+    // Workspaces to aggregate: all `recent_workspaces` entries, de-duplicated.
+    let mut workspaces: Vec<PathBuf> = Vec::new();
+    {
+        let settings = crabot::settings::Settings::load();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        for (path, _) in &settings.recent_workspaces {
+            if seen.insert(path.clone()) {
+                workspaces.push(path.clone());
+            }
+        }
+    }
 
     let target_month =
         month_arg.unwrap_or_else(|| chrono::Local::now().format("%Y-%m").to_string());
 
-    println!("Workspace: {}", workspace.display());
+    println!("Settings: {}", crabot::settings::Settings::path().display());
+    if workspaces.is_empty() {
+        println!("No recent workspaces configured.");
+        return;
+    }
+    println!("Workspaces ({}):", workspaces.len());
+    for workspace in &workspaces {
+        println!("  - {}", workspace.display());
+    }
     println!("Counting sessions in: {target_month}");
     println!();
 
-    // 1. List session file paths for the target month.
-    let paths = match session::list_session_paths(&workspace, Some(&target_month)) {
-        Ok(paths) => paths,
-        Err(e) => {
-            eprintln!("Error listing sessions: {e}");
-            std::process::exit(1);
+    // 1. List session file paths for the target month across all workspaces.
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for workspace in &workspaces {
+        let workspace = dunce::canonicalize(workspace).unwrap_or_else(|_| workspace.clone());
+        match session::list_session_paths(&workspace, Some(&target_month)) {
+            Ok(found) => paths.extend(found),
+            Err(e) => {
+                eprintln!(
+                    "Warning: cannot list sessions in {} — {e}",
+                    workspace.display()
+                );
+            }
         }
-    };
+    }
 
     if paths.is_empty() {
         println!("No sessions found for {target_month}.");
@@ -195,7 +212,7 @@ fn main() {
     println!("Found {} session(s).\n", paths.len());
 
     // 2. Load each session and attribute usage per model (tally deltas).
-    let mut by_day: BTreeMap<String, BTreeMap<String, DayStats>> = BTreeMap::new();
+    let mut by_day: BTreeMap<String, BTreeMap<String, UsageStats>> = BTreeMap::new();
     // Sessions per day — a multi-model session counts once per day.
     let mut day_sessions: BTreeMap<String, u64> = BTreeMap::new();
 
@@ -240,6 +257,8 @@ fn main() {
         "Day", "Model", "Sess", "Reqs", "Cost",
     );
     let separator = format!("{:-<12} {:-<30} {:-<6} {:-<7} {:-<10}", "", "", "", "", "");
+    let model_header = format!("{:<43} {:>6} {:>7} {:>10}", "Model", "Sess", "Reqs", "Cost");
+    let model_separator = format!("{:-<43} {:-<6} {:-<7} {:-<10}", "", "", "", "");
 
     let mut grand_count = 0u64;
     let mut grand_requests = 0u64;
@@ -288,10 +307,43 @@ fn main() {
         grand_requests,
         format_costs(&grand_costs),
     );
+
+    // 4. Per-model totals across all days.
+    let mut by_model: BTreeMap<String, UsageStats> = BTreeMap::new();
+    for models in by_day.values() {
+        for (model_id, stats) in models {
+            let entry = by_model.entry(model_id.clone()).or_default();
+            entry.count += stats.count;
+            entry.requests += stats.requests;
+            merge_costs(&mut entry.costs, &stats.costs);
+        }
+    }
+
+    println!();
+    println!("══ By model ({target_month}) ══\n");
+    println!("{model_header}");
+    println!("{model_separator}");
+    for (model_id, stats) in &by_model {
+        println!(
+            "{:<43} {:>6} {:>7} {:>10}",
+            model_id,
+            stats.count,
+            stats.requests,
+            format_costs(&stats.costs),
+        );
+    }
+    println!("{model_separator}");
+    println!(
+        "{:<43} {:>6} {:>7} {:>10}",
+        "TOTAL",
+        grand_count,
+        grand_requests,
+        format_costs(&grand_costs),
+    );
 }
 
 #[derive(Default)]
-struct DayStats {
+struct UsageStats {
     count: u64,
     requests: u64,
     costs: BTreeMap<Currency, f64>,
