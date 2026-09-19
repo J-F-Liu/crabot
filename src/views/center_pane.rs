@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crabot::chat::{Dialog, Turn, TurnBody, streaming_tool_ids, tool_items};
+use crabot::model::ModelConfig;
 use crabot::session::{SearchHit, SearchHitKind, Session};
 use genai::chat::ChatRole;
 use iced::{
@@ -11,7 +12,9 @@ use iced::{
     advanced::widget::operation::{Operation, Outcome, Scrollable, scrollable as scrollable_op},
     alignment, font, mouse,
     widget::scrollable::{Direction, Scrollbar},
-    widget::{self, Space, button, column, container, markdown, mouse_area, row, scrollable, text},
+    widget::{
+        self, Space, button, column, container, markdown, mouse_area, row, scrollable, stack, text,
+    },
 };
 use iced_runtime::task::widget as task_widget;
 use iced_selection::Text as SelectableText;
@@ -654,6 +657,8 @@ pub(crate) fn center_pane<'a>(
     theme: &'a Theme,
     font_scale: f32,
     lang: Lang,
+    model: Option<&'a ModelConfig>,
+    right_pane_collapsed: bool,
 ) -> Element<'a, CenterPaneEvent> {
     let tab: &SessionTab = conversation.viewing();
     let dialogs: &[Dialog] = tab.session.dialogs.as_slice();
@@ -690,6 +695,8 @@ pub(crate) fn center_pane<'a>(
         .map(|rp| conversation.session_tabs[rp].number)
         .collect();
     let viewing_number = tab.number;
+    // Move the right pane's usage summary into the status bar when collapsed.
+    let usage = right_pane_collapsed.then(|| usage_summary(tab, model));
     // Set up shared context for turn block builders.
     let turn_ctx = TurnView {
         expanded_turns,
@@ -845,6 +852,7 @@ pub(crate) fn center_pane<'a>(
                 viewing_number,
                 font_scale,
                 lang,
+                usage,
             ),
         ])
         .width(Fill)
@@ -1084,6 +1092,18 @@ fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
 
 // ── status line ───────────────────────────────────────────────────
 
+/// One-line usage summary for the status bar's right edge, e.g.
+/// `12.3% · $0.05`.
+fn usage_summary(tab: &SessionTab, model: Option<&ModelConfig>) -> String {
+    let mut parts = Vec::new();
+    if let Some(cw) = model.map(|m| m.context_window).filter(|&cw| cw > 0) {
+        let ratio = tab.latest_tokens.context_fill_ratio(cw);
+        parts.push(format!("{ratio:.1}%"));
+    }
+    parts.push(tab.session.formatted_cost());
+    parts.join(" · ")
+}
+
 fn status_line(
     status_text: Cow<'static, str>,
     phase: DialogPhase,
@@ -1091,6 +1111,7 @@ fn status_line(
     viewing_number: usize,
     font_scale: f32,
     lang: Lang,
+    usage: Option<String>,
 ) -> Element<'static, CenterPaneEvent> {
     let mut row = row![].align_y(Alignment::Center).spacing(8);
 
@@ -1127,10 +1148,22 @@ fn status_line(
         row = row.push(text(label).size(12.0 * font_scale).color(color_muted()));
     }
 
-    container(row)
+    let bar = container(row)
         .width(Fill)
         .align_x(alignment::Horizontal::Center)
         .padding([6, 12])
-        .style(bordered_bar_style)
-        .into()
+        .style(bordered_bar_style);
+
+    // Overlay the usage text so the centered status text keeps its position.
+    let Some(usage) = usage else {
+        return bar.into();
+    };
+    stack![
+        bar,
+        container(text(usage).size(12.0 * font_scale).color(color_muted()))
+            .align_right(Fill)
+            .center_y(Fill)
+            .padding([0, 12])
+    ]
+    .into()
 }

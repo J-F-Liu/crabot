@@ -1157,6 +1157,8 @@ impl App {
 
     /// The three-pane layout (left, center, right) with dividers.
     fn view_main_content(&self) -> Element<'_, Message> {
+        let model = self.get_current_model();
+        let right_pane_collapsed = self.settings.right_pane_width <= 0.0;
         row![
             left_pane(
                 &self.settings,
@@ -1179,6 +1181,8 @@ impl App {
                 &self.layout.theme,
                 self.settings.font_scale,
                 self.settings.language,
+                model,
+                right_pane_collapsed,
             )
             .map(|event| match event {
                 CenterPaneEvent::Conversation(e) => Message::Conversation(e),
@@ -1200,7 +1204,7 @@ impl App {
             divider(&self.layout.right_divider),
             right_pane(
                 self.settings.right_pane_width,
-                self.get_current_model(),
+                model,
                 self.conversation.viewing(),
                 &self.pane_sections,
                 &self.running_processes,
