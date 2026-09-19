@@ -15,7 +15,7 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── session header menu & info (center_pane.rs) ──
     ("Copy title", "复制标题"),
     ("Resend session", "重新发送"),
-    ("Fork session", "分身会话"),
+    ("Fork session", "克隆会话"),
     ("Compact session", "压缩会话"),
     ("Export as HTML", "导出为 HTML"),
     ("Model: {model_id}", "模型：{model_id}"),
