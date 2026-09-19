@@ -102,13 +102,14 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
                 return Err(CANCEL_REASON.into());
             }
             r = client()?.get(parsed.clone()).timeout(timeout).send() => {
-                r.map_err(|e| format!("Failed to fetch {url}: {e}"))?
+                // reqwest embeds the URL in its error; the call args already show it.
+                r.map_err(|e| format!("Failed to fetch: {}", e.without_url()))?
             }
         };
 
         let status = resp.status();
         if !status.is_success() {
-            return Err(format!("Failed to fetch {url}: HTTP {status}"));
+            return Err(format!("Failed to fetch: HTTP {status}"));
         }
 
         // Refuse known-huge bodies before downloading.
