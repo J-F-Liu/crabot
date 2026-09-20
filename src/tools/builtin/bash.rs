@@ -22,7 +22,7 @@ impl Tool for BashTool {
     }
 
     fn instruction(&self) -> &str {
-        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files, dedicated tools are available for those operations. Run `compgen -b` to list all available built-in commands (such as `json`, `csv`, `tomlq`, `http`); run `help <cmd>` for a description of a specific builtin."
+        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files, dedicated tools are available for those operations. Never background a command (`&`, `nohup`, `setsid`) to keep it running — it is refused, since the process is killed when the call ends; use the process tool for anything that must outlive the call. Run `compgen -b` to list all available built-in commands (such as `json`, `csv`, `tomlq`, `http`); run `help <cmd>` for a description of a specific builtin."
     }
 
     fn schema(&self) -> Value {
@@ -92,6 +92,11 @@ fn run(
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
     let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
+    // Refuse detaches before running: a backgrounded process would burn the
+    // whole timeout and be killed on the way out.
+    if let Some(detach) = bash_kit::detach_request(command) {
+        return Err(detach.message());
+    }
     let limits = tool_limits();
     let timeout = Duration::from_millis(
         crate::tools::arg_u64(args, "timeout")

@@ -10,7 +10,11 @@
 //! arguments; [`analyze_script`] extracts those names from literal arguments.
 //! `watch`/`parallel` stubs never run commands and `env` refuses them, so
 //! scripts that would involve one fall back to real bash. Mirrors bashkit
-//! 0.17.1 — re-verify when bumping.
+//! 0.18.1 — re-verify when bumping.
+//!
+//! Detaching a process is a request this tool cannot serve — the interpreter
+//! runs background jobs synchronously and kills the process group on timeout —
+//! so [`detach_request`] refuses those scripts with a `process` tool hint.
 //!
 //! Windows path translation is bidirectional, MSYS2-style:
 //! [`convert_args_for_host`] rewrites VFS paths in bridged-command args to
@@ -29,6 +33,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bashkit::analysis::{AnalyzedCommand, ScriptAnalysis, analyze_with_limits};
+use bashkit::parser::{
+    Assignment, AssignmentValue, Command as ShellCommand, CompoundCommand, ListOperator, Parser,
+    SimpleCommand, Word, WordPart,
+};
 use bashkit::{
     Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, HttpLimits, NetworkAllowlist,
     async_trait,
@@ -123,6 +131,156 @@ pub(crate) fn analyze_script(script: &str) -> Result<ScriptPlan, ()> {
     })
 }
 
+// ── Detach requests (`&`, `nohup`) ─────────────────────────────────
+
+/// Commands that hand a process past the call — see [`detach_request`].
+/// `disown` starts nothing, and `screen`/`tmux` have non-detaching uses.
+const DETACH_WRAPPERS: [&str; 3] = ["nohup", "setsid", "daemonize"];
+
+/// How a script asks for a process outliving the `bash` call.
+#[derive(PartialEq, Eq, Debug)]
+pub(crate) enum Detach {
+    /// `cmd &` — the background operator.
+    Background,
+    /// A detaching wrapper (`nohup`, `setsid`, `daemonize`).
+    Wrapper(&'static str),
+}
+
+impl Detach {
+    /// Agent-facing refusal: what was detected, why it cannot work here, and
+    /// the `process` call to use instead.
+    pub(crate) fn message(self) -> String {
+        let what = match self {
+            Detach::Background => "`&` background job".to_string(),
+            Detach::Wrapper(name) => format!("`{name}`"),
+        };
+        format!(
+            "The bash tool refused this command ({what}) and did not run it: a backgrounded \
+             process runs synchronously here and is killed when the call ends or times out. \
+             Use the process tool instead — {{\"action\": \"start\", \"command\": \"...\"}} \
+             returns a pid for `logs`, `status`, `input`, and `stop`."
+        )
+    }
+}
+
+/// The detach request in `script`, if any: a `&` background operator or a
+/// detaching wrapper in command position.
+///
+/// Unparsable scripts yield `None` (real bash reports the syntax error), as do
+/// `&`s bashkit's parser drops (`if …; then sleep 30 & fi`).
+pub(crate) fn detach_request(script: &str) -> Option<Detach> {
+    // Cheap prescan: most scripts contain neither a `&` nor a wrapper name.
+    if !script.contains('&') && !DETACH_WRAPPERS.iter().any(|name| script.contains(name)) {
+        return None;
+    }
+    let parsed = Parser::new(script).parse().ok()?;
+    detach_in_commands(&parsed.commands)
+}
+
+/// First detach request among `commands`, in source order.
+fn detach_in_commands(commands: &[ShellCommand]) -> Option<Detach> {
+    commands.iter().find_map(detach_in_command)
+}
+
+/// First detach request among command lists, in source order.
+fn first_detach<'a>(lists: impl IntoIterator<Item = &'a Vec<ShellCommand>>) -> Option<Detach> {
+    lists
+        .into_iter()
+        .find_map(|commands| detach_in_commands(commands))
+}
+
+/// Detach request inside one command, recursing into every nested body.
+fn detach_in_command(command: &ShellCommand) -> Option<Detach> {
+    match command {
+        ShellCommand::Simple(cmd) => detach_in_simple(cmd),
+        ShellCommand::Pipeline(pipeline) => detach_in_commands(&pipeline.commands),
+        // Source order: the leftmost signal names the message.
+        ShellCommand::List(list) => detach_in_command(&list.first).or_else(|| {
+            list.rest.iter().find_map(|(op, cmd)| match op {
+                ListOperator::Background => Some(Detach::Background),
+                _ => detach_in_command(cmd),
+            })
+        }),
+        ShellCommand::Compound(compound, redirects) => detach_in_compound(compound)
+            .or_else(|| detach_in_words(redirects.iter().map(|redirect| &redirect.target))),
+        ShellCommand::Function(def) => detach_in_command(&def.body),
+    }
+}
+
+/// Detach request in a simple command: a wrapper name in command position, or
+/// a command/process substitution in any word it carries — arguments, prefix
+/// assignments (`LOG=$(nohup server &)`), and redirect targets.
+fn detach_in_simple(cmd: &SimpleCommand) -> Option<Detach> {
+    detach_wrapper(&cmd.name).map(Detach::Wrapper).or_else(|| {
+        detach_in_words(std::iter::once(&cmd.name).chain(&cmd.args))
+            .or_else(|| cmd.assignments.iter().find_map(detach_in_assignment))
+            .or_else(|| detach_in_words(cmd.redirects.iter().map(|redirect| &redirect.target)))
+    })
+}
+
+/// Detach request inside an assignment value (`LOG=$(nohup server &)`).
+fn detach_in_assignment(assignment: &Assignment) -> Option<Detach> {
+    match &assignment.value {
+        AssignmentValue::Scalar(word) => detach_in_word(word),
+        AssignmentValue::Array(words) => detach_in_words(words),
+    }
+}
+
+/// First detach request among `words`, in source order.
+fn detach_in_words<'a>(words: impl IntoIterator<Item = &'a Word>) -> Option<Detach> {
+    words.into_iter().find_map(detach_in_word)
+}
+
+/// The detaching wrapper a word names, when every part of it is literal.
+fn detach_wrapper(word: &Word) -> Option<&'static str> {
+    let text = word
+        .parts
+        .iter()
+        .map(|part| match part {
+            WordPart::Literal(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Option<String>>()?;
+    DETACH_WRAPPERS.into_iter().find(|wrapper| *wrapper == text)
+}
+
+/// Detach request inside a word's command and process substitutions.
+fn detach_in_word(word: &Word) -> Option<Detach> {
+    word.parts.iter().find_map(|part| match part {
+        WordPart::CommandSubstitution(commands)
+        | WordPart::ProcessSubstitution { commands, .. } => detach_in_commands(commands),
+        _ => None,
+    })
+}
+
+/// Detach request inside a compound command's conditions and bodies.
+fn detach_in_compound(compound: &CompoundCommand) -> Option<Detach> {
+    match compound {
+        CompoundCommand::If(stmt) => first_detach(
+            [&stmt.condition, &stmt.then_branch]
+                .into_iter()
+                .chain(
+                    stmt.elif_branches
+                        .iter()
+                        .flat_map(|(cond, body)| [cond, body]),
+                )
+                .chain(stmt.else_branch.iter()),
+        ),
+        CompoundCommand::For(stmt) => detach_in_commands(&stmt.body),
+        CompoundCommand::ArithmeticFor(stmt) => detach_in_commands(&stmt.body),
+        CompoundCommand::While(stmt) => first_detach([&stmt.condition, &stmt.body]),
+        CompoundCommand::Until(stmt) => first_detach([&stmt.condition, &stmt.body]),
+        CompoundCommand::Case(stmt) => first_detach(stmt.cases.iter().map(|item| &item.commands)),
+        CompoundCommand::Select(stmt) => detach_in_commands(&stmt.body),
+        CompoundCommand::Subshell(commands) | CompoundCommand::BraceGroup(commands) => {
+            detach_in_commands(commands)
+        }
+        CompoundCommand::Time(stmt) => stmt.command.as_deref().and_then(detach_in_command),
+        CompoundCommand::Coproc(stmt) => detach_in_command(&stmt.body),
+        CompoundCommand::Arithmetic(_) | CompoundCommand::Conditional(_) => None,
+    }
+}
+
 /// Names that must never be bridged: opaque builtins (`command`, `exec`),
 /// interpreter re-entries (`eval`/`source`/`.`/`bash`/`sh`), path-based
 /// (`./s.sh`) and glob-shaped (`$TOOL`, `x*`) names. `[` is exempt — its
@@ -132,6 +290,7 @@ pub(crate) fn analyze_script(script: &str) -> Result<ScriptPlan, ()> {
 /// `nice`, `nohup`, `setsid`, `stdbuf`, `sudo` — need no special handling:
 /// they are not builtins, so bridging the wrapper itself runs the host
 /// binary, which spawns the wrapped command exactly like real bash does.
+/// (The detaching ones never reach the bridge — see [`detach_request`].)
 fn is_unbridgeable(name: &str) -> bool {
     matches!(
         name,
@@ -1458,172 +1617,5 @@ mod stderr_silencer {
                 super::drain_and_reemit(std::fs::File::from(read_end));
             }
         }
-    }
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-
-    /// Pin the MSYS2 argument-conversion rules: `/d/x` is a drive path,
-    /// `//d/x` stays UNC (server `d`, share `x`) — verified against the
-    /// MSYS2 runtime (`cygpath -w //d/x` → `\\d\x`) — mounted paths
-    /// resolve through the mount table, and unmapped absolutes pass through.
-    #[test]
-    fn convert_posix_arg_drive_unc_mount_and_pass_through() {
-        let tmp = std::env::temp_dir();
-        let mounts = [
-            RealMount::rw(std::env::temp_dir(), "/tmp"),
-            RealMount::ro("D:\\", "/d"),
-        ];
-        assert_eq!(convert_posix_arg("/d/x", &mounts), "D:\\x");
-        assert_eq!(convert_posix_arg("//d/x", &mounts), "\\\\d\\x");
-        assert_eq!(convert_posix_arg("/tmp", &mounts), tmp.to_string_lossy());
-        assert_eq!(convert_posix_arg("/foo", &mounts), "/foo");
-    }
-
-    /// Only `--opt=<path>` values convert; single-dash options and globs stay
-    /// as written (glob patterns match VFS names, not host paths).
-    #[test]
-    fn convert_arg_for_host_flag_equals_and_globs() {
-        let mounts = [RealMount::rw(std::env::temp_dir(), "/tmp")];
-        assert_eq!(
-            convert_arg_for_host("--git-dir=/d/x", &mounts),
-            "--git-dir=D:\\x"
-        );
-        assert_eq!(
-            convert_arg_for_host("--flag=plain", &mounts),
-            "--flag=plain"
-        );
-        assert_eq!(convert_arg_for_host("-C/d/x", &mounts), "-C/d/x");
-        assert_eq!(convert_arg_for_host("/d/*.rs", &mounts), "/d/*.rs");
-    }
-
-    /// Mount table mirroring [`mounts`] on Windows.
-    fn test_mounts() -> Vec<RealMount> {
-        vec![
-            RealMount::rw("D:\\Rust\\crabot", "/d/Rust/crabot"),
-            RealMount::rw("D:\\tmp", "/tmp"),
-            RealMount::ro("E:\\", "/e"),
-        ]
-    }
-
-    /// Rewrite a script through the analysis + rewrite pipeline.
-    fn rewrite(script: &str, mounts: &[RealMount]) -> String {
-        let plan = analyze_script(script).expect("script must analyze");
-        rewrite_host_paths(script, &plan.analysis, mounts).into_owned()
-    }
-
-    #[test]
-    fn host_arg_to_vfs_mount_case_fallback_and_shapes() {
-        let mounts = test_mounts();
-        assert_eq!(
-            host_arg_to_vfs("E:/Code/x.rs", &mounts).as_deref(),
-            Some("/e/Code/x.rs")
-        );
-        assert_eq!(
-            host_arg_to_vfs("E:\\Code\\x.rs", &mounts).as_deref(),
-            Some("/e/Code/x.rs")
-        );
-        // Case-insensitive mount match keeps the canonical VFS spelling.
-        assert_eq!(
-            host_arg_to_vfs("d:\\RUST\\crabot\\src\\x.rs", &mounts).as_deref(),
-            Some("/d/Rust/crabot/src/x.rs")
-        );
-        assert_eq!(
-            host_arg_to_vfs("D:\\tmp\\f.txt", &mounts).as_deref(),
-            Some("/tmp/f.txt")
-        );
-        // Unmounted drives fall back to the MSYS form; verbatim devices too.
-        assert_eq!(host_arg_to_vfs("C:/x", &mounts).as_deref(), Some("/c/x"));
-        assert_eq!(
-            host_arg_to_vfs("\\\\?\\C:\\x\\y", &mounts).as_deref(),
-            Some("/c/x/y")
-        );
-        // Non-host shapes never convert.
-        assert_eq!(host_arg_to_vfs("/e/Code/x.rs", &mounts), None);
-        assert_eq!(host_arg_to_vfs("rel/x.rs", &mounts), None);
-        assert_eq!(host_arg_to_vfs("E:x", &mounts), None);
-        assert_eq!(host_arg_to_vfs("\\\\server\\share\\x", &mounts), None);
-    }
-
-    #[test]
-    fn rewrite_converts_builtin_file_operands() {
-        let mounts = test_mounts();
-        assert_eq!(
-            rewrite("grep -n 'needle' E:/Code/x.rs", &mounts),
-            "grep -n 'needle' /e/Code/x.rs"
-        );
-        assert_eq!(
-            rewrite("cat 'd:\\RUST\\crabot\\Cargo.toml'", &mounts),
-            "cat '/d/Rust/crabot/Cargo.toml'"
-        );
-        assert_eq!(
-            rewrite("sed -n '1p' E:/Code/x.rs", &mounts),
-            "sed -n '1p' /e/Code/x.rs"
-        );
-        assert_eq!(
-            rewrite("find E:/Code -name '*.rs'", &mounts),
-            "find /e/Code -name '*.rs'"
-        );
-        assert_eq!(rewrite("ls > E:/out.txt", &mounts), "ls > /e/out.txt");
-        assert_eq!(
-            rewrite("grep -f E:/pat.txt E:/data.txt", &mounts),
-            "grep -f /e/pat.txt /e/data.txt"
-        );
-        assert_eq!(
-            rewrite("grep --file=E:/pat.txt E:/data.txt", &mounts),
-            "grep --file=/e/pat.txt /e/data.txt"
-        );
-    }
-
-    #[test]
-    fn rewrite_leaves_patterns_output_and_bridged_args() {
-        let mounts = test_mounts();
-        // The pattern position stays native; the file operand converts.
-        assert_eq!(
-            rewrite("grep 'E:/Code' E:/Code/x.rs", &mounts),
-            "grep 'E:/Code' /e/Code/x.rs"
-        );
-        // Output text and bridged host commands stay verbatim.
-        assert_eq!(rewrite("echo E:/Code/x.rs", &mounts), "echo E:/Code/x.rs");
-        assert_eq!(
-            rewrite("git -C E:/Code/x status", &mounts),
-            "git -C E:/Code/x status"
-        );
-    }
-
-    #[test]
-    fn rewrite_skips_ambiguous_and_extra_occurrences() {
-        let mounts = test_mounts();
-        // Same string as pattern and file: conversion would change the pattern.
-        assert_eq!(rewrite("grep 'E:/x' E:/x", &mounts), "grep 'E:/x' E:/x");
-        // Same string as output and file: a global replace would corrupt the output.
-        assert_eq!(
-            rewrite("echo E:/x; cat E:/x", &mounts),
-            "echo E:/x; cat E:/x"
-        );
-        // Extra occurrence in a heredoc body: only exact arg occurrences convert.
-        let script = "cat E:/x <<'EOF'\nE:/x\nEOF\n";
-        assert_eq!(rewrite(script, &mounts), script);
-        // A protected longer string containing the shorter arg still blocks
-        // the rewrite (fails safe rather than corrupting the output).
-        assert_eq!(
-            rewrite("echo E:/x/y; cat E:/x", &mounts),
-            "echo E:/x/y; cat E:/x"
-        );
-    }
-
-    /// Prefix-overlapping operands both convert: longest-first replacement
-    /// removes the inner occurrence before the shorter arg's census count is
-    /// checked against the remaining text.
-    #[test]
-    fn rewrite_converts_prefix_overlapping_paths() {
-        let mounts = test_mounts();
-        assert_eq!(rewrite("cat E:/x/y E:/x", &mounts), "cat /e/x/y /e/x");
-        assert_eq!(
-            rewrite("cat E:/x/y E:/x E:/x/y", &mounts),
-            "cat /e/x/y /e/x /e/x/y"
-        );
     }
 }

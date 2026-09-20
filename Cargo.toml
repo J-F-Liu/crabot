@@ -74,7 +74,7 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"
 linkify = "0.11.0"
-bashkit = { version = "=0.18.0", default-features = false, features = [
+bashkit = { version = "=0.18.1", default-features = false, features = [
     "http_client",
     "realfs",
     # 0.18: the feature also pins monty =0.0.19 and get-size2 =0.10.1, so the
