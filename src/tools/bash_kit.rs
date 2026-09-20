@@ -1309,9 +1309,8 @@ fn mounted_vfs(arg: &str, mounts: &[RealMount]) -> Option<String> {
 fn mounts(workspace: &Path, home: Option<&RealMount>) -> Vec<RealMount> {
     let mut list = vec![
         RealMount::rw(workspace, super::convert_path_to_unix_style(workspace)),
-        // Shared tmp dir ([`super::tmp_host_dir`]), so the `bash` tool and
-        // every file tool agree on where `/tmp` lives.
-        RealMount::rw(super::tmp_host_dir(workspace), "/tmp"),
+        // Shared tmp dir: the file tools and the `bash -c` fallback agree here.
+        RealMount::rw(super::tmp_host_dir(), "/tmp"),
     ];
     if let Some(home) = home {
         list.insert(1, home.clone());

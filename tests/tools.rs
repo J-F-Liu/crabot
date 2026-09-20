@@ -101,8 +101,7 @@ fn resolve_relative_nonexistent() {
 #[test]
 fn resolve_tmp_maps_to_tmp_host_dir() {
     let tmp = TempDir::new("tmp_vfs").unwrap();
-    let host_dir = tmp_host_dir(&tmp.path);
-    // `/tmp` itself (created by tmp_host_dir, so canonicalize succeeds).
+    let host_dir = tmp_host_dir();
     assert_eq!(
         resolve_path("/tmp", &tmp.path).unwrap(),
         dunce::canonicalize(&host_dir).unwrap()
@@ -126,7 +125,7 @@ fn resolve_tmp_prefix_does_not_capture_lookalikes() {
     let tmp = TempDir::new("tmp_look").unwrap();
     let resolved = resolve_path_partial("/tmpfoo", &tmp.path).unwrap();
     assert!(
-        !resolved.starts_with(tmp_host_dir(&tmp.path)),
+        !resolved.starts_with(tmp_host_dir()),
         "/tmpfoo wrongly captured by the tmp mount: {resolved:?}"
     );
 }

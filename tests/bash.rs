@@ -508,7 +508,7 @@ fn bashkit_tmp_mount_writes_to_real_dir() {
     let probe = format!("crabot_tmp_probe_{}", std::process::id());
     let result = run_bash(&format!("echo hello > /tmp/{probe}"), &tmp.path, None).unwrap();
     assert!(!result.contains("Exit code"), "unexpected: {result}");
-    let host = tmp_host_dir(&tmp.path).join(&probe);
+    let host = tmp_host_dir().join(&probe);
     assert_eq!(fs::read_to_string(&host).unwrap(), "hello\n");
     let _ = fs::remove_file(&host);
 }
@@ -534,7 +534,7 @@ fn bashkit_tmp_written_file_readable_by_read_tool() {
         .unwrap();
     assert!(out.contains("hello"), "read tool could not see /tmp: {out}");
 
-    let _ = fs::remove_file(tmp_host_dir(&tmp.path).join(&probe));
+    let _ = fs::remove_file(tmp_host_dir().join(&probe));
 }
 
 /// `cd /tmp` maps host commands to the [`tmp_host_dir`] mount — outside the
