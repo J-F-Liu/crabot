@@ -142,11 +142,14 @@ impl Tool for CustomTool {
             .split_first()
             .ok_or_else(|| "Empty command template".to_string())?;
 
+        // Resolve through `PATH`: `npx`-style shims (`.cmd`) need a shell lookup.
+        let paths = super::host_path_lists(None);
+
         // Create unnamed pipe pairs for stdout and stderr.
         let (stdout_tx, stdout_rx) = super::create_pipe_pair("stdout")?;
         let (stderr_tx, stderr_rx) = super::create_pipe_pair("stderr")?;
 
-        let mut cmd = Command::new(exe);
+        let mut cmd = Command::new(super::resolve_command(exe, &paths, workspace));
         cmd.args(args)
             .current_dir(workspace)
             .stdin(Stdio::null())

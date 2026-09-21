@@ -3,6 +3,7 @@
 
 use interprocess::unnamed_pipe;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -139,6 +140,11 @@ pub(crate) fn is_secret_env_key(key: &str) -> bool {
     key.ends_with("API_KEY")
 }
 
+/// Whether an env var name is `PATH` — Windows env blocks spell it `Path`.
+pub(crate) fn is_path_env_key(key: &str) -> bool {
+    key == "PATH" || (cfg!(windows) && key.eq_ignore_ascii_case("PATH"))
+}
+
 /// Strip secrets from a child command's inherited env: every variable whose
 /// name ends in `API_KEY`.
 pub(crate) fn sanitize_child_env(cmd: &mut std::process::Command) {
@@ -147,6 +153,28 @@ pub(crate) fn sanitize_child_env(cmd: &mut std::process::Command) {
             cmd.env_remove(&key);
         }
     }
+}
+
+/// Resolve a bare command name the way a shell searches `PATH` — Windows
+/// `PATHEXT` shims (`npx` → `npx.cmd`), the executable bit on Unix — through
+/// `path_lists` in order. An unmatched name comes back unchanged, so the OS
+/// reports the failure.
+pub(crate) fn resolve_command(name: &str, path_lists: &[String], cwd: &Path) -> PathBuf {
+    path_lists
+        .iter()
+        .find_map(|paths| which::which_in(name, Some(paths.as_str()), cwd).ok())
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// `PATH` lists a bare host command is resolved through: an explicit override
+/// (a tool's own env) first, then the host process's own value, both native.
+pub(crate) fn host_path_lists(override_path: Option<&str>) -> Vec<String> {
+    let host = std::env::var("PATH").ok();
+    [override_path, host.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(super::convert_path_list_to_native)
+        .collect()
 }
 
 /// Convert an unnamed pipe end (`Sender` or `Recver`) to `std::process::Stdio`.

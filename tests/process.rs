@@ -1,26 +1,20 @@
-use std::path::Path;
-#[cfg(unix)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use crabot::tools::OutputSink;
 use crabot::tools::Tool;
 use crabot::tools::make_strict_schema;
 use crabot::tools::process::{ProcessLogs, ProcessTool, parse_env};
-#[cfg(unix)]
-use serde_json::Value;
-use serde_json::json;
+use serde_json::{Value, json};
 #[cfg(unix)]
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 /// Helper: create a fresh temp workspace dir cleaned up on drop.
-#[cfg(unix)]
 struct TempDir {
     path: PathBuf,
 }
 
-#[cfg(unix)]
 impl TempDir {
     fn new(prefix: &str) -> Self {
         let mut dir = std::env::temp_dir();
@@ -31,14 +25,12 @@ impl TempDir {
     }
 }
 
-#[cfg(unix)]
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 
-#[cfg(unix)]
 fn execute(tool: &ProcessTool, args: Value, workspace: &std::path::Path) -> Result<String, String> {
     tool.execute(&args, workspace, &CancellationToken::new())
 }
@@ -333,6 +325,57 @@ fn start_wait_and_logs() {
     let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
     assert!(logs.contains("hello"), "logs: {logs}");
     assert!(logs.contains("world"), "logs: {logs}");
+}
+
+// ── host command resolution ───────────────────────────────────────
+
+/// A command behind a shell shim starts like a shell would run it: Windows
+/// `.cmd`/`.bat` launchers (`npx` → `npx.cmd`, invisible to `CreateProcess`)
+/// and extension-less executables on Unix.
+#[test]
+fn start_resolves_path_shim() {
+    let tmp = TempDir::new("path_shim");
+    let bin = tmp.path.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+
+    #[cfg(windows)]
+    std::fs::write(
+        bin.join("crabot-probe.cmd"),
+        "@echo off\r\necho shim-ok\r\necho %PATH%\r\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = bin.join("crabot-probe");
+        std::fs::write(&probe, "#!/bin/sh\necho shim-ok\necho \"$PATH\"\n").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let tool = ProcessTool;
+    // `PATH` as the tool's env override sees it (MSYS `/d/...` form on Windows).
+    let vfs = crabot::tools::convert_path_to_unix_style(&bin);
+    let started = execute(
+        &tool,
+        json!({"action": "start", "command": "crabot-probe", "env": {"PATH": vfs}}),
+        &tmp.path,
+    )
+    .unwrap();
+    let id = pid(&started);
+
+    let waited = execute(
+        &tool,
+        json!({"action": "wait", "pid": id, "timeout": 15000}),
+        &tmp.path,
+    )
+    .unwrap();
+    assert!(waited.contains("exited with code 0"), "wait: {waited}");
+    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
+    assert!(logs.contains("shim-ok"), "logs: {logs}");
+    // The child sees the native list the lookup searched — a Windows child
+    // cannot resolve anything through the MSYS `/d/...` override it was given.
+    let native = bin.to_string_lossy().into_owned();
+    assert!(logs.contains(&native), "logs: {logs}");
 }
 
 // ── registry change events ────────────────────────────────────────

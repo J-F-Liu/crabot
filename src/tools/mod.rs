@@ -48,7 +48,7 @@ pub use paths::{
     arg_path, convert_path_list_to_posix, convert_path_to_unix_style, normalize_newlines,
     resolve_path, resolve_path_partial, tmp_host_dir,
 };
-pub(crate) use paths::{arg_str, arg_u64, make_workspace_relative};
+pub(crate) use paths::{arg_str, arg_u64, convert_path_list_to_native, make_workspace_relative};
 #[cfg(windows)]
 pub(crate) use paths::{
     convert_path_to_windows_style, drive_style_to_windows, is_drive_path, map_path_list,
@@ -69,9 +69,9 @@ pub use proxy::{configure_proxy, llm_proxy_enabled, tools_proxy_active};
 pub(crate) use exec::peek_pipe_available;
 pub(crate) use exec::{
     ProcessSignal, StdinWriteError, combine_output, create_pipe_pair, detach_child, exit_code_of,
-    format_command_output, is_secret_env_key, pipe_to_stdio, sanitize_child_env,
-    set_pipe_nonblocking, set_raw_fd_nonblocking, set_sender_noninheritable, signal_process_tree,
-    write_stdin_bounded,
+    format_command_output, host_path_lists, is_path_env_key, is_secret_env_key, pipe_to_stdio,
+    resolve_command, sanitize_child_env, set_pipe_nonblocking, set_raw_fd_nonblocking,
+    set_sender_noninheritable, signal_process_tree, write_stdin_bounded,
 };
 
 // ── capture ─────────────────────────────────────────────────────────

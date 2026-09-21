@@ -7,7 +7,8 @@ use tokio_util::sync::CancellationToken;
 use serde_json::{Value, json};
 
 use crate::tools::{
-    ChunkForwarder, OutputSink, Tool, WaitError, arg_str, bash_kit, tool_limits, wait_with_timeout,
+    ChunkForwarder, OutputSink, Tool, WaitError, arg_str, bash_kit, host_path_lists,
+    resolve_command, tool_limits, wait_with_timeout,
 };
 
 pub struct BashTool;
@@ -125,7 +126,10 @@ fn execute_real_bash(
     let (stdout_tx, stdout_rx) = crate::tools::create_pipe_pair("stdout")?;
     let (stderr_tx, stderr_rx) = crate::tools::create_pipe_pair("stderr")?;
 
-    let mut cmd = std::process::Command::new("bash");
+    // Resolve through `PATH` so a shimmed `bash` and a Git-Bash-style launcher
+    // `PATH` both work.
+    let bash = resolve_command("bash", &host_path_lists(None), workspace);
+    let mut cmd = std::process::Command::new(bash);
     // Drop secrets (names ending in `API_KEY`) and rustup's recursion counter
     // (rustup proxies abort past their counter max).
     crate::tools::sanitize_child_env(&mut cmd);

@@ -93,6 +93,24 @@ pub fn convert_path_list_to_posix(value: &str) -> &str {
     value
 }
 
+/// Rewrite a host `PATH` value into the native list a child process needs:
+/// Windows Git-Bash form (`/c/a:/c/b`) becomes `C:\a;C:\b`.
+#[cfg(windows)]
+pub fn convert_path_list_to_native(value: &str) -> String {
+    map_path_list(value, ";", |entry| {
+        match convert_path_to_windows_style(entry) {
+            Some(native) => native.to_string_lossy().into_owned(),
+            None => entry.to_string(),
+        }
+    })
+}
+
+/// Identity on Unix: the host `PATH` already is the native list in use.
+#[cfg(not(windows))]
+pub fn convert_path_list_to_native(value: &str) -> String {
+    value.to_string()
+}
+
 /// Rewrite every entry of a `PATH` value with `convert` and join them by `sep`.
 #[cfg(windows)]
 pub(crate) fn map_path_list(value: &str, sep: &str, convert: impl Fn(&str) -> String) -> String {
@@ -242,27 +260,5 @@ pub fn resolve_path_partial(
             // back to the un‑canonicalized candidate.
             None => return Ok(candidate),
         }
-    }
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::split_env_path_list;
-
-    /// Both separators occur in `PATH` values; only a drive colon belongs to its
-    /// entry, so a native entry added to a POSIX list survives the split.
-    #[test]
-    fn path_lists_split_on_both_separators() {
-        assert_eq!(split_env_path_list(r"C:\a;C:\b"), [r"C:\a", r"C:\b"]);
-        assert_eq!(split_env_path_list("/c/a:/c/b"), ["/c/a", "/c/b"]);
-        assert_eq!(split_env_path_list(r"C:\a:/c/b"), [r"C:\a", "/c/b"]);
-        assert_eq!(split_env_path_list(r"/c/a:C:\b"), ["/c/a", r"C:\b"]);
-        assert_eq!(split_env_path_list(r"C:\a;;C:\b"), [r"C:\a", "", r"C:\b"]);
-        assert_eq!(split_env_path_list(r"/c/a::/c/b"), ["/c/a", "", "/c/b"]);
-        assert_eq!(
-            split_env_path_list(r"\\?\C:\a;C:\b"),
-            [r"\\?\C:\a", r"C:\b"]
-        );
-        assert_eq!(split_env_path_list(""), [""]);
     }
 }

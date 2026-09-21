@@ -12,6 +12,10 @@
 //! scripts that would involve one fall back to real bash. Mirrors bashkit
 //! 0.18.1 — re-verify when bumping.
 //!
+//! A bridged name is resolved through `PATH`+`PATHEXT` before spawning — the
+//! script's `$PATH` (native form) first, then the host's — so shell shims a
+//! bare name hides (`npx` → `npx.cmd`) run like in real bash.
+//!
 //! Detaching a process is a request this tool cannot serve — the interpreter
 //! runs background jobs synchronously and kills the process group on timeout —
 //! so [`detach_request`] refuses those scripts with a `process` tool hint.
@@ -660,7 +664,7 @@ fn build_bash(
     // MSYS-style below, always as `PATH` whatever spelling the host uses.
     let mut host_path = None;
     for (key, value) in std::env::vars() {
-        if is_path_var(&key) {
+        if super::is_path_env_key(&key) {
             host_path = Some(value);
         } else if key != "HOME" && !super::is_secret_env_key(&key) {
             builder = builder.env(key, value);
@@ -721,11 +725,6 @@ fn build_bash(
 /// Serializes `Bash::build` — the stderr swap is process-wide, so concurrent
 /// silencers would save and restore each other's handles.
 static SILENCER_LOCK: Mutex<()> = Mutex::new(());
-
-/// Whether an env var name is `PATH` — Windows env blocks spell it `Path`.
-fn is_path_var(key: &str) -> bool {
-    key == "PATH" || (cfg!(windows) && key.eq_ignore_ascii_case("PATH"))
-}
 
 /// Builtin that executes a host command directly (no bash involved).
 struct HostCommandBuiltin {
@@ -789,9 +788,12 @@ impl Builtin for HostCommandBuiltin {
         }
 
         let prepared = (|| -> Result<_, String> {
-            let mut cmd = std::process::Command::new(&self.name);
+            let cwd = resolve_cwd(ctx.cwd, &self.mounts)?;
+            let paths = path_lists_for_host_command(ctx.env, &self.mounts);
+            let mut cmd =
+                std::process::Command::new(super::resolve_command(&self.name, &paths, &cwd));
             cmd.args(convert_args_for_host(ctx.args, &self.mounts));
-            cmd.current_dir(resolve_cwd(ctx.cwd, &self.mounts)?);
+            cmd.current_dir(cwd);
             apply_child_env(&mut cmd, ctx.env, self.home.as_ref(), &self.mounts);
             let stdin_writer = match ctx.stdin {
                 Some(data) => {
@@ -822,6 +824,13 @@ impl Builtin for HostCommandBuiltin {
 
         let child = match cmd.spawn() {
             Ok(child) => child,
+            // Not on `$PATH` anywhere we searched — report it like real bash.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(ExecResult::err(
+                    format!("bash: {}: command not found", self.name),
+                    127,
+                ));
+            }
             Err(e) => return Ok(ExecResult::err(format!("bash: {}: {e}", self.name), 127)),
         };
 
@@ -913,10 +922,20 @@ fn path_list_for_host(value: &str, mounts: &[RealMount]) -> String {
     super::map_path_list(value, ";", |entry| convert_posix_arg(entry, mounts))
 }
 
-/// Identity on Unix: the interpreter's `PATH` already is the host's own value.
+/// Native form on Unix: the interpreter's `PATH` already is the host's own.
 #[cfg(not(windows))]
-fn path_list_for_host(value: &str, _mounts: &[RealMount]) -> &str {
-    value
+fn path_list_for_host(value: &str, _mounts: &[RealMount]) -> String {
+    value.to_string()
+}
+
+/// `PATH` lists a bridged command is resolved through: the script's own (it may
+/// prepend a directory), then the host's — the system environment.
+fn path_lists_for_host_command(env: &HashMap<String, String>, mounts: &[RealMount]) -> Vec<String> {
+    let script = env.get("PATH").map(|path| path_list_for_host(path, mounts));
+    script
+        .into_iter()
+        .chain(super::host_path_lists(None))
+        .collect()
 }
 
 /// Rewrite VFS absolute paths in host-command args to native paths,

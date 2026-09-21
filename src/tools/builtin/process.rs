@@ -26,7 +26,8 @@ use std::os::windows::io::{AsRawHandle, RawHandle};
 use crate::lock;
 use crate::tools::{
     CANCEL_REASON, OutputSink, ProcessSignal, StdinWriteError, StreamDecoder, Tool, arg_str,
-    arg_u64, detach_child, exit_code_of, resolve_path, sanitize_child_env, signal_process_tree,
+    arg_u64, convert_path_list_to_native, detach_child, exit_code_of, host_path_lists,
+    is_path_env_key, resolve_command, resolve_path, sanitize_child_env, signal_process_tree,
     tool_limits, write_stdin_bounded,
 };
 
@@ -576,6 +577,13 @@ fn parse_command(command: &str) -> Result<Vec<String>, String> {
     Ok(parts)
 }
 
+/// The caller's `PATH` override, whatever spelling the key uses.
+fn env_path_override(env: &HashMap<String, String>) -> Option<&str> {
+    env.iter()
+        .find(|(key, _)| is_path_env_key(key))
+        .map(|(_, value)| value.as_str())
+}
+
 /// Spawn validated argv (see [`parse_command`]), register the entry, and
 /// start reader + reaper threads.
 fn start_command(
@@ -589,11 +597,19 @@ fn start_command(
         .split_first()
         .expect("command was validated non-empty");
 
-    let mut cmd = Command::new(exe);
+    // Resolve through `PATH`: `npx`-style shims (`.cmd`) need a shell lookup.
+    let paths = host_path_lists(env_path_override(&env));
+    let mut cmd = Command::new(resolve_command(exe, &paths, &cwd));
     cmd.args(exe_args).current_dir(&cwd);
     sanitize_child_env(&mut cmd);
     for (key, value) in &env {
-        cmd.env(key, value);
+        // The child gets the same `PATH` the lookup used: shell tools report it
+        // in MSYS form (`/d/...`), which a native child cannot resolve through.
+        if is_path_env_key(key) {
+            cmd.env(key, convert_path_list_to_native(value));
+        } else {
+            cmd.env(key, value);
+        }
     }
     detach_child(&mut cmd);
     cmd.stdin(Stdio::piped())

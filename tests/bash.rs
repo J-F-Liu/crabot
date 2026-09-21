@@ -833,11 +833,15 @@ fn bashkit_err_does_not_stop_script() {
 }
 
 /// A failing builtin as the last command: its 127 (bash's command-not-found
-/// convention) becomes the script's final exit code.
+/// convention) becomes the script's final exit code, with bash's wording.
 #[test]
 fn bashkit_spawn_failure_exit_code() {
     let result = run_bash("definitely-not-a-command-xyz", &crabot_workspace(), None).unwrap();
     assert!(result.contains("Exit code: 127"), "unexpected: {result}");
+    assert!(
+        result.contains("definitely-not-a-command-xyz: command not found"),
+        "unexpected: {result}"
+    );
 }
 
 /// Signal death is reported like real bash (`128 + signal`, SIGTERM → 143):
