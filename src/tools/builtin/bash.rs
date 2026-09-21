@@ -19,11 +19,11 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command via Bash. For builds, tests, and Git only; use dedicated tools for file operations."
+        "Execute a shell command via Bash. Use only for builds, tests, Git, package managers, and CLI tooling — for file operations use the dedicated `read`, `write`, `search`, and `find` tools instead of `cat`, `echo`, `grep` and `find` commands."
     }
 
     fn instruction(&self) -> &str {
-        "Execute a shell command in the workspace directory using Bash. Commands time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Use this tool for builds, tests, Git operations, package management, and other CLI tasks. Do not use this tool to read, write, search, or locate files, dedicated tools are available for those operations. Never background a command (`&`, `nohup`, `setsid`) to keep it running — it is refused, since the process is killed when the call ends; use the process tool for anything that must outlive the call. Run `compgen -b` to list all available built-in commands (such as `json`, `csv`, `tomlq`, `http`); run `help <cmd>` for a description of a specific builtin."
+        "Commands run in the workspace directory and time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Never background a command (`&`, `nohup`, `setsid`) to keep it running — it is refused, since the process is killed when the call ends; use the process tool for anything that must outlive the call. Run `compgen -b` to list all available built-in commands (such as `json`, `csv`, `tomlq`, `http`); run `help <cmd>` for a description of a specific builtin."
     }
 
     fn schema(&self) -> Value {
@@ -35,7 +35,7 @@ impl Tool for BashTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "Bash shell command to execute. Use only for builds, tests, Git, package managers, and CLI tooling. Never use for file reading, writing, searching, or path-finding — use the dedicated `read`, `write`, `edit`, `search`, and `find` tools instead. Returns combined stdout and stderr."
+                    "description": "Bash shell command to execute. Returns combined stdout and stderr."
                 },
                 "timeout": {
                     "type": "integer",

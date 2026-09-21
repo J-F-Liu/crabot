@@ -40,11 +40,11 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search for a regex pattern in file contents. Returns file:line:content matches. Respects .gitignore."
+        "Search for a regex pattern in file contents. Returns file:line:content matches, or line:content when path is a single file. Respects .gitignore."
     }
 
     fn instruction(&self) -> &str {
-        "Search file contents using a regular expression. Returns matches in file:line:content format. Respects .gitignore rules. Use this tool to locate definitions, references, usages, or other patterns across the codebase before reading or editing specific files."
+        "Search file contents using a regular expression. Returns matches as file:line:content, or line:content when path names a single file. Respects .gitignore rules. Use this tool to locate definitions, references, usages, or other patterns across the codebase before reading or editing specific files."
     }
 
     fn schema(&self) -> Value {
@@ -88,14 +88,17 @@ struct SearchOutput {
 }
 
 impl SearchOutput {
-    /// Search one file, appending matches as `rel:line:text` lines.
+    /// Search one file, appending `{prefix}{line}:{text}` per match. `prefix`
+    /// is empty for a single-file target, `rel:` inside a directory walk.
+    /// `max_lines` caps `self.matched` cumulatively, so every file in a walk
+    /// gets the same absolute cap rather than a shrinking remaining budget.
     fn search_file(
         &mut self,
         searcher: &mut Searcher,
         matcher: &RegexMatcher,
         path: &Path,
-        rel: &str,
-        limit: usize,
+        prefix: &str,
+        max_lines: usize,
         cancel: &CancellationToken,
     ) -> io::Result<()> {
         let mut sink = Lossy(|line_no, text| {
@@ -104,14 +107,14 @@ impl SearchOutput {
                 self.cancelled = true;
                 return Ok(false);
             }
-            if self.matched >= limit {
+            if self.matched >= max_lines {
                 self.truncated = true;
                 return Ok(false);
             }
             self.matched += 1;
             let _ = writeln!(
                 self.out,
-                "{rel}:{line_no}:{}",
+                "{prefix}{line_no}:{}",
                 text.trim_end_matches(['\r', '\n'])
             );
             Ok(true)
@@ -144,14 +147,7 @@ pub(super) fn execute_search(
     if search_path.is_file() {
         let rel = make_workspace_relative(&search_path, workspace);
         output
-            .search_file(
-                &mut searcher,
-                &matcher,
-                &search_path,
-                &rel,
-                max_lines,
-                cancel,
-            )
+            .search_file(&mut searcher, &matcher, &search_path, "", max_lines, cancel)
             .map_err(|e| format!("Failed to read {rel}: {e}"))?;
     } else if search_path.is_dir() {
         for entry in ignore::WalkBuilder::new(&search_path)
@@ -170,14 +166,14 @@ pub(super) fn execute_search(
             if !entry.file_type().is_some_and(|ft| ft.is_file()) {
                 continue;
             }
-            let rel = make_workspace_relative(entry.path(), workspace);
+            let prefix = format!("{}:", make_workspace_relative(entry.path(), workspace));
             // Ignore unreadable files; search continues with the rest.
             let _ = output.search_file(
                 &mut searcher,
                 &matcher,
                 entry.path(),
-                &rel,
-                max_lines - output.matched,
+                &prefix,
+                max_lines,
                 cancel,
             );
         }
