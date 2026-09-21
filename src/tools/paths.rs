@@ -77,6 +77,68 @@ pub fn convert_path_to_unix_style(path: &std::path::Path) -> String {
     s.replace('\\', "/")
 }
 
+/// Convert a host `PATH` value to the MSYS list the `bash` tool's interpreter
+/// exposes (and a real Git Bash shows): `C:\a;C:\b` → `/c/a:/c/b`. Identity on
+/// Unix, where the host list already is the POSIX list in use.
+#[cfg(windows)]
+pub fn convert_path_list_to_posix(value: &str) -> String {
+    map_path_list(value, ":", |entry| {
+        convert_path_to_unix_style(std::path::Path::new(entry))
+    })
+}
+
+/// Identity on Unix: the host `PATH` already is the POSIX list in use.
+#[cfg(not(windows))]
+pub fn convert_path_list_to_posix(value: &str) -> &str {
+    value
+}
+
+/// Rewrite every entry of a `PATH` value with `convert` and join them by `sep`.
+#[cfg(windows)]
+pub(crate) fn map_path_list(value: &str, sep: &str, convert: impl Fn(&str) -> String) -> String {
+    split_env_path_list(value)
+        .into_iter()
+        .map(convert)
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// Split a `PATH` value on both separators (`;` host, `:` POSIX — a launcher
+/// can hand over a value mixing them), keeping a drive colon inside its entry.
+#[cfg(windows)]
+fn split_env_path_list(value: &str) -> Vec<&str> {
+    let mut entries = Vec::new();
+    let mut rest = value;
+    while let Some(sep) = next_separator(rest) {
+        entries.push(&rest[..sep]);
+        rest = &rest[sep + 1..];
+    }
+    entries.push(rest);
+    entries
+}
+
+/// Index of the next separator; the drive colon of a drive path (`C:\x`,
+/// `\\?\C:\x`) belongs to its entry, so only a later colon splits.
+#[cfg(windows)]
+fn next_separator(entry: &str) -> Option<usize> {
+    let drive_colon = if entry.starts_with(r"\\?\") { 5 } else { 1 };
+    let drive = is_drive_path(entry);
+    entry
+        .char_indices()
+        .find(|&(i, c)| matches!(c, ';' | ':') && !(drive && i == drive_colon))
+        .map(|(i, _)| i)
+}
+
+/// Host drive path shape: `C:\x`, `C:/x`, or the verbatim `\\?\C:\x` form.
+#[cfg(windows)]
+pub(crate) fn is_drive_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    let disk = |b: &[u8]| {
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
+    };
+    disk(b) || b.starts_with(br"\\?\") && disk(&b[4..])
+}
+
 /// Host dir mounted at `/tmp` by the `bash` tool and resolved by every file
 /// tool: the system temp dir. On Windows a real (MSYS/Cygwin) `bash` mounts
 /// it at `/tmp` too, so the in-process interpreter and the `bash -c` fallback
@@ -180,5 +242,27 @@ pub fn resolve_path_partial(
             // back to the un‑canonicalized candidate.
             None => return Ok(candidate),
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::split_env_path_list;
+
+    /// Both separators occur in `PATH` values; only a drive colon belongs to its
+    /// entry, so a native entry added to a POSIX list survives the split.
+    #[test]
+    fn path_lists_split_on_both_separators() {
+        assert_eq!(split_env_path_list(r"C:\a;C:\b"), [r"C:\a", r"C:\b"]);
+        assert_eq!(split_env_path_list("/c/a:/c/b"), ["/c/a", "/c/b"]);
+        assert_eq!(split_env_path_list(r"C:\a:/c/b"), [r"C:\a", "/c/b"]);
+        assert_eq!(split_env_path_list(r"/c/a:C:\b"), ["/c/a", r"C:\b"]);
+        assert_eq!(split_env_path_list(r"C:\a;;C:\b"), [r"C:\a", "", r"C:\b"]);
+        assert_eq!(split_env_path_list(r"/c/a::/c/b"), ["/c/a", "", "/c/b"]);
+        assert_eq!(
+            split_env_path_list(r"\\?\C:\a;C:\b"),
+            [r"\\?\C:\a", r"C:\b"]
+        );
+        assert_eq!(split_env_path_list(""), [""]);
     }
 }

@@ -45,12 +45,14 @@ pub use registry::{ToolRegistry, build_tools, unknown_tool_message};
 
 // ── paths ───────────────────────────────────────────────────────────
 pub use paths::{
-    arg_path, convert_path_to_unix_style, normalize_newlines, resolve_path, resolve_path_partial,
-    tmp_host_dir,
+    arg_path, convert_path_list_to_posix, convert_path_to_unix_style, normalize_newlines,
+    resolve_path, resolve_path_partial, tmp_host_dir,
 };
 pub(crate) use paths::{arg_str, arg_u64, make_workspace_relative};
 #[cfg(windows)]
-pub(crate) use paths::{convert_path_to_windows_style, drive_style_to_windows};
+pub(crate) use paths::{
+    convert_path_to_windows_style, drive_style_to_windows, is_drive_path, map_path_list,
+};
 
 // ── limits ──────────────────────────────────────────────────────────
 pub(crate) use limits::truncate_output;

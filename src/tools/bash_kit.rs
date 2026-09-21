@@ -20,6 +20,7 @@
 //! [`convert_args_for_host`] rewrites VFS paths in bridged-command args to
 //! native form before spawning, and [`rewrite_host_paths`] rewrites
 //! host-style paths in builtin args to VFS form (`E:/...` → `/e/...`).
+//! `$PATH` is seeded MSYS-style too (`/c/...`, `:`) and translated back on spawn.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -654,13 +655,19 @@ fn build_bash(
         builder = builder.http_transport(transport);
     }
 
-    // Seed env from host; HOME comes from the VFS home mount so `~` expands to
-    // a clean POSIX path (the host's is often a Windows `C:\` form). Secret
-    // vars (names ending in `API_KEY`) are withheld from the interpreter.
+    // Seed env from host, minus HOME (seeded from the VFS home mount so `~`
+    // expands to a POSIX path) and secrets (`*API_KEY` names). `PATH` is seeded
+    // MSYS-style below, always as `PATH` whatever spelling the host uses.
+    let mut host_path = None;
     for (key, value) in std::env::vars() {
-        if key != "HOME" && !super::is_secret_env_key(&key) {
+        if is_path_var(&key) {
+            host_path = Some(value);
+        } else if key != "HOME" && !super::is_secret_env_key(&key) {
             builder = builder.env(key, value);
         }
+    }
+    if let Some(path) = host_path {
+        builder = builder.env("PATH", super::convert_path_list_to_posix(&path));
     }
     if let Some(home) = &home_mount {
         builder = builder.env("HOME", home.vfs_path.to_string_lossy().into_owned());
@@ -715,6 +722,11 @@ fn build_bash(
 /// silencers would save and restore each other's handles.
 static SILENCER_LOCK: Mutex<()> = Mutex::new(());
 
+/// Whether an env var name is `PATH` — Windows env blocks spell it `Path`.
+fn is_path_var(key: &str) -> bool {
+    key == "PATH" || (cfg!(windows) && key.eq_ignore_ascii_case("PATH"))
+}
+
 /// Builtin that executes a host command directly (no bash involved).
 struct HostCommandBuiltin {
     name: String,
@@ -730,20 +742,24 @@ struct HostCommandBuiltin {
     home: Option<RealMount>,
 }
 
-/// Mirror the script env (`export`, prefix assignments, `unset`) into the
-/// child, remapping the seeded VFS HOME to its host path and dropping secrets.
+/// Mirror the script env (`export`, prefix assignments, `unset`) into the child:
+/// native `PATH`, the seeded VFS HOME remapped to its host path, no secrets.
 fn apply_child_env(
     cmd: &mut std::process::Command,
     env: &HashMap<String, String>,
     home: Option<&RealMount>,
+    mounts: &[RealMount],
 ) {
     cmd.env_clear();
     for (key, value) in env {
-        // Remap the seeded VFS HOME to the host path (script-assigned HOME passes through).
-        if key == "HOME"
+        // Host children need the native `PATH`; HOME maps back to its host path.
+        if key == "PATH" {
+            cmd.env(key, path_list_for_host(value, mounts));
+        } else if key == "HOME"
             && let Some(home) = home
             && value.as_str() == home.vfs_path.to_string_lossy()
         {
+            // Only the seeded VFS spelling remaps; a script-assigned HOME passes through.
             cmd.env("HOME", &home.host_path);
         } else if !super::is_secret_env_key(key) {
             cmd.env(key, value);
@@ -776,7 +792,7 @@ impl Builtin for HostCommandBuiltin {
             let mut cmd = std::process::Command::new(&self.name);
             cmd.args(convert_args_for_host(ctx.args, &self.mounts));
             cmd.current_dir(resolve_cwd(ctx.cwd, &self.mounts)?);
-            apply_child_env(&mut cmd, ctx.env, self.home.as_ref());
+            apply_child_env(&mut cmd, ctx.env, self.home.as_ref(), &self.mounts);
             let stdin_writer = match ctx.stdin {
                 Some(data) => {
                     let (stdin_tx, stdin_rx) = create_pipe_pair("stdin")?;
@@ -888,6 +904,19 @@ fn resolve_vfs(vfs: &Path, mount_specs: &[RealMount]) -> Option<PathBuf> {
     mount_specs
         .iter()
         .find_map(|m| match_mount(vfs, &m.vfs_path.to_string_lossy(), &m.host_path))
+}
+
+/// Translate the interpreter's MSYS-style `PATH` back to the native form a host
+/// child needs — MSYS2 does the same for its own native children.
+#[cfg(windows)]
+fn path_list_for_host(value: &str, mounts: &[RealMount]) -> String {
+    super::map_path_list(value, ";", |entry| convert_posix_arg(entry, mounts))
+}
+
+/// Identity on Unix: the interpreter's `PATH` already is the host's own value.
+#[cfg(not(windows))]
+fn path_list_for_host(value: &str, _mounts: &[RealMount]) -> &str {
+    value
 }
 
 /// Rewrite VFS absolute paths in host-command args to native paths,
@@ -1247,7 +1276,7 @@ fn classify_convert_all_args(command: &AnalyzedCommand, census: &mut ArgCensus) 
 /// fallback. `None` for non-host shapes and unmounted UNC paths.
 #[cfg(windows)]
 fn host_arg_to_vfs(arg: &str, mounts: &[RealMount]) -> Option<String> {
-    let drive = is_drive_path(arg);
+    let drive = super::is_drive_path(arg);
     if !drive && !arg.starts_with("\\\\") {
         return None; // VFS-shaped, relative, or otherwise not a host path
     }
@@ -1257,16 +1286,6 @@ fn host_arg_to_vfs(arg: &str, mounts: &[RealMount]) -> Option<String> {
     // Unmounted drives still convert, MSYS-style; unmounted UNC has no VFS
     // spelling. `convert_path_to_unix_style` also maps verbatim `\\?\C:\`.
     drive.then(|| super::convert_path_to_unix_style(Path::new(arg)))
-}
-
-/// Host drive path shape: `C:\x`, `C:/x`, or the verbatim `\\?\C:\x` form.
-#[cfg(windows)]
-fn is_drive_path(s: &str) -> bool {
-    let b = s.as_bytes();
-    let disk = |b: &[u8]| {
-        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\')
-    };
-    disk(b) || b.starts_with(br"\\?\") && disk(&b[4..])
 }
 
 /// Deepest case-insensitive mount match for a host path; returns the VFS

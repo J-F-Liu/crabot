@@ -4,6 +4,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
@@ -16,8 +17,16 @@ struct TempDir {
 
 impl TempDir {
     fn new(prefix: &str) -> io::Result<Self> {
+        // Unique per instance: parallel tests sharing a prefix must not clear
+        // each other's dir (each `new` clears the dir it is about to use).
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
         let mut dir = std::env::temp_dir();
-        dir.push(format!("crabot_test_{}_{}", prefix, std::process::id()));
+        dir.push(format!(
+            "crabot_test_{}_{}_{}",
+            prefix,
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&dir); // clean any left‑over
         fs::create_dir_all(&dir)?;
         Ok(Self { path: dir })
@@ -1177,6 +1186,98 @@ fn bashkit_watch_runs_host_command() {
         stream_and_collect("watch -n 1 git --version", &crabot_workspace(), Some(3000));
     let text = format!("{}{}", chunks.concat(), result.unwrap_or_else(|e| e));
     assert!(text.contains("git version"), "unexpected: {text}");
+}
+
+// ── PATH translation ────────────────────────────────────────
+
+/// The interpreter seeds `$PATH` in MSYS form — a `:`-separated list of POSIX
+/// paths, like a real Git Bash — not the host's native `;`-separated value.
+#[test]
+fn bashkit_path_is_msys_style() {
+    let result = run_bash("echo \"$PATH\"", &crabot_workspace(), None).unwrap();
+    let expected = crabot::tools::convert_path_list_to_posix(&std::env::var("PATH").unwrap());
+    assert_eq!(result.trim(), expected, "unexpected: {result}");
+    #[cfg(windows)]
+    assert!(
+        !result.contains([';', '\\']),
+        "native PATH leaked: {result}"
+    );
+}
+
+/// Native `...\System32` path of this host, for `PATH` round trips.
+#[cfg(windows)]
+fn system32_native() -> String {
+    std::env::var("SystemRoot")
+        .map(|root| format!("{root}\\System32"))
+        .unwrap_or_else(|_| "C:\\Windows\\System32".to_string())
+}
+
+/// MSYS spelling of the same dir (`C:\Windows\System32` → `/c/Windows/System32`).
+#[cfg(windows)]
+fn system32_posix() -> String {
+    crabot::tools::convert_path_to_unix_style(Path::new(&system32_native()))
+}
+
+/// Assert `where cmd` finds `cmd.exe` with `path_value` as the script `PATH`:
+/// `where` resolves through its own environment, so only a native list works.
+#[cfg(windows)]
+fn assert_where_finds_cmd(path_value: &str) {
+    let result = run_bash(
+        &format!("PATH='{path_value}' where cmd"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(
+        result.to_lowercase().contains("cmd.exe"),
+        "unexpected: {result}"
+    );
+}
+
+/// The seeded MSYS `PATH` reaches a host child in native form.
+#[cfg(windows)]
+#[test]
+fn bashkit_host_command_gets_native_path() {
+    assert_where_finds_cmd(&system32_posix());
+}
+
+/// A native `PATH` a script assigns itself keeps its drive colon when handed to
+/// a host child (`C:\x` must not split into `C` and `\x`).
+#[cfg(windows)]
+#[test]
+fn bashkit_native_script_path_reaches_host_command() {
+    assert_where_finds_cmd(&system32_native());
+}
+
+/// A mixed `PATH` — a multi-entry POSIX list plus a native entry appended —
+/// converts entry-wise: the probe dir is reachable only through the POSIX half.
+#[cfg(windows)]
+#[test]
+fn bashkit_mixed_separator_path_reaches_host_command() {
+    let tmp = TempDir::new("path_mixed").unwrap();
+    fs::write(tmp.join("crabot_probe.cmd"), "@echo off\r\necho probe\r\n").unwrap();
+    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
+    let path = format!("{dir}:{};C:\\Windows", system32_posix());
+    let result = run_bash(
+        &format!("PATH=\"{path}\" where crabot_probe.cmd"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("crabot_probe.cmd"), "unexpected: {result}");
+}
+
+/// On Unix the interpreter's `PATH` is the host's own value, so a child sees it
+/// verbatim.
+#[cfg(unix)]
+#[test]
+fn bashkit_host_command_gets_host_path() {
+    let result = run_bash("printenv PATH", &crabot_workspace(), None).unwrap();
+    assert_eq!(
+        result.trim(),
+        std::env::var("PATH").unwrap(),
+        "unexpected: {result}"
+    );
 }
 
 // ── fallback to real bash ───────────────────────────────────
