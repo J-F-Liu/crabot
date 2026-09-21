@@ -150,8 +150,9 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
             body_bytes.extend_from_slice(&chunk);
         }
 
-        // Charset-aware decoding; re-truncate since decoding may expand bytes
-        // (e.g. UTF-16 → UTF-8).
+        // Charset-aware decoding only — a fetched body is data, not terminal
+        // output, so escapes and control characters stay. Re-truncate since
+        // decoding may expand bytes (e.g. UTF-16 → UTF-8).
         let body = truncate_body(decode_bytes(&body_bytes), max_body_bytes);
 
         let output = match classify(mime_type(&content_type), &body) {

@@ -1506,8 +1506,8 @@ fn remaining_timeout(deadline_ms: u64) -> Duration {
 /// (`StreamData`'s `Deref` already ran `from_utf8_lossy`) and surfacing
 /// bashkit's head truncation so the final marker stays accurate.
 fn format_exec_result(result: &ExecResult) -> String {
-    let stdout = super::decode_bytes(result.stdout.as_bytes());
-    let stderr = super::decode_bytes(result.stderr.as_bytes());
+    let stdout = super::decode_plain(result.stdout.as_bytes());
+    let stderr = super::decode_plain(result.stderr.as_bytes());
     let mut output = super::combine_output(&stdout, &stderr, result.exit_code);
     if result.stdout_truncated || result.stderr_truncated {
         if !output.is_empty() {

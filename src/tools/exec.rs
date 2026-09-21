@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::charset::decode_bytes;
+use super::decoder::decode_plain;
 use super::limits::truncate_output;
 use super::tool::{STDIN_CHUNK, STDIN_POLL_INTERVAL};
 
@@ -324,11 +324,12 @@ fn exit_code_of_impl(status: &std::process::ExitStatus, msys: bool) -> i32 {
 }
 
 /// Combine stdout, stderr, and exit code into one string, then truncate.
-/// Output is decoded with charset detection (see [`decode_bytes`]); pass
-/// `msys = true` only for output of a real MSYS/Cygwin `bash`.
+/// Output is decoded charset-aware and reduced to plain text (see
+/// [`decode_plain`]); pass `msys = true` only for output of a real
+/// MSYS/Cygwin `bash`.
 pub(crate) fn format_command_output(output: &std::process::Output, msys: bool) -> String {
-    let stdout = decode_bytes(&output.stdout);
-    let stderr = decode_bytes(&output.stderr);
+    let stdout = decode_plain(&output.stdout);
+    let stderr = decode_plain(&output.stderr);
     truncate_output(combine_output(
         &stdout,
         &stderr,

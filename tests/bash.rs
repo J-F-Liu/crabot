@@ -657,8 +657,8 @@ fn gbk_output_is_decoded_not_garbled() {
     assert!(!result.contains('\u{FFFD}'), "unexpected: {result}");
 }
 
-/// The streaming route decodes GBK too: live chunks pin the encoding in
-/// `StreamDecoder` instead of emitting raw lossy bytes.
+/// The streaming route decodes GBK too: live chunks pin the encoding instead
+/// of emitting raw lossy bytes.
 #[test]
 fn gbk_streaming_is_decoded() {
     let (result, chunks) = stream_and_collect(
@@ -1308,4 +1308,67 @@ fn bashkit_parse_error_falls_back() {
         result.contains("unexpected EOF") || result.contains("EOF"),
         "unexpected: {result}"
     );
+}
+
+// ── plain-text output (ANSI stripping) ──────────────────────
+
+/// Styling escapes are dropped; tabs and the text survive (`tools::ansi`).
+#[test]
+fn strips_ansi_styling() {
+    let result = run_bash(
+        r"printf '\033[31mred\033[0m\ttext\n'",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result, "red\ttext\n");
+}
+
+/// Progress redraws collapse to the frame a terminal would leave on screen.
+#[test]
+fn collapses_progress_redraws() {
+    let result = run_bash(
+        r"printf '10%%\r50%%\r100%%\ndone\n'",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result, "100%\ndone\n");
+}
+
+/// OSC strings (window title, hyperlink target) vanish with their payload.
+#[test]
+fn drops_osc_sequences() {
+    let result = run_bash(
+        r"printf '\033]0;title\007\033]8;;https://example.com\007link\033]8;;\007\n'",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result, "link\n");
+}
+
+/// The live stream shown while a command runs is plain text too, even when a
+/// sequence is split across reads.
+#[test]
+fn streaming_output_is_plain_text() {
+    let (result, chunks) = stream_and_collect(
+        r"printf '\033[32mstep 1\033[0m\n10%%\r20%%\r30%%\n'",
+        &crabot_workspace(),
+        None,
+    );
+    assert_eq!(result.unwrap(), "step 1\n30%\n");
+    assert_eq!(chunks.concat(), "step 1\n30%\n");
+}
+
+/// The common progress pattern: `\r`, erase, restyle, reprint, newline.
+#[test]
+fn progress_erase_restyle_reprint() {
+    let result = run_bash(
+        r"printf '50%%\r\033[2K\033[32m100%%\033[0m\n'",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result, "100%\n");
 }

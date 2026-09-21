@@ -5,10 +5,11 @@
 //! their items at the legacy `crate::tools::<item>` paths so existing
 //! consumers (including the builtin tools' `super::` references) stay intact.
 
+mod ansi; // terminal-text filter; used by `decoder`
 /// In-process bashkit interpreter; `pub` for `tests/bash.rs`.
 pub mod bash_kit;
-mod charset;
 pub mod custom;
+mod decoder;
 pub mod mcp;
 
 // ── Submodules ─────────────────────────────────────────────────────
@@ -30,8 +31,8 @@ pub use builtin::{ask, bash, edit, fetch, find, process, read, renew, search, ta
 pub use renew::move_renews_to_end;
 pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
 
-pub(crate) use charset::{StreamDecoder, decode_bytes};
 pub use context::{current_tab_number, with_tab_scope};
+pub(crate) use decoder::{ChunkDecoder, PlainTextDecoder, decode_bytes, decode_plain};
 
 // ── tool ────────────────────────────────────────────────────────────
 pub(crate) use tool::CAPTURE_GRACE;

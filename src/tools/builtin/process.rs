@@ -25,10 +25,10 @@ use std::os::windows::io::{AsRawHandle, RawHandle};
 
 use crate::lock;
 use crate::tools::{
-    CANCEL_REASON, OutputSink, ProcessSignal, StdinWriteError, StreamDecoder, Tool, arg_str,
-    arg_u64, convert_path_list_to_native, detach_child, exit_code_of, host_path_lists,
-    is_path_env_key, resolve_command, resolve_path, sanitize_child_env, signal_process_tree,
-    tool_limits, write_stdin_bounded,
+    CANCEL_REASON, ChunkDecoder, OutputSink, PlainTextDecoder, ProcessSignal, StdinWriteError,
+    Tool, arg_str, arg_u64, convert_path_list_to_native, detach_child, exit_code_of,
+    host_path_lists, is_path_env_key, resolve_command, resolve_path, sanitize_child_env,
+    signal_process_tree, tool_limits, write_stdin_bounded,
 };
 
 /// Cap on retained exited process entries; the oldest are dropped on `start`.
@@ -697,7 +697,7 @@ fn spawn_reader(
     #[cfg(windows)]
     let raw = raw as isize; // RawHandle is !Send; the handle stays owned by `reader`.
     std::thread::spawn(move || {
-        let mut decoder = StreamDecoder::new();
+        let mut decoder = PlainTextDecoder::new();
         let mut out = Vec::new();
         let mut buf = [0u8; 8192];
         let mut exit_seen_at: Option<Instant> = None;

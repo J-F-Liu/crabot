@@ -104,6 +104,7 @@ agent-client-protocol = "2"
 agent-client-protocol-http = { version = "2", features = ["server"] }
 axum = "0.8"
 which = "8.0.6"
+anstyle-parse = { version = "1.0.0", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

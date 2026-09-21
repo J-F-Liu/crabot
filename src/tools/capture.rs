@@ -7,7 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::charset::{StreamDecoder, decode_bytes};
+use super::decoder::{ChunkDecoder, PlainTextDecoder, decode_plain};
 #[cfg(unix)]
 use super::exec::is_would_block;
 use super::exec::{kill_process_tree, set_pipe_nonblocking};
@@ -44,14 +44,17 @@ pub enum OutStream {
     Stderr,
 }
 
-/// Forwards pipe bytes to an [`OutputSink`] as text chunks: stdout/stderr
-/// merged in arrival order, `\r\n` → `\n`, small chunks coalesced (the
-/// live-output cap lives in [`capping_sink`](super::capping_sink)). Per-stream
-/// windows are also captured for partial-output errors, even without a sink.
+/// Forwards pipe bytes to an [`OutputSink`] as plain-text chunks: stdout/stderr
+/// merged in arrival order, decoded charset-aware with escapes stripped, small
+/// chunks coalesced (the live-output cap lives in
+/// [`capping_sink`](super::capping_sink)). Per-stream windows are also captured
+/// for partial-output errors, even without a sink.
 pub struct ChunkForwarder {
     /// Live streaming sink; `None` when only the partial capture is needed.
     sink: Option<OutputSink>,
-    decoder: StreamDecoder,
+    decoder: PlainTextDecoder,
+    /// Scratch for decoder chunks, drained into `pending`.
+    texts: Vec<String>,
     /// Coalesced text awaiting flush.
     pending: String,
     last_flush: std::time::Instant,
@@ -65,7 +68,8 @@ impl ChunkForwarder {
         let keep = per_stream_keep();
         Self {
             sink,
-            decoder: StreamDecoder::new(),
+            decoder: PlainTextDecoder::new(),
+            texts: Vec::new(),
             pending: String::new(),
             last_flush: std::time::Instant::now(),
             stdout_cap: BoundedCapture::new(keep),
@@ -79,22 +83,27 @@ impl ChunkForwarder {
             OutStream::Stdout => self.stdout_cap.push(bytes),
             OutStream::Stderr => self.stderr_cap.push(bytes),
         }
-        let mut texts = Vec::new();
-        self.decoder.feed(bytes, &mut texts);
-        for text in texts {
-            self.pending.push_str(&text);
-        }
+        self.decode(bytes, false);
         self.tick();
     }
 
     /// Flush carried/coalesced bytes at the end of the stream.
     pub fn finish(&mut self) {
-        let mut texts = Vec::new();
-        self.decoder.flush(&mut texts);
-        for text in texts {
+        self.decode(&[], true);
+        self.flush();
+    }
+
+    /// Decode `bytes` — flushing instead when `last` — and queue the text.
+    fn decode(&mut self, bytes: &[u8], last: bool) {
+        self.texts.clear();
+        if last {
+            self.decoder.flush(&mut self.texts);
+        } else {
+            self.decoder.feed(bytes, &mut self.texts);
+        }
+        for text in self.texts.drain(..) {
             self.pending.push_str(&text);
         }
-        self.flush();
     }
 
     /// Flush the coalescing buffer once it is large or old enough. Called
@@ -388,7 +397,7 @@ fn append_stream(msg: &mut String, name: &str, cap: &BoundedCapture) {
         return;
     }
     msg.push_str(&format!("\n--- partial {name} ---\n"));
-    msg.push_str(&decode_bytes(&cap.materialize()));
+    msg.push_str(&decode_plain(&cap.materialize()));
     let skipped = cap.skipped();
     if skipped > 0 {
         msg.push_str(&crate::truncation_marker(skipped, cap.total(), None));

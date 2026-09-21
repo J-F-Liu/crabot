@@ -305,12 +305,69 @@ fn normalizes_crlf_split_across_chunks() {
     assert_eq!(joined(&out), "a\nb");
 }
 
+/// A trailing `\r` (its `\n` never arrives) keeps the frame it drew and
+/// never leaks a raw control character into the stream.
 #[test]
-fn keeps_trailing_bare_cr() {
+fn trailing_bare_cr_leaves_its_frame() {
     let (mut f, out) = forwarder();
     push_stdout(&mut f, b"a\r");
+    // Held back: the next chunk decides between a line end and a redraw.
+    assert_eq!(joined(&out), "");
     f.finish();
-    assert_eq!(joined(&out), "a\r");
+    assert_eq!(joined(&out), "a");
+}
+
+/// A held `\r` followed by an escape sequence and a `\n` keeps the frame:
+/// styling doesn't redraw, and the split across chunks changes nothing.
+#[test]
+fn escape_after_held_cr_keeps_the_frame() {
+    let (mut f, out) = forwarder();
+    push_stdout(&mut f, b"100%\r");
+    push_stdout(&mut f, b"\x1b[0m\n");
+    f.finish();
+    assert_eq!(joined(&out), "100%\n");
+}
+
+/// A held `\r` followed by a tab doesn't redraw: the tab moves the cursor
+/// off column 0, so the frame survives and the tabbed text follows it.
+#[test]
+fn tab_after_held_cr_keeps_the_frame() {
+    let (mut f, out) = forwarder();
+    push_stdout(&mut f, b"100%\r");
+    push_stdout(&mut f, b"\tdone\n");
+    f.finish();
+    assert_eq!(joined(&out), "100%\tdone\n");
+}
+
+/// `ESC[K` erases the held frame even when the sequence arrives in the next
+/// chunk; a private-marker CSI (`ESC[?25l`) does not.
+#[test]
+fn erase_in_line_split_across_chunks() {
+    let (mut f, out) = forwarder();
+    push_stdout(&mut f, b"abc\r");
+    push_stdout(&mut f, b"\x1b[K\n");
+    push_stdout(&mut f, b"def\r\x1b[?25l\n");
+    f.finish();
+    assert_eq!(joined(&out), "\ndef\n");
+}
+
+/// `ESC[K` with the cursor at end of line (no held `\r`) erases nothing;
+/// the printed text survives.
+#[test]
+fn erase_in_line_at_end_of_line_keeps_text() {
+    let (mut f, out) = forwarder();
+    push_stdout(&mut f, b"abc\x1b[K\n");
+    f.finish();
+    assert_eq!(joined(&out), "abc\n");
+}
+
+/// An empty push contributes no chunk to the stream.
+#[test]
+fn empty_push_emits_nothing() {
+    let (mut f, out) = forwarder();
+    push_stdout(&mut f, b"");
+    f.finish();
+    assert!(out.lock().unwrap().is_empty(), "chunks: {:?}", joined(&out));
 }
 
 #[test]

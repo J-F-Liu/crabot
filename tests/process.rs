@@ -327,6 +327,32 @@ fn start_wait_and_logs() {
     assert!(logs.contains("world"), "logs: {logs}");
 }
 
+/// Reader output reaches `logs` as plain text: escapes stripped, tabs kept.
+#[cfg(unix)]
+#[test]
+fn logs_strip_ansi_sequences() {
+    let tmp = TempDir::new("ansi");
+    let tool = ProcessTool;
+
+    let started = execute(
+        &tool,
+        json!({"action": "start", "command": "/bin/sh -c \"printf '\\033[31mred\\033[0m\\ttext\\n'\""}),
+        &tmp.path,
+    )
+    .unwrap();
+    let id = pid(&started);
+    execute(
+        &tool,
+        json!({"action": "wait", "pid": id, "timeout": 15000}),
+        &tmp.path,
+    )
+    .unwrap();
+
+    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
+    assert!(logs.contains("red\ttext"), "logs: {logs:?}");
+    assert!(!logs.contains('\u{1b}'), "logs kept an escape: {logs:?}");
+}
+
 // ── host command resolution ───────────────────────────────────────
 
 /// A command behind a shell shim starts like a shell would run it: Windows
