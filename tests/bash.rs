@@ -258,6 +258,27 @@ fn assert_sha_lines(result: &str, n: usize) {
     );
 }
 
+/// Write `name` into `dir` as a `.cmd` launcher (Windows) or an executable
+/// shebang script (Unix) running `body`; returns its file name.
+fn write_command(dir: &Path, name: &str, body: &str) -> String {
+    #[cfg(windows)]
+    let (file, script) = (format!("{name}.cmd"), format!("@echo off\n{body}\r\n"));
+    #[cfg(unix)]
+    let (file, script) = (name.to_string(), format!("#!/bin/sh\n{body}\n"));
+    fs::write(dir.join(&file), script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.join(&file), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    file
+}
+
+/// Write a `name` shim into `dir` that echoes `message`; returns its file name.
+fn write_shim(dir: &Path, name: &str, message: &str) -> String {
+    write_command(dir, name, &format!("echo {message}"))
+}
+
 // ── bashkit syntax features ─────────────────────────────────
 
 /// `cargo --version && git --version` — external-command bridge + `&&` list.
@@ -606,6 +627,255 @@ fn bashkit_unset_hides_env_from_host_command() {
         "unset var leaked to host command: {result}"
     );
     assert!(result.contains("Exit code: 1"), "unexpected: {result}");
+}
+
+// ── command lookup (`which`, `type`) ────────────────────────
+
+/// `which <host tool>` reports the executable the bridge spawns — a VFS path the
+/// script can keep using (`[ -f "$p" ]`), not the bare name bashkit printed.
+#[test]
+fn bashkit_which_resolves_host_command() {
+    let result = run_bash(
+        r#"p=$(which cargo); case "$p" in /*) echo "vfs $p";; *) echo "not a path: $p";; esac; [ -f "$p" ] && echo file-ok"#,
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("vfs /"), "unexpected: {result}");
+    assert!(result.contains("cargo"), "unexpected: {result}");
+    assert!(result.contains("file-ok"), "unexpected: {result}");
+    assert!(!result.contains("Exit code"), "unexpected: {result}");
+}
+
+/// A script the sandbox itself puts on `$PATH` resolves to its VFS path — the
+/// OS spelling too (`cargo` → `cargo.exe`, `npx` → `npx.cmd`) — and runs.
+#[test]
+fn bashkit_which_searches_vfs_path() {
+    let tmp = TempDir::new("which_vfs_path").unwrap();
+    let file = write_shim(&tmp.path, "mytool", "tool-ran");
+    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
+    let result = run_bash(
+        &format!("export PATH='{dir}':$PATH; which mytool; mytool"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(
+        result.contains(&format!("{dir}/{file}")),
+        "unexpected: {result}"
+    );
+    assert!(result.contains("tool-ran"), "unexpected: {result}");
+}
+
+/// A name only the interpreter dispatches (`json`) is still reported by name, so
+/// `which <builtin>` works as an availability check.
+#[test]
+fn bashkit_which_reports_interpreter_names() {
+    let result = run_bash("which json", &crabot_workspace(), None).unwrap();
+    assert_eq!(result.trim(), "json", "unexpected: {result}");
+}
+
+/// `-a` lists every match, in `$PATH` order.
+#[test]
+fn bashkit_which_all_lists_every_match() {
+    let first = TempDir::new("which_all_first").unwrap();
+    let second = TempDir::new("which_all_second").unwrap();
+    let file = write_shim(&first.path, "mytool", "first");
+    write_shim(&second.path, "mytool", "second");
+
+    let (a, b) = (
+        crabot::tools::convert_path_to_unix_style(&first.path),
+        crabot::tools::convert_path_to_unix_style(&second.path),
+    );
+    let result = run_bash(
+        &format!("export PATH='{a}':'{b}':$PATH; which -a mytool"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        result.lines().take(2).collect::<Vec<_>>(),
+        [format!("{a}/{file}"), format!("{b}/{file}")],
+        "unexpected: {result}"
+    );
+}
+
+/// One file is listed once, however many roots the mount table reaches it from:
+/// the host search's answer to `/tmp/x` is the file the VFS already reported.
+#[test]
+fn bashkit_which_all_reports_a_file_once() {
+    let tmp = TempDir::new("which_all_alias").unwrap();
+    let file = write_shim(&tmp.path, "mytool", "tool-ran");
+    let name = tmp.path.file_name().unwrap().to_string_lossy().into_owned();
+    let result = run_bash(
+        // Through the `/tmp` mount, which is the same dir the host search lists.
+        &format!("export PATH='/tmp/{name}'; which -a mytool"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        result.lines().collect::<Vec<_>>(),
+        [format!("/tmp/{name}/{file}")],
+        "unexpected: {result}"
+    );
+}
+
+/// `type` describes what runs: a file by path, a builtin and a function by
+/// kind — `-t` prints the kind word, `-P`/`-p` the file alone.
+#[test]
+fn bashkit_type_resolves_files_builtins_and_functions() {
+    let result = run_bash(
+        "type cargo; type -t cargo; type -P cargo; type ls; type -t ls; type -t if; \
+         f() { :; }; type f; type -t f",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("cargo is /"), "unexpected: {result}");
+    assert!(
+        result.contains("ls is a shell builtin"),
+        "unexpected: {result}"
+    );
+    assert!(result.contains("f is a function"), "unexpected: {result}");
+    // `-t` prints the kind word alone — a line of its own, not part of a description.
+    let lines: Vec<&str> = result.lines().collect();
+    for kind in ["file", "builtin", "keyword", "function"] {
+        assert!(lines.contains(&kind), "missing {kind} line: {result}");
+    }
+}
+
+/// `type -P <missing>` stays silent and exits 1, like bash; the plain form
+/// reports the miss.
+#[test]
+fn bashkit_type_reports_missing_names() {
+    let result = run_bash(
+        "type -P nosuchtool; echo p=$?; type nosuchtool; echo t=$?",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        result.lines().next(),
+        Some("p=1"),
+        "-P must stay silent: {result}"
+    );
+    assert!(
+        result.contains("bash: type: nosuchtool: not found"),
+        "unexpected: {result}"
+    );
+    assert!(result.contains("t=1"), "unexpected: {result}");
+}
+
+/// Unix keeps honoring the executable bit: a file on `$PATH` that is not
+/// executable is not a command.
+#[cfg(unix)]
+#[test]
+fn bashkit_which_requires_the_executable_bit() {
+    let tmp = TempDir::new("which_exec_bit").unwrap();
+    fs::write(tmp.join("mytool"), "echo nope\n").unwrap();
+    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
+    let result = run_bash(
+        &format!("export PATH='{dir}':$PATH; which mytool; echo rc=$?"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result.trim(), "rc=1", "unexpected: {result}");
+}
+
+/// Windows cannot trust the mode bit: an extensionless file that is not a real
+/// executable image is not a command — the host resolver decides, not the VFS.
+#[cfg(windows)]
+#[test]
+fn bashkit_which_skips_extensionless_non_executable() {
+    let tmp = TempDir::new("which_plain").unwrap();
+    fs::write(tmp.join("plain"), "not a program\n").unwrap();
+    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
+    let result = run_bash(
+        &format!("export PATH='{dir}':$PATH; which plain; echo rc=$?"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result.trim(), "rc=1", "unexpected: {result}");
+}
+
+/// An extensionless file next to its `PATHEXT` spelling resolves to the one that
+/// runs: the host resolver's own extension probe must not vouch for the bare name.
+#[cfg(windows)]
+#[test]
+fn bashkit_which_prefers_the_runnable_spelling() {
+    let tmp = TempDir::new("which_spelling").unwrap();
+    fs::write(tmp.join("plain"), "not a program\n").unwrap();
+    let file = write_shim(&tmp.path, "plain", "spelling-ran");
+    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
+    let result = run_bash(
+        &format!("export PATH='{dir}'; which plain; plain"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        result.lines().next(),
+        Some(format!("{dir}/{file}").as_str()),
+        "unexpected: {result}"
+    );
+    assert!(result.contains("spelling-ran"), "unexpected: {result}");
+}
+
+/// A native `C:\…` operand resolves like its VFS spelling: `type`'s args are not
+/// rewritten to VFS form, so it used to answer "not found".
+#[cfg(windows)]
+#[test]
+fn bashkit_type_resolves_native_path_operand() {
+    let tmp = TempDir::new("type_native_path").unwrap();
+    let file = write_shim(&tmp.path, "mytool", "shim-ran");
+    let native = tmp.join(&file);
+    let result = run_bash(
+        &format!("type '{}'; which '{}'", native.display(), native.display()),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    // The temp dir is mounted at `/tmp` — the deepest match for its host path.
+    let tmp_name = tmp.path.file_name().unwrap().to_string_lossy();
+    let vfs = format!("/tmp/{tmp_name}/{file}");
+    assert!(
+        result.contains(&format!("{} is {vfs}", native.display())),
+        "unexpected: {result}"
+    );
+    assert!(
+        result.lines().any(|line| line == vfs),
+        "unexpected: {result}"
+    );
+}
+
+/// A plain `PATH=…` (no `export`) reaches the bridged command's own environment:
+/// real bash keeps `PATH` exported, so the child resolves its subprocesses
+/// through the same list the script's shell searched.
+#[test]
+fn bashkit_unexported_path_reaches_host_command() {
+    let tmp = TempDir::new("path_child_env").unwrap();
+    // A shim that echoes the `PATH` the child was handed.
+    #[cfg(windows)]
+    let body = "echo %PATH%";
+    #[cfg(unix)]
+    let body = "printf '%s\\n' \"$PATH\"";
+    write_command(&tmp.path, "pathprobe", body);
+    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
+    let result = run_bash(
+        &format!("PATH='{dir}':$PATH; pathprobe"),
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    let name = tmp.path.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        result.contains(&name),
+        "child PATH lacks the script dir: {result}"
+    );
+    assert!(!result.contains("not found"), "unexpected: {result}");
 }
 
 // ── cwd mapping ─────────────────────────────────────────────

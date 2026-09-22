@@ -28,6 +28,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,8 +44,8 @@ use bashkit::parser::{
     SimpleCommand, Word, WordPart,
 };
 use bashkit::{
-    Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, HttpLimits, NetworkAllowlist,
-    async_trait,
+    Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, FileSystem, HttpLimits,
+    NetworkAllowlist, async_trait, vfs_join,
 };
 
 use super::{
@@ -502,7 +503,7 @@ pub(crate) fn execute(
     let mut bash = build_bash(
         workspace,
         timeout + Duration::from_secs(1), // backstop; outer select fires first
-        &plan.external_names,
+        &plan,
         Arc::clone(&deadline_ms),
         shared_cancel.clone(),
         Arc::clone(&forwarder),
@@ -598,12 +599,13 @@ impl Drop for FlushTicker {
 
 /// Build a bashkit `Bash` wired to the real workspace.
 ///
-/// Applies the mount table, seeds env, and bridges external command names.
+/// Applies the mount table, seeds env, bridges external command names, and
+/// installs the path-aware `which`/`type` replacements.
 #[allow(clippy::too_many_arguments)] // one knob per interpreter concern
 fn build_bash(
     workspace: &Path,
     timeout: Duration,
-    external_names: &[String],
+    plan: &ScriptPlan,
     deadline_ms: Arc<AtomicU64>,
     cancel: CancellationToken,
     forwarder: Arc<Mutex<ChunkForwarder>>,
@@ -701,7 +703,21 @@ fn build_bash(
         builder = builder.python().env("BASHKIT_ALLOW_INPROCESS_PYTHON", "1");
     }
 
-    for name in external_names {
+    // bashkit's own `which`/`type` never search `$PATH` — replace both.
+    let lookup = Arc::new(CommandLookup {
+        mounts: Arc::clone(&shared_mounts),
+        functions: plan.analysis.functions.iter().cloned().collect(),
+    });
+    builder = builder
+        .builtin(
+            "which",
+            Box::new(WhichBuiltin {
+                lookup: Arc::clone(&lookup),
+            }),
+        )
+        .builtin("type", Box::new(TypeBuiltin { lookup }));
+
+    for name in &plan.external_names {
         builder = builder.builtin(
             name.clone(),
             Box::new(HostCommandBuiltin {
@@ -742,19 +758,22 @@ struct HostCommandBuiltin {
 }
 
 /// Mirror the script env (`export`, prefix assignments, `unset`) into the child:
-/// native `PATH`, the seeded VFS HOME remapped to its host path, no secrets.
+/// native `PATH`, VFS HOME remapped to its host path, no secrets. `path` is the
+/// script's `PATH` — real bash keeps it exported, so the child inherits it too.
 fn apply_child_env(
     cmd: &mut std::process::Command,
     env: &HashMap<String, String>,
+    path: Option<&str>,
     home: Option<&RealMount>,
     mounts: &[RealMount],
 ) {
     cmd.env_clear();
     for (key, value) in env {
-        // Host children need the native `PATH`; HOME maps back to its host path.
-        if key == "PATH" {
-            cmd.env(key, path_list_for_host(value, mounts));
-        } else if key == "HOME"
+        // The script's `PATH` is applied below; HOME maps back to its host path.
+        if super::is_path_env_key(key) {
+            continue;
+        }
+        if key == "HOME"
             && let Some(home) = home
             && value.as_str() == home.vfs_path.to_string_lossy()
         {
@@ -763,6 +782,9 @@ fn apply_child_env(
         } else if !super::is_secret_env_key(key) {
             cmd.env(key, value);
         }
+    }
+    if let Some(path) = path {
+        cmd.env("PATH", path_list_for_host(path, mounts));
     }
     // No host home: keep the inherited HOME as a fallback.
     if home.is_none()
@@ -789,12 +811,13 @@ impl Builtin for HostCommandBuiltin {
 
         let prepared = (|| -> Result<_, String> {
             let cwd = resolve_cwd(ctx.cwd, &self.mounts)?;
-            let paths = path_lists_for_host_command(ctx.env, &self.mounts);
+            let path = command_path(&ctx);
+            let paths = path_lists_for_host(path, &self.mounts);
             let mut cmd =
                 std::process::Command::new(super::resolve_command(&self.name, &paths, &cwd));
             cmd.args(convert_args_for_host(ctx.args, &self.mounts));
             cmd.current_dir(cwd);
-            apply_child_env(&mut cmd, ctx.env, self.home.as_ref(), &self.mounts);
+            apply_child_env(&mut cmd, ctx.env, path, self.home.as_ref(), &self.mounts);
             let stdin_writer = match ctx.stdin {
                 Some(data) => {
                     let (stdin_tx, stdin_rx) = create_pipe_pair("stdin")?;
@@ -885,6 +908,465 @@ impl Builtin for HostCommandBuiltin {
     }
 }
 
+// ── Introspection builtins (`which`, `type`) ────────────────────────
+//
+// bashkit's versions know only interpreter state, never `$PATH`. These
+// replacements resolve a name through the VFS (probing `PATHEXT`), then through
+// the host search [`HostCommandBuiltin`] spawns with, and print VFS paths.
+
+/// What a command name resolves to, in the shell's lookup order.
+enum CommandKind {
+    Function,
+    Keyword,
+    Builtin,
+    /// A file, as the VFS spells it.
+    File(String),
+}
+
+impl CommandKind {
+    /// The word `type -t` prints.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Function => "function",
+            Self::Keyword => "keyword",
+            Self::Builtin => "builtin",
+            Self::File(_) => "file",
+        }
+    }
+
+    /// The line `type` prints.
+    fn describe(&self, name: &str) -> String {
+        match self {
+            Self::Function => format!("{name} is a function"),
+            Self::Keyword => format!("{name} is a shell keyword"),
+            Self::Builtin => format!("{name} is a shell builtin"),
+            Self::File(path) => format!("{name} is {path}"),
+        }
+    }
+}
+
+/// Command lookup shared by [`WhichBuiltin`] and [`TypeBuiltin`].
+struct CommandLookup {
+    /// VFS mount table, shared with [`HostCommandBuiltin`].
+    mounts: Arc<[RealMount]>,
+    /// Functions the script defines — bashkit's analysis collects them, since
+    /// a custom builtin cannot see the interpreter's own table.
+    functions: HashSet<String>,
+}
+
+impl CommandLookup {
+    /// The kind the interpreter dispatches itself; `None` when a file has to
+    /// be found.
+    fn dispatched(&self, name: &str) -> Option<CommandKind> {
+        if self.functions.contains(name) {
+            Some(CommandKind::Function)
+        } else if is_keyword(name) {
+            Some(CommandKind::Keyword)
+        } else if builtin_names().contains(name) {
+            Some(CommandKind::Builtin)
+        } else {
+            None
+        }
+    }
+
+    /// The operand as the VFS spells it: a native Windows path
+    /// (`C:\tools\tool.exe`) resolves through the mount table, everything else
+    /// passes through. [`rewrite_host_paths`] converts most host-shaped args,
+    /// but `type`'s operands are protected from it — the lookup owns those.
+    fn vfs_operand<'a>(&self, name: &'a str) -> Cow<'a, str> {
+        #[cfg(windows)]
+        if let Some(vfs) = host_arg_to_vfs(name, &self.mounts) {
+            return Cow::Owned(vfs);
+        }
+        Cow::Borrowed(name)
+    }
+
+    /// Every file `name` resolves to, in search order; `all` keeps looking
+    /// past the first hit (`which -a`).
+    async fn files(&self, name: &str, ctx: &BuiltinContext<'_>, all: bool) -> Vec<String> {
+        let extensions = path_extensions(ctx.env);
+        let operand = self.vfs_operand(name);
+        let name = operand.as_ref();
+        // A path-shaped operand names one file (`./tool`, `/tools/tool`).
+        if name.contains('/') {
+            let (dir, file) = split_operand(name, ctx.cwd);
+            return self
+                .probe(&dir, &file, &extensions, &ctx.fs)
+                .await
+                .into_iter()
+                .collect();
+        }
+        let path = command_path(ctx);
+        let mut found = Vec::new();
+        for dir in path_dirs(path, ctx.cwd) {
+            if let Some(file) = self.probe(&dir, name, &extensions, &ctx.fs).await {
+                found.push(file);
+                if !all {
+                    break;
+                }
+            }
+        }
+        // Last in search order is the host search a bridged command spawns
+        // through: it still reaches what no mount covers (`/usr/bin` on
+        // Windows). `-a` lists it too, minus a file the VFS already found under
+        // another spelling of the same file (`/tmp/x` vs `/c/…/Temp/x`).
+        if (found.is_empty() || all)
+            && let Some(file) = self.host_file(name, path, ctx)
+            && !found
+                .iter()
+                .any(|seen| same_file(seen, &file, &self.mounts))
+        {
+            found.push(file);
+        }
+        found
+    }
+
+    /// The first runnable `name` in `dir`, in VFS spelling ([`vfs_join`] keeps
+    /// `/` separators, bashkit #2425): the name itself, then its `PATHEXT`
+    /// spellings (`npx` → `npx.cmd`) when it has none.
+    async fn probe(
+        &self,
+        dir: &Path,
+        name: &str,
+        extensions: &[String],
+        fs: &Arc<dyn FileSystem>,
+    ) -> Option<String> {
+        let mut spellings = vec![name.to_string()];
+        if Path::new(name).extension().is_none() {
+            spellings.extend(extensions.iter().map(|ext| format!("{name}{ext}")));
+        }
+        for spelling in spellings {
+            let candidate = vfs_join(dir, &spelling);
+            if is_command_file(&candidate, &self.mounts, fs).await {
+                return Some(super::convert_path_to_unix_style(&candidate));
+            }
+        }
+        None
+    }
+
+    /// The host executable `name` resolves to, in VFS spelling; `None` when the
+    /// host search finds nothing.
+    fn host_file(
+        &self,
+        name: &str,
+        path: Option<&str>,
+        ctx: &BuiltinContext<'_>,
+    ) -> Option<String> {
+        // An unmounted cwd has no host answer either — the bridge refused to
+        // spawn there ([`HostCommandBuiltin`]) — and a stand-in cwd would only
+        // resolve relative `$PATH` entries against the wrong directory.
+        let cwd = resolve_cwd(ctx.cwd, &self.mounts).ok()?;
+        let paths = path_lists_for_host(path, &self.mounts);
+        let resolved = super::resolve_command(name, &paths, &cwd);
+        let host = resolved.to_string_lossy();
+        // `resolve_command` echoes a name it could not resolve: a bare name
+        // resolves through `$PATH` alone, so the echo means a miss; a path-shaped
+        // operand (UNC, root-relative) is echoed only when it is not there.
+        if host == name && (is_bare_name(name) || !resolved.is_file()) {
+            return None;
+        }
+        // Windows: the mount table spells a native path best (`E:\x` → `/tmp/x`);
+        // the conversion below covers what it does not map (`E:\x` → `/e/x`).
+        #[cfg(windows)]
+        if let Some(vfs) = host_arg_to_vfs(&host, &self.mounts) {
+            return Some(vfs);
+        }
+        Some(super::convert_path_to_unix_style(&resolved))
+    }
+}
+
+/// `which` — a file on the script's `$PATH` (a bridged host command reports the
+/// executable that runs), else a name the interpreter dispatches itself.
+struct WhichBuiltin {
+    lookup: Arc<CommandLookup>,
+}
+
+#[async_trait]
+impl Builtin for WhichBuiltin {
+    async fn execute(&self, ctx: BuiltinContext<'_>) -> bashkit::Result<ExecResult> {
+        let (options, names) = split_options(ctx.args);
+        // Only `-a`/`--all` change the answer; the other options are ignored.
+        let all = options.iter().any(|o| matches!(*o, "-a" | "--all"));
+        let mut output = String::new();
+        let mut all_found = true;
+        for name in names {
+            let mut files = self.lookup.files(name, &ctx, all).await;
+            if files.is_empty() {
+                // No file, but the interpreter may run it itself (`json`, a
+                // function): report the name, as bashkit's `which` did.
+                if self.lookup.dispatched(name).is_none() {
+                    all_found = false;
+                    continue;
+                }
+                files.push(name.to_string());
+            }
+            for file in &files {
+                // `-a` prints a line per match; a path prints as the VFS spells it.
+                let _ = writeln!(output, "{file}");
+            }
+        }
+        Ok(ExecResult {
+            stdout: output.into(),
+            exit_code: if all_found { 0 } else { 1 },
+            ..Default::default()
+        })
+    }
+}
+
+/// The usage line `type` errors carry.
+const TYPE_USAGE: &str = "type [-afptP] name [name ...]";
+
+/// `type` — describe a command: the interpreter's builtins, keywords, and
+/// functions, or the file `$PATH` resolves to.
+struct TypeBuiltin {
+    lookup: Arc<CommandLookup>,
+}
+
+#[async_trait]
+impl Builtin for TypeBuiltin {
+    async fn execute(&self, ctx: BuiltinContext<'_>) -> bashkit::Result<ExecResult> {
+        // `-t` kind word, `-p`/`-P` file, `-a` all matches, `-f` no functions.
+        let (options, names) = split_options(ctx.args);
+        let mut type_only = false;
+        let mut path_only = false;
+        let mut show_all = false;
+        let mut no_functions = false;
+        for option in options {
+            for c in option[1..].chars() {
+                match c {
+                    't' => type_only = true,
+                    'p' | 'P' => path_only = true,
+                    'a' => show_all = true,
+                    'f' => no_functions = true,
+                    _ => {
+                        return Ok(ExecResult::err(
+                            format!(
+                                "bash: type: -{c}: invalid option\ntype: usage: {TYPE_USAGE}\n"
+                            ),
+                            1,
+                        ));
+                    }
+                }
+            }
+        }
+        if names.is_empty() {
+            return Ok(ExecResult::err(
+                format!("bash: type: usage: {TYPE_USAGE}\n"),
+                1,
+            ));
+        }
+
+        let mut output = String::new();
+        let mut errors = String::new();
+        let mut all_found = true;
+        for name in names {
+            let mut kinds: Vec<CommandKind> = Vec::new();
+            // `-p`/`-P` take the file alone (`-f` drops functions).
+            if !path_only
+                && let Some(kind) = self.lookup.dispatched(name)
+                && !(no_functions && matches!(kind, CommandKind::Function))
+            {
+                kinds.push(kind);
+            }
+            if kinds.is_empty() || show_all {
+                kinds.extend(
+                    self.lookup
+                        .files(name, &ctx, show_all)
+                        .await
+                        .into_iter()
+                        .map(CommandKind::File),
+                );
+            }
+            let Some(first) = kinds.first() else {
+                all_found = false;
+                // Bash reports a plain lookup failure only; `-t`/`-p` stay silent.
+                if !type_only && !path_only {
+                    let _ = writeln!(errors, "bash: type: {name}: not found");
+                }
+                continue;
+            };
+            if type_only {
+                let _ = writeln!(output, "{}", first.label());
+            } else {
+                for kind in &kinds {
+                    let _ = writeln!(output, "{}", kind.describe(name));
+                }
+            }
+        }
+
+        Ok(ExecResult {
+            stdout: output.into(),
+            stderr: errors.into(),
+            exit_code: if all_found { 0 } else { 1 },
+            ..Default::default()
+        })
+    }
+}
+
+/// Split args into option words and operands; `--` ends the options.
+fn split_options(args: &[String]) -> (Vec<&str>, Vec<&str>) {
+    let mut options = Vec::new();
+    let mut operands = Vec::new();
+    let mut terminated = false;
+    for arg in args {
+        if terminated || !arg.starts_with('-') || arg == "-" {
+            operands.push(arg.as_str());
+        } else if arg == "--" {
+            terminated = true;
+        } else {
+            options.push(arg.as_str());
+        }
+    }
+    (options, operands)
+}
+
+/// The script's `PATH`: a `PATH=…` assignment shadows the seeded environment.
+fn command_path<'a>(ctx: &'a BuiltinContext<'_>) -> Option<&'a str> {
+    ctx.variables
+        .get("PATH")
+        .or_else(|| ctx.env.get("PATH"))
+        .map(String::as_str)
+}
+
+/// `PATH` directories in order; a relative entry resolves against the cwd.
+fn path_dirs(path: Option<&str>, cwd: &Path) -> Vec<PathBuf> {
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    path.split(':')
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| vfs_join(cwd, dir))
+        .collect()
+}
+
+/// Extensions probed on Windows (`cargo` → `cargo.exe`), from the script's
+/// `PATHEXT`; empty on Unix, where a name is the file name.
+fn path_extensions(env: &HashMap<String, String>) -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    env.get("PATHEXT")
+        .map_or(".COM;.EXE;.BAT;.CMD", String::as_str)
+        .split(';')
+        .filter(|ext| ext.len() > 1 && ext.starts_with('.'))
+        .map(str::to_ascii_lowercase) // the filesystem ignores case
+        .collect()
+}
+
+/// Whether the VFS candidate is a runnable file: inside a mount, not a directory,
+/// and executable (Windows: the host resolver decides instead).
+async fn is_command_file(vfs: &Path, mounts: &[RealMount], fs: &Arc<dyn FileSystem>) -> bool {
+    // A memory-only VFS file has nothing to spawn.
+    let Some(host) = resolve_vfs(vfs, mounts) else {
+        return false;
+    };
+    let Ok(meta) = fs.stat(vfs).await else {
+        return false;
+    };
+    if meta.file_type.is_dir() {
+        return false;
+    }
+    if cfg!(windows) {
+        // `which_in` applies the rule `PATH` probing uses for an absolute path:
+        // a real executable image — the VFS cannot tell a PE from data. It also
+        // appends `PATHEXT` spellings and re-cases the match from the directory
+        // listing, so compare names: an extensionless file is a command only when
+        // its own image runs, not a sibling's.
+        which::which_in(&host, None::<&str>, Path::new(".")).is_ok_and(|found| {
+            match (found.file_name(), host.file_name()) {
+                (Some(found), Some(candidate)) => {
+                    host_eq(&found.to_string_lossy(), &candidate.to_string_lossy())
+                }
+                _ => false,
+            }
+        })
+    } else {
+        meta.mode & 0o111 != 0
+    }
+}
+
+/// Whether `name` is a plain command name — no path separator, so `$PATH` is the
+/// only place it resolves; `which_in` resolves every other shape as a path.
+fn is_bare_name(name: &str) -> bool {
+    if name.contains('/') {
+        return false;
+    }
+    #[cfg(windows)]
+    if name.contains('\\') {
+        return false;
+    }
+    true
+}
+
+/// Whether two VFS spellings name the same file: the mount table can reach one
+/// file from several roots (`/tmp/x` and `/c/…/Temp/x`).
+fn same_file(a: &str, b: &str, mounts: &[RealMount]) -> bool {
+    if a == b {
+        return true;
+    }
+    match (
+        resolve_vfs(Path::new(a), mounts),
+        resolve_vfs(Path::new(b), mounts),
+    ) {
+        (Some(a), Some(b)) => host_eq(&a.to_string_lossy(), &b.to_string_lossy()),
+        _ => false,
+    }
+}
+
+/// Whether two host-visible names are the same; the host filesystem ignores
+/// case on Windows.
+fn host_eq(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+/// Directory and file name of a path-shaped operand (`./tool`, `/tools/tool`);
+/// a relative directory resolves against the cwd.
+fn split_operand(name: &str, cwd: &Path) -> (PathBuf, String) {
+    let path = Path::new(name);
+    let file = path
+        .file_name()
+        .map(|file| file.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = match path.parent() {
+        Some(parent) if parent.has_root() => parent.to_path_buf(),
+        Some(parent) if !parent.as_os_str().is_empty() => vfs_join(cwd, parent),
+        _ => cwd.to_path_buf(),
+    };
+    (dir, file)
+}
+
+/// Whether `name` is a shell keyword — a copy of bashkit's private
+/// `interpreter::is_keyword`, so `type` agrees with the dispatch.
+fn is_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "if" | "then"
+            | "else"
+            | "elif"
+            | "fi"
+            | "for"
+            | "while"
+            | "until"
+            | "do"
+            | "done"
+            | "case"
+            | "esac"
+            | "in"
+            | "function"
+            | "select"
+            | "time"
+            | "{"
+            | "}"
+            | "[["
+            | "]]"
+            | "!"
+    )
+}
+
 /// Match a VFS path against a mount's VFS prefix; returns the corresponding
 /// host path when the prefix matches, `None` otherwise.
 fn match_mount(vfs_cwd: &Path, vfs_prefix: &str, host_root: &Path) -> Option<PathBuf> {
@@ -928,11 +1410,10 @@ fn path_list_for_host(value: &str, _mounts: &[RealMount]) -> String {
     value.to_string()
 }
 
-/// `PATH` lists a bridged command is resolved through: the script's own (it may
-/// prepend a directory), then the host's — the system environment.
-fn path_lists_for_host_command(env: &HashMap<String, String>, mounts: &[RealMount]) -> Vec<String> {
-    let script = env.get("PATH").map(|path| path_list_for_host(path, mounts));
-    script
+/// `PATH` lists a command is resolved through: the script's own, then the
+/// host's — the system environment.
+fn path_lists_for_host(path: Option<&str>, mounts: &[RealMount]) -> Vec<String> {
+    path.map(|path| path_list_for_host(path, mounts))
         .into_iter()
         .chain(super::host_path_lists(None))
         .collect()
