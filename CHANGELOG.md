@@ -1,3 +1,17 @@
+# Crabot v0.9.2
+
+- **Host commands resolve like a shell** — bridged `bash` commands, `process`, and custom tools search `PATH`+`PATHEXT` before spawning, so Windows launchers (`npx.cmd`, `npm.cmd`) start instead of failing with "program not found"; a name that resolves nowhere reports bash's `command not found` (exit 127).
+- **`which`, `type`, and `$PATH` behave like Git Bash** — the interpreter exposes `$PATH` as a `:`-separated list of MSYS paths (`/c/...`), always spelled `PATH`, while bridged commands still get the native form; the tool's own `which`/`type` search that list (probing Windows `PATHEXT`), so `which cargo` finds `cargo.exe` and `type -P git` prints its path instead of "not found".
+- **`/tmp` is the system temp dir** — the file tools, the in-process interpreter, and the real-`bash` fallback now agree on `/tmp`, so a script written there runs on Windows too.
+- **Detach requests are refused with a hint** — `&`, `nohup`, and `setsid` in the `bash` tool now fail with a pointer to the `process` tool.
+- **Shell output reaches the model as plain text** — ANSI escapes (colors, cursor moves, hyperlinks) no longer pollute tool results, error messages, or the live stream, and `\r` progress redraws collapse to the frame a terminal would leave (`10%\r50%\r100%\n` → `100%\n`).
+- **Usage stays visible when the right pane is collapsed** — the center-pane status bar then shows the context fill ratio and session cost.
+- **Appearance setting** — the User Interface tab can follow the system theme (default) or pin light/dark, tracking OS switches live.
+- **genai 0.7.0-beta.24** — thinking signatures are kept per tool call across turns, Anthropic reports its thinking share as reasoning tokens, OpenRouter reasoning details round-trip, and Ollama maps the thinking level to its `think` parameter; bashkit is updated to 0.18.2.
+- **Other fixes** — `|` inside `$…$`/`$$…$$` math spans no longer breaks Markdown table columns in the chat view or exported HTML; `fetch` failures no longer repeat the URL; "Fork Session" is translated as 克隆会话; the `session_stats` example reports per-model daily costs.
+
+**Full Changelog**: [`v0.9.1...v0.9.2`](https://github.com/J-F-Liu/crabot/compare/v0.9.1...v0.9.2)
+
 # Crabot v0.9.1
 
 - **Auto-scroll pauses while you read** — scrolling up (wheel, PageUp, Home) pauses following of streamed replies, and the view resumes at the bottom (End also resumes).

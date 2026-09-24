@@ -19,12 +19,12 @@ Most coding agents today run inside a terminal as TUIs. Crabot is built on the b
 
 - [x] No TUI — just a GUI, easy for everyone to use.
 - [x] Multi-tab sessions view — switch between concurrent sessions, or let the agent delegate subtasks to new tabs.
-- [x] Configure through dialogs — a settings dialog with 7 tab pages (AI Models, Prompt Recipes, Builtin Tools, Custom Tools, MCP Servers, Tool Playground, About), no need to write config files by hand.
+- [x] Configure through dialogs — a settings dialog with 8 tab pages (User Interface, AI Models, Prompt Recipes, Builtin Tools, Custom Tools, MCP Servers, Tool Playground, About), no need to write config files by hand.
 - [x] An explicit context window, with every detail customizable.
 - [x] Native, high-performance built-in tools.
 - [x] Custom CLI tools and MCP server tools, defined and managed in-app.
 - [x] Built in pure Rust — single native binary, no runtime dependency, zero GC pauses.
-- [x] Each session is saved as a json file in workspace `.agent/sessions` folder.
+- [x] Each session is saved as a JSONL file in the workspace `.agent/sessions` folder, appended message by message so nothing is lost if the app closes mid-turn.
 
 If you know the structure of the LLM context window, you will appreciate the UI design of crabot.
 <p align="center">
