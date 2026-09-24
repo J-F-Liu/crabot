@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use serde_json::{Value, json};
 
 use crate::tools::{
-    ChunkForwarder, OutputSink, Tool, WaitError, arg_str, bash_kit, host_path_lists,
+    ChunkForwarder, OutputSink, Tool, WaitError, bash_kit, host_path_lists, required_str,
     resolve_command, tool_limits, wait_with_timeout,
 };
 
@@ -92,7 +92,7 @@ fn run(
     cancel: &CancellationToken,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
-    let command = arg_str(args, "command").ok_or("Missing 'command' argument")?;
+    let command = required_str(args, "command")?;
     // Refuse detaches before running: a backgrounded process would burn the
     // whole timeout and be killed on the way out.
     if let Some(detach) = bash_kit::detach_request(command) {

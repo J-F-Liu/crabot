@@ -29,7 +29,8 @@ use grep_searcher::sinks::Lossy;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
 
 use crate::tools::{
-    Tool, arg_str, make_workspace_relative, resolve_path, tool_limits, truncate_output,
+    Tool, arg_str, make_workspace_relative, required_str, resolve_path, tool_limits,
+    truncate_output,
 };
 
 pub struct SearchTool;
@@ -130,7 +131,7 @@ pub(super) fn execute_search(
 ) -> Result<String, String> {
     let max_lines = tool_limits().search_max_lines;
 
-    let pattern = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
+    let pattern = required_str(args, "pattern")?;
     let search_path = arg_str(args, "path")
         .map(|p| resolve_path(p, workspace))
         .transpose()

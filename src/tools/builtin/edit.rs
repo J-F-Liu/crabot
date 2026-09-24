@@ -5,7 +5,9 @@ use tokio_util::sync::CancellationToken;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::tools::{Tool, arg_path, make_workspace_relative, normalize_newlines, resolve_path};
+use crate::tools::{
+    Tool, make_workspace_relative, normalize_newlines, required_path, resolve_path,
+};
 
 /// A single edit operation with flexible field-name aliases for cross‑model
 /// compatibility (e.g. `old_text` / `old` / `search`).
@@ -140,17 +142,12 @@ pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
     let mut errors: Vec<String> = Vec::new();
 
     // ── Validate path argument ────────────────────────────────────
-    let path = arg_path(args);
-    let file_path = match &path {
-        Some(p) => match resolve_path(p, workspace) {
-            Ok(fp) => Some(fp),
-            Err(e) => {
-                errors.push(format!("Failed to resolve path '{p}': {e}"));
-                None
-            }
-        },
-        None => {
-            errors.push("Missing 'path' argument".to_string());
+    let file_path = match required_path(args).and_then(|p| {
+        resolve_path(p, workspace).map_err(|e| format!("Failed to resolve path '{p}': {e}"))
+    }) {
+        Ok(fp) => Some(fp),
+        Err(msg) => {
+            errors.push(msg);
             None
         }
     };

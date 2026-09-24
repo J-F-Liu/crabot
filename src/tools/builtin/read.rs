@@ -6,7 +6,9 @@ use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
-use crate::tools::{Tool, arg_path, arg_u64, make_workspace_relative, resolve_path, tool_limits};
+use crate::tools::{
+    Tool, arg_u64, make_workspace_relative, required_path, resolve_path, tool_limits,
+};
 
 pub struct ReadTool;
 
@@ -85,7 +87,7 @@ pub(super) fn execute(args: &Value, workspace: &Path) -> Result<String, String> 
     let max_lines_cap = limits.read_max_lines;
     let max_bytes = limits.read_max_bytes;
 
-    let path = arg_path(args).ok_or("Missing 'path' argument")?;
+    let path = required_path(args)?;
     let file_path = resolve_path(path, workspace)
         .map_err(|e| format!("Failed to resolve path '{path}': {e}"))?;
     let display_path = make_workspace_relative(&file_path, workspace);

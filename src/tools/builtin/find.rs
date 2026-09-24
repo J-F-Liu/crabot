@@ -6,7 +6,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use serde_json::{Value, json};
 
 use crate::lock;
-use crate::tools::{Tool, arg_str, resolve_path, tool_limits};
+use crate::tools::{Tool, arg_str, required_str, resolve_path, tool_limits};
 
 pub struct FindTool;
 
@@ -95,7 +95,7 @@ pub(super) fn execute(
 ) -> Result<String, String> {
     let max_lines = tool_limits().find_max_lines;
 
-    let pattern_str = arg_str(args, "pattern").ok_or("Missing 'pattern' argument")?;
+    let pattern_str = required_str(args, "pattern")?;
     let search_path = arg_str(args, "path")
         .map(|p| resolve_path(p, workspace))
         .transpose()

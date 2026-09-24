@@ -31,6 +31,16 @@ pub(crate) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(|v| v.as_u64())
 }
 
+/// Required string arg; a missing value yields `Missing '<key>' argument`.
+pub(crate) fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+    arg_str(args, key).ok_or_else(|| format!("Missing '{key}' argument"))
+}
+
+/// Required path arg (alias-aware, see [`arg_path`]); missing → `Missing 'path' argument`.
+pub(crate) fn required_path(args: &Value) -> Result<&str, String> {
+    arg_path(args).ok_or_else(|| "Missing 'path' argument".to_string())
+}
+
 /// Strip the workspace prefix and convert to Unix‑style display path.
 pub(crate) fn make_workspace_relative(
     path: &std::path::Path,

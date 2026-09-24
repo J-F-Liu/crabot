@@ -27,8 +27,8 @@ use crate::lock;
 use crate::tools::{
     CANCEL_REASON, ChunkDecoder, OutputSink, PlainTextDecoder, ProcessSignal, StdinWriteError,
     Tool, arg_str, arg_u64, convert_path_list_to_native, detach_child, exit_code_of,
-    host_path_lists, is_path_env_key, resolve_command, resolve_path, sanitize_child_env,
-    signal_process_tree, tool_limits, write_stdin_bounded,
+    host_path_lists, is_path_env_key, required_str, resolve_command, resolve_path,
+    sanitize_child_env, signal_process_tree, tool_limits, write_stdin_bounded,
 };
 
 /// Cap on retained exited process entries; the oldest are dropped on `start`.
@@ -183,7 +183,7 @@ fn run(
     cancel: &CancellationToken,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
-    let action = arg_str(args, "action").ok_or("Missing 'action' argument")?;
+    let action = required_str(args, "action")?;
     match action {
         "start" => start(args, workspace),
         "list" => list(),
@@ -314,7 +314,7 @@ fn logs(
 
 fn input(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     let e = entry_for(args)?;
-    let text = arg_str(args, "input").ok_or("Missing 'input' argument")?;
+    let text = required_str(args, "input")?;
 
     if e.has_exited() {
         return Err(not_accepting_input(&e, "it has exited or been stopped"));

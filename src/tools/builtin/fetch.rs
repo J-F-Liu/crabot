@@ -7,7 +7,9 @@ use tokio_util::sync::CancellationToken;
 use dom_smoothie::{Article, Config, Readability};
 use serde_json::{Value, json};
 
-use crate::tools::{CANCEL_REASON, Tool, arg_str, decode_bytes, tool_limits, truncate_output};
+use crate::tools::{
+    CANCEL_REASON, Tool, arg_str, decode_bytes, required_str, tool_limits, truncate_output,
+};
 
 pub struct FetchTool;
 
@@ -71,7 +73,7 @@ pub enum ContentKind {
 pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
     let max_body_bytes = tool_limits().fetch_max_body_bytes;
 
-    let url = arg_str(args, "url").ok_or("Missing 'url' argument")?;
+    let url = required_str(args, "url")?;
     let format = match arg_str(args, "format").unwrap_or("markdown") {
         "markdown" => Format::Markdown,
         "text" => Format::Text,
