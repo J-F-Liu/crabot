@@ -7,13 +7,11 @@ use std::fmt::Write as _;
 use crabot::chat::{Dialog, Turn, TurnBody, markdown_options, streaming_tool_ids, tool_items};
 use crabot::i18n::Lang;
 use crabot::session::Session;
-use crabot::tools::edit::EditParam;
-use crabot::tools::todo::{TodoItem, TodoStatus};
 use pulldown_cmark::{Event, Tag, html};
 use serde_json::Value;
 
 use super::theme::is_dark;
-use super::tool_message::fmt_arg;
+use super::tool_view::{self, ArgRow, EditRow, TodoRow, TodoState};
 
 /// Write a formatted string into `out`, ignoring the infallible `fmt::Error`.
 macro_rules! w {
@@ -301,7 +299,7 @@ fn render_tool_turn(
             w!(out, "<div class=\"tool-header\">");
             render_tool_header(&badge, status_icon, status_class, ts, None, out);
             w!(out, "</div>");
-            render_args_rows(name, args, ctx.lang, out);
+            render_args_rows(&tool_view::arg_rows(name, args), ctx.lang, out);
             if let Some(Ok(buffer)) = result {
                 render_streaming_result(buffer, ctx.lang, out);
             }
@@ -309,7 +307,7 @@ fn render_tool_turn(
         }
 
         // Completed ask tool: question + answer without expand/collapse.
-        if name == "ask" && completed {
+        if tool_view::renders_own_view(name) && completed {
             w!(out, "<div class=\"tool-header\">");
             render_tool_header(&badge, status_icon, status_class, ts, None, out);
             w!(out, "</div>");
@@ -327,20 +325,20 @@ fn render_tool_turn(
             render_tool_header(&badge, status_icon, status_class, ts, Some(indicator), out);
             w!(out, "</summary>");
             w!(out, "<div class=\"tool-detail\">");
-            render_args_rows(name, args, ctx.lang, out);
+            render_args_rows(&tool_view::arg_rows(name, args), ctx.lang, out);
             render_result(result.unwrap(), ctx.lang, out);
             w!(out, "</div>");
             w!(out, "</details>");
             // Shown only while the adjacent `<details>` is collapsed.
             w!(out, "<div class=\"tool-preview\">");
-            render_args_preview(name, args, ctx.lang, out);
+            render_args_rows(&tool_view::preview_rows(name, args), ctx.lang, out);
             w!(out, "</div>");
         } else {
             // Pending call: plain header + compact args, no expand control.
             w!(out, "<div class=\"tool-header\">");
             render_tool_header(&badge, status_icon, status_class, ts, None, out);
             w!(out, "</div>");
-            render_args_preview(name, args, ctx.lang, out);
+            render_args_rows(&tool_view::preview_rows(name, args), ctx.lang, out);
         }
     }
     w!(out, "</div>");
@@ -369,54 +367,16 @@ fn render_tool_header(
 
 // ── tool arguments / results ──────────────────────────────────────
 
-fn render_args_preview(name: &str, args: &Value, lang: Lang, out: &mut String) {
-    if name == "edit" || name == "write" {
-        if let Some(path) = args
-            .as_object()
-            .and_then(|map| map.get("path"))
-            .and_then(|v| v.as_str())
-        {
-            render_arg_row("path", path, out);
+fn render_args_rows(rows: &[ArgRow], lang: Lang, out: &mut String) {
+    for row in rows {
+        match row {
+            ArgRow::Text { key, value } => render_arg_row(key, value, out),
+            ArgRow::OffsetLimit { offset, limit } => {
+                render_arg_line(&format!("offset: {offset}  limit: {limit}"), out);
+            }
+            ArgRow::Edits(edits) => render_edits_table(edits, lang, out),
+            ArgRow::Todo(items) => render_todo_table(items, lang, out),
         }
-    } else {
-        render_args_rows(name, args, lang, out);
-    }
-}
-
-fn render_args_rows(tool_name: &str, args: &Value, lang: Lang, out: &mut String) {
-    let Some(map) = args.as_object() else {
-        return;
-    };
-
-    if tool_name == "todo"
-        && let Some(items) = map.get("items").and_then(|v| v.as_array())
-    {
-        render_todo_table(items, lang, out);
-        return;
-    }
-
-    let has_offset_and_limit = map.contains_key("offset") && map.contains_key("limit");
-    if has_offset_and_limit {
-        let off = fmt_arg(map, "offset");
-        let lim = fmt_arg(map, "limit");
-        render_arg_line(&format!("offset: {off}  limit: {lim}"), out);
-    }
-
-    for (key, value) in map {
-        if has_offset_and_limit && (key == "offset" || key == "limit") {
-            continue;
-        }
-        if key == "edits"
-            && let Some(edits) = value.as_array()
-        {
-            render_edits_table(key, edits, lang, out);
-            continue;
-        }
-        let display = value
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| value.to_string());
-        render_arg_row(key, &display, out);
     }
 }
 
@@ -437,7 +397,7 @@ fn render_arg_line(value: &str, out: &mut String) {
     );
 }
 
-fn render_edits_table(key: &str, edits: &[Value], lang: Lang, out: &mut String) {
+fn render_edits_table(edits: &[EditRow], lang: Lang, out: &mut String) {
     w!(out, "<div class=\"edits\">");
     let count = lang
         .tr("{} edit(s)")
@@ -445,7 +405,7 @@ fn render_edits_table(key: &str, edits: &[Value], lang: Lang, out: &mut String) 
     w!(
         out,
         "<div class=\"edits-header\"><span class=\"arg-key\">{}:</span><span class=\"arg-value muted\">{}</span></div>",
-        escape_html(key),
+        escape_html(tool_view::EDITS_ARG),
         count
     );
     for (idx, edit) in edits.iter().enumerate() {
@@ -456,12 +416,12 @@ fn render_edits_table(key: &str, edits: &[Value], lang: Lang, out: &mut String) 
             out,
             "<div class=\"edit-block\"><span class=\"edit-index\">{index}</span>"
         );
-        match serde_json::from_value::<EditParam>(edit.clone()) {
-            Ok(param) => {
-                render_diff_row("−", "del", &param.old_text, out);
-                render_diff_row("+", "add", &param.new_text, out);
+        match edit {
+            EditRow::Edit { old_text, new_text } => {
+                render_diff_row("−", "del", old_text, out);
+                render_diff_row("+", "add", new_text, out);
             }
-            Err(_) => render_diff_row("⚠", "del", &edit.to_string(), out),
+            EditRow::Invalid(raw) => render_diff_row("⚠", "del", raw, out),
         }
         w!(out, "</div>");
     }
@@ -476,7 +436,7 @@ fn render_diff_row(marker: &str, class: &str, content: &str, out: &mut String) {
     );
 }
 
-fn render_todo_table(items: &[Value], lang: Lang, out: &mut String) {
+fn render_todo_table(items: &[TodoRow], lang: Lang, out: &mut String) {
     w!(out, "<div class=\"todo-table\">");
     w!(
         out,
@@ -488,29 +448,18 @@ fn render_todo_table(items: &[Value], lang: Lang, out: &mut String) {
         if idx > 0 {
             w!(out, "<div class=\"todo-divider\"></div>");
         }
-        match serde_json::from_value::<TodoItem>(item.clone()) {
-            Ok(todo) => {
-                let (status, class) = match todo.status {
-                    TodoStatus::Pending => (lang.tr("pending"), "todo-pending"),
-                    TodoStatus::InProgress => (lang.tr("in progress"), "todo-in-progress"),
-                    TodoStatus::Completed => (lang.tr("completed"), "todo-completed"),
-                };
-                let content = format!("{}{}", "  ".repeat(todo.depth as usize), todo.text);
-                w!(
-                    out,
-                    "<div class=\"todo-row\"><span class=\"todo-text\">{}</span><span class=\"todo-status {class}\">{status}</span></div>",
-                    escape_html(&content)
-                );
-            }
-            Err(_) => {
-                let invalid = lang.tr("⚠ invalid");
-                w!(
-                    out,
-                    "<div class=\"todo-row\"><span class=\"todo-text\">{}</span><span class=\"todo-status todo-invalid\">{invalid}</span></div>",
-                    escape_html(&item.to_string())
-                );
-            }
-        }
+        let class = match item.state {
+            TodoState::Pending => "todo-pending",
+            TodoState::InProgress => "todo-in-progress",
+            TodoState::Completed => "todo-completed",
+            TodoState::Invalid => "todo-invalid",
+        };
+        let status = lang.tr(item.state.label_key());
+        w!(
+            out,
+            "<div class=\"todo-row\"><span class=\"todo-text\">{}</span><span class=\"todo-status {class}\">{status}</span></div>",
+            escape_html(&item.content)
+        );
     }
     w!(out, "</div>");
 }

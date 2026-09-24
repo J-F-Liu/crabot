@@ -14,6 +14,7 @@ pub mod system_prompt;
 pub mod theme;
 pub mod tool_list;
 pub mod tool_message;
+pub mod tool_view;
 pub mod update;
 pub mod user_prompt;
 

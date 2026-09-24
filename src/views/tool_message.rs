@@ -12,9 +12,8 @@ use super::theme::{
     CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT, color_diff_bg_add, color_diff_bg_del,
     color_muted, color_text, color_tool_content_bg, color_tool_content_border,
 };
+use super::tool_view::{self, ArgRow, EditRow, TodoRow, TodoState};
 use crate::app::session_state::ASK_EXTEND_SECS;
-use crate::tools::edit::EditParam;
-use crate::tools::todo::{TodoItem, TodoStatus};
 use crate::{AskAction, AskRequest, ConversationEvent};
 use crabot::i18n::Lang;
 use iced::widget::{button, text_input};
@@ -379,15 +378,15 @@ pub(super) fn bold_font() -> Font {
 /// `marker` is the leading glyph (e.g. "−", "+", "⚠"), coloured with
 /// `marker_color`. `content` is rendered as selectable monospace text using
 /// `sel_style`, all on a `bg` background with rounded corners.
-fn diff_row<'a, M: Clone + 'static>(
-    marker: &'a str,
+fn diff_row<M: Clone + 'static>(
+    marker: &'static str,
     marker_color: Color,
-    content: String,
+    content: &str,
     sel_style: fn(&Theme) -> SelectionStyle,
     bg: Color,
     font_scale: f32,
     search_query: &str,
-) -> Element<'a, M> {
+) -> Element<'static, M> {
     container(
         row![
             text(marker)
@@ -396,7 +395,7 @@ fn diff_row<'a, M: Clone + 'static>(
                 .font(bold_font()),
             Space::new().width(6),
             highlighted_selectable(
-                &content,
+                content,
                 search_query,
                 12.0 * font_scale,
                 mono_font(),
@@ -418,13 +417,13 @@ fn diff_row<'a, M: Clone + 'static>(
     .into()
 }
 
-/// Single tool-argument key-value row.
-pub(super) fn arg_row<'a, M: Clone + 'static>(
-    key: &'a str,
-    value: String,
+/// A plain `key: value` argument row.
+fn arg_row<M: Clone + 'static>(
+    key: &str,
+    value: &str,
     font_scale: f32,
     search_query: &str,
-) -> Element<'a, M> {
+) -> Element<'static, M> {
     row![
         text(format!("{}:", key))
             .size(12.0 * font_scale)
@@ -432,7 +431,7 @@ pub(super) fn arg_row<'a, M: Clone + 'static>(
             .font(bold_font()),
         Space::new().width(8),
         highlighted_selectable(
-            &value,
+            value,
             search_query,
             12.0 * font_scale,
             mono_font(),
@@ -444,15 +443,14 @@ pub(super) fn arg_row<'a, M: Clone + 'static>(
 }
 
 /// Embedded table for the `edits` argument — each edit becomes a labelled block.
-fn edits_table<'a, M: Clone + 'static>(
-    key: &'a str,
-    edits: &'a [serde_json::Value],
+fn edits_table<M: Clone + 'static>(
+    edits: &[EditRow],
     font_scale: f32,
     search_query: &str,
     lang: Lang,
-) -> Element<'a, M> {
+) -> Element<'static, M> {
     let header = row![
-        text(format!("{}:", key))
+        text(format!("{}:", tool_view::EDITS_ARG))
             .size(12.0 * font_scale)
             .color(color_muted())
             .font(bold_font()),
@@ -466,11 +464,11 @@ fn edits_table<'a, M: Clone + 'static>(
     ]
     .spacing(0);
 
-    let rows: Vec<Element<'_, M>> = edits
+    let rows: Vec<Element<'static, M>> = edits
         .iter()
         .enumerate()
         .flat_map(|(i, edit)| {
-            let idx = container(
+            let idx: Element<'static, M> = container(
                 text(lang.tr("Edit #{}").replacen("{}", &(i + 1).to_string(), 1))
                     .size(11.0 * font_scale)
                     .color(color_muted()),
@@ -478,9 +476,8 @@ fn edits_table<'a, M: Clone + 'static>(
             .padding([2, 0])
             .into();
 
-            let items: Vec<Element<'_, M>> = match serde_json::from_value::<EditParam>(edit.clone())
-            {
-                Ok(EditParam { old_text, new_text }) => vec![
+            match edit {
+                EditRow::Edit { old_text, new_text } => vec![
                     idx,
                     diff_row(
                         "−",
@@ -501,20 +498,19 @@ fn edits_table<'a, M: Clone + 'static>(
                         search_query,
                     ),
                 ],
-                Err(_) => vec![
+                EditRow::Invalid(raw) => vec![
                     idx,
                     diff_row(
                         "⚠",
                         CRABOT_DANGER,
-                        edit.to_string(),
+                        raw,
                         sel_secondary,
                         color_diff_bg_del(),
                         font_scale,
                         search_query,
                     ),
                 ],
-            };
-            items
+            }
         })
         .collect();
 
@@ -530,12 +526,12 @@ const TODO_STATUS_IN_PROGRESS: Color = Color::from_rgb8(0x29, 0x76, 0xFF);
 const TODO_STATUS_WIDTH: f32 = 96.0;
 
 fn todo_text_cell<M: Clone + 'static>(
-    content: String,
+    content: &str,
     font_scale: f32,
     search_query: &str,
 ) -> Element<'static, M> {
     highlighted_selectable(
-        &content,
+        content,
         search_query,
         12.0 * font_scale,
         mono_font(),
@@ -544,7 +540,7 @@ fn todo_text_cell<M: Clone + 'static>(
 }
 
 fn todo_row<M: Clone + 'static>(
-    content: String,
+    content: &str,
     status: &'static str,
     status_color: Color,
     font_scale: f32,
@@ -569,34 +565,29 @@ fn todo_row<M: Clone + 'static>(
 }
 
 fn todo_item_row<M: Clone + 'static>(
-    item: &serde_json::Value,
+    row: &TodoRow,
     font_scale: f32,
     search_query: &str,
     lang: Lang,
 ) -> Element<'static, M> {
-    match serde_json::from_value::<TodoItem>(item.clone()) {
-        Ok(todo) => {
-            let (status, color) = match todo.status {
-                TodoStatus::Pending => (lang.tr("pending"), TODO_STATUS_PENDING),
-                TodoStatus::InProgress => (lang.tr("in progress"), TODO_STATUS_IN_PROGRESS),
-                TodoStatus::Completed => (lang.tr("completed"), CRABOT_SUCCESS),
-            };
-            let content = format!("{}{}", "  ".repeat(todo.depth as usize), todo.text);
-            todo_row(content, status, color, font_scale, search_query)
-        }
-        Err(_) => todo_row(
-            item.to_string(),
-            lang.tr("⚠ invalid"),
-            CRABOT_DANGER,
-            font_scale,
-            search_query,
-        ),
-    }
+    let color = match row.state {
+        TodoState::Pending => TODO_STATUS_PENDING,
+        TodoState::InProgress => TODO_STATUS_IN_PROGRESS,
+        TodoState::Completed => CRABOT_SUCCESS,
+        TodoState::Invalid => CRABOT_DANGER,
+    };
+    todo_row(
+        &row.content,
+        lang.tr(row.state.label_key()),
+        color,
+        font_scale,
+        search_query,
+    )
 }
 
 /// Embedded table for the `items` argument of the `todo` tool.
 fn todo_table<M: Clone + 'static>(
-    items: &[serde_json::Value],
+    items: &[TodoRow],
     font_scale: f32,
     search_query: &str,
     lang: Lang,
@@ -651,98 +642,95 @@ fn todo_table<M: Clone + 'static>(
         .into()
 }
 
-/// All tool-argument rows.
-pub(super) fn args_rows<'a, M: Clone + 'static>(
+/// Argument rows for a tool call in the live view. Rules live in [`tool_view`].
+pub(super) fn args_rows<M: Clone + 'static>(
     tool_name: &str,
-    args: &'a serde_json::Value,
+    args: &serde_json::Value,
     font_scale: f32,
     search_query: &str,
     lang: Lang,
-) -> Vec<Element<'a, M>> {
-    let Some(map) = args.as_object() else {
-        return Vec::new();
-    };
-
-    // Todo tool: render items as a table.
-    if tool_name == "todo"
-        && let Some(items) = map.get("items").and_then(|v| v.as_array())
-    {
-        return vec![todo_table(items, font_scale, search_query, lang)];
-    }
-
-    let mut rows: Vec<Element<'_, M>> = Vec::new();
-
-    // Combine offset + limit into a single row when both are present
-    // (used by the `read` tool).
-    let has_offset_and_limit = map.contains_key("offset") && map.contains_key("limit");
-    if has_offset_and_limit {
-        let off = fmt_arg(map, "offset");
-        let lim = fmt_arg(map, "limit");
-        let combined = format!("offset: {}  limit: {}", off, lim);
-        rows.push(
-            container(
-                row![highlighted_selectable(
-                    &combined,
-                    search_query,
-                    12.0 * font_scale,
-                    mono_font(),
-                    sel_secondary,
-                ),]
-                .spacing(0),
-            )
-            .padding([4, 8])
-            .style(|_theme: &Theme| container::Style {
-                background: Some(color_tool_content_bg().into()),
-                border: Border {
-                    color: color_tool_content_border(),
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
-                ..container::Style::default()
-            })
-            .into(),
-        );
-    }
-
-    for (k, v) in map {
-        // Skip offset/limit if we already combined them above.
-        if has_offset_and_limit && (k == "offset" || k == "limit") {
-            continue;
-        }
-        if k == "edits"
-            && let Some(arr) = v.as_array()
-        {
-            rows.push(edits_table(k, arr, font_scale, search_query, lang));
-            continue;
-        }
-        let val = v
-            .as_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| v.to_string());
-        rows.push(arg_row(k, val, font_scale, search_query));
-    }
-    rows
+) -> Vec<Element<'static, M>> {
+    row_elements(
+        tool_view::arg_rows(tool_name, args),
+        font_scale,
+        search_query,
+        lang,
+    )
 }
 
-/// Format a single argument value from the args map as a string.
-pub(crate) fn fmt_arg(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> String {
-    map.get(key)
-        .map(|v| {
-            v.as_str()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| v.to_string())
-        })
-        .unwrap_or_default()
-}
-
-/// Only the "path" argument row, when present.
-pub(super) fn path_arg_row<'a, M: Clone + 'static>(
-    args: &'a serde_json::Value,
+/// Collapsed argument rows: the modified path alone for `edit`/`write`.
+pub(super) fn preview_rows<M: Clone + 'static>(
+    tool_name: &str,
+    args: &serde_json::Value,
     font_scale: f32,
     search_query: &str,
-) -> Option<Element<'a, M>> {
-    let path = args.as_object()?.get("path")?.as_str()?;
-    Some(arg_row("path", path.to_string(), font_scale, search_query))
+    lang: Lang,
+) -> Vec<Element<'static, M>> {
+    row_elements(
+        tool_view::preview_rows(tool_name, args),
+        font_scale,
+        search_query,
+        lang,
+    )
+}
+
+fn row_elements<M: Clone + 'static>(
+    rows: Vec<ArgRow>,
+    font_scale: f32,
+    search_query: &str,
+    lang: Lang,
+) -> Vec<Element<'static, M>> {
+    rows.into_iter()
+        .map(|row| arg_row_element(row, font_scale, search_query, lang))
+        .collect()
+}
+
+/// Render one [`ArgRow`] as an iced element.
+fn arg_row_element<M: Clone + 'static>(
+    row: ArgRow,
+    font_scale: f32,
+    search_query: &str,
+    lang: Lang,
+) -> Element<'static, M> {
+    match row {
+        ArgRow::Text { key, value } => arg_row(&key, &value, font_scale, search_query),
+        ArgRow::OffsetLimit { offset, limit } => {
+            offset_limit_row(&offset, &limit, font_scale, search_query)
+        }
+        ArgRow::Edits(edits) => edits_table(&edits, font_scale, search_query, lang),
+        ArgRow::Todo(rows) => todo_table(&rows, font_scale, search_query, lang),
+    }
+}
+
+/// The combined `offset`/`limit` row (e.g. the `read` tool).
+fn offset_limit_row<M: Clone + 'static>(
+    offset: &str,
+    limit: &str,
+    font_scale: f32,
+    search_query: &str,
+) -> Element<'static, M> {
+    let combined = format!("offset: {offset}  limit: {limit}");
+    container(
+        row![highlighted_selectable(
+            &combined,
+            search_query,
+            12.0 * font_scale,
+            mono_font(),
+            sel_secondary,
+        ),]
+        .spacing(0),
+    )
+    .padding([4, 8])
+    .style(|_theme: &Theme| container::Style {
+        background: Some(color_tool_content_bg().into()),
+        border: Border {
+            color: color_tool_content_border(),
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// Rounded content-box style shared by tool result bodies.

@@ -19,7 +19,6 @@ use iced::{
 use iced_runtime::task::widget as task_widget;
 use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
-use serde_json::Value;
 
 use crate::app::session_state::SessionEvent;
 use crate::app::{ConversationState, SessionTab};
@@ -42,8 +41,9 @@ use super::theme::{
 };
 use super::tool_message::{
     args_rows, ask_result_view, bold_font, highlighted_selectable, highlighted_text,
-    highlighted_text_font, path_arg_row, result_text,
+    highlighted_text_font, preview_rows, result_text,
 };
+use super::tool_view;
 
 pub(crate) const MESSAGE_SCROLL: widget::Id = widget::Id::new("messages");
 pub(crate) const SEARCH_INPUT: widget::Id = widget::Id::new("search-input");
@@ -328,23 +328,6 @@ fn wrap_bubble<'a>(
         .into()
 }
 
-/// Collapsed args preview: just the path for edit/write, all args otherwise.
-fn args_preview<'a>(
-    name: &str,
-    args: &'a Value,
-    font_scale: f32,
-    search_query: &str,
-    lang: Lang,
-) -> Vec<Element<'a, CenterPaneEvent>> {
-    if name == "edit" || name == "write" {
-        path_arg_row(args, font_scale, search_query)
-            .into_iter()
-            .collect()
-    } else {
-        args_rows(name, args, font_scale, search_query, lang)
-    }
-}
-
 /// Tool item header without an expand indicator (pending/streaming/ask items).
 fn tool_header_row<'a>(
     badge: impl Into<Element<'a, CenterPaneEvent>>,
@@ -430,7 +413,7 @@ fn tool_turn_block<'a>(
         }
 
         // Completed ask tool: render question + answer without expand/collapse.
-        if name == "ask" && completed {
+        if tool_view::renders_own_view(name) && completed {
             elements.push(tool_header_row(badge, status_text, ts_text));
             elements.push(
                 ask_result_view(args, result.unwrap(), ctx.font_scale, ctx.lang)
@@ -481,7 +464,7 @@ fn tool_turn_block<'a>(
                 ctx.lang,
             ));
         } else {
-            elements.extend(args_preview(
+            elements.extend(preview_rows(
                 name,
                 args,
                 ctx.font_scale,
