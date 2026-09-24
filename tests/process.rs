@@ -1,5 +1,8 @@
-use std::path::{Path, PathBuf};
+mod common;
 
+use std::path::Path;
+
+use common::TempDir;
 #[cfg(unix)]
 use crabot::tools::OutputSink;
 use crabot::tools::Tool;
@@ -9,31 +12,6 @@ use serde_json::{Value, json};
 #[cfg(unix)]
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
-
-/// Helper: create a fresh temp workspace dir cleaned up on drop.
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new(prefix: &str) -> Self {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("crabot_process_{}_{}", prefix, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self { path: dir }
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn execute(tool: &ProcessTool, args: Value, workspace: &std::path::Path) -> Result<String, String> {
-    tool.execute(&args, workspace, &CancellationToken::new())
-}
 
 /// Numeric tokens of a `start`/`restart` result, in order.
 fn pids(result: &str) -> impl DoubleEndedIterator<Item = u32> + '_ {
@@ -55,12 +33,50 @@ fn last_pid(result: &str) -> u32 {
         .expect("restart result should name the new pid")
 }
 
+// ── TempDir-backed process wrappers ─────────────────────────────
+// Each collapses the old "run tool → parse pid → wait/stop/logs" boilerplate.
+
+/// Run the process tool in `ws`.
+fn run(ws: &TempDir, args: Value) -> Result<String, String> {
+    ProcessTool.execute(&args, &ws.path, &CancellationToken::new())
+}
+
+/// Start a process with a full args object (env/cwd overrides), returning its pid.
+fn start_with(ws: &TempDir, args: Value) -> u32 {
+    pid(&run(ws, args).unwrap())
+}
+
+/// Start `command` in `ws`, returning its pid.
 #[cfg(unix)]
+fn start(ws: &TempDir, command: &str) -> u32 {
+    start_with(ws, json!({"action": "start", "command": command}))
+}
+
+/// Wait up to 15s for `pid`; returns the result text.
+fn wait_exit(ws: &TempDir, pid: u32) -> String {
+    run(ws, json!({"action": "wait", "pid": pid, "timeout": 15000})).unwrap()
+}
+
+/// Fetch the accumulated logs for `pid`.
+fn logs(ws: &TempDir, pid: u32) -> String {
+    run(ws, json!({"action": "logs", "pid": pid})).unwrap()
+}
+
+/// Stop `pid` with `signal` (`""` = the tool's default), discarding the result.
+#[cfg(unix)]
+fn stop(ws: &TempDir, pid: u32, signal: &str) {
+    let mut args = json!({"action": "stop", "pid": pid});
+    if !signal.is_empty() {
+        args["signal"] = json!(signal);
+    }
+    let _ = run(ws, args);
+}
+
 /// Poll `logs` until it contains `needle`, panicking after ~2 s.
-fn wait_for_log(tool: &ProcessTool, id: u32, workspace: &std::path::Path, needle: &str) {
+#[cfg(unix)]
+fn wait_for_log(ws: &TempDir, id: u32, needle: &str) {
     for _ in 0..200 {
-        let logs = execute(tool, json!({"action": "logs", "pid": id}), workspace).unwrap();
-        if logs.contains(needle) {
+        if logs(ws, id).contains(needle) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -71,16 +87,8 @@ fn wait_for_log(tool: &ProcessTool, id: u32, workspace: &std::path::Path, needle
 #[cfg(unix)]
 #[test]
 fn input_cancel_unblocks_and_stop_still_works() {
-    let tmp = TempDir::new("input_cancel");
-    let tool = ProcessTool;
-
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
+    let tmp = TempDir::new("input_cancel").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 30\"");
 
     // `sleep 30` never reads stdin, so a large write fills the pipe and blocks.
     let cancel = CancellationToken::new();
@@ -100,47 +108,29 @@ fn input_cancel_unblocks_and_stop_still_works() {
     assert_eq!(result, "Cancelled by user", "input result: {result}");
 
     // The stdin mutex must be free: stop (which takes stdin) must not hang.
-    let stopped = execute(
-        &tool,
-        json!({"action": "stop", "pid": id, "signal": "kill"}),
-        &tmp.path,
-    )
-    .unwrap();
+    let stopped = run(&tmp, json!({"action": "stop", "pid": id, "signal": "kill"})).unwrap();
     assert!(stopped.contains("stopped"), "stop result: {stopped}");
 }
 
 #[cfg(unix)]
 #[test]
 fn wait_completes_when_daemon_grandchild_keeps_writing() {
-    let tmp = TempDir::new("daemon_write");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("daemon_write").unwrap();
 
     // The parent exits immediately; a grandchild keeps the pipe open and writes
     // continuously, so readers must stop after the drain grace (EOF never comes).
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"(i=0; while [ $i -lt 100000 ]; do echo noise; i=$((i+1)); done) & echo started; exit 7\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
+    let id = start(
+        &tmp,
+        "/bin/sh -c \"(i=0; while [ $i -lt 100000 ]; do echo noise; i=$((i+1)); done) & echo started; exit 7\"",
+    );
 
-    let waited = execute(
-        &tool,
-        json!({"action": "wait", "pid": id, "timeout": 10000}),
-        &tmp.path,
-    )
-    .unwrap();
+    let waited = wait_exit(&tmp, id);
     assert!(
         waited.contains("exited with code 7"),
         "wait result: {waited}"
     );
 
-    let _ = execute(
-        &tool,
-        json!({"action": "stop", "pid": id, "signal": "kill"}),
-        &tmp.path,
-    );
+    stop(&tmp, id, "kill");
 }
 
 // ── Schema ────────────────────────────────────────────────────────
@@ -300,29 +290,16 @@ fn parse_env_rejects_non_object_and_non_string_values() {
 #[cfg(unix)]
 #[test]
 fn start_wait_and_logs() {
-    let tmp = TempDir::new("run");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("run").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"echo hello; echo world; sleep 0.2\"");
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"echo hello; echo world; sleep 0.2\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-
-    let waited = execute(
-        &tool,
-        json!({"action": "wait", "pid": id, "timeout": 15000}),
-        &tmp.path,
-    )
-    .unwrap();
+    let waited = wait_exit(&tmp, id);
     assert!(
         waited.contains("exited with code 0"),
         "wait result: {waited}"
     );
 
-    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
+    let logs = logs(&tmp, id);
     assert!(logs.contains("hello"), "logs: {logs}");
     assert!(logs.contains("world"), "logs: {logs}");
 }
@@ -331,24 +308,14 @@ fn start_wait_and_logs() {
 #[cfg(unix)]
 #[test]
 fn logs_strip_ansi_sequences() {
-    let tmp = TempDir::new("ansi");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("ansi").unwrap();
+    let id = start(
+        &tmp,
+        "/bin/sh -c \"printf '\\033[31mred\\033[0m\\ttext\\n'\"",
+    );
+    wait_exit(&tmp, id);
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"printf '\\033[31mred\\033[0m\\ttext\\n'\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-    execute(
-        &tool,
-        json!({"action": "wait", "pid": id, "timeout": 15000}),
-        &tmp.path,
-    )
-    .unwrap();
-
-    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
+    let logs = logs(&tmp, id);
     assert!(logs.contains("red\ttext"), "logs: {logs:?}");
     assert!(!logs.contains('\u{1b}'), "logs kept an escape: {logs:?}");
 }
@@ -360,7 +327,7 @@ fn logs_strip_ansi_sequences() {
 /// and extension-less executables on Unix.
 #[test]
 fn start_resolves_path_shim() {
-    let tmp = TempDir::new("path_shim");
+    let tmp = TempDir::new("path_shim").unwrap();
     let bin = tmp.path.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
 
@@ -378,25 +345,16 @@ fn start_resolves_path_shim() {
         std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let tool = ProcessTool;
     // `PATH` as the tool's env override sees it (MSYS `/d/...` form on Windows).
     let vfs = crabot::tools::convert_path_to_unix_style(&bin);
-    let started = execute(
-        &tool,
+    let id = start_with(
+        &tmp,
         json!({"action": "start", "command": "crabot-probe", "env": {"PATH": vfs}}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
+    );
 
-    let waited = execute(
-        &tool,
-        json!({"action": "wait", "pid": id, "timeout": 15000}),
-        &tmp.path,
-    )
-    .unwrap();
+    let waited = wait_exit(&tmp, id);
     assert!(waited.contains("exited with code 0"), "wait: {waited}");
-    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
+    let logs = logs(&tmp, id);
     assert!(logs.contains("shim-ok"), "logs: {logs}");
     // The child sees the native list the lookup searched — a Windows child
     // cannot resolve anything through the MSYS `/d/...` override it was given.
@@ -418,7 +376,6 @@ async fn events_fire_on_start_and_exit() {
 
     use futures::StreamExt;
 
-    let tool = ProcessTool;
     let cancel = CancellationToken::new();
     let mut events = crabot::tools::process::events();
 
@@ -430,7 +387,7 @@ async fn events_fire_on_start_and_exit() {
             .is_some()
     );
 
-    let result = tool
+    let result = ProcessTool
         .execute(
             &json!({"action": "start", "command": SLEEP_CMD}),
             Path::new("."),
@@ -445,12 +402,13 @@ async fn events_fire_on_start_and_exit() {
             .is_some()
     );
 
-    tool.execute(
-        &json!({"action": "stop", "pid": pid}),
-        Path::new("."),
-        &cancel,
-    )
-    .unwrap();
+    ProcessTool
+        .execute(
+            &json!({"action": "stop", "pid": pid}),
+            Path::new("."),
+            &cancel,
+        )
+        .unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(5), events.next())
             .await
@@ -467,7 +425,6 @@ fn running_processes_track_owner_and_lifecycle() {
 
     use crabot::tools::{process, with_tab_scope};
 
-    let tool = ProcessTool;
     let cancel = CancellationToken::new();
     let find = |pid: u32| {
         process::running_processes()
@@ -476,7 +433,7 @@ fn running_processes_track_owner_and_lifecycle() {
     };
 
     // Started outside the LLM loop: no owning tab.
-    let result = tool
+    let result = ProcessTool
         .execute(
             &json!({"action": "start", "command": SLEEP_CMD}),
             Path::new("."),
@@ -489,7 +446,7 @@ fn running_processes_track_owner_and_lifecycle() {
 
     // Started inside a tab scope: the entry carries the owning tab number.
     let result = with_tab_scope(7, || {
-        tool.execute(
+        ProcessTool.execute(
             &json!({"action": "start", "command": SLEEP_CMD}),
             Path::new("."),
             &cancel,
@@ -503,12 +460,13 @@ fn running_processes_track_owner_and_lifecycle() {
 
     // Stopping a process removes it from the snapshot once the reaper records
     // the exit (which is also what pings the registry-change events).
-    tool.execute(
-        &json!({"action": "stop", "pid": tab_pid}),
-        Path::new("."),
-        &cancel,
-    )
-    .unwrap();
+    ProcessTool
+        .execute(
+            &json!({"action": "stop", "pid": tab_pid}),
+            Path::new("."),
+            &cancel,
+        )
+        .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while find(tab_pid).is_some() {
         assert!(
@@ -519,72 +477,50 @@ fn running_processes_track_owner_and_lifecycle() {
     }
 
     // Clean up the remaining playground process.
-    tool.execute(
-        &json!({"action": "stop", "pid": playground_pid}),
-        Path::new("."),
-        &cancel,
-    )
-    .unwrap();
+    ProcessTool
+        .execute(
+            &json!({"action": "stop", "pid": playground_pid}),
+            Path::new("."),
+            &cancel,
+        )
+        .unwrap();
 }
 
 #[cfg(unix)]
 #[test]
 fn input_is_written_to_stdin() {
-    let tmp = TempDir::new("input");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("input").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"read line; echo got:$line\"");
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"read line; echo got:$line\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-
-    let sent = execute(
-        &tool,
+    let sent = run(
+        &tmp,
         json!({"action": "input", "pid": id, "input": "hi there"}),
-        &tmp.path,
     )
     .unwrap();
     assert!(sent.contains("bytes"));
 
-    let waited = execute(
-        &tool,
-        json!({"action": "wait", "pid": id, "timeout": 15000}),
-        &tmp.path,
-    )
-    .unwrap();
+    let waited = wait_exit(&tmp, id);
     assert!(
         waited.contains("exited with code 0"),
         "wait result: {waited}"
     );
 
-    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
+    let logs = logs(&tmp, id);
     assert!(logs.contains("got:hi there"), "logs: {logs}");
 }
 
 #[cfg(unix)]
 #[test]
 fn stop_terminates_process() {
-    let tmp = TempDir::new("stop");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("stop").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 30\"");
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-
-    let status = execute(&tool, json!({"action": "status", "pid": id}), &tmp.path).unwrap();
+    let status = run(&tmp, json!({"action": "status", "pid": id})).unwrap();
     assert!(status.contains("running"), "status: {status}");
 
-    let stopped = execute(
-        &tool,
+    let stopped = run(
+        &tmp,
         json!({"action": "stop", "pid": id, "signal": "terminate"}),
-        &tmp.path,
     )
     .unwrap();
     assert!(stopped.contains("stopped"), "stop result: {stopped}");
@@ -593,50 +529,28 @@ fn stop_terminates_process() {
 #[cfg(unix)]
 #[test]
 fn list_and_status_report_state() {
-    let tmp = TempDir::new("list");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("list").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 30\"");
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-
-    let list = execute(&tool, json!({"action": "list"}), &tmp.path).unwrap();
+    let list = run(&tmp, json!({"action": "list"})).unwrap();
     assert!(list.contains(&id.to_string()), "list: {list}");
 
-    let status = execute(&tool, json!({"action": "status", "pid": id}), &tmp.path).unwrap();
+    let status = run(&tmp, json!({"action": "status", "pid": id})).unwrap();
     assert!(status.contains("running"), "status: {status}");
     assert!(status.contains("pid:"), "status: {status}");
 
-    // Clean up.
-    let _ = execute(
-        &tool,
-        json!({"action": "stop", "pid": id, "signal": "kill"}),
-        &tmp.path,
-    );
+    stop(&tmp, id, "kill");
 }
 
 #[cfg(unix)]
 #[test]
 fn restart_replaces_process() {
-    let tmp = TempDir::new("restart");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("restart").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 30\"");
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-
-    let restarted = execute(
-        &tool,
+    let restarted = run(
+        &tmp,
         json!({"action": "restart", "pid": id, "command": "/bin/sh -c \"echo again\""}),
-        &tmp.path,
     )
     .unwrap();
     assert!(
@@ -645,12 +559,7 @@ fn restart_replaces_process() {
     );
     let new_id = last_pid(&restarted);
 
-    let waited = execute(
-        &tool,
-        json!({"action": "wait", "pid": new_id, "timeout": 15000}),
-        &tmp.path,
-    )
-    .unwrap();
+    let waited = wait_exit(&tmp, new_id);
     assert!(
         waited.contains("exited with code 0"),
         "wait result: {waited}"
@@ -660,41 +569,24 @@ fn restart_replaces_process() {
 #[cfg(unix)]
 #[test]
 fn logs_immediately_after_exit_includes_tail() {
-    let tmp = TempDir::new("tail");
-    let tool = ProcessTool;
-
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"echo early\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
+    let tmp = TempDir::new("tail").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"echo early\"");
 
     // Read logs right away — before the reaper has necessarily recorded the
     // exit — and still see the full output (logs waits for the reader drain).
-    let logs = execute(&tool, json!({"action": "logs", "pid": id}), &tmp.path).unwrap();
+    let logs = logs(&tmp, id);
     assert!(logs.contains("early"), "logs: {logs}");
 }
 
 #[cfg(unix)]
 #[test]
 fn logs_follow_reports_exit_with_tail() {
-    let tmp = TempDir::new("follow_exit");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("follow_exit").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"echo bye\"");
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"echo bye\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-
-    let logs = execute(
-        &tool,
+    let logs = run(
+        &tmp,
         json!({"action": "logs", "pid": id, "follow": true, "timeout": 15000}),
-        &tmp.path,
     )
     .unwrap();
     assert!(logs.contains("exited with code 0"), "logs: {logs}");
@@ -704,30 +596,17 @@ fn logs_follow_reports_exit_with_tail() {
 #[cfg(unix)]
 #[test]
 fn logs_follow_reports_still_running_on_timeout() {
-    let tmp = TempDir::new("follow_timeout");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("follow_timeout").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 30\"");
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-
-    let logs = execute(
-        &tool,
+    let logs = run(
+        &tmp,
         json!({"action": "logs", "pid": id, "follow": true, "timeout": 100}),
-        &tmp.path,
     )
     .unwrap();
     assert!(logs.contains("still running after 100ms"), "logs: {logs}");
 
-    let _ = execute(
-        &tool,
-        json!({"action": "stop", "pid": id, "signal": "kill"}),
-        &tmp.path,
-    );
+    stop(&tmp, id, "kill");
 }
 
 #[cfg(unix)]
@@ -736,23 +615,10 @@ fn wait_completes_for_daemonising_child() {
     // The grandchild inherits the pipes and outlives its parent, so EOF never
     // arrives; wait must still report the exit. (The orphan exits on its own
     // a few seconds later.)
-    let tmp = TempDir::new("daemon");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("daemon").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"(sleep 5 &); echo started; exit 7\"");
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"(sleep 5 &); echo started; exit 7\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-
-    let waited = execute(
-        &tool,
-        json!({"action": "wait", "pid": id, "timeout": 5000}),
-        &tmp.path,
-    )
-    .unwrap();
+    let waited = run(&tmp, json!({"action": "wait", "pid": id, "timeout": 5000})).unwrap();
     assert!(
         waited.contains("exited with code 7"),
         "wait result: {waited}"
@@ -764,25 +630,21 @@ fn wait_completes_for_daemonising_child() {
 fn logs_follow_streams_every_line_to_sink() {
     // The first line must reach the sink too (it used to be indistinguishable
     // from "nothing yet" and was dropped).
-    let tmp = TempDir::new("follow_sink");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("follow_sink").unwrap();
 
     // Ample lead-in so the follow loop has definitely started before the
     // first line is emitted (the sink assertion fails if it misses "first").
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"sleep 1; echo first; sleep 0.3; echo second\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
+    let id = start(
+        &tmp,
+        "/bin/sh -c \"sleep 1; echo first; sleep 0.3; echo second\"",
+    );
 
     let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink: OutputSink = {
         let received = Arc::clone(&received);
         Arc::new(move |text: &str| received.lock().unwrap().push(text.to_string()))
     };
-    let result = tool
+    let result = ProcessTool
         .execute_streaming(
             &json!({"action": "logs", "pid": id, "follow": true, "timeout": 5000}),
             &tmp.path,
@@ -805,37 +667,22 @@ fn logs_follow_streams_every_line_to_sink() {
 #[cfg(unix)]
 #[test]
 fn stop_unknown_process_reports_error() {
-    let tmp = TempDir::new("unknown");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("unknown").unwrap();
 
-    let err = execute(&tool, json!({"action": "stop", "pid": 999999}), &tmp.path).unwrap_err();
+    let err = run(&tmp, json!({"action": "stop", "pid": 999999})).unwrap_err();
     assert!(err.contains("Unknown pid"), "err: {err}");
 }
 
 #[cfg(unix)]
 #[test]
 fn restart_after_exit_starts_replacement() {
-    let tmp = TempDir::new("restart_exit");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("restart_exit").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"echo first\"");
+    wait_exit(&tmp, id);
 
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"echo first\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
-    let _ = execute(
-        &tool,
-        json!({"action": "wait", "pid": id, "timeout": 15000}),
-        &tmp.path,
-    )
-    .unwrap();
-
-    let restarted = execute(
-        &tool,
+    let restarted = run(
+        &tmp,
         json!({"action": "restart", "pid": id, "command": "/bin/sh -c \"echo second\""}),
-        &tmp.path,
     )
     .unwrap();
     assert!(
@@ -844,70 +691,49 @@ fn restart_after_exit_starts_replacement() {
     );
     let new_id = last_pid(&restarted);
 
-    let waited = execute(
-        &tool,
-        json!({"action": "wait", "pid": new_id, "timeout": 15000}),
-        &tmp.path,
-    )
-    .unwrap();
+    let waited = wait_exit(&tmp, new_id);
     assert!(
         waited.contains("exited with code 0"),
         "wait result: {waited}"
     );
-    let logs = execute(&tool, json!({"action": "logs", "pid": new_id}), &tmp.path).unwrap();
+    let logs = logs(&tmp, new_id);
     assert!(logs.contains("second"), "logs: {logs}");
 }
 
 #[cfg(unix)]
 #[test]
 fn restart_escalates_to_kill_when_terminate_ignored() {
-    let tmp = TempDir::new("restart_kill");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("restart_kill").unwrap();
 
     // The shell ignores TERM and loops forever, so restart must escalate to kill.
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"trap '' TERM; echo ready; while :; do sleep 1; done\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
+    let id = start(
+        &tmp,
+        "/bin/sh -c \"trap '' TERM; echo ready; while :; do sleep 1; done\"",
+    );
 
     // Wait for the trap to be installed, else TERM kills the shell outright.
-    wait_for_log(&tool, id, &tmp.path, "ready");
+    wait_for_log(&tmp, id, "ready");
 
-    let restarted = execute(&tool, json!({"action": "restart", "pid": id}), &tmp.path).unwrap();
+    let restarted = run(&tmp, json!({"action": "restart", "pid": id})).unwrap();
     assert!(
         restarted.contains("kill after terminate ignored"),
         "restart result: {restarted}"
     );
 
     let new_id = last_pid(&restarted);
-    let _ = execute(
-        &tool,
-        json!({"action": "stop", "pid": new_id, "signal": "kill"}),
-        &tmp.path,
-    );
+    stop(&tmp, new_id, "kill");
 }
 
 #[cfg(unix)]
 #[test]
 fn restart_honors_cwd_and_env_overrides() {
-    let tmp = TempDir::new("restart_overrides");
-    std::fs::create_dir_all(tmp.path.join("sub")).unwrap();
-    let tool = ProcessTool;
-
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
+    let tmp = TempDir::new("restart_overrides").unwrap();
+    tmp.mkdir("sub").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 30\"");
 
     // Override both cwd and env on restart; the replacement must use them.
-    let restarted = execute(
-        &tool,
+    let restarted = run(
+        &tmp,
         json!({
             "action": "restart",
             "pid": id,
@@ -915,7 +741,6 @@ fn restart_honors_cwd_and_env_overrides() {
             "cwd": "sub",
             "env": {"MY_VAR": "hello"}
         }),
-        &tmp.path,
     )
     .unwrap();
     assert!(
@@ -924,18 +749,13 @@ fn restart_honors_cwd_and_env_overrides() {
     );
     let new_id = last_pid(&restarted);
 
-    let waited = execute(
-        &tool,
-        json!({"action": "wait", "pid": new_id, "timeout": 15000}),
-        &tmp.path,
-    )
-    .unwrap();
+    let waited = wait_exit(&tmp, new_id);
     assert!(
         waited.contains("exited with code 0"),
         "wait result: {waited}"
     );
 
-    let logs = execute(&tool, json!({"action": "logs", "pid": new_id}), &tmp.path).unwrap();
+    let logs = logs(&tmp, new_id);
     assert!(logs.contains("cwd="), "logs: {logs}");
     assert!(logs.contains("env=hello"), "logs: {logs}");
 }
@@ -943,30 +763,25 @@ fn restart_honors_cwd_and_env_overrides() {
 #[cfg(unix)]
 #[test]
 fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
-    let tmp = TempDir::new("restart_env");
-    let tool = ProcessTool;
+    let tmp = TempDir::new("restart_env").unwrap();
 
     // Start with an env override that a strict-mode restart must preserve.
-    let started = execute(
-        &tool,
+    let mut id = start_with(
+        &tmp,
         json!({"action": "start", "command": "/bin/sh -c \"sleep 30\"", "env": {"MY_VAR": "kept"}}),
-        &tmp.path,
-    )
-    .unwrap();
-    let mut id = pid(&started);
+    );
 
     // Strict-mode schemas make `env` a required string, so "no override"
     // arrives as null, "", or "null"; all inherit rather than wipe MY_VAR.
     for raw in [json!(null), json!(""), json!("null")] {
-        let restarted = execute(
-            &tool,
+        let restarted = run(
+            &tmp,
             json!({
                 "action": "restart",
                 "pid": id,
                 "command": "/bin/sh -c 'echo val=$MY_VAR'",
                 "env": raw
             }),
-            &tmp.path,
         )
         .unwrap();
         assert!(
@@ -974,13 +789,8 @@ fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
             "restart result: {restarted}"
         );
         id = last_pid(&restarted);
-        let _ = execute(
-            &tool,
-            json!({ "action": "wait", "pid": id, "timeout": 15000 }),
-            &tmp.path,
-        )
-        .unwrap();
-        let logs = execute(&tool, json!({ "action": "logs", "pid": id }), &tmp.path).unwrap();
+        wait_exit(&tmp, id);
+        let logs = logs(&tmp, id);
         assert!(
             logs.contains("val=kept"),
             "env lost on restart with env={raw}: {logs}"
@@ -988,25 +798,19 @@ fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
     }
 
     // An explicit empty object is a deliberate clear, distinct from "unset".
-    let restarted = execute(
-        &tool,
+    let restarted = run(
+        &tmp,
         json!({
             "action": "restart",
             "pid": id,
             "command": "/bin/sh -c 'echo val=${MY_VAR:-unset}'",
             "env": {}
         }),
-        &tmp.path,
     )
     .unwrap();
     id = last_pid(&restarted);
-    let _ = execute(
-        &tool,
-        json!({ "action": "wait", "pid": id, "timeout": 15000 }),
-        &tmp.path,
-    )
-    .unwrap();
-    let logs = execute(&tool, json!({ "action": "logs", "pid": id }), &tmp.path).unwrap();
+    wait_exit(&tmp, id);
+    let logs = logs(&tmp, id);
     assert!(
         logs.contains("val=unset"),
         "empty env did not clear: {logs}"
@@ -1016,44 +820,26 @@ fn restart_inherits_env_when_unset_or_blank_and_clears_on_empty_object() {
 #[cfg(unix)]
 #[test]
 fn restart_rejects_bad_command_without_stopping() {
-    let tmp = TempDir::new("restart_bad");
-    let tool = ProcessTool;
-
-    let started = execute(
-        &tool,
-        json!({"action": "start", "command": "/bin/sh -c \"sleep 30\""}),
-        &tmp.path,
-    )
-    .unwrap();
-    let id = pid(&started);
+    let tmp = TempDir::new("restart_bad").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 30\"");
 
     // A bad override must fail validation before the running process is stopped.
-    let err = execute(
-        &tool,
+    let err = run(
+        &tmp,
         json!({"action": "restart", "pid": id, "command": "echo 'unterminated"}),
-        &tmp.path,
     )
     .unwrap_err();
     assert!(err.contains("Failed to parse command"), "err: {err}");
 
     // Same for the empty override.
-    let err = execute(
-        &tool,
-        json!({"action": "restart", "pid": id, "command": ""}),
-        &tmp.path,
-    )
-    .unwrap_err();
+    let err = run(&tmp, json!({"action": "restart", "pid": id, "command": ""})).unwrap_err();
     assert!(err.contains("Empty command"), "err: {err}");
 
-    let status = execute(&tool, json!({"action": "status", "pid": id}), &tmp.path).unwrap();
+    let status = run(&tmp, json!({"action": "status", "pid": id})).unwrap();
     assert!(
         status.contains("running"),
         "original process was stopped: {status}"
     );
 
-    let _ = execute(
-        &tool,
-        json!({"action": "stop", "pid": id, "signal": "kill"}),
-        &tmp.path,
-    );
+    stop(&tmp, id, "kill");
 }

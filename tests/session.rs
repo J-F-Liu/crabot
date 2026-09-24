@@ -1,22 +1,20 @@
 //! Integration tests for session persistence in `crabot::session`.
 
+mod common;
+
 use std::path::PathBuf;
 
+use common::TempDir;
 use crabot::chat::TurnBody;
 use crabot::model::ModelConfig;
 use crabot::session::{Session, SessionRecord, list_session_paths};
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
 
-fn temp_workspace() -> PathBuf {
-    let base = std::env::temp_dir().join(format!("crabot-test-{}", std::process::id()));
-    // Unique suffix so parallel tests don't interfere.
-    static CNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let n = CNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = base.join(format!("t{n}"));
-    let ws = dir.join("workspace");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&ws).unwrap();
-    ws
+/// A temp dir guard plus the `workspace/` subdir a session persists into.
+fn temp_workspace() -> (TempDir, PathBuf) {
+    let dir = TempDir::new("session").unwrap();
+    let ws = dir.mkdir("workspace").unwrap();
+    (dir, ws)
 }
 
 /// An assistant message carrying a single tool call.
@@ -151,7 +149,7 @@ fn header_hit_deduped_when_first_turn_matches() {
 
 #[test]
 fn round_trip_jsonl() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
     session.title = "Hello world".into();
@@ -174,7 +172,7 @@ fn round_trip_jsonl() {
 
 #[test]
 fn incremental_append() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
     session.title = "Incremental".into();
@@ -204,7 +202,7 @@ fn incremental_append() {
 
 #[test]
 fn migrate_legacy_json() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
     session.title = "Legacy".into();
@@ -236,7 +234,7 @@ fn migrate_legacy_json() {
 
 #[test]
 fn list_dedupes_by_stem() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     // Use a current id so the file lands inside the scanned 3-month window.
     let mut session = Session::new();
     session.workspace = ws.clone();
@@ -256,7 +254,7 @@ fn list_dedupes_by_stem() {
 
 #[test]
 fn meta_update_appends_new_line() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
     session.title = "Initial".into();
@@ -298,7 +296,7 @@ fn pop_last_turn_removes_trailing_turn_and_empty_dialog() {
 
 #[test]
 fn tally_written_only_by_save_with_tally() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
     session.save().expect("first save");
@@ -330,7 +328,7 @@ fn tally_written_only_by_save_with_tally() {
 
 #[test]
 fn record_system_prompt_dedupes_and_roundtrips() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
 
@@ -368,7 +366,7 @@ fn record_system_prompt_dedupes_and_roundtrips() {
 
 #[test]
 fn system_prompt_record_roundtrips_with_conversation() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
     session.title = "With system".into();
@@ -535,8 +533,8 @@ fn has_reply_detects_assistant_messages() {
 
 #[test]
 fn workspace_switch_writes_full_history_to_new_file() {
-    let ws_a = temp_workspace();
-    let ws_b = temp_workspace();
+    let (_tmp_a, ws_a) = temp_workspace();
+    let (_tmp_b, ws_b) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws_a.clone();
     session.title = "Workspace switch".into();
@@ -564,7 +562,7 @@ fn workspace_switch_writes_full_history_to_new_file() {
 
 #[test]
 fn jsonl_without_meta_falls_back_to_file_stem() {
-    let ws = temp_workspace();
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws.clone();
     let path = session.save_path().unwrap();

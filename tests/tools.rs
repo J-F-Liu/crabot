@@ -1,9 +1,11 @@
+mod common;
+
 use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use common::TempDir;
 #[cfg(windows)]
 use crabot::tools::tmp_host_dir;
 use crabot::tools::{
@@ -11,46 +13,6 @@ use crabot::tools::{
     decode_stringified_args, resolve_path, resolve_path_partial, streaming_truncation_marker,
 };
 use serde_json::json;
-
-/// Helper: create a temp workspace dir that is cleaned up on drop.
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new(prefix: &str) -> io::Result<Self> {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("crabot_test_{}_{}", prefix, std::process::id()));
-        let _ = fs::remove_dir_all(&dir); // clean any left‑over
-        fs::create_dir_all(&dir)?;
-        Ok(Self { path: dir })
-    }
-
-    fn join(&self, name: &str) -> PathBuf {
-        self.path.join(name)
-    }
-
-    fn mkfile(&self, name: &str) -> io::Result<PathBuf> {
-        let p = self.join(name);
-        if let Some(parent) = p.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&p, b"")?;
-        Ok(p)
-    }
-
-    fn mkdir(&self, name: &str) -> io::Result<PathBuf> {
-        let p = self.join(name);
-        fs::create_dir_all(&p)?;
-        Ok(p)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
 
 // ── resolve_path ────────────────────────────────────────────
 

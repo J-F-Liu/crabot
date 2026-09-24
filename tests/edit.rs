@@ -1,22 +1,24 @@
 //! Integration tests for the `edit` tool in `crabot::tools::edit`.
 
+mod common;
+
 use std::path::Path;
 
+use common::TempDir;
 use crabot::tools::edit::{
     EditParam, NO_CHANGE_ALL_EDITS_MESSAGE, NO_CHANGE_MESSAGE, build_line_starts, execute,
     format_edit_numbers, line_number_at,
 };
 use serde_json::json;
 
-/// Write a throwaway file in a unique temp dir and run [`execute`].
+/// Write `body` to `file_name` in `dir` and run [`execute`].
 fn run_edit(
-    dir: &Path,
+    dir: &TempDir,
     file_name: &str,
     body: &str,
     args: serde_json::Value,
 ) -> Result<String, String> {
-    let file = dir.join(file_name);
-    std::fs::write(&file, body).unwrap();
+    let file = dir.write(file_name, body.as_bytes()).unwrap();
     let mut args = args;
     args["path"] = json!(file.to_str().unwrap());
     execute(&args, Path::new("."))
@@ -24,8 +26,7 @@ fn run_edit(
 
 #[test]
 fn duplicate_occurrence_reports_line_numbers() {
-    let dir = std::env::temp_dir().join(format!("crabot_edit_dup_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_dup").unwrap();
     let err = run_edit(
         &dir,
         "dup.txt",
@@ -34,14 +35,12 @@ fn duplicate_occurrence_reports_line_numbers() {
     )
     .unwrap_err();
     assert!(err.contains("lines 2 and 3"), "got: {err}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn overlap_reports_line_numbers_with_multibyte_ends() {
     // Second old_text ends in multi-byte 'é'; end line must not slice mid-char.
-    let dir = std::env::temp_dir().join(format!("crabot_edit_ovl_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_ovl").unwrap();
     let err = run_edit(
         &dir,
         "overlap.txt",
@@ -56,34 +55,29 @@ fn overlap_reports_line_numbers_with_multibyte_ends() {
     .unwrap_err();
     assert!(err.contains("overlap"), "got: {err}");
     assert!(err.contains("lines 1..1"), "got: {err}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn non_array_edits_reports_value_type() {
-    let dir = std::env::temp_dir().join(format!("crabot_edit_ty_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_ty").unwrap();
     let err = run_edit(&dir, "ty.txt", "x\n", json!({ "edits": "boom" })).unwrap_err();
     assert!(err.contains("must be an array, got string"), "got: {err}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn bad_path_and_bad_edit_reported_together() {
     // Arg-level and per-edit errors are collected and reported in one pass.
-    let dir = std::env::temp_dir().join(format!("crabot_edit_combo_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_combo").unwrap();
     let err = execute(
         &json!({
             "path": "no_such_dir_xyz/file.txt",
             "edits": [{ "old_text": "", "new_text": "x" }]
         }),
-        &dir,
+        &dir.path,
     )
     .unwrap_err();
     assert!(err.contains("Failed to resolve path"), "got: {err}");
     assert!(err.contains("'old_text' must not be empty"), "got: {err}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -103,8 +97,7 @@ fn line_number_at_matches_byte_and_char_boundaries() {
 
 #[test]
 fn successful_edit_needs_no_line_index() {
-    let dir = std::env::temp_dir().join(format!("crabot_edit_ok_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_ok").unwrap();
     let result = run_edit(
         &dir,
         "ok.txt",
@@ -117,13 +110,11 @@ fn successful_edit_needs_no_line_index() {
         std::fs::read_to_string(dir.join("ok.txt")).unwrap(),
         "one\ntwo bar\nthree\n"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn identical_old_and_new_reports_no_changes() {
-    let dir = std::env::temp_dir().join(format!("crabot_edit_noop_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_noop").unwrap();
     let result = run_edit(
         &dir,
         "noop.txt",
@@ -137,13 +128,11 @@ fn identical_old_and_new_reports_no_changes() {
         std::fs::read_to_string(dir.join("noop.txt")).unwrap(),
         "one\nfoo\n"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn all_no_op_edits_report_no_changes_in_all_edits() {
-    let dir = std::env::temp_dir().join(format!("crabot_edit_noop_all_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_noop_all").unwrap();
     let result = run_edit(
         &dir,
         "all.txt",
@@ -163,13 +152,11 @@ fn all_no_op_edits_report_no_changes_in_all_edits() {
         std::fs::read_to_string(dir.join("all.txt")).unwrap(),
         "one\n"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn mixed_no_op_edit_is_skipped_and_others_applied() {
-    let dir = std::env::temp_dir().join(format!("crabot_edit_mix_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_mix").unwrap();
     let result = run_edit(
         &dir,
         "mixed.txt",
@@ -192,14 +179,12 @@ fn mixed_no_op_edit_is_skipped_and_others_applied() {
         std::fs::read_to_string(dir.join("mixed.txt")).unwrap(),
         "one\ntwo foo\nfour\n"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn identical_old_and_new_with_missing_text_reports_no_changes() {
     // A no-op edit is not a lookup failure, even when old_text is absent.
-    let dir = std::env::temp_dir().join(format!("crabot_edit_noop2_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TempDir::new("edit_noop2").unwrap();
     let result = run_edit(
         &dir,
         "absent.txt",
@@ -208,7 +193,6 @@ fn identical_old_and_new_with_missing_text_reports_no_changes() {
     )
     .unwrap();
     assert_eq!(result, NO_CHANGE_MESSAGE, "got: {result}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

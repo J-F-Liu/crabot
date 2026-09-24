@@ -1,47 +1,15 @@
 //! Tests for the `bash` tool: the bashkit in-process interpreter route and
 //! its `bash -c` fallback.
 
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod common;
 
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use common::TempDir;
 use tokio_util::sync::CancellationToken;
 
 use crabot::tools::{ToolRegistry, tmp_host_dir};
-
-/// Helper: create a temp workspace dir that is cleaned up on drop.
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new(prefix: &str) -> io::Result<Self> {
-        // Unique per instance: parallel tests sharing a prefix must not clear
-        // each other's dir (each `new` clears the dir it is about to use).
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let mut dir = std::env::temp_dir();
-        dir.push(format!(
-            "crabot_test_{}_{}_{}",
-            prefix,
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&dir); // clean any left‑over
-        fs::create_dir_all(&dir)?;
-        Ok(Self { path: dir })
-    }
-
-    fn join(&self, name: &str) -> PathBuf {
-        self.path.join(name)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
 
 // ── helpers ─────────────────────────────────────────────────
 
