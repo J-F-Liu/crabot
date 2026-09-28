@@ -8,7 +8,7 @@ use genai::chat::ChatRole;
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task,
     Theme, Vector,
-    advanced::text::Highlight,
+    advanced::text::{Highlight, IntoFragment},
     advanced::widget::operation::{Operation, Outcome, Scrollable, scrollable as scrollable_op},
     alignment, font, mouse,
     widget::scrollable::{Direction, Scrollbar},
@@ -17,8 +17,6 @@ use iced::{
     },
 };
 use iced_runtime::task::widget as task_widget;
-use iced_selection::Text as SelectableText;
-use iced_selection::text::Style as SelectionStyle;
 
 use crate::app::session_state::SessionEvent;
 use crate::app::{ConversationState, SessionTab};
@@ -32,16 +30,15 @@ use super::icons;
 use super::session_tabs::localize_tab_label;
 use super::styles::{
     assistant_bubble_style, bordered_bar_style, icon_button_style, menu_container_style,
-    menu_item_style, pane_center, reasoning_box_style, role_badge_style, sel_default,
-    sel_secondary, session_header_style, tool_bubble_style, user_bubble_style,
+    menu_item_style, pane_center, reasoning_box_style, role_badge_style, sel_default, sel_muted,
+    sel_secondary, sel_strong, session_header_style, tool_bubble_style, user_bubble_style,
 };
 use super::theme::{
     CRABOT_DANGER, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT,
-    color_dialog_bg, color_muted, color_surface, color_text, color_text_strong, thin_vertical,
+    color_dialog_bg, color_muted, color_surface, color_text, thin_vertical,
 };
 use super::tool_message::{
-    args_rows, ask_result_view, bold_font, highlighted_selectable, highlighted_text,
-    highlighted_text_font, preview_rows, result_text,
+    arg_rows, ask_result_view, bold_font, highlighted_text, result_text, selectable,
 };
 use super::tool_view;
 
@@ -218,16 +215,16 @@ fn search_hit_style(
 }
 
 /// Small work-mode badge pill shown in dialog headers.
-fn work_mode_badge(
-    name: &str,
+fn work_mode_badge<'a>(
+    name: &'a str,
     font_scale: f32,
     search_query: &str,
-) -> Element<'static, CenterPaneEvent> {
+) -> Element<'a, CenterPaneEvent> {
     let semibold = Font {
         weight: font::Weight::Semibold,
         ..Font::DEFAULT
     };
-    container(highlighted_text_font(
+    container(highlighted_text(
         name,
         search_query,
         11.0 * font_scale,
@@ -287,7 +284,7 @@ impl<'a> TurnView<'a> {
     fn timestamp(&self, ts: &'a str) -> Element<'a, CenterPaneEvent> {
         let size = 11.0 * self.font_scale;
         if !self.search_lower.trim().is_empty() && ts.to_lowercase().contains(&self.search_lower) {
-            highlighted_text(ts, self.search_query, size)
+            highlighted_text(ts, self.search_query, size, Font::DEFAULT)
         } else {
             text(ts).size(size).color(color_muted()).into()
         }
@@ -299,13 +296,13 @@ impl<'a> TurnView<'a> {
 /// Colored role badge in a turn header. Tool-name badges highlight `query`
 /// matches; plain role labels ("User"/"Assistant") pass an empty query.
 /// `badge_text` is caller-localized; `style_label` stays English (style key).
-fn role_badge(
-    badge_text: &str,
+fn role_badge<'a>(
+    badge_text: impl IntoFragment<'a>,
     style_label: &'static str,
     font_scale: f32,
     query: &str,
-) -> Element<'static, CenterPaneEvent> {
-    container(highlighted_text_font(
+) -> Element<'a, CenterPaneEvent> {
+    container(highlighted_text(
         badge_text,
         query,
         12.0 * font_scale,
@@ -368,7 +365,7 @@ fn tool_turn_block<'a>(
 
         // Localize the chrome only; `name` stays raw for search highlighting.
         let badge_label = ctx.lang.tr("Tool - {name}").replacen("{name}", name, 1);
-        let badge = role_badge(&badge_label, "Tool", ctx.font_scale, ctx.search_query);
+        let badge = role_badge(badge_label, "Tool", ctx.font_scale, ctx.search_query);
         let completed = result.is_some() && !streaming;
 
         let (status_icon, status_color) = match (result, streaming) {
@@ -395,9 +392,8 @@ fn tool_turn_block<'a>(
         // control; the placeholder is replaced by the final result on finish.
         if streaming {
             elements.push(tool_header_row(badge, status_text, ts_text));
-            elements.extend(args_rows(
-                name,
-                args,
+            elements.extend(arg_rows(
+                tool_view::arg_rows(name, args),
                 ctx.font_scale,
                 ctx.search_query,
                 ctx.lang,
@@ -450,9 +446,8 @@ fn tool_turn_block<'a>(
         }
 
         if expanded {
-            elements.extend(args_rows(
-                name,
-                args,
+            elements.extend(arg_rows(
+                tool_view::arg_rows(name, args),
                 ctx.font_scale,
                 ctx.search_query,
                 ctx.lang,
@@ -464,9 +459,8 @@ fn tool_turn_block<'a>(
                 ctx.lang,
             ));
         } else {
-            elements.extend(preview_rows(
-                name,
-                args,
+            elements.extend(arg_rows(
+                tool_view::preview_rows(name, args),
                 ctx.font_scale,
                 ctx.search_query,
                 ctx.lang,
@@ -564,27 +558,18 @@ fn text_turn_block<'a>(
     if let Some(reasoning) = &tc.reasoning {
         // Default expanded; badge-row click toggles collapse.
         if !ctx.expanded_turns.contains(&(i, 0)) {
-            let reasoning_body: Element<'_, CenterPaneEvent> =
-                if !ctx.search_query.trim().is_empty() {
-                    // Keep matches selectable while searching.
-                    highlighted_selectable(
-                        reasoning,
-                        ctx.search_query,
-                        13.0 * ctx.font_scale,
-                        Font::DEFAULT,
-                        sel_secondary,
-                    )
-                } else if !ctx.selectable_msgs.contains(&i)
-                    && let Some(md) = &tc.reasoning_md
-                    && (!is_plain_text(md) || tc.reasoning_has_url)
-                {
-                    markdown_element(md, i, 13.0, ctx)
-                } else {
-                    SelectableText::new(reasoning)
-                        .size(13.0 * ctx.font_scale)
-                        .style(sel_secondary)
-                        .into()
-                };
+            let reasoning_body: Element<'_, CenterPaneEvent> = if ctx.search_query.trim().is_empty()
+                && !ctx.selectable_msgs.contains(&i)
+                && let Some(md) = &tc.reasoning_md
+                && (!is_plain_text(md) || tc.reasoning_has_url)
+            {
+                markdown_element(md, i, 13.0, ctx)
+            } else {
+                selectable(reasoning, ctx.search_query)
+                    .size(13.0 * ctx.font_scale)
+                    .style(sel_secondary)
+                    .into()
+            };
             content_col = content_col.push(
                 container(reasoning_body)
                     .style(reasoning_box_style)
@@ -598,22 +583,16 @@ fn text_turn_block<'a>(
             );
         }
     }
-    if !ctx.search_query.trim().is_empty() {
-        content_col = content_col.push(highlighted_selectable(
-            &tc.content,
-            ctx.search_query,
-            14.0 * ctx.font_scale,
-            Font::DEFAULT,
-            sel_default,
-        ));
-    } else if !ctx.selectable_msgs.contains(&i)
+    // Search hits stay selectable as plain text; otherwise prefer markdown.
+    if ctx.search_query.trim().is_empty()
+        && !ctx.selectable_msgs.contains(&i)
         && let Some(md) = &tc.content_md
         && (!is_plain_text(md) || tc.has_url)
     {
         content_col = content_col.push(markdown_element(md, i, 14.0, ctx));
     } else {
         content_col = content_col.push(
-            SelectableText::new(&tc.content)
+            selectable(&tc.content, ctx.search_query)
                 .size(14.0 * ctx.font_scale)
                 .style(sel_default),
         );
@@ -715,11 +694,11 @@ pub(crate) fn center_pane<'a>(
                     .color(CRABOT_PRIMARY)
                     .into(),
             ];
-            if let Some(mode) = dialog.mode {
+            if let Some(mode) = &dialog.mode {
                 row_elements.push(work_mode_badge(&mode.name, font_scale, search_query));
             }
-            row_elements.push(highlighted_text_font(
-                &title,
+            row_elements.push(highlighted_text(
+                title,
                 search_query,
                 13.0 * font_scale,
                 bold_font(),
@@ -863,18 +842,7 @@ fn session_header<'a>(
         prompt
     };
     let header = row![
-        header_container(
-            SelectableText::new(title)
-                .size(14.0)
-                .style(|theme: &Theme| {
-                    let p = theme.extended_palette();
-                    SelectionStyle {
-                        color: Some(color_text_strong()),
-                        selection: p.primary.base.color,
-                    }
-                }),
-            200.0,
-        ),
+        header_container(selectable(title, "").size(14.0).style(sel_strong), 200.0),
         header_actions_menu(conversation, lang),
     ]
     .spacing(6)
@@ -976,39 +944,32 @@ fn session_info<'a>(
     if model_id.is_none() && parent.is_empty() {
         return row![].into();
     }
-    let muted_selectable = |theme: &Theme| SelectionStyle {
-        color: Some(color_muted()),
-        selection: theme.extended_palette().primary.base.color,
-    };
     let mut info = row![].spacing(8).align_y(Alignment::Center);
     if let Some(model_id) = model_id {
+        let model = lang
+            .tr("Model: {model_id}")
+            .replacen("{model_id}", model_id, 1);
         info = info.push(
-            SelectableText::new(
-                lang.tr("Model: {model_id}")
-                    .replacen("{model_id}", model_id, 1),
-            )
-            .size(12.0 * font_scale)
-            .style(muted_selectable),
+            selectable(model, "")
+                .size(12.0 * font_scale)
+                .style(sel_muted),
         );
     }
     if !parent.is_empty() {
+        let source = parent_label(conversation, parent, lang);
+        let spawned = lang.tr("Spawned from {}").replacen("{}", &source, 1);
         info = info.push(Space::new().width(Length::Fill)).push(
-            SelectableText::new(lang.tr("Spawned from {}").replacen(
-                "{}",
-                &parent_label(conversation, parent, lang),
-                1,
-            ))
-            .size(12.0 * font_scale)
-            .style(muted_selectable),
+            selectable(spawned, "")
+                .size(12.0 * font_scale)
+                .style(sel_muted),
         );
     }
-    let time_text = SelectableText::new(lang.tr("Created: {}").replacen(
-        "{}",
-        &session.created_at,
-        1,
-    ))
-    .size(12.0 * font_scale)
-    .style(muted_selectable);
+    let created = lang
+        .tr("Created: {}")
+        .replacen("{}", &session.created_at, 1);
+    let time_text = selectable(created, "")
+        .size(12.0 * font_scale)
+        .style(sel_muted);
     container(
         info.push(Space::new().width(Length::Fill))
             .push(time_text)
@@ -1055,20 +1016,10 @@ fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
         return row![].into();
     };
     header_container(
-        container(
-            SelectableText::new(prompt)
-                .size(13.0)
-                .style(|theme: &Theme| {
-                    let p = theme.extended_palette();
-                    SelectionStyle {
-                        color: Some(color_muted()),
-                        selection: p.primary.base.color,
-                    }
-                }),
-        )
-        .width(Fill)
-        .padding([6, 14])
-        .style(bordered_bar_style),
+        container(selectable(prompt, "").size(13.0).style(sel_muted))
+            .width(Fill)
+            .padding([6, 14])
+            .style(bordered_bar_style),
         200.0,
     )
 }

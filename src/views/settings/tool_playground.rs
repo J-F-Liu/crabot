@@ -5,14 +5,13 @@ use iced::{
     },
 };
 
-use iced_selection::Text as SelectableText;
-
 use crate::tools::{Tool, ToolRegistry};
 use crate::views::styles::sel_default;
 use crate::views::theme::{
     CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_text_strong,
     is_dark,
 };
+use crate::views::tool_message::selectable;
 use crate::views::{primary_button, secondary_button, secondary_dropdown_style};
 use crate::widgets::dropdown::DropDown;
 use crabot::i18n::Lang;
@@ -408,7 +407,7 @@ fn render_param_field<'a>(
 /// Monospace scrollable result text.
 fn result_text(output: String) -> Element<'static, SettingsEvent> {
     scrollable(
-        SelectableText::new(output)
+        selectable(output, "")
             .size(12)
             .font(iced::Font::MONOSPACE)
             .style(sel_default),

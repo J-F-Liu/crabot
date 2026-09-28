@@ -639,3 +639,19 @@ pub(crate) fn sel_secondary(theme: &Theme) -> SelectionStyle {
         selection: color_secondary(theme),
     }
 }
+
+/// Dimmed text with the primary selection colour.
+pub(crate) fn sel_muted(theme: &Theme) -> SelectionStyle {
+    SelectionStyle {
+        color: Some(color_muted()),
+        selection: color_primary(theme),
+    }
+}
+
+/// Emphasised text with the primary selection colour.
+pub(crate) fn sel_strong(theme: &Theme) -> SelectionStyle {
+    SelectionStyle {
+        color: Some(color_text_strong()),
+        selection: color_primary(theme),
+    }
+}

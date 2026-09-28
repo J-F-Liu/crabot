@@ -1,8 +1,11 @@
+use std::borrow::Cow;
+use std::ops::Range;
+
 use iced::{
     Alignment, Border, Color, Element, Fill, Font, Theme, font, padding,
+    widget::text::{IntoFragment, Span},
     widget::{Space, column, container, rich_text, row, span, text, text::Wrapping},
 };
-use iced_selection::Text as SelectableText;
 use iced_selection::text::Style as SelectionStyle;
 
 use super::ASK_INPUT;
@@ -18,48 +21,67 @@ use crate::{AskAction, AskRequest, ConversationEvent};
 use crabot::i18n::Lang;
 use iced::widget::{button, text_input};
 
+/// Rounded box for tool argument rows and result bodies: optional fill plus border.
+fn tool_box_style(background: Option<Color>, border: Color, radius: f32) -> container::Style {
+    container::Style {
+        background: background.map(Into::into),
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: radius.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Boxed tool content (ask views, argument rows): fill plus thin border.
+fn tool_content_box(_theme: &Theme) -> container::Style {
+    tool_box_style(
+        Some(color_tool_content_bg()),
+        color_tool_content_border(),
+        4.0,
+    )
+}
+
+/// Boxed tool result body: `background` fill plus a thin border.
+fn tool_result_box(background: Color, border: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_theme: &Theme| tool_box_style(Some(background), border, 6.0)
+}
+
 /// Shared container style for ask tool views (active and completed).
-fn ask_tool_container(
-    content: impl Into<Element<'static, ConversationEvent>>,
-) -> Element<'static, ConversationEvent> {
+fn ask_tool_container<'a>(
+    content: impl Into<Element<'a, ConversationEvent>>,
+) -> Element<'a, ConversationEvent> {
     container(content.into())
         .padding([10, 14])
-        .style(|_theme: &Theme| container::Style {
-            background: Some(color_tool_content_bg().into()),
-            border: Border {
-                color: color_tool_content_border(),
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..container::Style::default()
-        })
+        .style(tool_content_box)
         .width(Fill)
         .into()
 }
 
 /// Render a list of options with checkmarks.
 /// In interactive mode each option is a clickable `button`; otherwise
-/// options are rendered as read-only `SelectableText`.
-fn ask_option_list(
-    options: &[String],
+/// options are rendered as read-only selectable text.
+fn ask_option_list<'a>(
+    options: impl IntoIterator<Item = &'a str>,
     selected: &str,
     font_scale: f32,
     interactive: bool,
-) -> Vec<Element<'static, ConversationEvent>> {
+) -> Vec<Element<'a, ConversationEvent>> {
     options
-        .iter()
+        .into_iter()
         .map(|option| {
             let is_selected = option == selected;
             let check = if is_selected { "✓" } else { " " };
-            let label: Element<'static, ConversationEvent> = if interactive {
-                button(text(option.clone()).size(13.0 * font_scale))
+            let label: Element<'a, ConversationEvent> = if interactive {
+                button(text(option).size(13.0 * font_scale))
                     .style(secondary_button)
                     .on_press(ConversationEvent::AskAction(AskAction::OptionSelected(
-                        option.clone(),
+                        option.to_owned(),
                     )))
                     .into()
             } else {
-                SelectableText::new(option.clone())
+                selectable(option, "")
                     .size(13.0 * font_scale)
                     .style(sel_default)
                     .into()
@@ -84,14 +106,14 @@ fn ask_answer_input(input: &str, lang: Lang) -> Element<'static, ConversationEve
 }
 
 /// Interactive response controls for the builtin ask tool.
-pub(crate) fn ask_view(
-    request: &AskRequest,
+pub(crate) fn ask_view<'a>(
+    request: &'a AskRequest,
     input: &str,
     custom_input: bool,
     seconds_left: u64,
     font_scale: f32,
     lang: Lang,
-) -> Element<'static, ConversationEvent> {
+) -> Element<'a, ConversationEvent> {
     let countdown: Element<'static, ConversationEvent> = row![
         text(lang.tr("⏳ {seconds_left}s left").replacen(
             "{seconds_left}",
@@ -121,45 +143,35 @@ pub(crate) fn ask_view(
         Space::new().width(Fill),
         countdown
     ];
-    let question: Element<'static, ConversationEvent> =
-        SelectableText::new(request.question.clone())
-            .style(sel_default)
-            .into();
+    let question: Element<'a, ConversationEvent> =
+        selectable(&request.question, "").style(sel_default).into();
     let enter_answer = button(text(lang.tr("Enter my answer")))
         .style(secondary_button)
         .on_press(ConversationEvent::AskAction(AskAction::EnterAnswer));
     let you_decide = button(text(lang.tr("You decide")))
         .style(secondary_button)
         .on_press(ConversationEvent::AskAction(AskAction::YouDecide));
-    let controls: Element<'static, ConversationEvent> = if request.options.is_empty() {
-        row![
-            ask_answer_input(input, lang),
-            button(text(lang.tr("Ok")))
-                .style(primary_button)
-                .on_press_maybe(
-                    (!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok))
-                ),
-            you_decide
-        ]
-        .spacing(8)
-        .into()
+    let ok = button(text(lang.tr("Ok")))
+        .style(primary_button)
+        .on_press_maybe((!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok)));
+    let controls: Element<'a, ConversationEvent> = if request.options.is_empty() {
+        row![ask_answer_input(input, lang), ok, you_decide]
+            .spacing(8)
+            .into()
     } else {
-        let mut options_col =
-            column(ask_option_list(&request.options, input, font_scale, true)).spacing(8);
+        let mut options_col = column(ask_option_list(
+            request.options.iter().map(String::as_str),
+            input,
+            font_scale,
+            true,
+        ))
+        .spacing(8);
         if custom_input {
             options_col = options_col.push(ask_answer_input(input, lang));
         }
-        let action_row = row![
-            button(text(lang.tr("Ok")))
-                .style(primary_button)
-                .on_press_maybe(
-                    (!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok))
-                ),
-            enter_answer,
-            you_decide
-        ]
-        .spacing(8)
-        .padding([4, 16]);
+        let action_row = row![ok, enter_answer, you_decide]
+            .spacing(8)
+            .padding([4, 16]);
         column![options_col, action_row].spacing(8).into()
     };
     ask_tool_container(column![header, question, controls].spacing(8))
@@ -168,24 +180,20 @@ pub(crate) fn ask_view(
 /// Completed ask tool result view — shows the question, all options
 /// (with the selected one marked ✓), and the answer without interactive
 /// controls (those only appear during active asking via [`ask_view`]).
-pub(crate) fn ask_result_view(
-    args: &serde_json::Value,
-    result: &Result<String, String>,
+pub(crate) fn ask_result_view<'a>(
+    args: &'a serde_json::Value,
+    result: &'a Result<String, String>,
     font_scale: f32,
     lang: Lang,
-) -> Element<'static, ConversationEvent> {
+) -> Element<'a, ConversationEvent> {
     let question = args
         .get("question")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    let options: Vec<String> = args
+    let options: Vec<&str> = args
         .get("options")
         .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
     let (answer, is_ok) = match result {
@@ -193,10 +201,8 @@ pub(crate) fn ask_result_view(
         Err(e) => (e.as_str(), false),
     };
 
-    let question_text: Element<'static, ConversationEvent> =
-        SelectableText::new(question.to_string())
-            .style(sel_default)
-            .into();
+    let question_text: Element<'a, ConversationEvent> =
+        selectable(question, "").style(sel_default).into();
 
     let answer_label = lang.tr(if is_ok { "Answer" } else { "Error" });
     let answer_color = if is_ok { CRABOT_SUCCESS } else { CRABOT_DANGER };
@@ -204,8 +210,8 @@ pub(crate) fn ask_result_view(
     let mut answer_col = column![];
 
     if !options.is_empty() {
-        let matched = options.iter().any(|opt| opt == answer);
-        let option_rows = ask_option_list(&options, answer, font_scale, false);
+        let matched = options.contains(&answer);
+        let option_rows = ask_option_list(options, answer, font_scale, false);
 
         if matched {
             answer_col = answer_col
@@ -233,7 +239,7 @@ pub(crate) fn ask_result_view(
                             .size(12.0 * font_scale)
                             .color(answer_color)
                             .font(bold_font()),
-                        SelectableText::new(answer.to_string())
+                        selectable(answer, "")
                             .size(13.0 * font_scale)
                             .style(sel_default),
                     ]
@@ -242,11 +248,10 @@ pub(crate) fn ask_result_view(
                 );
         }
     } else {
-        let answer_element: Element<'static, ConversationEvent> =
-            SelectableText::new(answer.to_string())
-                .size(13.0 * font_scale)
-                .style(sel_default)
-                .into();
+        let answer_element: Element<'a, ConversationEvent> = selectable(answer, "")
+            .size(13.0 * font_scale)
+            .style(sel_default)
+            .into();
         answer_col = answer_col.push(
             row![
                 text(format!("{answer_label}: "))
@@ -265,94 +270,99 @@ pub(crate) fn ask_result_view(
 /// Color used for search keyword highlighting within text.
 const SEARCH_HIGHLIGHT_BG: Color = Color::from_rgba(1.0, 0.92, 0.0, 0.35);
 
-/// Build a vector of `Span`s from `content` where occurrences of `query` are
-/// case-insensitively highlighted. Spans own their text (static lifetime).
-pub(super) fn highlighted_spans(
-    content: &str,
+/// `Span`s of `content`, case-insensitive `query` matches highlighted.
+///
+/// A `&str`/`&String` is borrowed, an owned `String` moves in: the only copy
+/// left is splitting an owned fragment whose match needs slicing.
+fn highlighted_spans<'a>(
+    content: impl IntoFragment<'a>,
     query: &str,
-) -> Vec<iced::widget::text::Span<'static, (), iced::Font>> {
+) -> Vec<Span<'a, (), iced::Font>> {
+    let content = content.into_fragment();
+
     if query.trim().is_empty() {
-        return vec![span(content.to_string())];
+        return vec![span(content)];
     }
 
-    // Build a case-insensitive literal-match regex.  Escaping prevents the
-    // search query from being interpreted as regex syntax.
-    let re = match regex::RegexBuilder::new(&regex::escape(query))
+    // Case-insensitive literal match: escaping keeps the query out of regex syntax.
+    let Ok(re) = regex::RegexBuilder::new(&regex::escape(query))
         .case_insensitive(true)
         .build()
-    {
-        Ok(r) => r,
-        Err(_) => return vec![span(content.to_string())],
+    else {
+        return vec![span(content)];
     };
 
-    let mut spans: Vec<iced::widget::text::Span<'static, (), iced::Font>> = Vec::new();
+    let ranges: Vec<Range<usize>> = re.find_iter(&content).map(|m| m.start()..m.end()).collect();
+    if ranges.is_empty() {
+        return vec![span(content)];
+    }
+
+    match content {
+        // Borrowed text: the pieces are slices of the caller's string.
+        Cow::Borrowed(text) => split_spans(text, &ranges),
+        // Owned text: splitting needs copies, so hand the pieces out as owned.
+        Cow::Owned(text) => split_spans(&text, &ranges)
+            .into_iter()
+            .map(|piece| piece.to_static())
+            .collect(),
+    }
+}
+
+/// Build the span list for byte `ranges` inside `text`, highlighting each match;
+/// every fragment is a slice of `text`.
+fn split_spans<'a>(text: &'a str, ranges: &[Range<usize>]) -> Vec<Span<'a, (), iced::Font>> {
+    let mut spans = Vec::with_capacity(ranges.len() * 2 + 1);
     let mut last_end = 0;
 
-    for m in re.find_iter(content) {
-        let start = m.start();
-        let end = m.end();
-        if start > last_end {
-            spans.push(span(content[last_end..start].to_string()));
+    for range in ranges {
+        if range.start > last_end {
+            spans.push(span(&text[last_end..range.start]));
         }
-        spans.push(span(content[start..end].to_string()).background(SEARCH_HIGHLIGHT_BG));
-        last_end = end;
+        spans.push(span(&text[range.start..range.end]).background(SEARCH_HIGHLIGHT_BG));
+        last_end = range.end;
     }
 
-    if last_end < content.len() {
-        spans.push(span(content[last_end..].to_string()));
-    }
-
-    if spans.is_empty() {
-        spans.push(span(content.to_string()));
+    if last_end < text.len() {
+        spans.push(span(&text[last_end..]));
     }
 
     spans
 }
 
-/// Build text with inline search keyword highlighting.
-/// Returns a `rich_text` element when a query is active, or plain `text` otherwise.
-pub(super) fn highlighted_text<M: Clone + 'static>(
-    content: &str,
-    query: &str,
-    size: f32,
-) -> Element<'static, M> {
-    highlighted_text_font(content, query, size, Font::DEFAULT)
-}
-
-/// Like [`highlighted_text`], with an explicit font (e.g. bold header text).
-pub(super) fn highlighted_text_font<M: Clone + 'static>(
-    content: &str,
+/// Text with inline search keyword highlighting.
+pub(super) fn highlighted_text<'a, M: Clone + 'static>(
+    content: impl IntoFragment<'a>,
     query: &str,
     size: f32,
     font: Font,
-) -> Element<'static, M> {
-    if query.trim().is_empty() {
-        return text(content.to_string()).size(size).font(font).into();
-    }
+) -> Element<'a, M> {
     rich_text(highlighted_spans(content, query))
         .size(size)
         .font(font)
         .into()
 }
 
-/// Selectable text with inline search-keyword highlighting (plain when the query is empty).
-pub(super) fn highlighted_selectable<M: Clone + 'static>(
-    content: &str,
+/// Selectable rich text, `query` matches highlighted (an empty query renders the
+/// content plain); returns the widget so callers chain `.size()`, `.font()`,
+/// `.style()`.
+/// Use rich_text instead of `iced_selection::Text` so `\t` stays a tab stop, not a `.notdef` box.
+pub(super) fn selectable<'a, M: Clone + 'static>(
+    content: impl IntoFragment<'a>,
     query: &str,
-    size: f32,
-    font: Font,
-    style: impl Fn(&Theme) -> SelectionStyle + 'static,
-) -> Element<'static, M> {
-    if query.trim().is_empty() {
-        return SelectableText::new(content.to_string())
-            .size(size)
-            .font(font)
-            .style(style)
-            .into();
-    }
+) -> iced_selection::text::Rich<'a, (), M, iced::Theme, iced::Renderer> {
     iced_selection::rich_text(highlighted_spans(content, query))
-        .size(size)
-        .font(font)
+}
+
+/// Small monospace selectable text for tool arguments, `query` matches highlighted.
+fn mono_selectable<'a, M: Clone + 'static>(
+    content: impl IntoFragment<'a>,
+    query: &str,
+    font_scale: f32,
+    style: fn(&Theme) -> SelectionStyle,
+) -> Element<'a, M> {
+    selectable(content, query)
+        .size(12.0 * font_scale)
+        .font(mono_font())
         .style(style)
         .into()
 }
@@ -378,15 +388,15 @@ pub(super) fn bold_font() -> Font {
 /// `marker` is the leading glyph (e.g. "−", "+", "⚠"), coloured with
 /// `marker_color`. `content` is rendered as selectable monospace text using
 /// `sel_style`, all on a `bg` background with rounded corners.
-fn diff_row<M: Clone + 'static>(
+fn diff_row<'a, M: Clone + 'static>(
     marker: &'static str,
     marker_color: Color,
-    content: &str,
+    content: impl IntoFragment<'a>,
     sel_style: fn(&Theme) -> SelectionStyle,
     bg: Color,
     font_scale: f32,
     search_query: &str,
-) -> Element<'static, M> {
+) -> Element<'a, M> {
     container(
         row![
             text(marker)
@@ -394,13 +404,7 @@ fn diff_row<M: Clone + 'static>(
                 .color(marker_color)
                 .font(bold_font()),
             Space::new().width(6),
-            highlighted_selectable(
-                content,
-                search_query,
-                12.0 * font_scale,
-                mono_font(),
-                sel_style,
-            ),
+            mono_selectable(content, search_query, font_scale, sel_style),
         ]
         .spacing(0),
     )
@@ -418,25 +422,19 @@ fn diff_row<M: Clone + 'static>(
 }
 
 /// A plain `key: value` argument row.
-fn arg_row<M: Clone + 'static>(
+fn arg_row<'a, M: Clone + 'static>(
     key: &str,
-    value: &str,
+    value: impl IntoFragment<'a>,
     font_scale: f32,
     search_query: &str,
-) -> Element<'static, M> {
+) -> Element<'a, M> {
     row![
         text(format!("{}:", key))
             .size(12.0 * font_scale)
             .color(CRABOT_TOOL_ACCENT)
             .font(bold_font()),
         Space::new().width(8),
-        highlighted_selectable(
-            value,
-            search_query,
-            12.0 * font_scale,
-            mono_font(),
-            sel_default
-        ),
+        mono_selectable(value, search_query, font_scale, sel_default),
     ]
     .spacing(0)
     .into()
@@ -444,7 +442,7 @@ fn arg_row<M: Clone + 'static>(
 
 /// Embedded table for the `edits` argument — each edit becomes a labelled block.
 fn edits_table<M: Clone + 'static>(
-    edits: &[EditRow],
+    edits: Vec<EditRow>,
     font_scale: f32,
     search_query: &str,
     lang: Lang,
@@ -465,7 +463,7 @@ fn edits_table<M: Clone + 'static>(
     .spacing(0);
 
     let rows: Vec<Element<'static, M>> = edits
-        .iter()
+        .into_iter()
         .enumerate()
         .flat_map(|(i, edit)| {
             let idx: Element<'static, M> = container(
@@ -525,31 +523,22 @@ const TODO_STATUS_PENDING: Color = Color::from_rgb8(0x99, 0x99, 0x99);
 const TODO_STATUS_IN_PROGRESS: Color = Color::from_rgb8(0x29, 0x76, 0xFF);
 const TODO_STATUS_WIDTH: f32 = 96.0;
 
-fn todo_text_cell<M: Clone + 'static>(
-    content: &str,
-    font_scale: f32,
-    search_query: &str,
-) -> Element<'static, M> {
-    highlighted_selectable(
-        content,
-        search_query,
-        12.0 * font_scale,
-        mono_font(),
-        sel_default,
-    )
-}
-
-fn todo_row<M: Clone + 'static>(
-    content: &str,
+fn todo_row<'a, M: Clone + 'static>(
+    content: impl IntoFragment<'a>,
     status: &'static str,
     status_color: Color,
     font_scale: f32,
     search_query: &str,
-) -> Element<'static, M> {
+) -> Element<'a, M> {
     row![
-        container(todo_text_cell(content, font_scale, search_query))
-            .width(Fill)
-            .padding(2),
+        container(mono_selectable(
+            content,
+            search_query,
+            font_scale,
+            sel_default
+        ))
+        .width(Fill)
+        .padding(2),
         container(
             text(status)
                 .size(12.0 * font_scale)
@@ -565,7 +554,7 @@ fn todo_row<M: Clone + 'static>(
 }
 
 fn todo_item_row<M: Clone + 'static>(
-    row: &TodoRow,
+    row: TodoRow,
     font_scale: f32,
     search_query: &str,
     lang: Lang,
@@ -576,18 +565,13 @@ fn todo_item_row<M: Clone + 'static>(
         TodoState::Completed => CRABOT_SUCCESS,
         TodoState::Invalid => CRABOT_DANGER,
     };
-    todo_row(
-        &row.content,
-        lang.tr(row.state.label_key()),
-        color,
-        font_scale,
-        search_query,
-    )
+    let status = lang.tr(row.state.label_key());
+    todo_row(row.content, status, color, font_scale, search_query)
 }
 
 /// Embedded table for the `items` argument of the `todo` tool.
 fn todo_table<M: Clone + 'static>(
-    items: &[TodoRow],
+    items: Vec<TodoRow>,
     font_scale: f32,
     search_query: &str,
     lang: Lang,
@@ -614,7 +598,7 @@ fn todo_table<M: Clone + 'static>(
     .spacing(8);
 
     let mut elements: Vec<Element<'static, M>> = vec![col_header.into()];
-    for (index, item) in items.iter().enumerate() {
+    for (index, item) in items.into_iter().enumerate() {
         if index > 0 {
             elements.push(
                 container(Space::new().width(Fill).height(1.0))
@@ -630,51 +614,13 @@ fn todo_table<M: Clone + 'static>(
 
     container(column(elements).spacing(0).width(Fill))
         .padding(4)
-        .style(|_theme: &Theme| container::Style {
-            border: Border {
-                color: color_tool_content_border(),
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..container::Style::default()
-        })
+        .style(|_theme: &Theme| tool_box_style(None, color_tool_content_border(), 4.0))
         .width(Fill)
         .into()
 }
 
-/// Argument rows for a tool call in the live view. Rules live in [`tool_view`].
-pub(super) fn args_rows<M: Clone + 'static>(
-    tool_name: &str,
-    args: &serde_json::Value,
-    font_scale: f32,
-    search_query: &str,
-    lang: Lang,
-) -> Vec<Element<'static, M>> {
-    row_elements(
-        tool_view::arg_rows(tool_name, args),
-        font_scale,
-        search_query,
-        lang,
-    )
-}
-
-/// Collapsed argument rows: the modified path alone for `edit`/`write`.
-pub(super) fn preview_rows<M: Clone + 'static>(
-    tool_name: &str,
-    args: &serde_json::Value,
-    font_scale: f32,
-    search_query: &str,
-    lang: Lang,
-) -> Vec<Element<'static, M>> {
-    row_elements(
-        tool_view::preview_rows(tool_name, args),
-        font_scale,
-        search_query,
-        lang,
-    )
-}
-
-fn row_elements<M: Clone + 'static>(
+/// Render [`tool_view`] argument rows as elements for the live view.
+pub(super) fn arg_rows<M: Clone + 'static>(
     rows: Vec<ArgRow>,
     font_scale: f32,
     search_query: &str,
@@ -693,12 +639,12 @@ fn arg_row_element<M: Clone + 'static>(
     lang: Lang,
 ) -> Element<'static, M> {
     match row {
-        ArgRow::Text { key, value } => arg_row(&key, &value, font_scale, search_query),
+        ArgRow::Text { key, value } => arg_row(&key, value, font_scale, search_query),
         ArgRow::OffsetLimit { offset, limit } => {
             offset_limit_row(&offset, &limit, font_scale, search_query)
         }
-        ArgRow::Edits(edits) => edits_table(&edits, font_scale, search_query, lang),
-        ArgRow::Todo(rows) => todo_table(&rows, font_scale, search_query, lang),
+        ArgRow::Edits(edits) => edits_table(edits, font_scale, search_query, lang),
+        ArgRow::Todo(rows) => todo_table(rows, font_scale, search_query, lang),
     }
 }
 
@@ -710,40 +656,15 @@ fn offset_limit_row<M: Clone + 'static>(
     search_query: &str,
 ) -> Element<'static, M> {
     let combined = format!("offset: {offset}  limit: {limit}");
-    container(
-        row![highlighted_selectable(
-            &combined,
-            search_query,
-            12.0 * font_scale,
-            mono_font(),
-            sel_secondary,
-        ),]
-        .spacing(0),
-    )
+    container(mono_selectable(
+        combined,
+        search_query,
+        font_scale,
+        sel_secondary,
+    ))
     .padding([4, 8])
-    .style(|_theme: &Theme| container::Style {
-        background: Some(color_tool_content_bg().into()),
-        border: Border {
-            color: color_tool_content_border(),
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..container::Style::default()
-    })
+    .style(tool_content_box)
     .into()
-}
-
-/// Rounded content-box style shared by tool result bodies.
-fn tool_box_style(background: Color, border: Color) -> container::Style {
-    container::Style {
-        background: Some(background.into()),
-        border: Border {
-            color: border,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..container::Style::default()
-    }
 }
 
 /// Live-render window; the final result replaces this view on finish.
@@ -787,9 +708,10 @@ pub(super) fn streaming_result_text<'a, M: Clone + 'static>(
     body = body.push(text(shown).size(13.0 * font_scale).font(mono_font()));
     container(body)
         .padding([8, 10])
-        .style(move |_theme: &Theme| {
-            tool_box_style(color_tool_content_bg(), color_tool_content_border())
-        })
+        .style(tool_result_box(
+            color_tool_content_bg(),
+            color_tool_content_border(),
+        ))
         .into()
 }
 
@@ -810,17 +732,25 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
     } else {
         CRABOT_DANGER
     };
+    let fill = if is_ok {
+        color_tool_content_bg()
+    } else {
+        color_diff_bg_del()
+    };
+    let border = if is_ok {
+        color_tool_content_border()
+    } else {
+        accent.scale_alpha(0.4)
+    };
 
-    let body: Element<'_, M> = highlighted_selectable(
-        display,
-        search_query,
-        13.0 * font_scale,
-        mono_font(),
-        move |theme: &Theme| SelectionStyle {
+    let body: Element<'a, M> = selectable(display, search_query)
+        .size(13.0 * font_scale)
+        .font(mono_font())
+        .style(move |theme: &Theme| SelectionStyle {
             color: Some(color_text(theme)),
             selection: accent,
-        },
-    );
+        })
+        .into();
 
     container(
         column![
@@ -834,12 +764,6 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
         .width(Fill),
     )
     .padding([8, 10])
-    .style(move |_theme: &Theme| {
-        if is_ok {
-            tool_box_style(color_tool_content_bg(), color_tool_content_border())
-        } else {
-            tool_box_style(color_diff_bg_del(), accent.scale_alpha(0.4))
-        }
-    })
+    .style(tool_result_box(fill, border))
     .into()
 }
