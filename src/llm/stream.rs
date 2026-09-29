@@ -55,9 +55,14 @@ pub(super) fn mark_cache_tail(messages: &mut [ChatMessage]) {
 
 // ── Retry classification ───────────────────────────────────────────
 
-/// Whether an HTTP status warrants an auto-retry (429 rate limit / 5xx server error).
+/// Whether an error code warrants an auto-retry (429 rate limit / 5xx server error).
+fn is_retryable_code(code: u64) -> bool {
+    code == 429 || (500..600).contains(&code)
+}
+
+/// Whether an HTTP status warrants an auto-retry.
 fn is_retryable_status(status: StatusCode) -> bool {
-    status.as_u16() == 429 || (500..600).contains(&status.as_u16())
+    is_retryable_code(u64::from(status.as_u16()))
 }
 
 /// Whether a reqwest error is a transport-level failure worth retrying.
@@ -66,11 +71,32 @@ fn is_retryable_reqwest(e: &reqwest::Error) -> bool {
     e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() || e.is_decode()
 }
 
-/// Classify a genai error as transient (429 / 5xx / transport failure).
-/// Statuses buried in `ChatResponseGeneration`/`ChatResponse` bodies aren't classified.
+/// Whether a 200-status SSE `error` payload carries a retryable code.
+///
+/// genai surfaces these as `ChatResponse { body }` with no HTTP status; the
+/// code may sit at the top level or under `error`, as a number or a string.
+/// Message text and `error_type` are deliberately ignored — only the code decides.
+fn is_retryable_body(body: &serde_json::Value) -> bool {
+    body.get("code")
+        .or_else(|| body.pointer("/error/code"))
+        .and_then(code_as_u64)
+        .is_some_and(is_retryable_code)
+}
+
+/// Read an error code that a provider sent as a number or a numeric string.
+fn code_as_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str()?.trim().parse().ok())
+}
+
+/// Classify a genai error as transient (429 / 5xx / transport failure,
+/// incl. retryable codes in SSE error-event bodies). Statuses buried in
+/// `ChatResponseGeneration` bodies aren't classified.
 pub(super) fn is_retryable(e: &genai::Error) -> bool {
     match e {
         genai::Error::HttpError { status, .. } => is_retryable_status(*status),
+        genai::Error::ChatResponse { body, .. } => is_retryable_body(body),
         genai::Error::WebAdapterCall { webc_error, .. }
         | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
             genai::webc::Error::ResponseFailedStatus { status, .. } => is_retryable_status(*status),
