@@ -8,13 +8,18 @@ use genai::{Client, ModelIden, ServiceTarget};
 
 use crabot::model::resolve_api_key;
 
+/// Adapter kind for a configured `api_type`; unknown values fall back to OpenAI.
+pub(super) fn adapter_kind(api_type: &str) -> AdapterKind {
+    AdapterKind::from_lower_str(api_type).unwrap_or(AdapterKind::OpenAI)
+}
+
 /// Build a genai `Client` with custom auth, endpoint, and adapter kind.
 pub(super) fn build_client(
     base_url: &str,
     api_key: &str,
     api_type: &str,
 ) -> Result<Client, genai::Error> {
-    let adapter_kind = AdapterKind::from_lower_str(api_type).unwrap_or(AdapterKind::OpenAI);
+    let adapter_kind = adapter_kind(api_type);
     let has_custom_endpoint = !base_url.is_empty();
     let has_custom_key = !api_key.is_empty();
 

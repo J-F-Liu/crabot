@@ -392,6 +392,41 @@ pub fn strip_error_envelope(s: &str) -> &str {
     s.strip_prefix(ERROR_ENVELOPE).unwrap_or(s)
 }
 
+// ── Image markers ────────────────────────────────────────────────────
+
+/// Prefix of an image-reference line, e.g. `[image: assets/logo.png]`.
+pub const IMAGE_MARKER_PREFIX: &str = "[image: ";
+
+/// History message referencing attached images — one `path` per line. Only
+/// paths are stored; the bytes are re-read when a request is built. Plumbing:
+/// no UI turn of its own.
+pub fn image_marker_message(paths: &[String]) -> ChatMessage {
+    let text = paths
+        .iter()
+        .map(|path| format!("{IMAGE_MARKER_PREFIX}{path}]"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    ChatMessage::user(text)
+}
+
+/// Paths referenced by an image-marker message; `None` for any other message.
+pub fn image_marker_paths(msg: &ChatMessage) -> Option<Vec<&str>> {
+    if msg.role != ChatRole::User {
+        return None;
+    }
+    let [genai::chat::ContentPart::Text(text)] = msg.content.parts().as_slice() else {
+        return None;
+    };
+    let paths = text
+        .lines()
+        .map(|line| {
+            line.strip_prefix(IMAGE_MARKER_PREFIX)
+                .and_then(|p| p.strip_suffix(']'))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!paths.is_empty()).then_some(paths)
+}
+
 // ── ToolCall ─────────────────────────────────────────────────────────
 
 /// A pending tool call that hasn't produced a result yet.

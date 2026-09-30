@@ -57,7 +57,15 @@ rmcp = { version = "2", default-features = false, features = [
 ] }
 http = "1.4.2"
 arrayvec = { version = "0.7.8", features = ["serde"] }
-image = { version = "0.25.10", default-features = false, features = ["ico"] }
+image = { version = "0.25.10", default-features = false, features = [
+    "ico",
+    # Decoders used to probe attached image files for `read`.
+    "bmp",
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+] }
 reqwest = { version = "0.13.4", default-features = false, features = [
     "rustls",
     "gzip",

@@ -33,6 +33,47 @@ pub type ToolRef = Arc<dyn Tool>;
 /// Sink for incremental tool output (e.g. bash stdout/stderr chunks).
 pub type OutputSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// A local image a tool wants delivered to the model with its text result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageAttachment {
+    /// Workspace-relative (or absolute) path — shown to the model and re-read
+    /// when the request is built.
+    pub path: String,
+    /// MIME type, e.g. `image/png`.
+    pub media_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+}
+
+impl ImageAttachment {
+    /// Human-readable summary of the attachment for a tool result.
+    pub fn summary(&self) -> String {
+        format!(
+            "{} ({}, {}, {}x{})",
+            self.path,
+            self.media_type,
+            human_bytes(self.bytes),
+            self.width,
+            self.height
+        )
+    }
+}
+
+/// Format a byte count as `12 B` / `48.2 KB` / `3.5 MB`.
+pub(crate) fn human_bytes(bytes: u64) -> String {
+    const UNITS: [(&str, u64); 3] = [("MB", 1 << 20), ("KB", 1 << 10), ("B", 1)];
+    let (unit, size) = UNITS
+        .iter()
+        .find(|(_, size)| bytes >= *size)
+        .unwrap_or(&UNITS[2]);
+    if *size == 1 {
+        format!("{bytes} B")
+    } else {
+        format!("{:.1} {unit}", bytes as f64 / *size as f64)
+    }
+}
+
 /// Trait implemented by every tool (built-in or custom).
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
@@ -91,6 +132,19 @@ pub trait Tool: Send + Sync {
         _sink: &OutputSink,
     ) -> Result<String, String> {
         self.execute_inner(args, workspace, cancel)
+    }
+
+    /// Execute and report any images to deliver with the result — the LLM
+    /// layer sends them as binary content parts in a follow-up message. The
+    /// default attaches nothing; tools that probe their target file (like
+    /// `read`) override this to probe only once.
+    fn execute_with_attachments(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &CancellationToken,
+    ) -> (Result<String, String>, Vec<ImageAttachment>) {
+        (self.execute(args, workspace, cancel), Vec::new())
     }
 
     /// Full tool declaration suitable for genai ChatRequest.

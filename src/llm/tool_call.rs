@@ -14,8 +14,13 @@ use crate::app::session_state::{ASK_TIMEOUT_SECS, AskRequest, SessionEvent};
 use crate::tools::{self, ToolRef};
 use crabot::chat::{ToolResult as ChatToolResult, envelope_error};
 use crabot::lock;
+use crabot::tools::ImageAttachment;
 
 // ── Shared execution context ───────────────────────────────────────
+
+/// One finished tool call: genai's wire response, the UI result, and any
+/// images the tool attached to it.
+type ToolOutcome = (ToolResponse, ChatToolResult, Vec<ImageAttachment>);
 
 /// Shared state for tool execution.
 pub(super) struct ExecutionCtx<'a> {
@@ -44,12 +49,10 @@ fn find_tool(tools: &[ToolRef], name: &str) -> Option<ToolRef> {
 }
 
 /// Join a spawned tool task, mapping panics to an error result.
-async fn await_tool(
-    handle: tokio::task::JoinHandle<Result<String, String>>,
-) -> Result<String, String> {
+async fn await_tool<T>(handle: tokio::task::JoinHandle<T>) -> Result<T, String> {
     handle
         .await
-        .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
+        .map_err(|e| format!("Tool execution panicked: {e}"))
 }
 
 /// Log a finished tool execution: name, elapsed time, and outcome.
@@ -61,31 +64,34 @@ fn log_tool_outcome(name: &str, result: &Result<String, String>, start: Instant)
     }
 }
 
-/// Execute a tool on a blocking thread under the session-tab scope; a missing
-/// tool yields an error result.
+/// Execute a tool on a blocking thread under the session-tab scope, also
+/// collecting any images the tool attaches to its result; a missing tool
+/// yields an error result.
 async fn call_tool(
     tool: Option<ToolRef>,
     tc: &ToolCall,
     workspace: std::path::PathBuf,
     cancel_token: CancellationToken,
     tab_number: usize,
-) -> Result<String, String> {
+) -> (Result<String, String>, Vec<ImageAttachment>) {
     let name = tc.fn_name.clone();
     let start = Instant::now();
-    let result = match tool {
+    let outcome = match tool {
         Some(t) => {
             let fn_arguments = tc.fn_arguments.clone();
             await_tool(tokio::task::spawn_blocking(move || {
                 tools::with_tab_scope(tab_number, || {
-                    t.execute(&fn_arguments, &workspace, &cancel_token)
+                    t.execute_with_attachments(&fn_arguments, &workspace, &cancel_token)
                 })
             }))
             .await
         }
         None => Err(tools::unknown_tool_message(&tc.fn_name)),
     };
+    // A panicked task carries no attachments.
+    let (result, images) = outcome.unwrap_or_else(|e| (Err(e), Vec::new()));
     log_tool_outcome(&name, &result, start);
-    result
+    (result, images)
 }
 
 /// Execute a tool, forwarding its live output as [`SessionEvent::ToolOutput`],
@@ -150,7 +156,7 @@ async fn call_tool_streaming(
         last_flush = Instant::now();
     }
 
-    let result = await_tool(handle).await;
+    let result = await_tool(handle).await.unwrap_or_else(Err);
     log_tool_outcome(&name, &result, start);
     result
 }
@@ -190,6 +196,7 @@ pub(super) async fn run_parallel_batch(
     ctx: &ExecutionCtx<'_>,
     task_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<(String, Result<String, String>)>,
     tool_responses: &mut Vec<ToolResponse>,
+    attachments: &mut Vec<ImageAttachment>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) {
     if batch.is_empty() {
@@ -202,7 +209,8 @@ pub(super) async fn run_parallel_batch(
         let cancel = ctx.cancel_token.clone();
         let tool = find_tool(ctx.tools, &tc.fn_name);
         let workspace = ctx.workspace.to_path_buf();
-        let result = call_tool(tool, tc, workspace, cancel, ctx.tab_number).await;
+        let (result, images) = call_tool(tool, tc, workspace, cancel, ctx.tab_number).await;
+        attachments.extend(images);
         let (response, result) = build_tool_result(tc, result);
         tool_responses.push(response);
         on_event(SessionEvent::ToolResult(result)).await;
@@ -215,7 +223,7 @@ pub(super) async fn run_parallel_batch(
     for tc in batch.drain(..) {
         let cancel = ctx.cancel_token.clone();
 
-        let future: BoxFuture<'static, (ToolResponse, ChatToolResult)> = if tc.fn_name == "task" {
+        let future: BoxFuture<'static, ToolOutcome> = if tc.fn_name == "task" {
             let request = tools::task_request_from_call(&tc.call_id, &tc.fn_arguments);
             let (tx, rx) = tokio::sync::oneshot::channel();
             if request.prompt.trim().is_empty() {
@@ -238,7 +246,8 @@ pub(super) async fn run_parallel_batch(
                     _ = cancel.cancelled() => Err(crate::tools::CANCEL_REASON.into()),
                     result = rx => result.unwrap_or_else(|_| Err("Task response channel closed.".into())),
                 };
-                build_tool_result(&tc, result)
+                let (response, chat_result) = build_tool_result(&tc, result);
+                (response, chat_result, Vec::new())
             })
         } else {
             let tab_number = ctx.tab_number;
@@ -246,8 +255,9 @@ pub(super) async fn run_parallel_batch(
             let workspace = ctx.workspace.to_path_buf();
             let tc = tc.clone();
             Box::pin(async move {
-                let result = call_tool(tool, &tc, workspace, cancel, tab_number).await;
-                build_tool_result(&tc, result)
+                let (result, images) = call_tool(tool, &tc, workspace, cancel, tab_number).await;
+                let (response, chat_result) = build_tool_result(&tc, result);
+                (response, chat_result, images)
             })
         };
         futures.push(future);
@@ -258,8 +268,9 @@ pub(super) async fn run_parallel_batch(
     loop {
         tokio::select! {
             item = futures.next() => {
-                let Some((response, result)) = item else { break };
+                let Some((response, result, images)) = item else { break };
                 tool_responses.push(response);
+                attachments.extend(images);
                 on_event(SessionEvent::ToolResult(result)).await;
             }
             report = task_receiver.recv(), if receiver_open => match report {
@@ -286,18 +297,22 @@ pub(super) async fn run_serial_tool(
     ask_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     renew_executed: &mut bool,
     tool_responses: &mut Vec<ToolResponse>,
+    attachments: &mut Vec<ImageAttachment>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) {
     let start = Instant::now();
-    let result = match tc.fn_name.as_str() {
-        "ask" => handle_ask_tool(tc, ask_receiver, ctx, on_event).await,
+    let (result, images) = match tc.fn_name.as_str() {
+        "ask" => (
+            handle_ask_tool(tc, ask_receiver, ctx, on_event).await,
+            Vec::new(),
+        ),
         "renew" => {
             let prompt = tc
                 .fn_arguments
                 .get("prompt")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            if prompt.is_empty() {
+            let result = if prompt.is_empty() {
                 Err("Renew called with an empty prompt — no new session created.".into())
             } else if *renew_executed {
                 Err("Only the first 'renew' call is effective.".into())
@@ -306,15 +321,20 @@ pub(super) async fn run_serial_tool(
             } else {
                 *renew_executed = true;
                 Ok("New session created with the provided prompt.".into())
-            }
+            };
+            (result, Vec::new())
         }
         _ => {
             let tool = find_tool(ctx.tools, &tc.fn_name);
             let workspace = ctx.workspace.to_path_buf();
             let cancel = ctx.cancel_token.clone();
-            // bash and process stream their output live like LLM text chunks.
+            // bash and process stream their output live like LLM text chunks;
+            // neither produces image attachments.
             if matches!(tc.fn_name.as_str(), "bash" | "process") {
-                call_tool_streaming(tool, tc, workspace, cancel, ctx.tab_number, on_event).await
+                let result =
+                    call_tool_streaming(tool, tc, workspace, cancel, ctx.tab_number, on_event)
+                        .await;
+                (result, Vec::new())
             } else {
                 call_tool(tool, tc, workspace, cancel, ctx.tab_number).await
             }
@@ -325,6 +345,7 @@ pub(super) async fn run_serial_tool(
         let name = tc.fn_name.clone();
         log_tool_outcome(&name, &result, start);
     }
+    attachments.extend(images);
     let (response, result) = build_tool_result(tc, result);
     tool_responses.push(response);
     on_event(SessionEvent::ToolResult(result)).await;

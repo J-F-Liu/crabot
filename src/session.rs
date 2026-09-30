@@ -8,7 +8,10 @@ use std::sync::{Mutex, OnceLock};
 
 use chrono::{Datelike, TimeZone};
 
-use crate::chat::{Dialog, ToolResult, Turn, TurnBody, is_enveloped_error, strip_error_envelope};
+use crate::chat::{
+    Dialog, ToolResult, Turn, TurnBody, image_marker_paths, is_enveloped_error,
+    strip_error_envelope,
+};
 use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
 use crate::user::WorkMode;
@@ -195,6 +198,10 @@ impl Session {
         for msg in &session.history {
             match msg.role {
                 ChatRole::User => {
+                    // Image markers are plumbing, not user prompts.
+                    if image_marker_paths(msg).is_some() {
+                        continue;
+                    }
                     compacted.extend(answer.take());
                     compacted.push(msg.clone());
                 }
@@ -450,6 +457,10 @@ impl Session {
             match msg.role {
                 ChatRole::System => {}
                 ChatRole::User => {
+                    // Image markers ride along in history but are not user turns.
+                    if image_marker_paths(msg).is_some() {
+                        continue;
+                    }
                     let parts = msg.content.parts();
                     // Extract work mode from the first part if present (e.g. "work-mode: code").
                     let mode = parts

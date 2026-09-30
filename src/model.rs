@@ -66,6 +66,7 @@ impl ModelList {
             max_tokens: model.max_tokens,
             thinking: config.thinking,
             thinking_level: config.thinking_level.clone(),
+            vision: model.input.iter().any(|m| m.eq_ignore_ascii_case("image")),
         })
     }
 
@@ -196,6 +197,8 @@ pub struct ModelInfo {
     pub max_tokens: u32,
     pub thinking: bool,
     pub thinking_level: String,
+    /// Whether the model accepts image input (from its input modalities).
+    pub vision: bool,
 }
 
 // ── Cost / TokenAmount ──────────────────────────────────────────────

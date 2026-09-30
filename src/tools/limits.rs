@@ -22,6 +22,8 @@ pub struct ToolLimits {
     pub read_max_lines: usize,
     /// `read`: byte budget per call.
     pub read_max_bytes: usize,
+    /// `read`: largest image attached to the model instead of being read as text.
+    pub read_max_image_bytes: usize,
     /// `find`: maximum result lines.
     pub find_max_lines: usize,
     /// `search`: maximum result lines.
@@ -45,7 +47,8 @@ impl ToolLimits {
             head_tail_bytes: 3 * 1024,       // 3 KB each
             max_output_bytes: 100 * 1024,    // 100 KB
             read_max_lines: 2000,
-            read_max_bytes: 64 * 1024, // 64 KB
+            read_max_bytes: 64 * 1024,             // 64 KB
+            read_max_image_bytes: 5 * 1024 * 1024, // 5 MB (Anthropic's per-image cap)
             find_max_lines: 100,
             search_max_lines: 500,
             fetch_max_body_bytes: 8 * 1024 * 1024, // 8 MB

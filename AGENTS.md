@@ -49,7 +49,7 @@ Tools implement a small trait with a name, description, JSON schema, and a block
 | Custom        | `~/.crabot/tools.ron` | User-defined CLI tools: templated command + typed parameters     |
 | MCP           | `~/.crabot/mcp.ron`   | Remote tools from stdio/HTTP servers, auto-discovered on startup |
 
-Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and overlap checks); `find`, `search` (gitignore-aware glob and regex search); `bash` (interpreter-backed shell with timeouts and cancellation); `process` (long-running process lifecycle); `ask` (interactive question to the user); `todo` (shared task list); `task` (delegate a subtask to a background session tab); `renew` (hand off to a fresh session when context is nearly full); `fetch` (web page → Markdown). See the README for parameters.
+Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and overlap checks; `read` attaches image files as pictures instead of returning bytes); `find`, `search` (gitignore-aware glob and regex search); `bash` (interpreter-backed shell with timeouts and cancellation); `process` (long-running process lifecycle); `ask` (interactive question to the user); `todo` (shared task list); `task` (delegate a subtask to a background session tab); `renew` (hand off to a fresh session when context is nearly full); `fetch` (web page → Markdown). See the README for parameters.
 
 ## Conventions
 

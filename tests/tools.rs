@@ -9,10 +9,12 @@ use common::TempDir;
 #[cfg(windows)]
 use crabot::tools::tmp_host_dir;
 use crabot::tools::{
-    COALESCE_MS, ChunkForwarder, OutStream, OutputSink, StreamingCap, ToolLimits,
-    decode_stringified_args, resolve_path, resolve_path_partial, streaming_truncation_marker,
+    COALESCE_MS, ChunkForwarder, ImageAttachment, OutStream, OutputSink, StreamingCap, Tool,
+    ToolLimits, decode_stringified_args, init_tool_limits, resolve_path, resolve_path_partial,
+    streaming_truncation_marker,
 };
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 // ── resolve_path ────────────────────────────────────────────
 
@@ -506,4 +508,122 @@ fn tab_scope_restores_after_panic() {
     });
     assert!(panicked.is_err());
     assert!(current_tab_number().is_none());
+}
+
+// ── read: image attachments ─────────────────────────────────────────
+
+/// Tool limits are process-global, so tests that set them must not run
+/// alongside tests that read them.
+static LIMITS: Mutex<()> = Mutex::new(());
+
+/// Write a small solid PNG into `dir`.
+fn write_png(dir: &TempDir, name: &str, width: u32, height: u32) {
+    let img = image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]));
+    img.save(dir.join(name)).unwrap();
+}
+
+/// Run `read` on `path` inside `dir`, returning the result text and attachments.
+fn read(path: serde_json::Value, dir: &TempDir) -> (String, Vec<ImageAttachment>) {
+    try_read(path, dir).unwrap()
+}
+
+/// Same as [`read`], but keeps the error instead of unwrapping it.
+fn try_read(
+    path: serde_json::Value,
+    dir: &TempDir,
+) -> Result<(String, Vec<ImageAttachment>), String> {
+    let (result, attached) = crabot::tools::read::ReadTool.execute_with_attachments(
+        &json!({ "path": path }),
+        &dir.path,
+        &CancellationToken::new(),
+    );
+    result.map(|text| (text, attached))
+}
+
+/// Images are reported by path and dimensions instead of being dumped as bytes,
+/// and offer themselves to the LLM layer as attachments.
+#[test]
+fn read_attaches_images_instead_of_bytes() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_image").unwrap();
+    write_png(&tmp, "shot.png", 3, 2);
+
+    let (result, attached) = read("shot.png".into(), &tmp);
+    assert!(
+        result.starts_with("[Image] ")
+            && result.contains("image/png, ")
+            && result.ends_with("3x2)"),
+        "{result}"
+    );
+
+    assert_eq!(attached.len(), 1);
+    assert!(attached[0].path.ends_with("shot.png"), "{:?}", attached[0]);
+    assert_eq!((attached[0].width, attached[0].height), (3, 2));
+    assert_eq!(attached[0].media_type, "image/png");
+}
+
+/// Non-image files keep the line-numbered text path, with nothing attached.
+#[test]
+fn read_keeps_text_for_non_images() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_text").unwrap();
+    tmp.write("notes.txt", b"hello\n").unwrap();
+
+    let (result, attached) = read("notes.txt".into(), &tmp);
+    assert!(result.contains("1|hello"), "{result}");
+    assert!(attached.is_empty());
+}
+
+/// A file named like an image but not decodable errors instead of dumping
+/// binary garbage as text.
+#[test]
+fn read_errors_for_broken_images() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_broken").unwrap();
+    tmp.write("broken.png", b"not a png\n").unwrap();
+
+    let result = try_read("broken.png".into(), &tmp).unwrap_err();
+    assert!(result.contains("Failed to decode image"), "{result}");
+}
+
+/// Oversized images are reported but never attached: every request would carry
+/// the base64 otherwise, and providers reject them anyway.
+#[test]
+fn read_reports_images_over_the_size_limit() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_big").unwrap();
+    write_png(&tmp, "big.png", 64, 64);
+
+    let mut limits = ToolLimits::new();
+    limits.read_max_image_bytes = 1; // no real PNG is that small
+    init_tool_limits(limits);
+
+    let (result, attached) = read("big.png".into(), &tmp);
+    assert!(result.contains("not attached: larger than 1 B"), "{result}");
+    assert!(attached.is_empty());
+
+    init_tool_limits(ToolLimits::new());
+}
+
+/// An image outside the workspace round-trips: the marker records a displayable
+/// path, and resolving it again finds the same file on the next request.
+#[test]
+fn read_attaches_images_outside_the_workspace() {
+    let _limits = crabot::lock(&LIMITS);
+    let ws = TempDir::new("read_ws").unwrap();
+    let outside = TempDir::new("read_outside").unwrap();
+    write_png(&outside, "shot.png", 2, 2);
+    let path = outside.join("shot.png");
+
+    let (result, attached) = read(path.to_string_lossy().into(), &ws);
+    assert!(result.starts_with("[Image] "), "{result}");
+
+    assert_eq!(attached.len(), 1);
+
+    let marker = crabot::chat::image_marker_message(&[attached[0].path.clone()]);
+    let paths = crabot::chat::image_marker_paths(&marker).unwrap();
+    assert_eq!(
+        crabot::tools::resolve_path(paths[0], &ws.path).unwrap(),
+        dunce::canonicalize(&path).unwrap()
+    );
 }

@@ -7,8 +7,22 @@ use tokio_util::sync::CancellationToken;
 use serde_json::{Value, json};
 
 use crate::tools::{
-    Tool, arg_u64, make_workspace_relative, required_path, resolve_path, tool_limits,
+    CANCEL_REASON, ImageAttachment, Tool, arg_u64, human_bytes, make_workspace_relative,
+    required_path, resolve_path, tool_limits,
 };
+
+/// Image extensions read as pictures rather than as text, with their MIME type.
+const IMAGE_TYPES: [(&str, &str); 6] = [
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+    ("bmp", "image/bmp"),
+];
+
+/// Longest image side the vision APIs accept (Anthropic rejects more).
+const MAX_IMAGE_SIDE: u32 = 8000;
 
 pub struct ReadTool;
 
@@ -18,11 +32,11 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file from the filesystem with line-numbered output. Supports offset and line-limit pagination."
+        "Read a file from the filesystem with line-numbered output. Supports offset and line-limit pagination. Image files are attached to the conversation so they can be looked at."
     }
 
     fn instruction(&self) -> &str {
-        "When reading files, prefer larger, context-rich reads over multiple small consecutive reads. Large files may be truncated with a marker such as \"[213 more lines in file. Use offset=2000 to continue.]\". You can use the `read` tool to load additional content if needed. Never pass the truncation marker to an edit tool. You don't need to read a file if it's already provided in context."
+        "When reading files, prefer larger, context-rich reads over multiple small consecutive reads. Large files may be truncated with a marker such as \"[213 more lines in file. Use offset=2000 to continue.]\". You can use the `read` tool to load additional content if needed. Never pass the truncation marker to an edit tool. You don't need to read a file if it's already provided in context. Reading an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp) attaches the picture itself to the conversation instead of returning its bytes."
     }
 
     fn schema(&self) -> Value {
@@ -53,8 +67,94 @@ impl Tool for ReadTool {
         workspace: &Path,
         _cancel: &CancellationToken,
     ) -> Result<String, String> {
-        execute(args, workspace)
+        run(args, workspace).0
     }
+
+    fn execute_with_attachments(
+        &self,
+        args: &Value,
+        workspace: &Path,
+        cancel: &CancellationToken,
+    ) -> (Result<String, String>, Vec<ImageAttachment>) {
+        if cancel.is_cancelled() {
+            return (Err(CANCEL_REASON.into()), Vec::new());
+        }
+        run(args, workspace)
+    }
+}
+
+/// Probe the file once and produce both the result text and any attachment.
+fn run(args: &Value, workspace: &Path) -> (Result<String, String>, Vec<ImageAttachment>) {
+    match read_image(args, workspace) {
+        Some(ReadImage::Attached(image)) => {
+            let text = format!("[Image] {}", image.summary());
+            (Ok(text), vec![image])
+        }
+        Some(ReadImage::Skipped { image, reason }) => {
+            let text = format!("[Image] {} — not attached: {reason}.", image.summary());
+            (Ok(text), Vec::new())
+        }
+        // An image file that won't decode is never worth dumping as text.
+        Some(ReadImage::Undecodable(reason)) => (Err(reason), Vec::new()),
+        None => (execute(args, workspace), Vec::new()),
+    }
+}
+
+/// Outcome of probing an image file: attached to the model, or reported by
+/// description (in `run`) because the provider would reject it.
+enum ReadImage {
+    Attached(ImageAttachment),
+    Skipped {
+        image: ImageAttachment,
+        reason: String,
+    },
+    /// The extension says image, but the bytes don't decode.
+    Undecodable(String),
+}
+
+/// The image a `read` call refers to: extension must be an image type and the
+/// file must decode with a non-zero size. `None` ⇒ read it as text.
+fn read_image(args: &Value, workspace: &Path) -> Option<ReadImage> {
+    let path = required_path(args).ok()?;
+    let media_type = IMAGE_TYPES
+        .iter()
+        .find(|(ext, _)| {
+            Path::new(path)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+        })
+        .map(|(_, mime)| *mime)?;
+    let file_path = resolve_path(path, workspace).ok()?;
+    let bytes = std::fs::metadata(&file_path).ok()?.len();
+    let (width, height) = match image::image_dimensions(&file_path) {
+        Ok(dimensions) => dimensions,
+        Err(e) => {
+            let display = make_workspace_relative(&file_path, workspace);
+            return Some(ReadImage::Undecodable(format!(
+                "Failed to decode image {display}: {e}"
+            )));
+        }
+    };
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let image = ImageAttachment {
+        path: make_workspace_relative(&file_path, workspace),
+        media_type: media_type.to_string(),
+        width,
+        height,
+        bytes,
+    };
+    let limit = tool_limits().read_max_image_bytes as u64;
+    if bytes > limit {
+        let reason = format!("larger than {}", human_bytes(limit));
+        return Some(ReadImage::Skipped { image, reason });
+    }
+    if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
+        let reason = format!("over {MAX_IMAGE_SIDE}px on a side");
+        return Some(ReadImage::Skipped { image, reason });
+    }
+    Some(ReadImage::Attached(image))
 }
 
 /// Number of decimal digits of `n` (0 → 1, 5 → 1, 99 → 2, …).

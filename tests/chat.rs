@@ -199,3 +199,28 @@ fn code_bar_no_longer_truncates_a_table_row() {
         "row tail dropped: {text:?}"
     );
 }
+
+// ── image markers ───────────────────────────────────────────────────
+
+/// Markers carry one path per line and round-trip through the parser.
+#[test]
+fn image_markers_round_trip() {
+    use crabot::chat::{image_marker_message, image_marker_paths};
+    use genai::chat::ChatMessage;
+
+    let msg = image_marker_message(&["a.png".to_string(), "sub/b.jpg".to_string()]);
+    assert_eq!(image_marker_paths(&msg).unwrap(), ["a.png", "sub/b.jpg"]);
+
+    // A `]` inside the path survives — only the trailing one closes the marker.
+    let odd = image_marker_message(&["we[ird].png".to_string()]);
+    assert_eq!(image_marker_paths(&odd).unwrap(), ["we[ird].png"]);
+
+    for msg in [
+        ChatMessage::user("hello"),
+        ChatMessage::assistant("[image: a.png]"),
+        ChatMessage::user("[image: a.png] plus a question"),
+        ChatMessage::user(""),
+    ] {
+        assert!(image_marker_paths(&msg).is_none(), "{msg:?}");
+    }
+}

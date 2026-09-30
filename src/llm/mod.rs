@@ -14,16 +14,19 @@ use genai::chat::{
 
 use crate::app::session_state::SessionEvent;
 use crate::tools::{self, ToolRef};
-use crabot::chat::ToolCall as ChatToolCall;
+use crabot::chat::{ToolCall as ChatToolCall, image_marker_message};
 use crabot::lock;
 use crabot::model::ModelInfo;
+use crabot::tools::ImageAttachment;
 use crabot::user::UserPrompt;
 
 mod client;
+mod image;
 mod stream;
 mod tool_call;
 
 use client::build_client;
+pub(crate) use image::ImageCache;
 pub use stream::DialogPhase;
 use stream::{
     AttemptOutcome, MAX_ATTEMPTS, StreamCtx, failure_message, is_retryable, mark_cache_tail,
@@ -57,6 +60,8 @@ pub struct SendConfig {
     pub max_iterations: usize,
     /// Seconds of stream silence before giving up (0 = off).
     pub stream_stall_timeout_secs: u64,
+    /// Session-scoped encoded-image cache, reused across streams of the tab.
+    pub image_cache: Arc<Mutex<ImageCache>>,
 }
 
 /// Push a message into the request and record it in history.
@@ -118,6 +123,7 @@ pub async fn send_stream(
         cancel_token,
         max_iterations,
         stream_stall_timeout_secs,
+        image_cache,
     } = config;
 
     let client = match build_client(&model.base_url, &model.api_key, &model.api_type) {
@@ -212,6 +218,20 @@ pub async fn send_stream(
     for _ in 0..max_iterations {
         // Signal that we're connecting to the LLM.
         on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await;
+
+        // Deliver any images read by tools before the tail cache breakpoint is
+        // set (a merged tool turn replaces the marker message). The lock is
+        // scoped so no guard lives across the request's await points.
+        {
+            let mut cache = lock(&image_cache);
+            image::attach_images(
+                &mut chat_req.messages,
+                &workspace,
+                model.vision,
+                client::adapter_kind(&model.api_type),
+                &mut cache,
+            );
+        }
 
         // Keep a single rolling cache breakpoint at the conversation tail
         // (Anthropic limit: 4 breakpoints; system prompt uses 1 for Ephemeral1h).
@@ -367,6 +387,7 @@ pub async fn send_stream(
         // Every tool call runs and produces a result, so the tool calls in the
         // assistant message always have matching results in history.
         let mut tool_responses: Vec<ToolResponse> = Vec::with_capacity(tool_calls.len());
+        let mut attachments: Vec<ImageAttachment> = Vec::new();
         let mut renew_executed = false;
         let mut batch: Vec<&ToolCall> = Vec::new();
 
@@ -381,6 +402,7 @@ pub async fn send_stream(
                 &exec_ctx,
                 &mut task_receiver,
                 &mut tool_responses,
+                &mut attachments,
                 on_event,
             )
             .await;
@@ -390,6 +412,7 @@ pub async fn send_stream(
                 &mut ask_receiver,
                 &mut renew_executed,
                 &mut tool_responses,
+                &mut attachments,
                 on_event,
             )
             .await;
@@ -401,6 +424,7 @@ pub async fn send_stream(
             &exec_ctx,
             &mut task_receiver,
             &mut tool_responses,
+            &mut attachments,
             on_event,
         )
         .await;
@@ -413,6 +437,24 @@ pub async fn send_stream(
             // results, so history keeps them either way.
             on_event(SessionEvent::Cancelled).await;
             return;
+        }
+
+        // Images read by tools are recorded as path markers; the bytes are
+        // attached when the next request is built (folded into the tool turn
+        // for providers that require strict role alternation).
+        let mut images: Vec<String> = Vec::new();
+        for a in &attachments {
+            if !images.contains(&a.path) {
+                images.push(a.path.clone());
+            }
+        }
+        if !images.is_empty() {
+            let marker = image_marker_message(&images);
+            chat_req = chat_req.append_message(marker.clone());
+            if !on_event(SessionEvent::MessageReady(marker)).await {
+                on_event(SessionEvent::Cancelled).await;
+                return;
+            }
         }
 
         // When renew was called, stop the current session — no more requests.

@@ -1103,6 +1103,7 @@ pub(crate) fn start_dialog(
         cancel_token: cancel_token.clone(),
         max_iterations: app.settings.max_iterations,
         stream_stall_timeout_secs: app.settings.stream_stall_timeout,
+        image_cache: tab.session_state.image_cache.clone(),
     };
 
     let mut history = tab.session.history.clone();

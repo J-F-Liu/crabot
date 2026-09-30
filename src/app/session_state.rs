@@ -74,6 +74,9 @@ pub(crate) struct SessionState {
     pub(crate) renew_hint_cooldown: Cell<u32>,
     /// Auto-retry countdown after a transient LLM failure (429/5xx/connection).
     pub(crate) retry: Option<RetryInfo>,
+    /// Encoded images attached to this session's requests, shared with the
+    /// stream tasks and dropped when the tab closes.
+    pub(crate) image_cache: Arc<Mutex<crate::llm::ImageCache>>,
 }
 
 impl SessionState {
@@ -98,6 +101,7 @@ impl SessionState {
             scroll_throttle: Cell::new(Instant::now()),
             renew_hint_cooldown: Cell::new(0),
             retry: None,
+            image_cache: Arc::new(Mutex::new(crate::llm::ImageCache::default())),
         }
     }
 

@@ -35,8 +35,10 @@ pub use context::{current_tab_number, with_tab_scope};
 pub(crate) use decoder::{ChunkDecoder, PlainTextDecoder, decode_bytes, decode_plain};
 
 // ── tool ────────────────────────────────────────────────────────────
-pub(crate) use tool::CAPTURE_GRACE;
-pub use tool::{CANCEL_REASON, COALESCE_BYTES, COALESCE_MS, OutputSink, Tool, ToolRef};
+pub use tool::{
+    CANCEL_REASON, COALESCE_BYTES, COALESCE_MS, ImageAttachment, OutputSink, Tool, ToolRef,
+};
+pub(crate) use tool::{CAPTURE_GRACE, human_bytes};
 
 // ── schema ──────────────────────────────────────────────────────────
 pub use schema::{decode_stringified_args, make_strict_schema};
