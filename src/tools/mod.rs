@@ -16,6 +16,7 @@ pub mod mcp;
 mod capture;
 mod context;
 mod exec;
+pub mod image;
 mod limits;
 mod paths;
 mod proxy;
@@ -35,10 +36,10 @@ pub use context::{current_tab_number, with_tab_scope};
 pub(crate) use decoder::{ChunkDecoder, PlainTextDecoder, decode_bytes, decode_plain};
 
 // ── tool ────────────────────────────────────────────────────────────
+pub(crate) use tool::CAPTURE_GRACE;
 pub use tool::{
     CANCEL_REASON, COALESCE_BYTES, COALESCE_MS, ImageAttachment, OutputSink, Tool, ToolRef,
 };
-pub(crate) use tool::{CAPTURE_GRACE, human_bytes};
 
 // ── schema ──────────────────────────────────────────────────────────
 pub use schema::{decode_stringified_args, make_strict_schema};
@@ -58,6 +59,12 @@ pub(crate) use paths::{
 #[cfg(windows)]
 pub(crate) use paths::{
     convert_path_to_windows_style, drive_style_to_windows, is_drive_path, map_path_list,
+};
+
+// ── image ───────────────────────────────────────────────────────────
+pub use image::{
+    EncodedImage, ImageBudget, RouteImages, encode_for_request, media_type_for_extension, probe,
+    route_images, set_route_images, sniff_file, target_dimensions,
 };
 
 // ── limits ──────────────────────────────────────────────────────────

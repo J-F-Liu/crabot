@@ -9,9 +9,9 @@ use common::TempDir;
 #[cfg(windows)]
 use crabot::tools::tmp_host_dir;
 use crabot::tools::{
-    COALESCE_MS, ChunkForwarder, ImageAttachment, OutStream, OutputSink, StreamingCap, Tool,
-    ToolLimits, decode_stringified_args, init_tool_limits, resolve_path, resolve_path_partial,
-    streaming_truncation_marker,
+    COALESCE_MS, ChunkForwarder, ImageAttachment, ImageBudget, OutStream, OutputSink, RouteImages,
+    StreamingCap, Tool, ToolLimits, decode_stringified_args, init_tool_limits, resolve_path,
+    resolve_path_partial, streaming_truncation_marker,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -522,6 +522,15 @@ fn write_png(dir: &TempDir, name: &str, width: u32, height: u32) {
     img.save(dir.join(name)).unwrap();
 }
 
+/// A solid PNG of the given size, encoded in memory.
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]));
+    let mut buf = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+        .unwrap();
+    buf
+}
+
 /// Run `read` on `path` inside `dir`, returning the result text and attachments.
 fn read(path: serde_json::Value, dir: &TempDir) -> (String, Vec<ImageAttachment>) {
     try_read(path, dir).unwrap()
@@ -538,6 +547,18 @@ fn try_read(
         &CancellationToken::new(),
     );
     result.map(|text| (text, attached))
+}
+
+/// Publish a route so `read` sees this tab as (non-)vision-capable.
+fn set_route(tab: usize, vision: bool, model_id: &str) {
+    crabot::tools::set_route_images(
+        tab,
+        RouteImages {
+            vision,
+            model_id: model_id.to_string(),
+            budget: ImageBudget::from_limits(&ToolLimits::new()),
+        },
+    );
 }
 
 /// Images are reported by path and dimensions instead of being dumped as bytes,
@@ -586,21 +607,38 @@ fn read_errors_for_broken_images() {
     assert!(result.contains("Failed to decode image"), "{result}");
 }
 
-/// Oversized images are reported but never attached: every request would carry
-/// the base64 otherwise, and providers reject them anyway.
+/// A file over the byte budget but within the pixel budgets is still
+/// attached: the encoder re-compresses it at the same dimensions instead of
+/// the read tool refusing it.
 #[test]
-fn read_reports_images_over_the_size_limit() {
+fn read_attaches_images_over_the_byte_budget() {
     let _limits = crabot::lock(&LIMITS);
-    let tmp = TempDir::new("read_big").unwrap();
-    write_png(&tmp, "big.png", 64, 64);
+    let tmp = TempDir::new("read_big_bytes").unwrap();
+    // Noise compresses badly, so a small raster still exceeds a modest byte cap.
+    let noise = image::RgbImage::from_fn(128, 128, |x, y| {
+        image::Rgb([(x * 7 + y * 13) as u8, (x * 31) as u8, (y * 17) as u8])
+    });
+    noise.save(tmp.join("noise.png")).unwrap();
 
     let mut limits = ToolLimits::new();
-    limits.read_max_image_bytes = 1; // no real PNG is that small
+    limits.read_max_image_bytes = 32 * 1024; // the PNG on disk is bigger
     init_tool_limits(limits);
+    let budget = ImageBudget::from_limits(&limits);
 
-    let (result, attached) = read("big.png".into(), &tmp);
-    assert!(result.contains("not attached: larger than 1 B"), "{result}");
-    assert!(attached.is_empty());
+    let (result, attached) = read("noise.png".into(), &tmp);
+    assert_eq!(attached.len(), 1, "{result}");
+    // Same dimensions on the wire, so nothing is reported as downscaled.
+    assert_eq!((attached[0].width, attached[0].height), (128, 128));
+    assert!(attached[0].source_width.is_none(), "{result}");
+
+    let encoded = crabot::tools::encode_for_request(&tmp.join("noise.png"), &budget).unwrap();
+    assert_eq!((encoded.width, encoded.height), (128, 128));
+    assert!(
+        encoded.data.len() <= budget.max_bytes,
+        "{} bytes exceed the {} cap",
+        encoded.data.len(),
+        budget.max_bytes
+    );
 
     init_tool_limits(ToolLimits::new());
 }
@@ -626,4 +664,193 @@ fn read_attaches_images_outside_the_workspace() {
         crabot::tools::resolve_path(paths[0], &ws.path).unwrap(),
         dunce::canonicalize(&path).unwrap()
     );
+}
+
+/// An image past the pixel budget is reported at the size the request will
+/// carry, with the multiplier that maps coordinates back onto the file.
+#[test]
+fn read_reports_the_downscaled_size_and_coordinate_advice() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_downscale").unwrap();
+    write_png(&tmp, "big.png", 400, 200);
+
+    let mut limits = ToolLimits::new();
+    limits.read_max_image_pixels = 20_000; // 4000 px², so 200x100
+    init_tool_limits(limits);
+
+    let (result, attached) = read("big.png".into(), &tmp);
+    assert_eq!(attached.len(), 1);
+    assert_eq!((attached[0].width, attached[0].height), (200, 100));
+    assert_eq!(attached[0].source_width, Some(400));
+    assert!(result.contains("downscaled from 400x200 px"), "{result}");
+    assert!(result.contains("multiply coordinates by 2.00"), "{result}");
+
+    init_tool_limits(ToolLimits::new());
+}
+
+/// A file whose bytes disagree with its extension is refused with the fix,
+/// rather than shipped under the wrong MIME type.
+#[test]
+fn read_rejects_an_extension_that_contradicts_the_bytes() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_mismatch").unwrap();
+    tmp.write("shot.jpg", &png_bytes(4, 4)).unwrap();
+
+    let result = try_read("shot.jpg".into(), &tmp).unwrap_err();
+    assert!(result.contains("declares image/jpeg"), "{result}");
+    assert!(result.contains("bytes are image/png"), "{result}");
+}
+
+/// An image format with no extension is recognized from its own bytes.
+#[test]
+fn read_recognizes_an_extensionless_image() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_signature").unwrap();
+    tmp.write("screenshot", &png_bytes(4, 4)).unwrap();
+
+    let (result, attached) = read("screenshot".into(), &tmp);
+    assert_eq!(attached.len(), 1, "{result}");
+    assert_eq!(attached[0].media_type, "image/png");
+}
+
+/// A truncated file fails the full decode that admission performs, instead of
+/// reaching a provider as a valid-looking header.
+#[test]
+fn read_rejects_a_truncated_image() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_truncated").unwrap();
+    let mut png = png_bytes(64, 64);
+    png.truncate(png.len() / 2);
+    tmp.write("half.png", &png).unwrap();
+
+    let result = try_read("half.png".into(), &tmp).unwrap_err();
+    assert!(result.contains("Failed to decode image"), "{result}");
+}
+
+/// A route that cannot see pictures refuses the read outright — silently
+/// returning the path would let the model describe a picture it never saw.
+#[test]
+fn read_refuses_images_for_a_text_only_model() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_blind").unwrap();
+    write_png(&tmp, "shot.png", 4, 4);
+
+    set_route(77, false, "text-only-1");
+    let result =
+        crabot::tools::with_tab_scope(77, || try_read("shot.png".into(), &tmp).unwrap_err());
+
+    assert!(result.contains("text-only-1"), "{result}");
+    assert!(result.contains("does not accept image input"), "{result}");
+}
+
+/// The same read succeeds once the route declares image input.
+#[test]
+fn read_attaches_images_for_a_vision_model() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_sighted").unwrap();
+    write_png(&tmp, "shot.png", 4, 4);
+
+    set_route(78, true, "vision-1");
+    let (result, attached) = crabot::tools::with_tab_scope(78, || read("shot.png".into(), &tmp));
+
+    assert_eq!(attached.len(), 1, "{result}");
+    assert_eq!((attached[0].width, attached[0].height), (4, 4));
+}
+
+/// A picture past the byte budget is still attached when downscaling brings
+/// it back under — refusing outright would be the wrong answer.
+#[test]
+fn oversized_images_are_encoded_down_instead_of_refused() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("read_encode").unwrap();
+    // Noise compresses badly, so the file is far larger than its pixels need.
+    let noise = image::RgbImage::from_fn(1200, 900, |x, y| {
+        image::Rgb([(x * 7 + y * 13) as u8, (x * 31) as u8, (y * 17) as u8])
+    });
+    noise.save(tmp.join("noise.png")).unwrap();
+
+    let mut limits = ToolLimits::new();
+    limits.read_max_image_pixels = 250_000;
+    init_tool_limits(limits);
+    let budget = ImageBudget::from_limits(&limits);
+
+    let source_bytes = fs::metadata(tmp.join("noise.png")).unwrap().len();
+    let (result, attached) = read("noise.png".into(), &tmp);
+    assert_eq!(attached.len(), 1, "{result}");
+    assert!(attached[0].source_width.is_some(), "{result}");
+
+    let encoded = crabot::tools::encode_for_request(&tmp.join("noise.png"), &budget).unwrap();
+    assert_eq!(
+        (encoded.width, encoded.height),
+        (attached[0].width, attached[0].height),
+        "the request must carry the size read advertised"
+    );
+    assert!(
+        (encoded.data.len() as u64) < source_bytes,
+        "{} vs {source_bytes}",
+        encoded.data.len()
+    );
+
+    init_tool_limits(ToolLimits::new());
+}
+
+/// A big raster is downscaled to the budget and encoded, and the encoder is
+/// checked to have produced the dimensions the read tool advertised.
+#[test]
+fn request_encoding_downscales_and_keeps_the_promised_size() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("encode_downscale").unwrap();
+    let path = tmp.join("big.png");
+    image::RgbaImage::from_pixel(3200, 2400, image::Rgba([3, 200, 40, 255]))
+        .save(&path)
+        .unwrap();
+
+    let budget = ImageBudget::from_limits(&ToolLimits::new());
+    let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
+    assert_eq!(
+        (encoded.width, encoded.height),
+        crabot::tools::target_dimensions(3200, 2400, &budget)
+    );
+    assert!(encoded.width as u64 * encoded.height as u64 <= budget.max_pixels);
+    assert!(encoded.width <= budget.max_side);
+    assert!(encoded.data.len() < std::fs::metadata(&path).unwrap().len() as usize);
+}
+
+/// A fully opaque alpha plane is not worth the lossless codec: the picture
+/// still goes out as the far smaller JPEG.
+#[test]
+fn opaque_sources_encode_as_jpeg() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("encode_opaque").unwrap();
+    let path = tmp.join("flat.png");
+    image::RgbaImage::from_pixel(256, 256, image::Rgba([1, 2, 3, 255]))
+        .save(&path)
+        .unwrap();
+
+    let budget = ImageBudget {
+        max_pixels: 1024, // forces a re-encode
+        max_side: 64,
+        max_bytes: 1024 * 1024,
+    };
+    let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
+    assert_eq!(encoded.media_type, "image/jpeg");
+}
+
+/// Transparency keeps the alpha channel by routing through WebP.
+#[test]
+fn transparent_sources_encode_as_webp() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("encode_alpha").unwrap();
+    let path = tmp.join("cutout.png");
+    image::RgbaImage::from_pixel(256, 256, image::Rgba([1, 2, 3, 0]))
+        .save(&path)
+        .unwrap();
+
+    let budget = ImageBudget {
+        max_pixels: 1024,
+        max_side: 64,
+        max_bytes: 1024 * 1024,
+    };
+    let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
+    assert_eq!(encoded.media_type, "image/webp");
 }

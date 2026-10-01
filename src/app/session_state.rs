@@ -75,8 +75,9 @@ pub(crate) struct SessionState {
     /// Auto-retry countdown after a transient LLM failure (429/5xx/connection).
     pub(crate) retry: Option<RetryInfo>,
     /// Encoded images attached to this session's requests, shared with the
-    /// stream tasks and dropped when the tab closes.
-    pub(crate) image_cache: Arc<Mutex<crate::llm::ImageCache>>,
+    /// stream tasks and dropped when the tab closes. Async-locked because a
+    /// request encodes pictures between awaits.
+    pub(crate) image_cache: Arc<tokio::sync::Mutex<crate::llm::ImageCache>>,
 }
 
 impl SessionState {
@@ -101,7 +102,7 @@ impl SessionState {
             scroll_throttle: Cell::new(Instant::now()),
             renew_hint_cooldown: Cell::new(0),
             retry: None,
-            image_cache: Arc::new(Mutex::new(crate::llm::ImageCache::default())),
+            image_cache: Arc::new(tokio::sync::Mutex::new(crate::llm::ImageCache::default())),
         }
     }
 

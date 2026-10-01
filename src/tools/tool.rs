@@ -41,21 +41,54 @@ pub struct ImageAttachment {
     pub path: String,
     /// MIME type, e.g. `image/png`.
     pub media_type: String,
+    /// Width of the image the model receives, after any downscale.
     pub width: u32,
+    /// Height of the image the model receives, after any downscale.
     pub height: u32,
+    /// Encoded size of the file on disk.
     pub bytes: u64,
+    /// Intrinsic width, present only when the request carries a smaller image.
+    pub source_width: Option<u32>,
+    /// Intrinsic height, present only when the request carries a smaller image.
+    pub source_height: Option<u32>,
 }
 
 impl ImageAttachment {
     /// Human-readable summary of the attachment for a tool result.
     pub fn summary(&self) -> String {
+        let scaled = match (self.source_width, self.source_height) {
+            (Some(width), Some(height)) => format!(
+                " (downscaled from {width}x{height} px; {})",
+                scale_advice(width, height, self.width, self.height)
+            ),
+            _ => String::new(),
+        };
         format!(
-            "{} ({}, {}, {}x{})",
+            "{} ({}, {}, {}x{}{})",
             self.path,
             self.media_type,
             human_bytes(self.bytes),
             self.width,
-            self.height
+            self.height,
+            scaled
+        )
+    }
+}
+
+/// Coordinate advice mapping the attached image back onto the original file;
+/// a single multiplier is named only when both axes round to the same ratio.
+fn scale_advice(source_width: u32, source_height: u32, width: u32, height: u32) -> String {
+    if width == 0 || height == 0 {
+        return "coordinates map 1:1 to the file".to_string();
+    }
+    let x = format!("{:.2}", source_width as f64 / width as f64);
+    let y = format!("{:.2}", source_height as f64 / height as f64);
+    if x == y {
+        format!("multiply coordinates by {x} to locate features in the original file")
+    } else {
+        format!(
+            "multiply x coordinates by {x} and y coordinates by {y} to locate features \
+             in the original file"
         )
     }
 }

@@ -17,7 +17,7 @@ use crate::tools::{self, ToolRef};
 use crabot::chat::{ToolCall as ChatToolCall, image_marker_message};
 use crabot::lock;
 use crabot::model::ModelInfo;
-use crabot::tools::ImageAttachment;
+use crabot::tools::{ImageAttachment, ImageBudget, RouteImages, set_route_images};
 use crabot::user::UserPrompt;
 
 mod client;
@@ -61,7 +61,7 @@ pub struct SendConfig {
     /// Seconds of stream silence before giving up (0 = off).
     pub stream_stall_timeout_secs: u64,
     /// Session-scoped encoded-image cache, reused across streams of the tab.
-    pub image_cache: Arc<Mutex<ImageCache>>,
+    pub image_cache: Arc<tokio::sync::Mutex<ImageCache>>,
 }
 
 /// Push a message into the request and record it in history.
@@ -189,6 +189,18 @@ pub async fn send_stream(
     // Agent loop: keep calling the LLM until it responds without tool calls.
     let mut finished = false;
 
+    // Publish what this route can consume, so `read` refuses an image the
+    // model could not see and reports the dimensions the request will carry.
+    let image_budget = ImageBudget::for_model(&model);
+    set_route_images(
+        tab_number,
+        RouteImages {
+            vision: model.vision,
+            model_id: model.model_id.clone(),
+            budget: image_budget,
+        },
+    );
+
     // Execution context for the tool loop below (loop-invariant).
     let exec_ctx = ExecutionCtx {
         tools: &tools,
@@ -223,14 +235,16 @@ pub async fn send_stream(
         // set (a merged tool turn replaces the marker message). The lock is
         // scoped so no guard lives across the request's await points.
         {
-            let mut cache = lock(&image_cache);
+            let mut cache = image_cache.lock().await;
             image::attach_images(
                 &mut chat_req.messages,
                 &workspace,
                 model.vision,
                 client::adapter_kind(&model.api_type),
                 &mut cache,
-            );
+                image_budget,
+            )
+            .await;
         }
 
         // Keep a single rolling cache breakpoint at the conversation tail

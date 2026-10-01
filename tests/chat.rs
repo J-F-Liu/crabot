@@ -224,3 +224,31 @@ fn image_markers_round_trip() {
         assert!(image_marker_paths(&msg).is_none(), "{msg:?}");
     }
 }
+
+/// Omission notices travel with the markers: the attached paths still parse,
+/// and a message whose pictures were all dropped stops looking like a marker.
+#[test]
+fn image_markers_skip_omission_notices() {
+    use crabot::chat::{image_marker_message, image_marker_paths, image_marker_text};
+    use genai::chat::ChatMessage;
+
+    let kept = image_marker_text(
+        &["a.png".to_string()],
+        &[(
+            "b.png".to_string(),
+            "this request's image budget is full".to_string(),
+        )],
+    );
+    let msg = ChatMessage::user(kept);
+    assert_eq!(image_marker_paths(&msg).unwrap(), ["a.png"]);
+
+    let dropped = image_marker_text(
+        &[],
+        &[("b.png".to_string(), "it could not be encoded".to_string())],
+    );
+    assert!(image_marker_paths(&ChatMessage::user(dropped)).is_none());
+
+    // An active marker still round-trips when nothing was dropped.
+    let plain = image_marker_message(&["a.png".to_string()]);
+    assert_eq!(image_marker_paths(&plain).unwrap(), ["a.png"]);
+}

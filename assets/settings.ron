@@ -64,6 +64,8 @@
         read_max_lines: 2000,
         read_max_bytes: 65536,
         read_max_image_bytes: 5242880,
+        read_max_image_pixels: 1600000,
+        read_max_image_side: 1568,
         find_max_lines: 100,
         search_max_lines: 500,
         fetch_max_body_bytes: 8388608,

@@ -397,19 +397,37 @@ pub fn strip_error_envelope(s: &str) -> &str {
 /// Prefix of an image-reference line, e.g. `[image: assets/logo.png]`.
 pub const IMAGE_MARKER_PREFIX: &str = "[image: ";
 
+/// Prefix of a line telling the model a picture is not on the wire, e.g.
+/// `[image omitted: shot.png — this request's image budget is full]`.
+pub const IMAGE_OMITTED_PREFIX: &str = "[image omitted: ";
+
 /// History message referencing attached images — one `path` per line. Only
 /// paths are stored; the bytes are re-read when a request is built. Plumbing:
 /// no UI turn of its own.
 pub fn image_marker_message(paths: &[String]) -> ChatMessage {
-    let text = paths
+    ChatMessage::user(image_marker_text(paths, &[]))
+}
+
+/// Marker text for one image message: an active line per picture the request
+/// carries, an omission notice per picture it could not afford.
+pub fn image_marker_text(paths: &[String], omitted: &[(String, String)]) -> String {
+    let mut lines: Vec<String> = paths
         .iter()
         .map(|path| format!("{IMAGE_MARKER_PREFIX}{path}]"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    ChatMessage::user(text)
+        .collect();
+    lines.extend(
+        omitted
+            .iter()
+            .map(|(path, reason)| format!("{IMAGE_OMITTED_PREFIX}{path} — {reason}]")),
+    );
+    lines.join("\n")
 }
 
 /// Paths referenced by an image-marker message; `None` for any other message.
+///
+/// Omission notices are inert: they tell the model a picture is gone without
+/// making the message unreadable, so a message whose pictures were all dropped
+/// stops looking like a marker and is never retried.
 pub fn image_marker_paths(msg: &ChatMessage) -> Option<Vec<&str>> {
     if msg.role != ChatRole::User {
         return None;
@@ -417,13 +435,17 @@ pub fn image_marker_paths(msg: &ChatMessage) -> Option<Vec<&str>> {
     let [genai::chat::ContentPart::Text(text)] = msg.content.parts().as_slice() else {
         return None;
     };
-    let paths = text
-        .lines()
-        .map(|line| {
-            line.strip_prefix(IMAGE_MARKER_PREFIX)
-                .and_then(|p| p.strip_suffix(']'))
-        })
-        .collect::<Option<Vec<_>>>()?;
+    let mut paths = Vec::new();
+    for line in text.lines() {
+        if let Some(path) = line
+            .strip_prefix(IMAGE_MARKER_PREFIX)
+            .and_then(|path| path.strip_suffix(']'))
+        {
+            paths.push(path);
+        } else if !line.starts_with(IMAGE_OMITTED_PREFIX) {
+            return None;
+        }
+    }
     (!paths.is_empty()).then_some(paths)
 }
 

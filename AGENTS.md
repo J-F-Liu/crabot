@@ -49,7 +49,7 @@ Tools implement a small trait with a name, description, JSON schema, and a block
 | Custom        | `~/.crabot/tools.ron` | User-defined CLI tools: templated command + typed parameters     |
 | MCP           | `~/.crabot/mcp.ron`   | Remote tools from stdio/HTTP servers, auto-discovered on startup |
 
-Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and overlap checks; `read` attaches image files as pictures instead of returning bytes); `find`, `search` (gitignore-aware glob and regex search); `bash` (interpreter-backed shell with timeouts and cancellation); `process` (long-running process lifecycle); `ask` (interactive question to the user); `todo` (shared task list); `task` (delegate a subtask to a background session tab); `renew` (hand off to a fresh session when context is nearly full); `fetch` (web page → Markdown). See the README for parameters.
+Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and overlap checks; `read` attaches image files as pictures instead of returning bytes, and one shared image policy in `src/tools/image.rs` decides the budget, the delivered size, and the encoding for both the tool result and the request); `find`, `search` (gitignore-aware glob and regex search); `bash` (interpreter-backed shell with timeouts and cancellation); `process` (long-running process lifecycle); `ask` (interactive question to the user); `todo` (shared task list); `task` (delegate a subtask to a background session tab); `renew` (hand off to a fresh session when context is nearly full); `fetch` (web page → Markdown). See the README for parameters.
 
 ## Conventions
 
@@ -58,6 +58,7 @@ Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and ov
 - **Async:** Tokio integrated with iced streams; cancellation via `CancellationToken`; interactive tools talk to the UI over channels.
 - **State & UI:** one root `App` with grouped state (models, settings, layout, prompt, tools, conversation, settings dialog, overlay) and a hierarchical message enum; each session tab owns its own streaming/search/scroll/model state.
 - **Streaming UX:** placeholders are pushed when a turn starts and updated in place; `bash` and `process` forward live output, coalesced and capped before rendering.
+- **Images:** history stores only path markers; the request builder encodes the bytes (`src/llm/image.rs`) under a per-request allowance, spending it on the newest pictures and degrading the rest to a text notice.
 - **Style:** short, purposeful comments; keep functions small and names meaningful; run `cargo fmt` and `cargo clippy` before wrapping up.
 
 ## Repository

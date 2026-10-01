@@ -7,22 +7,10 @@ use tokio_util::sync::CancellationToken;
 use serde_json::{Value, json};
 
 use crate::tools::{
-    CANCEL_REASON, ImageAttachment, Tool, arg_u64, human_bytes, make_workspace_relative,
-    required_path, resolve_path, tool_limits,
+    CANCEL_REASON, ImageAttachment, ImageBudget, RouteImages, Tool, arg_u64, current_tab_number,
+    make_workspace_relative, media_type_for_extension, probe, required_path, resolve_path,
+    route_images, sniff_file, target_dimensions, tool_limits,
 };
-
-/// Image extensions read as pictures rather than as text, with their MIME type.
-const IMAGE_TYPES: [(&str, &str); 6] = [
-    ("png", "image/png"),
-    ("jpg", "image/jpeg"),
-    ("jpeg", "image/jpeg"),
-    ("gif", "image/gif"),
-    ("webp", "image/webp"),
-    ("bmp", "image/bmp"),
-];
-
-/// Longest image side the vision APIs accept (Anthropic rejects more).
-const MAX_IMAGE_SIDE: u32 = 8000;
 
 pub struct ReadTool;
 
@@ -36,7 +24,7 @@ impl Tool for ReadTool {
     }
 
     fn instruction(&self) -> &str {
-        "When reading files, prefer larger, context-rich reads over multiple small consecutive reads. Large files may be truncated with a marker such as \"[213 more lines in file. Use offset=2000 to continue.]\". You can use the `read` tool to load additional content if needed. Never pass the truncation marker to an edit tool. You don't need to read a file if it's already provided in context. Reading an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp) attaches the picture itself to the conversation instead of returning its bytes."
+        "When reading files, prefer larger, context-rich reads over multiple small consecutive reads. Large files may be truncated with a marker such as \"[213 more lines in file. Use offset=2000 to continue.]\". You can use the `read` tool to load additional content if needed. Never pass the truncation marker to an edit tool. You don't need to read a file if it's already provided in context. Reading an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp) attaches the picture itself to the conversation instead of returning its bytes; oversized images are downscaled automatically, so never install image libraries or generate thumbnails to look at one."
     }
 
     fn schema(&self) -> Value {
@@ -90,71 +78,93 @@ fn run(args: &Value, workspace: &Path) -> (Result<String, String>, Vec<ImageAtta
             let text = format!("[Image] {}", image.summary());
             (Ok(text), vec![image])
         }
-        Some(ReadImage::Skipped { image, reason }) => {
-            let text = format!("[Image] {} — not attached: {reason}.", image.summary());
-            (Ok(text), Vec::new())
+        // A refusal or a file that will not decode is never worth describing
+        // as if the model had seen the picture.
+        Some(ReadImage::Refused(reason)) | Some(ReadImage::Undecodable(reason)) => {
+            (Err(reason), Vec::new())
         }
-        // An image file that won't decode is never worth dumping as text.
-        Some(ReadImage::Undecodable(reason)) => (Err(reason), Vec::new()),
         None => (execute(args, workspace), Vec::new()),
     }
 }
 
-/// Outcome of probing an image file: attached to the model, or reported by
-/// description (in `run`) because the provider would reject it.
+/// Outcome of probing an image file: attached to the model, or refused.
 enum ReadImage {
     Attached(ImageAttachment),
-    Skipped {
-        image: ImageAttachment,
-        reason: String,
-    },
-    /// The extension says image, but the bytes don't decode.
+    /// The calling route cannot consume images at all.
+    Refused(String),
+    /// The file claims to be an image, but the bytes don't decode as one.
     Undecodable(String),
 }
 
-/// The image a `read` call refers to: extension must be an image type and the
-/// file must decode with a non-zero size. `None` ⇒ read it as text.
+/// The image a `read` call refers to: the path claims an image format or its
+/// bytes prove one, and the file decodes to a non-zero size. `None` ⇒ read it
+/// as text. Refusal gates run before any pixel work, so a blind model never
+/// pays for a decode.
 fn read_image(args: &Value, workspace: &Path) -> Option<ReadImage> {
     let path = required_path(args).ok()?;
-    let media_type = IMAGE_TYPES
-        .iter()
-        .find(|(ext, _)| {
-            Path::new(path)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case(ext))
-        })
-        .map(|(_, mime)| *mime)?;
     let file_path = resolve_path(path, workspace).ok()?;
-    let bytes = std::fs::metadata(&file_path).ok()?.len();
-    let (width, height) = match image::image_dimensions(&file_path) {
-        Ok(dimensions) => dimensions,
-        Err(e) => {
-            let display = make_workspace_relative(&file_path, workspace);
-            return Some(ReadImage::Undecodable(format!(
-                "Failed to decode image {display}: {e}"
-            )));
-        }
-    };
-    if width == 0 || height == 0 {
+    let display = make_workspace_relative(&file_path, workspace);
+    // A missing file is the text reader's error to report.
+    std::fs::metadata(&file_path).ok()?;
+
+    if !claims_image(&file_path) {
         return None;
     }
+
+    let route = current_tab_number().and_then(route_images);
+    if let Some(reason) = vision_refusal(route.as_ref(), &display) {
+        return Some(ReadImage::Refused(reason));
+    }
+
+    let facts = match probe(&file_path, &display) {
+        Ok(facts) => facts,
+        Err(reason) => return Some(ReadImage::Undecodable(reason)),
+    };
+    if facts.width == 0 || facts.height == 0 {
+        return None;
+    }
+
+    // Report what the request will really carry, so the coordinate advice the
+    // model derives from it stays exact.
+    let budget = route
+        .map(|route| route.budget)
+        .unwrap_or_else(|| ImageBudget::from_limits(&tool_limits()));
+    let (width, height) = target_dimensions(facts.width, facts.height, &budget);
+    let downscaled = (width, height) != (facts.width, facts.height);
     let image = ImageAttachment {
-        path: make_workspace_relative(&file_path, workspace),
-        media_type: media_type.to_string(),
+        path: display,
+        media_type: facts.media_type.to_string(),
         width,
         height,
-        bytes,
+        bytes: facts.bytes,
+        source_width: downscaled.then_some(facts.width),
+        source_height: downscaled.then_some(facts.height),
     };
-    let limit = tool_limits().read_max_image_bytes as u64;
-    if bytes > limit {
-        let reason = format!("larger than {}", human_bytes(limit));
-        return Some(ReadImage::Skipped { image, reason });
-    }
-    if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
-        let reason = format!("over {MAX_IMAGE_SIDE}px on a side");
-        return Some(ReadImage::Skipped { image, reason });
-    }
+
+    // Byte budget: an oversized file is still attached — the encoder
+    // re-compresses it without touching dimensions, so this report stays
+    // exact; the request builder drops it only if the ladder cannot fit it.
     Some(ReadImage::Attached(image))
+}
+
+/// Whether `path` should be read as a picture: its extension claims an image
+/// format, or it carries none at all and its leading bytes prove one. Only an
+/// extension-less file is sniffed, so a `.md` that happens to start with `BM`
+/// stays text.
+fn claims_image(path: &Path) -> bool {
+    media_type_for_extension(path).is_some()
+        || (path.extension().is_none() && sniff_file(path).is_some())
+}
+
+/// Refuse a picture when the route driving this turn cannot consume one —
+/// better than handing the model a path it will describe from imagination.
+fn vision_refusal(route: Option<&RouteImages>, display: &str) -> Option<String> {
+    let route = route.filter(|route| !route.vision)?;
+    Some(format!(
+        "Cannot read \"{display}\" as an image: model \"{}\" does not accept image input; \
+         switch to an image-capable model, or read the file as text",
+        route.model_id
+    ))
 }
 
 /// Number of decimal digits of `n` (0 → 1, 5 → 1, 99 → 2, …).

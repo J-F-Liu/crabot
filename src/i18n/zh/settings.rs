@@ -157,6 +157,8 @@ pub static TABLE: &[(&str, &str)] = &[
     ("read max lines", "读取最大行数"),
     ("read max bytes", "读取最大字节数"),
     ("read image max bytes", "读取图片最大字节数"),
+    ("read image max pixels", "读取图片最大像素数"),
+    ("read image max side", "读取图片最长边"),
     ("find max lines", "查找最大行数"),
     ("search max lines", "搜索最大行数"),
     ("fetch max body bytes", "抓取最大正文字节数"),

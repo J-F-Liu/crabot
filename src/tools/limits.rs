@@ -22,8 +22,13 @@ pub struct ToolLimits {
     pub read_max_lines: usize,
     /// `read`: byte budget per call.
     pub read_max_bytes: usize,
-    /// `read`: largest image attached to the model instead of being read as text.
+    /// `read`: largest encoded bytes an image may occupy on the wire; bigger
+    /// sources are re-compressed until they fit, then omitted.
     pub read_max_image_bytes: usize,
+    /// `read`: decoded pixels (width × height) above which an image is downscaled.
+    pub read_max_image_pixels: u64,
+    /// `read`: longest edge above which an image is downscaled.
+    pub read_max_image_side: u32,
     /// `find`: maximum result lines.
     pub find_max_lines: usize,
     /// `search`: maximum result lines.
@@ -48,7 +53,9 @@ impl ToolLimits {
             max_output_bytes: 100 * 1024,    // 100 KB
             read_max_lines: 2000,
             read_max_bytes: 64 * 1024,             // 64 KB
-            read_max_image_bytes: 5 * 1024 * 1024, // 5 MB (Anthropic's per-image cap)
+            read_max_image_bytes: 5 * 1024 * 1024, // 5 MB encoded, before base64
+            read_max_image_pixels: 1_600_000,      // ~1.6 MP, ≈2100 visual tokens
+            read_max_image_side: 1568,
             find_max_lines: 100,
             search_max_lines: 500,
             fetch_max_body_bytes: 8 * 1024 * 1024, // 8 MB
@@ -65,6 +72,11 @@ impl ToolLimits {
         self.command_timeout_ms = self
             .command_timeout_ms
             .clamp(1000, self.max_command_timeout_ms);
+        // A zero budget would refuse every image, and a zero side would make
+        // the downscale geometry divide by zero.
+        self.read_max_image_bytes = self.read_max_image_bytes.max(1);
+        self.read_max_image_pixels = self.read_max_image_pixels.max(1);
+        self.read_max_image_side = self.read_max_image_side.max(1);
     }
 }
 

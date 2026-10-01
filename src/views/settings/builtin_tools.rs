@@ -52,6 +52,8 @@ pub(crate) enum ToolLimitField {
     ReadMaxLines,
     ReadMaxBytes,
     ReadImageMaxBytes,
+    ReadMaxImagePixels,
+    ReadMaxImageSide,
     FindMaxLines,
     SearchMaxLines,
     FetchMaxBodyBytes,
@@ -61,7 +63,7 @@ pub(crate) enum ToolLimitField {
 }
 
 impl ToolLimitField {
-    pub(crate) const ALL: [ToolLimitField; 13] = [
+    pub(crate) const ALL: [ToolLimitField; 15] = [
         ToolLimitField::CommandTimeoutMs,
         ToolLimitField::MaxCommandTimeoutMs,
         ToolLimitField::HeadTailBytes,
@@ -69,6 +71,8 @@ impl ToolLimitField {
         ToolLimitField::ReadMaxLines,
         ToolLimitField::ReadMaxBytes,
         ToolLimitField::ReadImageMaxBytes,
+        ToolLimitField::ReadMaxImagePixels,
+        ToolLimitField::ReadMaxImageSide,
         ToolLimitField::FindMaxLines,
         ToolLimitField::SearchMaxLines,
         ToolLimitField::FetchMaxBodyBytes,
@@ -86,6 +90,8 @@ impl ToolLimitField {
             ToolLimitField::ReadMaxLines => lang.tr("read max lines"),
             ToolLimitField::ReadMaxBytes => lang.tr("read max bytes"),
             ToolLimitField::ReadImageMaxBytes => lang.tr("read image max bytes"),
+            ToolLimitField::ReadMaxImagePixels => lang.tr("read image max pixels"),
+            ToolLimitField::ReadMaxImageSide => lang.tr("read image max side"),
             ToolLimitField::FindMaxLines => lang.tr("find max lines"),
             ToolLimitField::SearchMaxLines => lang.tr("search max lines"),
             ToolLimitField::FetchMaxBodyBytes => lang.tr("fetch max body bytes"),
@@ -107,6 +113,8 @@ pub(crate) struct ToolLimitStrings {
     pub read_max_lines: String,
     pub read_max_bytes: String,
     pub read_max_image_bytes: String,
+    pub read_max_image_pixels: String,
+    pub read_max_image_side: String,
     pub find_max_lines: String,
     pub search_max_lines: String,
     pub fetch_max_body_bytes: String,
@@ -125,6 +133,8 @@ impl ToolLimitStrings {
             read_max_lines: limits.read_max_lines.to_string(),
             read_max_bytes: limits.read_max_bytes.to_string(),
             read_max_image_bytes: limits.read_max_image_bytes.to_string(),
+            read_max_image_pixels: limits.read_max_image_pixels.to_string(),
+            read_max_image_side: limits.read_max_image_side.to_string(),
             find_max_lines: limits.find_max_lines.to_string(),
             search_max_lines: limits.search_max_lines.to_string(),
             fetch_max_body_bytes: limits.fetch_max_body_bytes.to_string(),
@@ -149,6 +159,11 @@ impl ToolLimitStrings {
             read_max_lines: parse(&self.read_max_lines, defaults.read_max_lines),
             read_max_bytes: parse(&self.read_max_bytes, defaults.read_max_bytes),
             read_max_image_bytes: parse(&self.read_max_image_bytes, defaults.read_max_image_bytes),
+            read_max_image_pixels: parse(
+                &self.read_max_image_pixels,
+                defaults.read_max_image_pixels,
+            ),
+            read_max_image_side: parse(&self.read_max_image_side, defaults.read_max_image_side),
             find_max_lines: parse(&self.find_max_lines, defaults.find_max_lines),
             search_max_lines: parse(&self.search_max_lines, defaults.search_max_lines),
             fetch_max_body_bytes: parse(&self.fetch_max_body_bytes, defaults.fetch_max_body_bytes),
@@ -170,6 +185,8 @@ impl ToolLimitStrings {
             ToolLimitField::ReadMaxLines => &self.read_max_lines,
             ToolLimitField::ReadMaxBytes => &self.read_max_bytes,
             ToolLimitField::ReadImageMaxBytes => &self.read_max_image_bytes,
+            ToolLimitField::ReadMaxImagePixels => &self.read_max_image_pixels,
+            ToolLimitField::ReadMaxImageSide => &self.read_max_image_side,
             ToolLimitField::FindMaxLines => &self.find_max_lines,
             ToolLimitField::SearchMaxLines => &self.search_max_lines,
             ToolLimitField::FetchMaxBodyBytes => &self.fetch_max_body_bytes,
@@ -188,6 +205,8 @@ impl ToolLimitStrings {
             ToolLimitField::ReadMaxLines => &mut self.read_max_lines,
             ToolLimitField::ReadMaxBytes => &mut self.read_max_bytes,
             ToolLimitField::ReadImageMaxBytes => &mut self.read_max_image_bytes,
+            ToolLimitField::ReadMaxImagePixels => &mut self.read_max_image_pixels,
+            ToolLimitField::ReadMaxImageSide => &mut self.read_max_image_side,
             ToolLimitField::FindMaxLines => &mut self.find_max_lines,
             ToolLimitField::SearchMaxLines => &mut self.search_max_lines,
             ToolLimitField::FetchMaxBodyBytes => &mut self.fetch_max_body_bytes,
@@ -383,7 +402,7 @@ fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
     // Two columns, each holding one related group stacked vertically:
     // left = bash / truncation / read, right = find+search / fetch / mcp.
     let lang = state.language;
-    let (left_fields, right_fields) = ToolLimitField::ALL.split_at(7);
+    let (left_fields, right_fields) = ToolLimitField::ALL.split_at(8);
     let column_rows = |fields: &[ToolLimitField]| {
         column(fields.iter().copied().map(|f| limit_row(state, f)))
             .spacing(4)
