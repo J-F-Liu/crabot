@@ -298,23 +298,29 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
+    /// Generator for `assets/tools.ron`: the tool definition below is the
+    /// source of truth, the RON file is its serialized form.
+    ///
+    /// The command is one shell script wrapped in `bash -c '...'`, so it must
+    /// not contain a `'` (it would close the wrapper) and must not contain a
+    /// `{` other than template values (TinyTemplate would parse it as one);
+    /// `\134` is the octal escape tr needs for a lone backslash.
     #[test]
     fn create_custom_tool() {
         let crate_source = CustomTool {
             name: "crate_source".to_string(),
-            description:
-                "Find the local source path for a Rust crate from cargo cache. Returns the cached extraction directory containing the full crate source code. Useful for inspecting a crate's API, reading its implementation, or debugging dependencies." .to_string(),
+            description: "Find the local source directory of a Rust crate in the cargo cache. Resolves crates.io packages, git dependencies, and path dependencies of the current workspace, falling back to a search of the whole cache. Returns the directory holding the crate's full source, for inspecting a crate's API or implementation, or debugging a dependency." .to_string(),
             instruction:
                 "Look up Rust crate version and source locations. Before inspecting a Rust dependency's source code, use crate_source to find its local path." .to_string(),
             parameters: vec![
                 ToolParameter {
                     name: "crate".to_string(),
                     kind: ParameterType::String,
-                    description: "Name of the Rust crate to find (e.g., 'bevy', 'serde', 'nalgebra')".to_string(),
+                    description: "Name of the crate to locate (e.g. 'bevy', 'serde', 'nalgebra'); 'name@version' picks one specific version".to_string(),
                     required: true,
                 },
             ],
-            command: "bash -c \"registry=$(ls -1dt ~/.cargo/registry/src/* | head -n1);crate=$(cargo tree -i {crate} | sed -n '1s/ v/-/p');echo \\$registry/\\$crate\"".to_string(),
+            command: "bash -c 'n=\"{crate}\"; b=$(echo \"$n\" | cut -d\"@\" -f1); c=$CARGO_HOME; [ -n \"$c\" ] || c=$HOME/.cargo; l=$(cargo tree --color never -i \"$n\" 2>/dev/null | head -n1); read -r _ v s <<< \"$l\"; v=$(echo \"$v\" | cut -c\"2-\"); p=$(echo \"$s\" | sed \"s/^(//;s/)$//\"); case $p in /*|[A-Za-z]:*) d=$p ;; *://*) r=$(echo \"$p\" | cut -d\"#\" -f2 | cut -c\"1-7\"); d=$(find \"$c/git/checkouts\" -mindepth 2 -maxdepth 2 -type d -name \"$r\" 2>/dev/null | head -n1) ;; *) d=$(find \"$c/registry/src\" -mindepth 2 -maxdepth 2 -type d -name \"$b-$v\" 2>/dev/null | head -n1) ;; esac; [ -n \"$d\" ] || d=$(find \"$c/registry/src\" -mindepth 2 -maxdepth 2 -type d -name \"$b-*\" 2>/dev/null | head -n1); [ -n \"$d\" ] || d=$(find \"$c/git/checkouts\" -maxdepth 3 -name Cargo.toml 2>/dev/null | while read -r f; do grep -qs \"^name = \\\"$b\\\"$\" \"$f\" && dirname \"$f\"; done | head -n1); if [ -z \"$d\" ]; then echo \"crate_source: $n not found in the cargo cache\" >&2; exit 1; fi; printf \"%s\\n\" \"$d\" | tr \"\\134\" /'".to_string(),
         };
 
         let args = json!({"crate": "iced"});
