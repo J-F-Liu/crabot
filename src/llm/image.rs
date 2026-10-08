@@ -69,9 +69,6 @@ struct WireImage {
 #[derive(Default)]
 pub(crate) struct ImageCache {
     entries: HashMap<PathBuf, CachedImage>,
-    /// Test-only counter of served-from-cache attachments.
-    #[cfg(test)]
-    hits: usize,
 }
 
 impl std::fmt::Debug for ImageCache {
@@ -98,10 +95,6 @@ impl ImageCache {
             && cached.mtime == mtime
             && cached.budget == budget
         {
-            #[cfg(test)]
-            {
-                self.hits += 1;
-            }
             return Some(cached.clone());
         }
         let source = path.to_path_buf();

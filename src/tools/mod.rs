@@ -18,6 +18,7 @@ mod context;
 mod exec;
 pub mod image;
 mod limits;
+mod normalize;
 mod paths;
 mod proxy;
 mod registry;
@@ -66,6 +67,9 @@ pub use image::{
     EncodedImage, ImageBudget, RouteImages, encode_for_request, media_type_for_extension, probe,
     route_images, set_route_images, sniff_file, target_dimensions,
 };
+
+// ── normalize ───────────────────────────────────────────────────────
+pub use normalize::group_repeated_paths;
 
 // ── limits ──────────────────────────────────────────────────────────
 pub(crate) use limits::truncate_output;

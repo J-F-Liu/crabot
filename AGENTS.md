@@ -58,6 +58,7 @@ Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and ov
 - **Async:** Tokio integrated with iced streams; cancellation via `CancellationToken`; interactive tools talk to the UI over channels.
 - **State & UI:** one root `App` with grouped state (models, settings, layout, prompt, tools, conversation, settings dialog, overlay) and a hierarchical message enum; each session tab owns its own streaming/search/scroll/model state.
 - **Streaming UX:** placeholders are pushed when a turn starts and updated in place; `bash` and `process` forward live output, coalesced and capped before rendering.
+- **Tool output normalization:** grep-style runs that repeat a file path (`path:12:text`, `path-12-text` for context) collapse into a `path:` heading plus the original `line…` tails (`src/tools/normalize.rs`), applied once in `build_tool_result` so the model, the UI, the session file, and the HTML export all carry the same text; the live stream stays raw.
 - **Images:** history stores only path markers; the request builder encodes the bytes (`src/llm/image.rs`) under a per-request allowance, spending it on the newest pictures and degrading the rest to a text notice.
 - **Style:** short, purposeful comments; keep functions small and names meaningful; run `cargo fmt` and `cargo clippy` before wrapping up.
 

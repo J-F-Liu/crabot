@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use genai::chat::{ToolCall, ToolResponse};
 
 use crate::app::session_state::{ASK_TIMEOUT_SECS, AskRequest, SessionEvent};
-use crate::tools::{self, ToolRef};
+use crate::tools::{self, ToolRef, group_repeated_paths};
 use crabot::chat::{ToolResult as ChatToolResult, envelope_error};
 use crabot::lock;
 use crabot::tools::ImageAttachment;
@@ -162,10 +162,25 @@ async fn call_tool_streaming(
 }
 
 /// Build genai `ToolResponse` and UI `ChatToolResult` from an execution result.
+///
+/// Grep-style output is normalized here, once: the wire content, the UI turn,
+/// and the persisted history then all carry the same text the model read.
 fn build_tool_result(
     tc: &ToolCall,
     result: Result<String, String>,
 ) -> (ToolResponse, ChatToolResult) {
+    let result = result.map(|output| match group_repeated_paths(&output) {
+        Some(grouped) => {
+            tracing::debug!(
+                tool = %tc.fn_name,
+                before = output.len(),
+                after = grouped.len(),
+                "grouped repeated file paths in tool output"
+            );
+            grouped
+        }
+        None => output,
+    });
     let result_flat = match &result {
         Ok(s) => s.clone(),
         Err(e) => envelope_error(e),
