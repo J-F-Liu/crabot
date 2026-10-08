@@ -53,6 +53,15 @@ fn install_panic_hook(log_dir: &Path) {
     }));
 }
 
+/// Install rustls' process-level crypto provider.
+///
+/// `reqwest` is built with `rustls-no-provider` (see `Cargo.toml`), so this must
+/// run before the first HTTPS client is created. Idempotent: `install_default`
+/// only errors when a provider is already installed (bashkit installs this one).
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Initialize the tracing logger: daily-rolling files under `~/.crabot/logs/`.
 /// In debug builds output is also mirrored to stderr for development.
 ///

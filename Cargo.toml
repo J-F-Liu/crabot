@@ -15,7 +15,9 @@ serde_json = "1"
 chrono = "0.4"
 rfd = "0.17"
 home = "0.5"
-genai = "=0.7.0-beta.24"
+# `default` is just `rustls-tls` = `reqwest/rustls`, which drags in aws-lc-rs;
+# our own reqwest entry below already enables TLS (rustls + ring provider).
+genai = { version = "=0.7.0-beta.24", default-features = false }
 futures = "0.3"
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -24,12 +26,14 @@ tokio = { version = "1", features = [
     "time",
     "net",
 ] }
+# `image` would also pull iced's codec set (AV1/TIFF/EXR/...); our own `image`
+# dependency below enables exactly the formats this app decodes.
 iced = { version = "0.14.0", features = [
     "advanced",
     "tokio",
     "highlighter",
     "markdown",
-    "image",
+    "image-without-codecs",
     "svg",
 ] }
 iced_runtime = "0.14.0"
@@ -67,17 +71,30 @@ image = { version = "0.25.10", default-features = false, features = [
     "webp",
 ] }
 reqwest = { version = "0.13.4", default-features = false, features = [
-    "rustls",
+    # `rustls` would drag in aws-lc-rs, whose C build is the slowest single step
+    # of a cold release build; bashkit already uses rustls' ring backend.
+    "rustls-no-provider",
     "gzip",
     "charset",
     # Honor HTTP(S)_PROXY/NO_PROXY env (seeded from the Windows system proxy).
     "system-proxy",
 ] }
+
+# reqwest runs with `rustls-no-provider`, so the process-level provider is
+# installed explicitly in `main` via `rustls::crypto::ring`.
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
 dom_smoothie = "0.18.0"
 htmd = "0.5.4"
 open = "5.4.0"
 semver = "1.0"
-zip = "8.6.0"
+# Only `ZipArchive::new` + `extract` are used, on our own deflate release assets;
+# `deflate` would also build zopfli (a compressor) for nothing.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"

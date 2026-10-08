@@ -39,6 +39,8 @@ fn apply_iced_backend(backend: &str) {
 
 pub fn main() -> iced::Result {
     let _log_guard = setup::init_logging();
+    // Must precede any HTTP client: reqwest is built with `rustls-no-provider`.
+    setup::install_crypto_provider();
     let saved = crabot::settings::Settings::load();
     // Iced reads `ICED_BACKEND` once in `run()`, so apply it beforehand.
     apply_iced_backend(&saved.iced_backend);
@@ -61,7 +63,12 @@ pub fn main() -> iced::Result {
     let position =
         iced::window::Position::Specific(Point::new(saved.window_pos.0, saved.window_pos.1));
     let icon = setup::ASSETS.get_file("images/icon.ico").and_then(|f| {
-        iced::window::icon::from_file_data(f.contents(), Some(image::ImageFormat::Ico)).ok()
+        // iced's `image` feature is off, so decode the ICO with our own `image` crate.
+        let rgba = image::load_from_memory_with_format(f.contents(), image::ImageFormat::Ico)
+            .ok()?
+            .to_rgba8();
+        let (width, height) = (rgba.width(), rgba.height());
+        iced::window::icon::from_rgba(rgba.into_raw(), width, height).ok()
     });
     iced::application(move || App::boot(saved.clone()), App::update, App::view)
         .subscription(App::subscription)
