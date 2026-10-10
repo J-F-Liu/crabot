@@ -76,6 +76,17 @@ fn host_python_available() -> bool {
     })
 }
 
+/// The host's own `uname`, resolved on the host `PATH`; `None` fallback to bashkit's builtin.
+fn host_uname() -> Option<&'static Path> {
+    static UNAME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    UNAME
+        .get_or_init(|| {
+            let lists = super::host_path_lists(None);
+            which::which_in("uname", lists.first(), Path::new(".")).ok()
+        })
+        .as_deref()
+}
+
 /// Cached set of every builtin this bashkit build can dispatch.
 pub(crate) fn builtin_names() -> &'static HashSet<String> {
     static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
@@ -717,20 +728,27 @@ fn build_bash(
         )
         .builtin("type", Box::new(TypeBuiltin { lookup }));
 
+    // Bridge each host command the script calls; `uname` joins them so it runs
+    // the host's own — bashkit's builtin answers with virtual `Linux … sandbox`
+    // values, and a host without one keeps it.
+    let host_command = |name: String| {
+        Box::new(HostCommandBuiltin {
+            name,
+            mounts: Arc::clone(&shared_mounts),
+            cancel: cancel.clone(),
+            deadline_ms: Arc::clone(&deadline_ms),
+            timeout,
+            forwarder: forwarder.clone(),
+            home: home_mount.clone(),
+        })
+    };
     for name in &plan.external_names {
-        builder = builder.builtin(
-            name.clone(),
-            Box::new(HostCommandBuiltin {
-                name: name.clone(),
-                mounts: Arc::clone(&shared_mounts),
-                cancel: cancel.clone(),
-                deadline_ms: Arc::clone(&deadline_ms),
-                timeout,
-                forwarder: forwarder.clone(),
-                home: home_mount.clone(),
-            }),
-        );
+        builder = builder.builtin(name.clone(), host_command(name.clone()));
     }
+    if let Some(uname) = host_uname() {
+        builder = builder.builtin("uname", host_command(uname.to_string_lossy().into_owned()));
+    }
+
     // bashkit warns on stderr per read-write mount; silence stderr while
     // building (locked so concurrent builds can't swap each other's handles).
     let _lock = lock(&SILENCER_LOCK);
