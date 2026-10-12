@@ -12,6 +12,10 @@
 //! scripts that would involve one fall back to real bash. Mirrors bashkit
 //! 0.18.1 — re-verify when bumping.
 //!
+//! `uname` is bridged to the host's own binary (MSYS's included) rather than
+//! answered by bashkit's virtual `Linux … sandbox` builtin; a Windows host
+//! without one reports its own facts ([`super::uname`]).
+//!
 //! A bridged name is resolved through `PATH`+`PATHEXT` before spawning — the
 //! script's `$PATH` (native form) first, then the host's — so shell shims a
 //! bare name hides (`npx` → `npx.cmd`) run like in real bash.
@@ -74,17 +78,6 @@ fn host_python_available() -> bool {
             cmd.status().is_ok_and(|s| s.success())
         })
     })
-}
-
-/// The host's own `uname`, resolved on the host `PATH`; `None` fallback to bashkit's builtin.
-fn host_uname() -> Option<&'static Path> {
-    static UNAME: OnceLock<Option<PathBuf>> = OnceLock::new();
-    UNAME
-        .get_or_init(|| {
-            let lists = super::host_path_lists(None);
-            which::which_in("uname", lists.first(), Path::new(".")).ok()
-        })
-        .as_deref()
 }
 
 /// Cached set of every builtin this bashkit build can dispatch.
@@ -697,6 +690,11 @@ fn build_bash(
         .env("OSTYPE", ostype)
         .env("HOSTTYPE", std::env::consts::ARCH)
         .env("MACHTYPE", format!("{}-{machine}", std::env::consts::ARCH));
+    // What the host bash exports — MSYS tools read their platform here.
+    #[cfg(windows)]
+    if let Some(msystem) = super::uname::host_msystem() {
+        builder = builder.env("MSYSTEM", msystem);
+    }
 
     // Embedded Python (Monty) registers `python`/`python3` builtins — only
     // when the host has none (see `host_python_available`); otherwise those
@@ -728,10 +726,9 @@ fn build_bash(
         )
         .builtin("type", Box::new(TypeBuiltin { lookup }));
 
-    // Bridge each host command the script calls; `uname` joins them so it runs
-    // the host's own — bashkit's builtin answers with virtual `Linux … sandbox`
-    // values, and a host without one keeps it.
-    let host_command = |name: String| {
+    // Bridge each host command the script calls; `uname` joins them, since
+    // bashkit's own builtin reports a virtual `Linux … sandbox` platform.
+    let host_command = |name: String| -> Box<dyn Builtin> {
         Box::new(HostCommandBuiltin {
             name,
             mounts: Arc::clone(&shared_mounts),
@@ -745,7 +742,14 @@ fn build_bash(
     for name in &plan.external_names {
         builder = builder.builtin(name.clone(), host_command(name.clone()));
     }
-    if let Some(uname) = host_uname() {
+    // Unix always has a host `uname` on `PATH`; Windows may have none, so there
+    // the builtin replaces bashkit's virtual one and covers that case too.
+    #[cfg(windows)]
+    {
+        builder = builder.builtin("uname", Box::new(super::uname::Uname::new(host_command)));
+    }
+    #[cfg(not(windows))]
+    if let Some(uname) = super::uname::host_uname() {
         builder = builder.builtin("uname", host_command(uname.to_string_lossy().into_owned()));
     }
 
@@ -1945,7 +1949,7 @@ fn real_username() -> Option<String> {
 }
 
 /// Real host hostname via the OS (`gethostname` / `GetComputerNameW`).
-fn real_hostname() -> Option<String> {
+pub(crate) fn real_hostname() -> Option<String> {
     hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())

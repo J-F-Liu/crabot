@@ -1548,6 +1548,24 @@ fn bashkit_parse_error_falls_back() {
     );
 }
 
+// ── `uname` reports the host ────────────────────────────────
+
+/// The interpreter answers with the host's platform — bashkit's builtin would
+/// report a virtual `Linux … 5.15.0-sandbox … GNU/Linux` one instead.
+#[test]
+fn bashkit_uname_reports_the_host() {
+    let result = run_bash("uname -a", &crabot_workspace(), None).unwrap();
+    assert!(!result.contains("sandbox"), "unexpected: {result}");
+    let hostname = hostname::get().unwrap().to_string_lossy().into_owned();
+    assert!(result.contains(&hostname), "unexpected: {result}");
+    // A Windows host is not Linux, even though the interpreter runs MSYS.
+    #[cfg(windows)]
+    assert!(
+        result.contains("_NT-") && !result.contains("GNU/Linux"),
+        "unexpected: {result}"
+    );
+}
+
 // ── plain-text output (ANSI stripping) ──────────────────────
 
 /// Styling escapes are dropped; tabs and the text survive (`tools::ansi`).

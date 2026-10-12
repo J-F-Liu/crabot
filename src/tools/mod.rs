@@ -24,6 +24,7 @@ mod proxy;
 mod registry;
 mod schema;
 mod tool;
+mod uname; // host's own `uname`, replacing bashkit's virtual Linux
 
 /// One file per tool; `super::` inside them resolves via this module's re-exports.
 pub mod builtin;
