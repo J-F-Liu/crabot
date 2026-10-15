@@ -154,7 +154,7 @@ fn render_dialog(
         w!(
             out,
             "<span class=\"mode-badge\">{}</span>",
-            escape_html(mode.name.as_ref())
+            escape_html(mode.label(ctx.lang))
         );
     }
     w!(

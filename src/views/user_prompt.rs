@@ -32,7 +32,7 @@ pub(crate) fn user_prompt_view<'a>(
 ) -> Element<'a, PromptEvent> {
     let mut tab_bar_builder = TabBar::new(PromptEvent::SelectWorkMode);
     for mode in WorkMode::all() {
-        tab_bar_builder = tab_bar_builder.push(*mode, TabLabel::Text(mode.name.to_string()));
+        tab_bar_builder = tab_bar_builder.push(*mode, TabLabel::Text(mode.label(lang).to_string()));
     }
     let tab_bar: Element<'_, PromptEvent> = tab_bar_builder
         .set_active_tab(&workmode)

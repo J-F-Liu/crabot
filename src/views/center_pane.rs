@@ -695,7 +695,7 @@ pub(crate) fn center_pane<'a>(
                     .into(),
             ];
             if let Some(mode) = &dialog.mode {
-                row_elements.push(work_mode_badge(&mode.name, font_scale, search_query));
+                row_elements.push(work_mode_badge(mode.label(lang), font_scale, search_query));
             }
             row_elements.push(highlighted_text(
                 title,

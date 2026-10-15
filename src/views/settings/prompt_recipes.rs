@@ -49,7 +49,14 @@ pub(super) fn prompt_recipes_page<'a>(state: &'a SettingsState) -> Element<'a, S
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 let expanded = state.expanded_recipe_mode == Some(i);
-                mode_card(i, mode.name.to_string(), mode_key, recipes, expanded, lang)
+                mode_card(
+                    i,
+                    mode.label(lang).to_string(),
+                    mode_key,
+                    recipes,
+                    expanded,
+                    lang,
+                )
             })
             .collect();
         column(cards).spacing(8).into()

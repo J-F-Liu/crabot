@@ -3,6 +3,8 @@ use genai::chat::ContentPart;
 use regex::Regex;
 use std::sync::LazyLock;
 
+use crate::i18n::Lang;
+
 /// A work mode parsed from `assets/workmode.md` at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkMode {
@@ -28,6 +30,11 @@ impl WorkMode {
                 .collect()
         });
         &MODES
+    }
+
+    /// Localized display name; falls back to the English name when untranslated.
+    pub fn label(&self, lang: Lang) -> &str {
+        lang.tr(self.name.as_str())
     }
 
     /// The default mode (the one named `"Code"`, or the first mode).

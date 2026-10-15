@@ -17,6 +17,10 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Workspace tree", "工作区文件树"),
     ("Recipes ▾", "配方 ▾"),
     ("Work mode", "工作模式"),
+    // Work-mode names, shared by user_prompt / center_pane / prompt_recipes / export.
+    ("Plan", "计划"),
+    ("Code", "代码"),
+    ("Review", "审查"),
     ("Send", "发送"),
     ("Loading…", "加载中…"),
     ("No workspace selected.", "未选择工作区。"),
