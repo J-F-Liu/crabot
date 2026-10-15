@@ -143,6 +143,11 @@ impl TextArea {
         self.content.text()
     }
 
+    /// Returns `true` when the content holds no non-whitespace text.
+    pub fn is_blank(&self) -> bool {
+        self.content.text().trim().is_empty()
+    }
+
     /// Returns the current cursor position.
     pub fn cursor(&self) -> text_editor::Cursor {
         self.content.cursor()

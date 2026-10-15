@@ -30,6 +30,9 @@ pub(crate) fn user_prompt_view<'a>(
     workspace_set: bool,
     lang: crabot::i18n::Lang,
 ) -> Element<'a, PromptEvent> {
+    // Blank input sends nothing, so the button shows that instead of failing silently.
+    let can_send = !user_prompt.is_blank();
+
     let mut tab_bar_builder = TabBar::new(PromptEvent::SelectWorkMode);
     for mode in WorkMode::all() {
         tab_bar_builder = tab_bar_builder.push(*mode, TabLabel::Text(mode.label(lang).to_string()));
@@ -109,7 +112,7 @@ pub(crate) fn user_prompt_view<'a>(
             iced::widget::Space::new().width(Length::Fill),
             button(text(lang.tr("Send")).size(13).align_x(Alignment::Center))
                 .width(80)
-                .on_press(PromptEvent::SendPrompt)
+                .on_press_maybe(can_send.then_some(PromptEvent::SendPrompt))
                 .style(crate::views::primary_button),
         ]
         .spacing(8)
