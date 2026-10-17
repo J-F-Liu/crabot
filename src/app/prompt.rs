@@ -2,6 +2,7 @@ use iced::{Task, widget::text_editor};
 
 use std::path::{Path, PathBuf};
 
+use crabot::user::{AttachmentKind, UserAttachment};
 use crabot::workspace;
 
 pub(crate) const PREAMBLE: &str = "Preamble";
@@ -136,7 +137,10 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
             app.prompt.workmode_enabled = enabled;
         }
         PromptEvent::ToggleRecipeDropdown => {
-            app.prompt.recipe_dropdown_expanded = !app.prompt.recipe_dropdown_expanded;
+            toggle_dropdown(
+                &mut app.prompt.recipe_dropdown_expanded,
+                &mut app.prompt.attachment_menu_expanded,
+            );
         }
         PromptEvent::SelectRecipe(index) => {
             let mode_key = app.prompt.workmode.name.to_lowercase();
@@ -150,6 +154,70 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         PromptEvent::DismissRecipeDropdown => {
             app.prompt.recipe_dropdown_expanded = false;
         }
+        PromptEvent::ToggleAttachmentMenu => {
+            toggle_dropdown(
+                &mut app.prompt.attachment_menu_expanded,
+                &mut app.prompt.recipe_dropdown_expanded,
+            );
+        }
+        PromptEvent::DismissAttachmentMenu => {
+            app.prompt.attachment_menu_expanded = false;
+        }
+        PromptEvent::AttachFile(kind) => {
+            app.prompt.attachment_menu_expanded = false;
+            let title = match kind {
+                AttachmentKind::Text => app.settings.language.tr("Attach text file"),
+                AttachmentKind::Image => app.settings.language.tr("Attach image file"),
+            }
+            .to_string();
+            return Task::perform(pick_attachment_files(kind, title), move |paths| {
+                Message::Prompt(PromptEvent::AttachmentDialogResult(kind, paths))
+            });
+        }
+        PromptEvent::AttachmentDialogResult(kind, paths) => {
+            let Some(paths) = paths else {
+                return Task::none();
+            };
+            if paths.is_empty() {
+                return Task::none();
+            }
+            return Task::perform(validate_attachments(kind, paths), |(accepted, rejected)| {
+                Message::Prompt(PromptEvent::AttachmentsValidated(accepted, rejected))
+            });
+        }
+        PromptEvent::AttachmentsValidated(accepted, mut rejected) => {
+            let lang = app.settings.language;
+            for item in accepted {
+                if app.prompt.attachments.iter().any(|a| a.path == item.path) {
+                    continue;
+                }
+                if app.prompt.attachments.len() >= MAX_ATTACHMENTS_PER_PROMPT {
+                    let note = lang
+                        .tr("Attachment limit reached ({} per prompt).")
+                        .replacen("{}", &MAX_ATTACHMENTS_PER_PROMPT.to_string(), 1);
+                    rejected.push(format!("{}: {note}", item.display_name()));
+                    continue;
+                }
+                app.prompt.attachments.push(item);
+            }
+            if !rejected.is_empty() {
+                let body = format!(
+                    "{}\n\n{}",
+                    lang.tr("Some files were not attached:"),
+                    rejected.join("\n")
+                );
+                return crate::app::conversation::show_message_dialog(
+                    rfd::MessageLevel::Warning,
+                    lang.tr("Attachment not added"),
+                    &body,
+                );
+            }
+        }
+        PromptEvent::RemoveAttachment(index) => {
+            if index < app.prompt.attachments.len() {
+                app.prompt.attachments.remove(index);
+            }
+        }
         PromptEvent::FileTreeReady(tree) => {
             app.prompt.files.tree = tree;
         }
@@ -158,6 +226,82 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         }
     }
     Task::none()
+}
+
+/// Files one prompt may carry; matches the request image allowance.
+const MAX_ATTACHMENTS_PER_PROMPT: usize = 20;
+
+/// Toggle one dropdown, collapsing the other so only one menu is open.
+fn toggle_dropdown(target: &mut bool, other: &mut bool) {
+    *target = !*target;
+    if *target {
+        *other = false;
+    }
+}
+
+/// Validate selected files off the UI thread. Images are fully decoded so an
+/// unsupported, corrupt, or oversized file never enters the prompt list.
+async fn validate_attachments(
+    kind: AttachmentKind,
+    paths: Vec<PathBuf>,
+) -> (Vec<UserAttachment>, Vec<String>) {
+    tokio::task::spawn_blocking(move || {
+        let mut accepted = Vec::new();
+        let mut rejected = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for path in paths {
+            let stored = path.to_string_lossy().into_owned();
+            if !seen.insert(stored.clone()) {
+                continue;
+            }
+            if kind == AttachmentKind::Text {
+                accepted.push(UserAttachment::new(kind, stored));
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&stored)
+                .to_string();
+            match crabot::tools::probe(Path::new(&stored), &name) {
+                Ok(_) => accepted.push(UserAttachment::new(kind, stored)),
+                Err(reason) => rejected.push(format!("{name}: {reason}")),
+            }
+        }
+        (accepted, rejected)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        (
+            Vec::new(),
+            vec![format!("attachment validation failed: {error}")],
+        )
+    })
+}
+
+/// File types offered by the attachment picker's text filter.
+const TEXT_EXTENSIONS: &[&str] = &[
+    "txt", "md", "markdown", "rs", "toml", "json", "yaml", "yml", "xml", "html", "css", "js",
+    "jsx", "ts", "tsx", "py", "go", "java", "c", "h", "cpp", "hpp", "cs", "rb", "php", "sh",
+    "bash", "zsh", "ps1", "bat", "cmd", "sql", "csv", "log", "ini", "cfg", "conf", "lock", "env",
+];
+
+/// Open the native picker filtered to the selected attachment type.
+async fn pick_attachment_files(kind: AttachmentKind, title: String) -> Option<Vec<PathBuf>> {
+    let dialog = rfd::AsyncFileDialog::new().set_title(title);
+    let dialog = match kind {
+        AttachmentKind::Text => dialog
+            .add_filter("Text files", TEXT_EXTENSIONS)
+            .add_filter("All files", &["*"]),
+        AttachmentKind::Image => dialog.add_filter("Image files", &crabot::tools::IMAGE_EXTENSIONS),
+    };
+    let files = dialog.pick_files().await?;
+    Some(
+        files
+            .into_iter()
+            .map(|file| file.path().to_path_buf())
+            .collect(),
+    )
 }
 
 // ── Workspace & prompt-file helpers ───────────────────────────────

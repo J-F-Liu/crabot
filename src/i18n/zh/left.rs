@@ -16,6 +16,25 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── user prompt area (user_prompt.rs) ──
     ("Workspace tree", "工作区文件树"),
     ("Recipes ▾", "配方 ▾"),
+    ("Attachment ▾", "附件 ▾"),
+    ("Attach text file", "附加文本文件"),
+    ("Attach image file", "附加图片文件"),
+    ("Attachment not added", "附件未添加"),
+    ("Attachment not sent", "附件未发送"),
+    ("Some files were not attached:", "以下文件未能附加："),
+    (
+        "Attachment limit reached ({} per prompt).",
+        "已达到每条提示 {} 个附件的上限。",
+    ),
+    ("Images not supported", "模型不支持图片"),
+    (
+        "The selected model does not accept image input. Remove the image attachments or choose a vision-capable model.",
+        "当前模型不支持图片输入，请移除图片附件或选择支持视觉的模型。",
+    ),
+    (
+        "{} is no longer available. Remove it and try again.",
+        "{} 已不存在，请移除后重试。",
+    ),
     ("Work mode", "工作模式"),
     // Work-mode names, shared by user_prompt / center_pane / prompt_recipes / export.
     ("Plan", "计划"),

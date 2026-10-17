@@ -9,8 +9,8 @@ use std::sync::{Mutex, OnceLock};
 use chrono::{Datelike, TimeZone};
 
 use crate::chat::{
-    Dialog, ToolResult, Turn, TurnBody, image_marker_paths, is_enveloped_error,
-    strip_error_envelope,
+    Dialog, ToolResult, Turn, TurnBody, attachment_marker_items, image_marker_paths,
+    is_enveloped_error, strip_error_envelope,
 };
 use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
 use crate::tools::todo::TodoItem;
@@ -198,8 +198,8 @@ impl Session {
         for msg in &session.history {
             match msg.role {
                 ChatRole::User => {
-                    // Image markers are plumbing, not user prompts.
-                    if image_marker_paths(msg).is_some() {
+                    // Image markers and attachment markers are plumbing, not prompts.
+                    if image_marker_paths(msg).is_some() || attachment_marker_items(msg).is_some() {
                         continue;
                     }
                     compacted.extend(answer.take());
@@ -399,6 +399,12 @@ impl Session {
                                     || matches(&c.args.to_string())
                             })
                     }
+                    TurnBody::Attachment(items) => {
+                        matches(&turn.timestamp)
+                            || items
+                                .iter()
+                                .any(|item| matches(item.display_name()) || matches(&item.path))
+                    }
                 };
                 if hit {
                     dialog_hits.push(SearchHit {
@@ -459,6 +465,11 @@ impl Session {
                 ChatRole::User => {
                     // Image markers ride along in history but are not user turns.
                     if image_marker_paths(msg).is_some() {
+                        continue;
+                    }
+                    // Attachment markers become their own display block.
+                    if let Some(items) = attachment_marker_items(msg) {
+                        push_or_new(&mut dialogs, Turn::attachment(items));
                         continue;
                     }
                     let parts = msg.content.parts();

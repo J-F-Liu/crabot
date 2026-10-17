@@ -51,6 +51,41 @@ fn tool_turns(session: &Session) -> usize {
 }
 
 #[test]
+fn rebuild_dialogs_renders_attachment_blocks() {
+    use crabot::chat::{attachment_marker_items, attachment_marker_message};
+    use crabot::user::{AttachmentKind, UserAttachment};
+
+    let attachments = vec![
+        UserAttachment::new(AttachmentKind::Text, "notes.txt"),
+        UserAttachment::new(AttachmentKind::Image, "screen.png"),
+    ];
+    let mut session = Session::new();
+    session.history.push(ChatMessage::user("hello"));
+    session
+        .history
+        .push(attachment_marker_message(&attachments).expect("non-empty attachments"));
+    session.history.push(ChatMessage::assistant("done"));
+    session.rebuild_dialogs();
+
+    assert_eq!(session.dialogs.len(), 1);
+    assert_eq!(session.dialogs[0].title, "hello");
+    let TurnBody::Attachment(items) = &session.dialogs[0].turns[1].body else {
+        panic!("attachment marker should render an attachment turn");
+    };
+    assert_eq!(items, &attachments);
+
+    // Attachment markers are plumbing: compaction keeps the prompt and answer.
+    let compacted = session.compact();
+    assert_eq!(compacted.history.len(), 2);
+    assert!(
+        compacted
+            .history
+            .iter()
+            .all(|msg| attachment_marker_items(msg).is_none())
+    );
+}
+
+#[test]
 fn search_covers_dialog_and_turn_headers() {
     use crabot::chat::{ToolCall, ToolResult, Turn};
     use crabot::session::{SearchHit, SearchHitKind};

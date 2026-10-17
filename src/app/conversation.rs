@@ -4,7 +4,7 @@ use crabot::HashSetExt;
 use crabot::chat::{Turn, TurnBody};
 use crabot::model::ModelConfig;
 use crabot::session::{Session, fix_history};
-use crabot::user::{UserPrompt, WorkMode};
+use crabot::user::{AttachmentKind, UserPrompt, WorkMode};
 use futures::{SinkExt, future::FutureExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -46,7 +46,11 @@ fn localized_header_title(app: &App) -> String {
 
 /// Show an async message dialog (the sync `show()` would block the UI thread).
 /// The mapped message lands in the no-op `Cancelled` arm of `ExportSessionHtmlDone`.
-fn show_message_dialog(level: rfd::MessageLevel, title: &str, description: &str) -> Task<Message> {
+pub(crate) fn show_message_dialog(
+    level: rfd::MessageLevel,
+    title: &str,
+    description: &str,
+) -> Task<Message> {
     Task::perform(
         rfd::AsyncMessageDialog::new()
             .set_level(level)
@@ -748,10 +752,52 @@ fn search_event(app: &mut App, event: crate::views::SearchEvent) -> Task<Message
 
 // ── send / resend ──────────────────────────────────────────────────
 
+/// Placeholder prompt used when the user sends only attachments.
+const ATTACHMENT_ONLY_PROMPT: &str = "Attached files:";
+
+/// Refuse files that disappeared after selection, and images the selected
+/// model cannot consume, without clearing the prompt.
+fn attachment_send_guard(app: &App, model: &ModelConfig) -> Option<Task<Message>> {
+    let lang = app.settings.language;
+    if let Some(missing) = app
+        .prompt
+        .attachments
+        .iter()
+        .find(|item| !Path::new(&item.path).is_file())
+    {
+        let body = lang
+            .tr("{} is no longer available. Remove it and try again.")
+            .replacen("{}", missing.display_name(), 1);
+        return Some(show_message_dialog(
+            rfd::MessageLevel::Warning,
+            lang.tr("Attachment not sent"),
+            &body,
+        ));
+    }
+    let has_image = app
+        .prompt
+        .attachments
+        .iter()
+        .any(|item| item.kind == AttachmentKind::Image);
+    if has_image
+        && let Some(info) = app.models.get_model_info(model)
+        && !info.vision
+    {
+        return Some(show_message_dialog(
+            rfd::MessageLevel::Warning,
+            lang.tr("Images not supported"),
+            lang.tr(
+                "The selected model does not accept image input. Remove the image attachments or choose a vision-capable model.",
+            ),
+        ));
+    }
+    None
+}
+
 pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
     let raw = app.prompt.user_prompt.text();
     let content = crabot::tools::normalize_newlines(&raw).into_owned();
-    if content.trim().is_empty() {
+    if content.trim().is_empty() && app.prompt.attachments.is_empty() {
         return Task::none();
     }
     let Some(model) = app.selected_model_config() else {
@@ -761,6 +807,16 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
         app.overlay.show_workspace_dialog = true;
         return Task::none();
     }
+    if let Some(task) = attachment_send_guard(app, &model) {
+        return task;
+    }
+
+    // Attachments alone still need a text part for providers and the dialog title.
+    let content = if content.trim().is_empty() {
+        ATTACHMENT_ONLY_PROMPT.to_string()
+    } else {
+        content
+    };
 
     // Idle send starts a new dialog: reset the snapshot scope so write/edit re-captures.
     if !app.conversation.viewing_is_streaming() {
@@ -770,7 +826,10 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
     // Capture everything needed before touching the input state.
     let mode = app.prompt.workmode_enabled.then_some(app.prompt.workmode);
     let with_tree = app.prompt.files.enabled;
+    let attachments = std::mem::take(&mut app.prompt.attachments);
     app.prompt.files.enabled = false;
+    app.prompt.attachment_menu_expanded = false;
+    app.prompt.recipe_dropdown_expanded = false;
     app.prompt.user_prompt.clear();
 
     let tab_number = app.conversation.viewing_tab_number();
@@ -781,7 +840,7 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
             app,
             app.conversation.viewing,
             &model,
-            UserPrompt::new(mode, content, None),
+            UserPrompt::new(mode, content, None).with_attachments(attachments),
         );
     }
 
@@ -797,6 +856,7 @@ pub(crate) fn send_prompt(app: &mut App) -> Task<Message> {
                 mode,
                 model,
                 files_tree,
+                attachments,
             }
         },
         |pending| Message::Conversation(ConversationEvent::SendWithFreshTree(Box::new(pending))),
@@ -826,6 +886,7 @@ pub(crate) struct PendingSend {
     mode: Option<WorkMode>,
     model: ModelConfig,
     files_tree: String,
+    attachments: Vec<crabot::user::UserAttachment>,
 }
 
 /// Complete a checked-path send once the off-thread tree scan lands.
@@ -836,12 +897,18 @@ fn continue_send_with_fresh_tree(app: &mut App, pending: PendingSend) -> Task<Me
         mode,
         model,
         files_tree,
+        attachments,
     } = pending;
     let Some(tab_pos) = app.conversation.tab_pos(tab_number) else {
         return Task::none();
     };
     let tree = (!files_tree.is_empty()).then_some(files_tree);
-    dispatch_prompt(app, tab_pos, &model, UserPrompt::new(mode, content, tree))
+    dispatch_prompt(
+        app,
+        tab_pos,
+        &model,
+        UserPrompt::new(mode, content, tree).with_attachments(attachments),
+    )
 }
 
 /// Set up a new dialog from `content` on the given tab and start streaming.

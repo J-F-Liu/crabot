@@ -14,12 +14,13 @@ use genai::chat::{
 
 use crate::app::session_state::SessionEvent;
 use crate::tools::{self, ToolRef};
-use crabot::chat::{ToolCall as ChatToolCall, image_marker_message};
+use crabot::chat::{ToolCall as ChatToolCall, attachment_marker_message, image_marker_message};
 use crabot::lock;
 use crabot::model::ModelInfo;
 use crabot::tools::{ImageAttachment, ImageBudget, RouteImages, set_route_images};
 use crabot::user::UserPrompt;
 
+mod attachment;
 mod client;
 mod image;
 mod stream;
@@ -46,7 +47,7 @@ pub struct SendConfig {
     pub user_prompt: Option<UserPrompt>,
     pub tools: Vec<ToolRef>,
     /// Shared slot for a user prompt injected during streaming (tool execution / thinking).
-    pub injected_prompt: Arc<Mutex<Option<String>>>,
+    pub injected_prompt: Arc<Mutex<Option<UserPrompt>>>,
     /// Receiver for the builtin ask tool's user response.
     pub ask_receiver: tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     /// Shared ask-tool deadline — the UI extends it to give more time.
@@ -83,19 +84,35 @@ async fn record_msg(
 /// `None`: nothing pending. `Some(true)`: injected — keep the agent loop
 /// running so a follow-up request answers it. `Some(false)`: stopped.
 async fn inject_user_prompt(
-    pending: &Mutex<Option<String>>,
+    pending: &Mutex<Option<UserPrompt>>,
     chat_req: &mut ChatRequest,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) -> Option<bool> {
     let prompt = lock(pending).take()?;
-    if !record_msg(chat_req, ChatMessage::user(prompt.clone()), on_event).await {
+    let user_msg = ChatMessage::user(MessageContent::from_parts(prompt.to_content_parts()));
+    if !record_msg(chat_req, user_msg, on_event).await {
         return Some(false);
     }
-    if !on_event(SessionEvent::UserPrompt(prompt)).await {
+    if !on_event(SessionEvent::UserPrompt(prompt.content.clone())).await {
         on_event(SessionEvent::Cancelled).await;
         return Some(false);
     }
+    if !record_attachments(chat_req, &prompt.attachments, on_event).await {
+        return Some(false);
+    }
     Some(true)
+}
+
+/// Record the attachment marker for a prompt's files, if it has any.
+async fn record_attachments(
+    chat_req: &mut ChatRequest,
+    attachments: &[crabot::user::UserAttachment],
+    on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
+) -> bool {
+    match attachment_marker_message(attachments) {
+        Some(marker) => record_msg(chat_req, marker, on_event).await,
+        None => true,
+    }
 }
 
 /// Stream an LLM interaction with a tool-execution loop.
@@ -159,6 +176,9 @@ pub async fn send_stream(
         let user_msg = ChatMessage::user(MessageContent::from_parts(prompt.to_content_parts()));
         // Record it immediately so the prompt survives a failed stream.
         if !record_msg(&mut chat_req, user_msg, on_event).await {
+            return;
+        }
+        if !record_attachments(&mut chat_req, &prompt.attachments, on_event).await {
             return;
         }
     }
@@ -230,6 +250,11 @@ pub async fn send_stream(
     for _ in 0..max_iterations {
         // Signal that we're connecting to the LLM.
         on_event(SessionEvent::PhaseChange(DialogPhase::LlmLoading)).await;
+
+        // Deliver text files and images attached by the user before the tail
+        // cache breakpoint is set. Text markers become text parts; image
+        // markers are handed to `attach_images` below.
+        attachment::attach_text_files(&mut chat_req.messages, &workspace).await;
 
         // Deliver any images read by tools before the tail cache breakpoint is
         // set (a merged tool turn replaces the marker message). The lock is

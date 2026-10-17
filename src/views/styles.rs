@@ -349,6 +349,19 @@ pub(crate) fn icon_button_style(theme: &Theme, status: button::Status) -> button
     style
 }
 
+/// Small chip holding one selected attachment above the send row.
+pub(crate) fn attachment_chip_style(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(color_surface().into()),
+        border: Border {
+            color: color_border(),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 // ── message bubble styles ─────────────────────────────────────────
 
 pub(crate) fn user_bubble_style(_theme: &Theme) -> container::Style {

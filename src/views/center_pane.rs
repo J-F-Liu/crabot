@@ -611,7 +611,46 @@ fn turn_block<'a>(
     match &msg.body {
         TurnBody::Tool(_) | TurnBody::Temp(_) => tool_turn_block(msg, i, ctx, streaming_ids),
         TurnBody::Text(_) => text_turn_block(msg, i, ctx),
+        TurnBody::Attachment(_) => attachment_turn_block(msg, ctx),
     }
+}
+
+/// Build a compact block listing the files attached to a prompt.
+fn attachment_turn_block<'a>(msg: &'a Turn, ctx: &TurnView<'a>) -> Element<'a, CenterPaneEvent> {
+    let TurnBody::Attachment(items) = &msg.body else {
+        unreachable!("attachment_turn_block called on non-Attachment turn")
+    };
+
+    let badge = role_badge(ctx.lang.tr("Attachment"), "User", ctx.font_scale, "");
+    let header = row![
+        badge,
+        Space::new().width(Length::Fill),
+        ctx.timestamp(&msg.timestamp),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let mut files = column![].spacing(4).width(Fill);
+    for item in items {
+        files = files.push(
+            row![
+                text(item.kind.icon()).size(13.0 * ctx.font_scale),
+                highlighted_text(
+                    item.display_name(),
+                    ctx.search_query,
+                    13.0 * ctx.font_scale,
+                    Font::DEFAULT,
+                ),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        );
+    }
+
+    wrap_bubble(
+        column![header, files].spacing(6).width(Fill),
+        user_bubble_style,
+    )
 }
 
 pub(crate) fn center_pane<'a>(

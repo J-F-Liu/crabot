@@ -12,6 +12,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Assistant", "助手"),
     ("System", "系统"),
     ("Tool - {name}", "工具 - {name}"),
+    ("Attachment", "附件"),
     // ── session header menu & info (center_pane.rs) ──
     ("Copy title", "复制标题"),
     ("Resend session", "重新发送"),

@@ -1,11 +1,34 @@
 //! Integration tests for the markdown, URL and emoji helpers in `crabot::chat`.
 
-use crabot::chat::{markdown_options, markdown_source, replace_emoji};
+use crabot::chat::{
+    attachment_marker_items, attachment_marker_message, markdown_options, markdown_source,
+    replace_emoji,
+};
+use crabot::user::{AttachmentKind, UserAttachment};
 use pulldown_cmark::{Event, Parser};
 
 /// Convenience wrapper: true if `text` contains at least one bare URL.
 fn has_url(text: &str) -> bool {
     markdown_source(text).1
+}
+
+#[test]
+fn attachment_markers_round_trip() {
+    let items = vec![
+        UserAttachment::new(AttachmentKind::Text, "notes/read me.txt"),
+        UserAttachment::new(AttachmentKind::Image, "shots/screen.png"),
+    ];
+    let msg = attachment_marker_message(&items).expect("non-empty attachments");
+    assert_eq!(attachment_marker_items(&msg), Some(items));
+    assert!(attachment_marker_message(&[]).is_none());
+}
+
+#[test]
+fn ordinary_user_messages_are_not_attachment_markers() {
+    assert!(attachment_marker_items(&genai::chat::ChatMessage::user("hello")).is_none());
+    assert!(
+        attachment_marker_items(&genai::chat::ChatMessage::user("[attachment: nope] x")).is_none()
+    );
 }
 
 #[test]

@@ -192,6 +192,7 @@ fn render_turn(
             render_tool_turn(turn, i, streaming_ids, ctx, out);
         }
         TurnBody::Text(_) => render_text_turn(turn, i, ctx, out),
+        TurnBody::Attachment(_) => render_attachment_turn(turn, ctx, out),
     }
 }
 
@@ -239,6 +240,33 @@ fn render_text_turn(turn: &Turn, i: usize, ctx: &RenderCtx<'_>, out: &mut String
         markdown_to_html(&tc.content)
     );
     w!(out, "</div>");
+}
+
+fn render_attachment_turn(turn: &Turn, ctx: &RenderCtx<'_>, out: &mut String) {
+    let TurnBody::Attachment(items) = &turn.body else {
+        unreachable!("render_attachment_turn called on non-Attachment turn")
+    };
+
+    w!(out, "<div class=\"bubble user attachment\">");
+    w!(out, "<div class=\"turn-header\">");
+    render_turn_header(
+        ctx.lang.tr("Attachment"),
+        "user",
+        None,
+        &turn.timestamp,
+        out,
+    );
+    w!(out, "</div>");
+    w!(out, "<ul class=\"attachment-list\">");
+    for item in items {
+        w!(
+            out,
+            "<li><span class=\"attachment-icon\">{}</span>{}</li>",
+            item.kind.icon(),
+            escape_html(item.display_name())
+        );
+    }
+    w!(out, "</ul></div>");
 }
 
 fn render_badge(role_label: &str, badge_class: &str, out: &mut String) {
@@ -723,6 +751,9 @@ body {
 .bubble.user { background: var(--user-bg); }
 .bubble.assistant, .bubble.system { background: var(--assistant-bg); }
 .bubble.tool { background: var(--tool-bg); border-radius: 8px; }
+.attachment-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.attachment-list li { font-size: 13px; }
+.attachment-icon { margin-right: 6px; }
 
 .turn-header { display: flex; align-items: center; gap: 6px; }
 .turn-header .indicator { color: var(--primary); font-size: 10px; }

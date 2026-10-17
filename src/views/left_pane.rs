@@ -57,6 +57,8 @@ pub(crate) fn left_pane<'a>(
             .unwrap_or(&[])
     };
     let recipe_dropdown_expanded: bool = prompt.recipe_dropdown_expanded;
+    let attachment_menu_expanded: bool = prompt.attachment_menu_expanded;
+    let attachments: &[crabot::user::UserAttachment] = &prompt.attachments;
     let streaming: DialogPhase = conversation.viewing().session_state.phase;
     let session_options: &[SessionEntry] = &conversation.session_list;
     let current_session_id: &str = &conversation.viewing().session.id;
@@ -109,6 +111,8 @@ pub(crate) fn left_pane<'a>(
                         workmode_enabled,
                         prompt_recipes,
                         recipe_dropdown_expanded,
+                        attachments,
+                        attachment_menu_expanded,
                         files,
                         workspace_set,
                         lang,

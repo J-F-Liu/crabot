@@ -19,7 +19,9 @@ use crate::views::ASK_INPUT;
 use crate::views::scroll_to_end;
 use crate::views::search_bar::SearchState;
 use crabot::HashSetExt;
-use crabot::chat::{TextContent, ToolCall, ToolResult, Turn, TurnBody, replace_emoji};
+use crabot::chat::{
+    TextContent, ToolCall, ToolResult, Turn, TurnBody, attachment_marker_items, replace_emoji,
+};
 use crabot::lock;
 use crabot::session::Session;
 use crabot::user::{UserPrompt, WorkMode};
@@ -42,7 +44,7 @@ pub(crate) struct SessionState {
     /// Cancellation token to stop an in-progress stream early.
     pub(crate) cancel_token: CancellationToken,
     /// Shared slot for a raw user prompt injected during streaming.
-    pub(crate) injected_prompt: Arc<Mutex<Option<String>>>,
+    pub(crate) injected_prompt: Arc<Mutex<Option<UserPrompt>>>,
     /// Parked full `UserPrompt` (work mode, workspace tree) to be dispatched
     /// later when this tab is no longer blocked by another tab's stream.
     pub(crate) pending_prompt: Option<UserPrompt>,
@@ -135,7 +137,7 @@ impl SessionState {
     /// interrupt injection into the ongoing stream on this tab.
     pub(crate) fn inject_prompt(&mut self, prompt: UserPrompt) {
         if let Ok(mut pending) = self.injected_prompt.lock() {
-            *pending = Some(prompt.content.clone());
+            *pending = Some(prompt.clone());
         }
         // for display on UI
         self.pending_prompt = Some(prompt);
@@ -392,6 +394,18 @@ pub(crate) fn update(
                 }
                 return Task::none();
             }
+            // Attachment markers become their own user-facing block. History
+            // keeps the marker; file contents are materialized per request.
+            if let Some(items) = attachment_marker_items(&msg) {
+                session.push_turn(Turn::attachment(items));
+                session.history.push(msg);
+                let _ = session.save();
+                return if viewing {
+                    maybe_scroll_to_end(&state.auto_scroll)
+                } else {
+                    Task::none()
+                };
+            }
             // Only non-empty assistant messages are emitted, so record as-is.
             backfill_assistant_turn(state, session, &msg);
             session.history.push(msg);
@@ -559,10 +573,19 @@ fn clear_pending_with_notice(state: &mut SessionState, session: &mut Session) {
     if let Ok(mut pending) = state.injected_prompt.lock()
         && let Some(prompt) = pending.take()
     {
-        let msg = format!(
+        let mut msg = format!(
             "⚠️ Stream ended — the following prompt was **not executed**:\n\n> {}",
-            prompt
+            prompt.content
         );
+        if !prompt.attachments.is_empty() {
+            let files = prompt
+                .attachments
+                .iter()
+                .map(|item| item.display_name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            msg.push_str(&format!("\n>\n> Attachments: {files}"));
+        }
         session.push_turn(Turn::assistant(msg, None));
     }
     state.pending_prompt = None;

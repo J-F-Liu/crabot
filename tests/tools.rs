@@ -836,6 +836,173 @@ fn opaque_sources_encode_as_jpeg() {
     assert_eq!(encoded.media_type, "image/jpeg");
 }
 
+/// A format the provider does not accept (BMP) is transcoded rather than
+/// shipped under an unsupported media type.
+#[test]
+fn bmp_sources_are_transcoded_for_the_wire() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("encode_bmp").unwrap();
+    let path = tmp.join("shot.bmp");
+    image::RgbImage::from_pixel(8, 6, image::Rgb([10, 20, 30]))
+        .save_with_format(&path, image::ImageFormat::Bmp)
+        .unwrap();
+
+    let budget = ImageBudget::from_limits(&ToolLimits::new());
+    let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
+    assert_ne!(encoded.media_type, "image/bmp");
+    assert!(
+        matches!(
+            encoded.media_type.as_str(),
+            "image/jpeg" | "image/webp" | "image/png"
+        ),
+        "{}",
+        encoded.media_type
+    );
+    assert_eq!((encoded.width, encoded.height), (8, 6));
+}
+
+/// A clean image within every budget keeps its exact source bytes.
+#[test]
+fn clean_images_pass_through_byte_identically() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("encode_passthrough").unwrap();
+    let path = tmp.join("clean.png");
+    image::RgbaImage::from_fn(32, 16, |x, y| {
+        image::Rgba([(x * 8) as u8, (y * 16) as u8, 40, 255])
+    })
+    .save(&path)
+    .unwrap();
+
+    let source = fs::read(&path).unwrap();
+    let budget = ImageBudget::from_limits(&ToolLimits::new());
+    let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
+    assert_eq!(encoded.media_type, "image/png");
+    assert_eq!(encoded.data, source);
+}
+
+/// A 16-bit source is re-encoded to an 8-bit wire format instead of being
+/// passed through at a depth providers may not accept.
+#[test]
+fn high_depth_sources_are_reencoded_to_eight_bit() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("encode_16bit").unwrap();
+    let path = tmp.join("deep.png");
+    image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::from_pixel(8, 8, image::Rgb([1, 2, 3]))
+        .save(&path)
+        .unwrap();
+
+    let budget = ImageBudget::from_limits(&ToolLimits::new());
+    let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
+    assert_eq!(encoded.media_type, "image/jpeg");
+}
+
+/// Transparent images that exceed the byte target shrink until they fit
+/// instead of being silently dropped.
+#[test]
+fn transparent_sources_shrink_to_fit_the_byte_budget() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("encode_alpha_budget").unwrap();
+    let path = tmp.join("cutout.png");
+    image::RgbaImage::from_fn(256, 256, |x, y| {
+        let n = (u64::from(x) * 0x9E37_79B9) ^ (u64::from(y) * 0x85EB_CA6B) ^ 0xC2B2_AE35_3C6E_F0A1;
+        image::Rgba([n as u8, (n >> 8) as u8, (n >> 16) as u8, (n >> 24) as u8])
+    })
+    .save(&path)
+    .unwrap();
+
+    let budget = ImageBudget {
+        max_pixels: 1_000_000,
+        max_side: 1024,
+        max_bytes: 4 * 1024,
+    };
+    let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
+    assert!(encoded.data.len() <= budget.max_bytes);
+    assert!(
+        matches!(encoded.media_type.as_str(), "image/webp" | "image/png"),
+        "{}",
+        encoded.media_type
+    );
+    assert!(encoded.width < 256 || encoded.height < 256);
+}
+
+/// A source past the admission side limit is refused before decoding.
+#[test]
+fn probe_rejects_images_over_the_source_side_limit() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("probe_side").unwrap();
+    let path = tmp.join("wide.png");
+    image::RgbImage::from_pixel(8193, 1, image::Rgb([1, 2, 3]))
+        .save(&path)
+        .unwrap();
+
+    let error = crabot::tools::probe(&path, "wide.png").unwrap_err();
+    assert!(error.contains("8192"), "{error}");
+}
+
+/// EXIF orientation is applied before reporting dimensions and encoding.
+#[test]
+fn exif_orientation_is_applied_before_encoding() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("encode_orientation").unwrap();
+    let path = tmp.join("rotated.jpg");
+    fs::write(&path, jpeg_with_orientation(8, 4, 6)).unwrap();
+
+    let probe = crabot::tools::probe(&path, "rotated.jpg").unwrap();
+    assert_eq!((probe.width, probe.height), (4, 8));
+
+    let budget = ImageBudget::from_limits(&ToolLimits::new());
+    let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
+    assert_eq!((encoded.width, encoded.height), (4, 8));
+}
+
+/// A minimal JPEG carrying EXIF orientation 6 (rotate 90 degrees clockwise).
+fn jpeg_with_orientation(width: u32, height: u32, orientation: u8) -> Vec<u8> {
+    let mut jpeg = Vec::new();
+    image::RgbImage::from_pixel(width, height, image::Rgb([200, 10, 10]))
+        .write_to(
+            &mut std::io::Cursor::new(&mut jpeg),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+    // Little-endian TIFF with one IFD0 entry: orientation (tag 0x0112).
+    let mut tiff = vec![
+        0x49,
+        0x49,
+        0x2A,
+        0x00, // "II*\0"
+        8,
+        0,
+        0,
+        0, // IFD0 offset
+        1,
+        0, // one entry
+        0x12,
+        0x01,
+        3,
+        0,
+        1,
+        0,
+        0,
+        0,
+        orientation,
+        0,
+        0,
+        0, // tag/type/count/value
+        0,
+        0,
+        0,
+        0, // next IFD
+    ];
+    let payload_len = tiff.len() + 6;
+    let mut app1 = vec![0xFF, 0xE1, 0, 0];
+    app1[2] = ((payload_len + 2) >> 8) as u8;
+    app1[3] = (payload_len + 2) as u8;
+    app1.extend_from_slice(b"Exif\0\0");
+    app1.append(&mut tiff);
+    let _ = jpeg.splice(2..2, app1);
+    jpeg
+}
+
 /// Transparency keeps the alpha channel by routing through WebP.
 #[test]
 fn transparent_sources_encode_as_webp() {

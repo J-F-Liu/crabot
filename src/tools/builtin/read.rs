@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 use crate::tools::{
     CANCEL_REASON, ImageAttachment, ImageBudget, RouteImages, Tool, arg_u64, current_tab_number,
-    make_workspace_relative, media_type_for_extension, probe, required_path, resolve_path,
-    route_images, sniff_file, target_dimensions, tool_limits,
+    make_workspace_relative, media_type_for_extension, prepare_for_request, required_path,
+    resolve_path, route_images, sniff_file, tool_limits,
 };
 
 pub struct ReadTool;
@@ -92,7 +92,7 @@ enum ReadImage {
     Attached(ImageAttachment),
     /// The calling route cannot consume images at all.
     Refused(String),
-    /// The file claims to be an image, but the bytes don't decode as one.
+    /// The file claims to be an image, but it cannot be decoded or prepared.
     Undecodable(String),
 }
 
@@ -116,34 +116,27 @@ fn read_image(args: &Value, workspace: &Path) -> Option<ReadImage> {
         return Some(ReadImage::Refused(reason));
     }
 
-    let facts = match probe(&file_path, &display) {
-        Ok(facts) => facts,
-        Err(reason) => return Some(ReadImage::Undecodable(reason)),
-    };
-    if facts.width == 0 || facts.height == 0 {
-        return None;
-    }
-
-    // Report what the request will really carry, so the coordinate advice the
-    // model derives from it stays exact.
+    // Report exactly what the request will carry, so the coordinate advice the
+    // model derives from it stays exact even when the encoder must shrink
+    // below the nominal target to fit the byte budget.
     let budget = route
         .map(|route| route.budget)
         .unwrap_or_else(|| ImageBudget::from_limits(&tool_limits()));
-    let (width, height) = target_dimensions(facts.width, facts.height, &budget);
-    let downscaled = (width, height) != (facts.width, facts.height);
+    let prepared = match prepare_for_request(&file_path, &display, &budget) {
+        Ok(prepared) => prepared,
+        Err(reason) => return Some(ReadImage::Undecodable(reason)),
+    };
+    let (width, height) = (prepared.encoded.width, prepared.encoded.height);
+    let downscaled = (width, height) != (prepared.probe.width, prepared.probe.height);
     let image = ImageAttachment {
         path: display,
-        media_type: facts.media_type.to_string(),
+        media_type: prepared.encoded.media_type,
         width,
         height,
-        bytes: facts.bytes,
-        source_width: downscaled.then_some(facts.width),
-        source_height: downscaled.then_some(facts.height),
+        bytes: prepared.probe.bytes,
+        source_width: downscaled.then_some(prepared.probe.width),
+        source_height: downscaled.then_some(prepared.probe.height),
     };
-
-    // Byte budget: an oversized file is still attached — the encoder
-    // re-compresses it without touching dimensions, so this report stays
-    // exact; the request builder drops it only if the ladder cannot fit it.
     Some(ReadImage::Attached(image))
 }
 

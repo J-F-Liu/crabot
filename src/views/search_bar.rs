@@ -244,6 +244,7 @@ pub(crate) fn expand_result(
                     changed
                 }
                 TurnBody::Temp(_) => false,
+                TurnBody::Attachment(_) => false,
             };
             return dialog_changed || turn_changed;
         }

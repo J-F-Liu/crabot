@@ -16,7 +16,7 @@ use crabot::model::{self, ModelConfig, ModelList};
 use crabot::settings::{Appearance, FONT_SCALE_MAX, FONT_SCALE_MIN};
 use crabot::setup;
 use crabot::tools;
-use crabot::user::{UserPrompt, WorkMode};
+use crabot::user::{AttachmentKind, UserAttachment, UserPrompt, WorkMode};
 use prompt::{FilepathEntry, TOOLS};
 
 use crate::views::{
@@ -108,6 +108,10 @@ pub(crate) struct PromptWorkspaceState {
     pub(crate) workmode: WorkMode,
     pub(crate) workmode_enabled: bool,
     pub(crate) recipe_dropdown_expanded: bool,
+    /// Files picked for the next prompt, cleared after sending.
+    pub(crate) attachments: Vec<UserAttachment>,
+    /// Whether the attachment menu is open.
+    pub(crate) attachment_menu_expanded: bool,
     /// Whether the skills multi-select dropdown is open.
     pub(crate) skills_menu_expanded: bool,
 }
@@ -518,6 +522,18 @@ pub(crate) enum PromptEvent {
     ToggleRecipeDropdown,
     SelectRecipe(usize),
     DismissRecipeDropdown,
+    /// Open/close the attachment type menu.
+    ToggleAttachmentMenu,
+    /// Dismiss the attachment menu (outside click / Escape).
+    DismissAttachmentMenu,
+    /// Open the file picker for the given attachment type.
+    AttachFile(AttachmentKind),
+    /// Returned by the attachment file picker (None when cancelled).
+    AttachmentDialogResult(AttachmentKind, Option<Vec<PathBuf>>),
+    /// Returned by the attachment validator: accepted files and rejection reasons.
+    AttachmentsValidated(Vec<UserAttachment>, Vec<String>),
+    /// Remove the selected attachment at the given index.
+    RemoveAttachment(usize),
     SendPrompt,
 }
 
@@ -789,6 +805,8 @@ impl App {
             workmode: WorkMode::default_mode(),
             workmode_enabled: true,
             recipe_dropdown_expanded: false,
+            attachments: Vec::new(),
+            attachment_menu_expanded: false,
             skills_menu_expanded: false,
         };
 

@@ -3,13 +3,13 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::LazyLock;
 
-use genai::chat::{ChatMessage, ChatRole};
+use genai::chat::{ChatMessage, ChatRole, ContentPart};
 use gh_emoji::Replacer;
 use linkify::{LinkFinder, LinkKind};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde_json::Value;
 
-use crate::user::WorkMode;
+use crate::user::{AttachmentKind, UserAttachment, WorkMode};
 
 // ── TextContent ──────────────────────────────────────────────────────
 
@@ -449,6 +449,54 @@ pub fn image_marker_paths(msg: &ChatMessage) -> Option<Vec<&str>> {
     (!paths.is_empty()).then_some(paths)
 }
 
+// ── Attachment markers ──────────────────────────────────────────────
+
+/// Prefix of an attachment-reference line, e.g. `[attachment: text] src/main.rs`.
+pub const ATTACHMENT_MARKER_PREFIX: &str = "[attachment: ";
+
+/// History message referencing the files attached to one prompt. Only paths
+/// are stored; file contents and image bytes are materialized per request.
+pub fn attachment_marker_message(attachments: &[UserAttachment]) -> Option<ChatMessage> {
+    (!attachments.is_empty()).then(|| ChatMessage::user(attachment_marker_text(attachments)))
+}
+
+/// Marker text for a set of attachments, one file per line.
+pub fn attachment_marker_text(attachments: &[UserAttachment]) -> String {
+    attachments
+        .iter()
+        .map(|item| {
+            // Line breaks would split one attachment into two marker lines.
+            let path = item.path.replace(['\n', '\r'], " ");
+            format!("{ATTACHMENT_MARKER_PREFIX}{}] {path}", item.kind.marker())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Attachments referenced by an attachment-marker message; `None` for any
+/// other message.
+pub fn attachment_marker_items(msg: &ChatMessage) -> Option<Vec<UserAttachment>> {
+    if msg.role != ChatRole::User {
+        return None;
+    }
+    let [ContentPart::Text(text)] = msg.content.parts().as_slice() else {
+        return None;
+    };
+    let mut items = Vec::new();
+    for line in text.lines() {
+        let rest = line.strip_prefix(ATTACHMENT_MARKER_PREFIX)?;
+        let (kind, path) = rest.split_once("] ")?;
+        if path.is_empty() {
+            return None;
+        }
+        items.push(UserAttachment {
+            kind: AttachmentKind::from_marker(kind)?,
+            path: path.to_string(),
+        });
+    }
+    (!items.is_empty()).then_some(items)
+}
+
 // ── ToolCall ─────────────────────────────────────────────────────────
 
 /// A pending tool call that hasn't produced a result yet.
@@ -470,6 +518,8 @@ pub enum TurnBody {
     Tool(Vec<ToolResult>),
     /// Pending tool calls — execution in progress, no results yet.
     Temp(Vec<ToolCall>),
+    /// User-selected files travelling with a prompt.
+    Attachment(Vec<UserAttachment>),
 }
 
 // ── Turn ────────────────────────────────────────────────────────────
@@ -625,6 +675,15 @@ impl Turn {
         Self {
             role: ChatRole::Tool,
             body: TurnBody::Temp(calls),
+            timestamp: String::new(),
+        }
+    }
+
+    /// A user attachment block; the text prompt (if any) stays a separate turn.
+    pub fn attachment(items: Vec<UserAttachment>) -> Self {
+        Self {
+            role: ChatRole::User,
+            body: TurnBody::Attachment(items),
             timestamp: String::new(),
         }
     }
