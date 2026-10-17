@@ -52,7 +52,7 @@ pub use registry::{ToolRegistry, build_tools, unknown_tool_message};
 // ── paths ───────────────────────────────────────────────────────────
 pub use paths::{
     arg_path, convert_path_list_to_posix, convert_path_to_unix_style, normalize_newlines,
-    resolve_path, resolve_path_partial, tmp_host_dir,
+    read_text_attachment, read_text_limited, resolve_path, resolve_path_partial, tmp_host_dir,
 };
 pub(crate) use paths::{
     arg_str, arg_u64, convert_path_list_to_native, make_workspace_relative, required_path,
@@ -65,9 +65,9 @@ pub(crate) use paths::{
 
 // ── image ───────────────────────────────────────────────────────────
 pub use image::{
-    EncodedImage, IMAGE_EXTENSIONS, ImageBudget, PreparedImage, RouteImages, encode_for_request,
-    media_type_for_extension, prepare_for_request, probe, route_images, set_route_images,
-    sniff_file, target_dimensions,
+    EncodedImage, IMAGE_EXTENSIONS, ImageBudget, PreparedImage, PreviewImage, RouteImages,
+    decode_for_preview, encode_for_request, media_type_for_extension, prepare_for_request, probe,
+    route_images, set_route_images, sniff_file, target_dimensions,
 };
 
 // ── normalize ───────────────────────────────────────────────────────

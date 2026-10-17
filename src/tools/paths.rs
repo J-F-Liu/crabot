@@ -1,6 +1,11 @@
 //! Text and path helpers shared by the built-in tools.
 
+use std::io::Read;
+use std::path::Path;
+
 use serde_json::Value;
+
+use super::limits::tool_limits;
 
 /// Convert Windows-style `\r\n` line endings to Unix `\n`.
 pub fn normalize_newlines(s: &str) -> std::borrow::Cow<'_, str> {
@@ -8,6 +13,33 @@ pub fn normalize_newlines(s: &str) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Borrowed(s);
     }
     std::borrow::Cow::Owned(s.replace("\r\n", "\n"))
+}
+
+/// Read up to `limit` text bytes, rejecting binary input and marking truncation.
+pub fn read_text_limited(path: &Path, limit: usize) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    file.take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|err| err.to_string())?;
+    let truncated = bytes.len() > limit;
+    if truncated {
+        bytes.truncate(limit);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if text.contains('\0') {
+        return Err("the file contains binary data".into());
+    }
+    let mut text = normalize_newlines(&text).into_owned();
+    if truncated {
+        text.push_str(&format!("\n\n[… attached file truncated at {limit} bytes]"));
+    }
+    Ok(text)
+}
+
+/// Read a text attachment under the configured byte limit.
+pub fn read_text_attachment(path: &Path) -> Result<String, String> {
+    read_text_limited(path, tool_limits().read_max_bytes.max(1))
 }
 
 pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {

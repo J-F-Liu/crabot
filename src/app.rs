@@ -39,7 +39,7 @@ pub(crate) mod snapshot;
 mod subscription;
 mod tool_state;
 
-pub(crate) use session_tab::{SessionEndStatus, SessionTab};
+pub(crate) use session_tab::{AttachmentPreview, PreviewContent, SessionEndStatus, SessionTab};
 
 // ── App ───────────────────────────────────────────────────────────
 
@@ -564,6 +564,10 @@ pub(crate) enum ConversationEvent {
     /// be injected or launched.
     SendWithFreshTree(Box<conversation::PendingSend>),
     ToggleTurnExpand(usize, usize),
+    /// Toggle the inline preview for a file attachment.
+    ToggleAttachmentPreview(String, AttachmentKind),
+    /// A decoded preview for (tab number, attachment path, request id).
+    AttachmentPreviewLoaded(usize, String, u64, Result<PreviewContent, String>),
     ToggleDialogExpand(usize),
     ToggleAllDialogsExpand,
     SessionPickerFocused,

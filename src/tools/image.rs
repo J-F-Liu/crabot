@@ -227,33 +227,20 @@ pub fn sniff_file(path: &Path) -> Option<&'static str> {
     sniff_media_type(&read_signature(path).ok()?)
 }
 
-/// The media type to attach `path` as: its extension when it names an image,
-/// otherwise whatever the bytes prove. A declared type the bytes contradict is
-/// an error — the provider would be handed the wrong MIME.
-fn resolve_media_type(path: &Path, head: &[u8], display: &str) -> Result<&'static str, String> {
-    let declared = media_type_for_extension(path);
-    let sniffed = sniff_media_type(head);
-    match (declared, sniffed) {
-        (Some(declared), Some(sniffed)) if declared != sniffed => {
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            Err(format!(
-                "Failed to decode image {display}: the .{ext} extension declares {declared}, \
-                 but the bytes are {sniffed}; rename the file to match its actual format, \
-                 or convert it to PNG/JPEG/WebP"
-            ))
-        }
-        (_, None) => Err(format!(
+/// The MIME type proven by a file's leading bytes.
+fn resolve_media_type(head: &[u8], display: &str) -> Result<&'static str, String> {
+    sniff_media_type(head).ok_or_else(|| {
+        format!(
             "Failed to decode image {display}: the bytes are not a PNG/JPEG/WebP/GIF/BMP image; \
              the file may be truncated or corrupt"
-        )),
-        (declared, sniffed) => Ok(declared.or(sniffed).expect("one arm is Some")),
-    }
+        )
+    })
 }
 
 /// Facts a full decode proves about an image file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageProbe {
-    /// Media type agreed on by the extension and the bytes.
+    /// Media type proven by the file's leading bytes.
     pub media_type: &'static str,
     /// Intrinsic width after EXIF orientation — the width a viewer perceives.
     pub width: u32,
@@ -303,8 +290,7 @@ impl Source {
         let data =
             std::fs::read(path).map_err(|e| format!("Failed to read image {display}: {e}"))?;
         let bytes = data.len() as u64;
-        let media_type =
-            resolve_media_type(path, &data[..data.len().min(SIGNATURE_BYTES)], display)?;
+        let media_type = resolve_media_type(&data[..data.len().min(SIGNATURE_BYTES)], display)?;
 
         let mut reader = ImageReader::new(Cursor::new(data.as_slice()))
             .with_guessed_format()
@@ -672,4 +658,45 @@ fn shrink_dimensions(width: u32, height: u32) -> (u32, u32) {
     let scale = 0.75f64;
     let next = |value: u32| ((f64::from(value) * scale).floor() as u32).max(1);
     (next(width), next(height))
+}
+
+// ── Preview decoding ─────────────────────────────────────────────────
+
+/// Decoded RGBA pixels for an in-app image preview.
+#[derive(Debug)]
+pub struct PreviewImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// Decode and orient `path` for display within `max_side`/`max_pixels`.
+pub fn decode_for_preview(
+    path: &Path,
+    max_side: u32,
+    max_pixels: u64,
+) -> Result<PreviewImage, String> {
+    let display = path.display().to_string();
+    let source = Source::load(path, &display)?;
+    let (width, height) = target_dimensions(
+        source.image.width(),
+        source.image.height(),
+        &ImageBudget {
+            max_pixels: max_pixels.max(1),
+            max_side: max_side.max(1),
+            max_bytes: usize::MAX,
+        },
+    );
+    let image = if (width, height) == (source.image.width(), source.image.height()) {
+        source.image
+    } else {
+        source
+            .image
+            .resize_exact(width, height, FilterType::Triangle)
+    };
+    Ok(PreviewImage {
+        width,
+        height,
+        rgba: image.to_rgba8().into_raw(),
+    })
 }

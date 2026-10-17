@@ -688,17 +688,17 @@ fn read_reports_the_downscaled_size_and_coordinate_advice() {
     init_tool_limits(ToolLimits::new());
 }
 
-/// A file whose bytes disagree with its extension is refused with the fix,
-/// rather than shipped under the wrong MIME type.
+/// Bytes may disagree with the extension; the sniffed type wins.
 #[test]
-fn read_rejects_an_extension_that_contradicts_the_bytes() {
+fn read_uses_the_actual_type_when_the_extension_contradicts() {
     let _limits = crabot::lock(&LIMITS);
     let tmp = TempDir::new("read_mismatch").unwrap();
     tmp.write("shot.jpg", &png_bytes(4, 4)).unwrap();
 
-    let result = try_read("shot.jpg".into(), &tmp).unwrap_err();
-    assert!(result.contains("declares image/jpeg"), "{result}");
-    assert!(result.contains("bytes are image/png"), "{result}");
+    let (result, attached) = read("shot.jpg".into(), &tmp);
+    assert_eq!(attached.len(), 1, "{result}");
+    assert_eq!(attached[0].media_type, "image/png");
+    assert!(result.contains("image/png"), "{result}");
 }
 
 /// An image format with no extension is recognized from its own bytes.
@@ -953,6 +953,44 @@ fn exif_orientation_is_applied_before_encoding() {
     let budget = ImageBudget::from_limits(&ToolLimits::new());
     let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
     assert_eq!((encoded.width, encoded.height), (4, 8));
+}
+
+/// Preview decoding applies EXIF orientation and respects the display budget.
+#[test]
+fn preview_decoding_orients_and_bounds_pixels() {
+    let _limits = crabot::lock(&LIMITS);
+    let tmp = TempDir::new("preview_decode").unwrap();
+    let path = tmp.join("rotated.jpg");
+    fs::write(&path, jpeg_with_orientation(8, 4, 6)).unwrap();
+
+    let preview = crabot::tools::decode_for_preview(&path, 1024, 1_000_000).unwrap();
+    assert_eq!((preview.width, preview.height), (4, 8));
+    assert_eq!(preview.rgba.len(), 4 * 8 * 4);
+
+    let small = crabot::tools::decode_for_preview(&path, 4, 16).unwrap();
+    assert_eq!((small.width, small.height), (2, 4));
+    assert_eq!(small.rgba.len(), 2 * 4 * 4);
+}
+
+/// Bounded text reads normalize newlines, mark truncation, and reject binary data.
+#[test]
+fn text_preview_read_is_bounded_and_rejects_binary() {
+    let tmp = TempDir::new("read_text_preview").unwrap();
+    let path = tmp.join("note.txt");
+
+    fs::write(&path, "a\r\nb\r\n").unwrap();
+    assert_eq!(
+        crabot::tools::read_text_limited(&path, 1024).unwrap(),
+        "a\nb\n"
+    );
+
+    fs::write(&path, "0123456789").unwrap();
+    let truncated = crabot::tools::read_text_limited(&path, 4).unwrap();
+    assert!(truncated.starts_with("0123"), "{truncated}");
+    assert!(truncated.contains("truncated at 4 bytes"), "{truncated}");
+
+    fs::write(&path, b"a\0b").unwrap();
+    assert!(crabot::tools::read_text_limited(&path, 1024).is_err());
 }
 
 /// A minimal JPEG carrying EXIF orientation 6 (rotate 90 degrees clockwise).

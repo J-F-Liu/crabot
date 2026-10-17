@@ -1,4 +1,4 @@
-use iced::{Task, widget};
+use iced::{Task, widget, window};
 
 use crabot::HashSetExt;
 use crabot::chat::{Turn, TurnBody};
@@ -14,9 +14,13 @@ use tokio_util::sync::CancellationToken;
 use crate::app::session_state::{self, AskAction, SessionEvent, SpawnKind, SuccessorSpawn};
 use crate::app::session_tab::SessionTab;
 use crate::app::snapshot;
-use crate::app::{App, ConversationEvent, FocusedTarget, Message, TabBarScrollState};
+use crate::app::{
+    App, AttachmentPreview, ConversationEvent, FocusedTarget, Message, PreviewContent,
+    TabBarScrollState,
+};
 use crate::llm::DialogPhase;
 use crate::tools::process;
+use crate::views::center_pane::{PREVIEW_MAX_HEIGHT, PREVIEW_MAX_WIDTH};
 use crate::views::export;
 use crate::views::session_list::{SessionEntry, insert_listed_entry};
 use crate::views::session_tabs::TAB_SCROLL_STEP;
@@ -44,25 +48,32 @@ fn localized_header_title(app: &App) -> String {
     }
 }
 
-/// Show an async message dialog (the sync `show()` would block the UI thread).
-/// The mapped message lands in the no-op `Cancelled` arm of `ExportSessionHtmlDone`.
+/// Show an async, window-parented message dialog; the result is ignored.
 pub(crate) fn show_message_dialog(
     level: rfd::MessageLevel,
     title: &str,
     description: &str,
 ) -> Task<Message> {
-    Task::perform(
-        rfd::AsyncMessageDialog::new()
-            .set_level(level)
-            .set_title(title)
-            .set_description(description)
-            .show(),
-        |_| {
-            Message::Conversation(ConversationEvent::ExportSessionHtmlDone(
-                export::ExportOutcome::Cancelled,
-            ))
-        },
-    )
+    let title = title.to_owned();
+    let description = description.to_owned();
+    window::latest()
+        .then(move |id| {
+            let dialog = rfd::AsyncMessageDialog::new()
+                .set_level(level)
+                .set_title(title.as_str())
+                .set_description(description.as_str());
+            match id {
+                Some(id) => window::run(id, move |window| dialog.set_parent(window)),
+                None => Task::done(dialog),
+            }
+        })
+        .then(|dialog| {
+            Task::perform(dialog.show(), |_| {
+                Message::Conversation(ConversationEvent::ExportSessionHtmlDone(
+                    export::ExportOutcome::Cancelled,
+                ))
+            })
+        })
 }
 
 /// Scroll the tab bar by `delta` pixels, clamping to valid range.
@@ -181,6 +192,26 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             tab.search.invalidate_offsets();
             app.layout.focused = None;
         }
+        ConversationEvent::ToggleAttachmentPreview(path, kind) => {
+            return toggle_attachment_preview(app, path, kind);
+        }
+        ConversationEvent::AttachmentPreviewLoaded(number, path, generation, result) => {
+            let Some(pos) = app.conversation.tab_pos(number) else {
+                // Tab closed while loading — drop the stale preview.
+                return Task::none();
+            };
+            let tab = &mut app.conversation.session_tabs[pos];
+            // A newer request for the same path wins; drop older results.
+            if matches!(
+                tab.attachment_previews.get(&path),
+                Some(AttachmentPreview::Loading(current)) if *current == generation
+            ) {
+                let preview =
+                    result.map_or_else(AttachmentPreview::Failed, AttachmentPreview::Ready);
+                tab.attachment_previews.insert(path, preview);
+                tab.search.invalidate_offsets();
+            }
+        }
         ConversationEvent::ToggleDialogExpand(index) => {
             let tab = app.conversation.viewing_mut();
             let expanded = tab.expanded_dialogs.contains(&index);
@@ -272,6 +303,72 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         }
     }
     Task::none()
+}
+
+/// Decode at twice the on-screen size, keeping previews sharp on HiDPI displays.
+const PREVIEW_SCALE: f32 = 2.0;
+
+/// Decode bounds derived from the largest on-screen preview.
+fn preview_decode_budget() -> (u32, u64) {
+    let width = (PREVIEW_MAX_WIDTH * PREVIEW_SCALE).ceil() as u32;
+    let height = (PREVIEW_MAX_HEIGHT * PREVIEW_SCALE).ceil() as u32;
+    (width.max(height), u64::from(width) * u64::from(height))
+}
+
+/// Toggle an attachment preview, loading its content off-thread on first open.
+fn toggle_attachment_preview(app: &mut App, path: String, kind: AttachmentKind) -> Task<Message> {
+    let workspace = app.prompt.workspace.1.clone();
+    let tab = app.conversation.viewing_mut();
+    let was_open = tab.attachment_previews.remove(&path).is_some();
+    tab.search.invalidate_offsets();
+    app.layout.focused = None;
+    if was_open {
+        return Task::none();
+    }
+
+    tab.preview_generation += 1;
+    let generation = tab.preview_generation;
+    tab.attachment_previews
+        .insert(path.clone(), AttachmentPreview::Loading(generation));
+    let tab_number = tab.number;
+
+    let load_path = path.clone();
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                load_attachment_preview(&load_path, kind, &workspace)
+            })
+            .await
+            .map_err(|error| format!("attachment preview task failed: {error}"))?
+        },
+        move |result| {
+            Message::Conversation(ConversationEvent::AttachmentPreviewLoaded(
+                tab_number, path, generation, result,
+            ))
+        },
+    )
+}
+
+/// Decode one preview; runs on the blocking pool.
+fn load_attachment_preview(
+    path: &str,
+    kind: AttachmentKind,
+    workspace: &Path,
+) -> Result<PreviewContent, String> {
+    // Picker paths are absolute; read-tool paths are usually workspace-relative.
+    let resolved =
+        crabot::tools::resolve_path(path, workspace).unwrap_or_else(|_| PathBuf::from(path));
+    match kind {
+        AttachmentKind::Image => {
+            let (max_side, max_pixels) = preview_decode_budget();
+            let preview = crabot::tools::decode_for_preview(&resolved, max_side, max_pixels)?;
+            Ok(PreviewContent::Image(
+                iced::widget::image::Handle::from_rgba(preview.width, preview.height, preview.rgba),
+            ))
+        }
+        AttachmentKind::Text => crabot::tools::read_text_attachment(&resolved)
+            .map(|text| PreviewContent::Text(text.into())),
+    }
 }
 
 /// Open a save dialog and export the viewing session to an HTML file.

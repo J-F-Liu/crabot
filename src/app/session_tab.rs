@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::app::session_state::SessionState;
 use crate::llm::DialogPhase;
@@ -6,6 +7,23 @@ use crate::model::TokenAmount;
 use crate::tools::todo::{self, TodoList};
 use crate::views::search_bar::SearchState;
 use crabot::session::Session;
+
+/// Decoded inline preview content.
+#[derive(Debug, Clone)]
+pub(crate) enum PreviewContent {
+    Image(iced::widget::image::Handle),
+    /// Shared to keep event clones cheap.
+    Text(Arc<str>),
+}
+
+/// Lazily loaded inline preview.
+#[derive(Debug)]
+pub(crate) enum AttachmentPreview {
+    /// Request id; stale results are ignored.
+    Loading(u64),
+    Ready(PreviewContent),
+    Failed(String),
+}
 
 /// Final state after the session stream finishes — None while running or fresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +52,10 @@ pub(crate) struct SessionTab {
     pub(crate) expanded_dialogs: HashSet<usize>,
     /// Currently selectable (double-clicked) turn indices.
     pub(crate) selectable_msgs: HashSet<usize>,
+    /// Inline previews, keyed by path.
+    pub(crate) attachment_previews: HashMap<String, AttachmentPreview>,
+    /// Latest preview load request id.
+    pub(crate) preview_generation: u64,
     /// Per-tab search state (query, results, offsets, widget ids).
     pub(crate) search: SearchState,
     /// Shared per-tab todo list — the `todo` tool writes to it during this tab's running.
@@ -77,6 +99,8 @@ impl SessionTab {
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
             selectable_msgs: HashSet::new(),
+            attachment_previews: HashMap::new(),
+            preview_generation: 0,
             search: SearchState::default(),
             todo_items,
             scroll_offset: None,

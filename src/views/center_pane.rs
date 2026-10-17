@@ -1,9 +1,10 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crabot::chat::{Dialog, Turn, TurnBody, streaming_tool_ids, tool_items};
 use crabot::model::ModelConfig;
 use crabot::session::{SearchHit, SearchHitKind, Session};
+use crabot::user::AttachmentKind;
 use genai::chat::ChatRole;
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task,
@@ -13,13 +14,15 @@ use iced::{
     alignment, font, mouse,
     widget::scrollable::{Direction, Scrollbar},
     widget::{
-        self, Space, button, column, container, markdown, mouse_area, row, scrollable, stack, text,
+        self, Space, button, column, container, image, markdown, mouse_area, row, scrollable,
+        stack, text,
     },
 };
 use iced_runtime::task::widget as task_widget;
+use serde_json::Value;
 
 use crate::app::session_state::SessionEvent;
-use crate::app::{ConversationState, SessionTab};
+use crate::app::{AttachmentPreview, ConversationState, PreviewContent, SessionTab};
 use crate::llm::DialogPhase;
 use crate::views::search_bar::SearchState;
 use crate::widgets::popup_menu::PopupMenu;
@@ -29,9 +32,10 @@ use crabot::i18n::Lang;
 use super::icons;
 use super::session_tabs::localize_tab_label;
 use super::styles::{
-    assistant_bubble_style, bordered_bar_style, icon_button_style, menu_container_style,
-    menu_item_style, pane_center, reasoning_box_style, role_badge_style, sel_default, sel_muted,
-    sel_secondary, sel_strong, session_header_style, tool_bubble_style, user_bubble_style,
+    assistant_bubble_style, attachment_chip_style, bordered_bar_style, icon_button_style,
+    menu_container_style, menu_item_style, pane_center, reasoning_box_style, role_badge_style,
+    sel_default, sel_muted, sel_secondary, sel_strong, session_header_style, tool_bubble_style,
+    user_bubble_style,
 };
 use super::theme::{
     CRABOT_DANGER, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT,
@@ -51,6 +55,13 @@ const PAGE_SCROLL_FRACTION: f32 = 0.9;
 
 /// Vertical pixels scrolled per arrow-key press on the message view.
 pub(crate) const SCROLL_STEP: f32 = 40.0;
+
+/// Largest inline image preview bounds; the decode budget derives from these.
+pub(crate) const PREVIEW_MAX_WIDTH: f32 = 480.0;
+pub(crate) const PREVIEW_MAX_HEIGHT: f32 = 360.0;
+
+/// Height a long text preview scrolls within.
+const TEXT_PREVIEW_MAX_HEIGHT: f32 = 260.0;
 
 /// Snap the message scroll to the end unconditionally.
 pub(crate) fn scroll_to_end() -> Task<()> {
@@ -270,6 +281,7 @@ fn turn_count_badge(
 struct TurnView<'a> {
     expanded_turns: &'a HashSet<(usize, usize)>,
     selectable_msgs: &'a HashSet<usize>,
+    attachment_previews: &'a HashMap<String, AttachmentPreview>,
     theme: &'a Theme,
     font_scale: f32,
     /// Active UI language for the fixed labels rendered inside turn blocks.
@@ -466,9 +478,76 @@ fn tool_turn_block<'a>(
                 ctx.lang,
             ));
         }
+
+        // Successful image reads can be previewed inline.
+        if let Some(path) = read_image_path(name, args, result) {
+            let preview = ctx.attachment_previews.get(path);
+            elements.push(read_image_toggle(path, preview.is_some(), ctx));
+            if let Some(preview) = preview {
+                elements.push(attachment_preview_body(preview, ctx));
+            }
+        }
     }
 
     wrap_bubble(column(elements).spacing(8).width(Fill), tool_bubble_style)
+}
+
+/// Path argument of a successful `read` image result.
+fn read_image_path<'a>(
+    name: &str,
+    args: &'a Value,
+    result: Option<&Result<String, String>>,
+) -> Option<&'a str> {
+    let text = result?.as_ref().ok()?;
+    if name != "read" || !text.starts_with("[Image] ") {
+        return None;
+    }
+    crabot::tools::arg_path(args)
+}
+
+/// Clickable row that toggles an inline preview.
+fn preview_toggle<'a>(
+    icon: &'static str,
+    label: Element<'a, CenterPaneEvent>,
+    expanded: bool,
+    ctx: &TurnView<'a>,
+    event: ConversationEvent,
+) -> Element<'a, CenterPaneEvent> {
+    mouse_area(
+        row![
+            text(icon).size(13.0 * ctx.font_scale),
+            text(if expanded { "▾" } else { "▸" })
+                .size(10.0 * ctx.font_scale)
+                .color(color_muted()),
+            label,
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .on_press(CenterPaneEvent::Conversation(event))
+    .interaction(mouse::Interaction::Pointer)
+    .into()
+}
+
+/// Clickable row that expands the picture a `read` call returned.
+fn read_image_toggle<'a>(
+    path: &'a str,
+    expanded: bool,
+    ctx: &TurnView<'a>,
+) -> Element<'a, CenterPaneEvent> {
+    let label = ctx
+        .lang
+        .tr(if expanded { "Hide image" } else { "Show image" });
+    preview_toggle(
+        "🖼️",
+        text(label)
+            .size(12.0 * ctx.font_scale)
+            .color(CRABOT_TOOL_ACCENT)
+            .into(),
+        expanded,
+        ctx,
+        ConversationEvent::ToggleAttachmentPreview(path.to_string(), AttachmentKind::Image),
+    )
 }
 
 /// True when parsed markdown is a single plain-text paragraph
@@ -632,25 +711,73 @@ fn attachment_turn_block<'a>(msg: &'a Turn, ctx: &TurnView<'a>) -> Element<'a, C
 
     let mut files = column![].spacing(4).width(Fill);
     for item in items {
-        files = files.push(
-            row![
-                text(item.kind.icon()).size(13.0 * ctx.font_scale),
-                highlighted_text(
-                    item.display_name(),
-                    ctx.search_query,
-                    13.0 * ctx.font_scale,
-                    Font::DEFAULT,
-                ),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-        );
+        let preview = ctx.attachment_previews.get(&item.path);
+        files = files.push(preview_toggle(
+            item.kind.icon(),
+            highlighted_text(
+                item.display_name(),
+                ctx.search_query,
+                13.0 * ctx.font_scale,
+                Font::DEFAULT,
+            ),
+            preview.is_some(),
+            ctx,
+            ConversationEvent::ToggleAttachmentPreview(item.path.clone(), item.kind),
+        ));
+        if let Some(preview) = preview {
+            files = files.push(attachment_preview_body(preview, ctx));
+        }
     }
 
     wrap_bubble(
         column![header, files].spacing(6).width(Fill),
         user_bubble_style,
     )
+}
+
+/// Body of an expanded attachment preview.
+fn attachment_preview_body<'a>(
+    preview: &'a AttachmentPreview,
+    ctx: &TurnView<'a>,
+) -> Element<'a, CenterPaneEvent> {
+    match preview {
+        AttachmentPreview::Loading(_) => text(ctx.lang.tr("Loading…"))
+            .size(12.0 * ctx.font_scale)
+            .color(color_muted())
+            .into(),
+        AttachmentPreview::Failed(reason) => text(
+            ctx.lang
+                .tr("Failed to load attachment: {reason}")
+                .replacen("{reason}", reason, 1),
+        )
+        .size(12.0 * ctx.font_scale)
+        .color(CRABOT_DANGER)
+        .into(),
+        AttachmentPreview::Ready(PreviewContent::Image(handle)) => {
+            container(image(handle.clone()).border_radius(6.0))
+                .max_width(PREVIEW_MAX_WIDTH)
+                .max_height(PREVIEW_MAX_HEIGHT)
+                .padding(4)
+                .style(attachment_chip_style)
+                .into()
+        }
+        AttachmentPreview::Ready(PreviewContent::Text(content)) => container(
+            scrollable(
+                selectable(content.as_ref(), ctx.search_query)
+                    .size(12.0 * ctx.font_scale)
+                    .font(Font::MONOSPACE)
+                    .style(sel_default),
+            )
+            .direction(Direction::Vertical(
+                Scrollbar::new().width(4).scroller_width(4),
+            )),
+        )
+        .max_height(TEXT_PREVIEW_MAX_HEIGHT)
+        .width(Fill)
+        .padding(8)
+        .style(attachment_chip_style)
+        .into(),
+    }
 }
 
 pub(crate) fn center_pane<'a>(
@@ -702,6 +829,7 @@ pub(crate) fn center_pane<'a>(
     let turn_ctx = TurnView {
         expanded_turns,
         selectable_msgs,
+        attachment_previews: &tab.attachment_previews,
         theme,
         font_scale,
         lang,

@@ -13,6 +13,12 @@ pub static TABLE: &[(&str, &str)] = &[
     ("System", "系统"),
     ("Tool - {name}", "工具 - {name}"),
     ("Attachment", "附件"),
+    (
+        "Failed to load attachment: {reason}",
+        "无法加载附件：{reason}",
+    ),
+    ("Show image", "展开图片"),
+    ("Hide image", "收起图片"),
     // ── session header menu & info (center_pane.rs) ──
     ("Copy title", "复制标题"),
     ("Resend session", "重新发送"),
