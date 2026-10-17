@@ -23,10 +23,9 @@ struct RawModel {
     reasoning: Option<bool>,
     tool_calling: Option<bool>,
     input_modalities: Vec<String>,
-    author: String,
-    author_id: String,
+    /// Reasoning effort values (e.g. `low`, `medium`, `high`, `max`).
+    thinking_levels: Vec<String>,
     alias_id: Vec<String>,
-    alias: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -44,6 +43,8 @@ struct RawPrice {
     output: Option<RawAmount>,
     cache_read: Option<RawAmount>,
     cache_write: Option<RawAmount>,
+    /// DeepSeek-style peak pricing: multiply this price during Beijing peak hours.
+    double_on_peak_hour: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -114,7 +115,9 @@ fn parse_models(raw: RawDatabase) -> HashMap<String, Model> {
     for m in raw.models {
         let (cost, offers) = extract_costs(&m.offers);
         let thinking = m.reasoning.unwrap_or(false);
-        let thinking_levels = if thinking {
+        let thinking_levels = if thinking && !m.thinking_levels.is_empty() {
+            m.thinking_levels.clone()
+        } else if thinking {
             vec![
                 "low".to_string(),
                 "medium".to_string(),
@@ -138,7 +141,7 @@ fn parse_models(raw: RawDatabase) -> HashMap<String, Model> {
         // Primary ID first — first-wins among duplicates.
         models.entry(m.id).or_insert_with(|| model.clone());
         // Defer aliases until after all primaries are registered.
-        for alias in m.alias_id.into_iter().chain(m.alias) {
+        for alias in m.alias_id {
             pending_aliases.push((alias, model.clone()));
         }
     }
@@ -160,7 +163,7 @@ fn extract_costs(offers: &[RawOffer]) -> (Cost, Vec<Cost>) {
                 cache_read: price.cache_read.as_ref().map(|a| a.amount).unwrap_or(0.0),
                 cache_write: price.cache_write.as_ref().map(|a| a.amount).unwrap_or(0.0),
                 currency: offer.currency,
-                double_on_peak_hour: false,
+                double_on_peak_hour: price.double_on_peak_hour,
                 source: offer.source.clone().unwrap_or_default(),
             })
         })
