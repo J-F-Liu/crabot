@@ -5,7 +5,9 @@ use iced::{
     widget::{Space, button, container, mouse_area, row, scrollable, svg, text, tooltip},
 };
 
-use super::icons::{CHEVRON_LEFT, CHEVRON_RIGHT, CLOSE};
+use super::icons::{
+    CHEVRON_LEFT, CHEVRON_RIGHT, CLOSE, PANEL_RIGHT_CLOSE, PANEL_RIGHT_OPEN, icon_action,
+};
 use super::styles::{bordered_bar_style, session_tab_style, tab_close_button_style, tooltip_style};
 use super::theme;
 use crate::app::{ConversationState, SessionEndStatus, SessionTab, conversation::TabBarDirection};
@@ -40,6 +42,7 @@ pub(crate) fn scroll_tab_bar_to(target_x: f32) -> Task<()> {
 pub(crate) fn session_tabs(
     conversation: &ConversationState,
     lang: Lang,
+    right_pane_collapsed: bool,
 ) -> Element<'_, CenterPaneEvent> {
     let viewing_number = conversation.viewing_tab_number();
     let tabs = conversation
@@ -56,17 +59,28 @@ pub(crate) fn session_tabs(
         .id(TAB_BAR_ID.clone())
         .on_scroll(CenterPaneEvent::TabBarScrolled);
 
+    let (toggle_icon, toggle_tip) = if right_pane_collapsed {
+        (PANEL_RIGHT_OPEN, "Show right pane")
+    } else {
+        (PANEL_RIGHT_CLOSE, "Hide right pane")
+    };
+
     container(
         row![
             arrow_button(CHEVRON_LEFT, TabBarDirection::Left, conversation),
             bar,
             arrow_button(CHEVRON_RIGHT, TabBarDirection::Right, conversation),
+            icon_action(
+                toggle_icon,
+                lang.tr(toggle_tip),
+                CenterPaneEvent::ToggleRightPane
+            ),
         ]
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
     .height(Length::Fixed(BAR_HEIGHT))
-    .padding(Padding::new(0.0).top(BAR_VPAD).left(4.0))
+    .padding(Padding::new(0.0).top(BAR_VPAD).horizontal(4.0))
     .style(bordered_bar_style)
     .into()
 }

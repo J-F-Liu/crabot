@@ -9,7 +9,7 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use iced::widget::scrollable::Viewport;
-use iced::widget::{column, container, row, text_editor};
+use iced::widget::{Space, column, container, row, text_editor};
 use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
 
 use crabot::model::{self, ModelConfig, ModelList};
@@ -64,6 +64,8 @@ pub(crate) struct LayoutState {
     pub(crate) cursor: Point,
     pub(crate) left_divider: DividerState,
     pub(crate) right_divider: DividerState,
+    /// Last visible width, restored when the right pane is shown again.
+    pub(crate) right_pane_restore_width: f32,
     /// Active color theme; the matching dark flag lives in `views::theme`.
     pub(crate) theme: Theme,
     pub(crate) shift_held: bool,
@@ -496,6 +498,8 @@ pub(crate) enum LayoutEvent {
     EscapePressed,
     Zoom(f32),
     ToggleTheme(bool),
+    /// Show or hide the right pane.
+    ToggleRightPane,
 }
 
 /// Events from the prompt, workspace, and user-input area.
@@ -659,6 +663,8 @@ pub(crate) enum CenterPaneEvent {
     LinkClicked(String),
     /// Tab bar scrollable viewport changed.
     TabBarScrolled(Viewport),
+    /// Show or hide the right pane.
+    ToggleRightPane,
 }
 
 /// Events emitted by the right pane.
@@ -815,6 +821,7 @@ impl App {
         };
 
         let models_count = models.models.len();
+        let right_pane_restore_width = saved.right_pane_width.max(theme::MIN_W);
         let mut app = Self {
             settings: saved,
             layout: LayoutState {
@@ -823,6 +830,7 @@ impl App {
                 cursor: Point::ORIGIN,
                 left_divider: DividerState::default(),
                 right_divider: DividerState::default(),
+                right_pane_restore_width,
                 theme: theme::theme_for(dark),
                 shift_held: false,
                 ctrl_held: false,
@@ -1133,17 +1141,13 @@ impl App {
     fn view_body(&self) -> Element<'_, Message> {
         let main = self.view_main_content();
         if self.settings_dialog.open {
-            let backdrop = container(
-                iced::widget::Space::new()
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            )
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_: &Theme| container::Style {
-                background: Some(CRABOT_MODAL_SCRIM.into()),
-                ..container::Style::default()
-            });
+            let backdrop = container(Space::new().width(Length::Fill).height(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|_: &Theme| container::Style {
+                    background: Some(CRABOT_MODAL_SCRIM.into()),
+                    ..container::Style::default()
+                });
             let dialog = crate::views::settings_dialog(&self.settings_dialog)
                 .map(|e| Message::ModelSettings(ModelSettingsEvent::Settings(e)));
             iced::widget::stack![
@@ -1181,6 +1185,38 @@ impl App {
     fn view_main_content(&self) -> Element<'_, Message> {
         let model = self.get_current_model();
         let right_pane_collapsed = self.settings.right_pane_width <= 0.0;
+        let right_side: Element<'_, Message> = if right_pane_collapsed {
+            // Collapsed: skip laying out the pane content entirely.
+            Space::new().into()
+        } else {
+            row![
+                divider(&self.layout.right_divider),
+                right_pane(
+                    self.settings.right_pane_width,
+                    model,
+                    self.conversation.viewing(),
+                    &self.pane_sections,
+                    &self.running_processes,
+                    theme::is_dark(),
+                    &self.acp,
+                    self.settings.language,
+                )
+                .map(|event| match event {
+                    RightPaneEvent::ToggleTheme(dark) => {
+                        Message::Layout(LayoutEvent::ToggleTheme(dark))
+                    }
+                    RightPaneEvent::Restart => Message::RestartApp,
+                    RightPaneEvent::RevertFile(path) => Message::RevertFile(path),
+                    RightPaneEvent::RevertAll => Message::RevertAll,
+                    RightPaneEvent::DismissRevertError => Message::DismissRevertError,
+                    RightPaneEvent::ToggleSection(section) => Message::TogglePaneSection(section),
+                    RightPaneEvent::ToggleAcpServer(enabled) => {
+                        Message::Acp(crate::acp::AcpMessage::Toggle(enabled))
+                    }
+                }),
+            ]
+            .into()
+        };
         row![
             left_pane(
                 &self.settings,
@@ -1222,30 +1258,11 @@ impl App {
                 CenterPaneEvent::TabBarScrolled(vp) => {
                     Message::Layout(LayoutEvent::TabBarScrolled(vp))
                 }
-            }),
-            divider(&self.layout.right_divider),
-            right_pane(
-                self.settings.right_pane_width,
-                model,
-                self.conversation.viewing(),
-                &self.pane_sections,
-                &self.running_processes,
-                theme::is_dark(),
-                &self.acp,
-                self.settings.language,
-            )
-            .map(|event| match event {
-                RightPaneEvent::ToggleTheme(dark) =>
-                    Message::Layout(LayoutEvent::ToggleTheme(dark)),
-                RightPaneEvent::Restart => Message::RestartApp,
-                RightPaneEvent::RevertFile(path) => Message::RevertFile(path),
-                RightPaneEvent::RevertAll => Message::RevertAll,
-                RightPaneEvent::DismissRevertError => Message::DismissRevertError,
-                RightPaneEvent::ToggleSection(section) => Message::TogglePaneSection(section),
-                RightPaneEvent::ToggleAcpServer(enabled) => {
-                    Message::Acp(crate::acp::AcpMessage::Toggle(enabled))
+                CenterPaneEvent::ToggleRightPane => {
+                    Message::Layout(LayoutEvent::ToggleRightPane)
                 }
             }),
+            right_side,
         ]
         .spacing(0)
         .into()

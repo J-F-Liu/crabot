@@ -69,6 +69,8 @@ pub static TABLE: &[(&str, &str)] = &[
     ),
     // ── session tabs (session_tabs.rs) ──
     ("Session {}", "会话 {}"),
+    ("Hide right pane", "隐藏右侧面板"),
+    ("Show right pane", "显示右侧面板"),
     // ── search bar (search_bar.rs) ──
     ("Search…", "搜索…"),
     // ── status line retry countdown (app/session_state.rs) ──

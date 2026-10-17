@@ -57,8 +57,38 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
             // Preview only; the persisted appearance is untouched.
             app.set_dark(dark);
         }
+        LayoutEvent::ToggleRightPane => toggle_right_pane(app),
     }
     Task::none()
+}
+
+/// Maximum width one side pane may take while leaving room for the other.
+fn max_pane_width(window_width: f32, other_width: f32) -> f32 {
+    (window_width - other_width - 2.0 * HANDLE - MIN_W).max(MIN_W)
+}
+
+/// Resize the right pane, collapsing near [`MIN_W`] and remembering the last visible width.
+fn set_right_pane_width(app: &mut App, width: f32) {
+    let max = max_pane_width(app.layout.window_size.width, app.settings.left_pane_width);
+    let width = if width < MIN_W - 10.0 {
+        0.0
+    } else {
+        width.min(max)
+    };
+    app.settings.right_pane_width = width;
+    if width > 0.0 {
+        app.layout.right_pane_restore_width = width;
+    }
+}
+
+fn toggle_right_pane(app: &mut App) {
+    if app.settings.right_pane_width > 0.0 {
+        set_right_pane_width(app, 0.0);
+        app.layout.right_divider.dragging = false;
+        app.layout.right_divider.hovered = false;
+    } else {
+        set_right_pane_width(app, app.layout.right_pane_restore_width);
+    }
 }
 
 fn cursor_moved(app: &mut App, pos: Point) {
@@ -66,31 +96,16 @@ fn cursor_moved(app: &mut App, pos: Point) {
     app.layout.left_divider.hovered =
         pos.x >= app.settings.left_pane_width && pos.x <= app.settings.left_pane_width + HANDLE;
     let right_x = app.layout.window_size.width - app.settings.right_pane_width - HANDLE;
-    app.layout.right_divider.hovered = pos.x >= right_x && pos.x <= right_x + HANDLE;
+    app.layout.right_divider.hovered =
+        app.settings.right_pane_width > 0.0 && pos.x >= right_x && pos.x <= right_x + HANDLE;
 
     if app.layout.left_divider.dragging {
         let delta = pos.x - app.layout.left_divider.origin;
-        let gutter = 2.0 * HANDLE;
-        let max = (app.layout.window_size.width - app.settings.right_pane_width - gutter - MIN_W)
-            .max(MIN_W);
+        let max = max_pane_width(app.layout.window_size.width, app.settings.right_pane_width);
         app.settings.left_pane_width = (app.layout.left_divider.start + delta).clamp(MIN_W, max);
     } else if app.layout.right_divider.dragging {
         let delta = pos.x - app.layout.right_divider.origin;
-        let gutter = 2.0 * HANDLE;
-        let max = (app.layout.window_size.width - app.settings.left_pane_width - gutter - MIN_W)
-            .max(MIN_W);
-        let new_width = (app.layout.right_divider.start - delta).max(0.0);
-        app.settings.right_pane_width = if app.layout.right_divider.start == 0.0 {
-            if new_width > 10.0 {
-                new_width.clamp(MIN_W, max)
-            } else {
-                0.0
-            }
-        } else if new_width < MIN_W - 10.0 {
-            0.0
-        } else {
-            new_width.min(max)
-        };
+        set_right_pane_width(app, app.layout.right_divider.start - delta);
     }
 }
 
@@ -102,14 +117,13 @@ fn left_pressed(app: &mut App) -> Task<Message> {
         app.layout.left_divider.dragging = true;
         app.layout.left_divider.origin = app.layout.cursor.x;
         app.layout.left_divider.start = app.settings.left_pane_width;
-    } else if app.layout.cursor.x >= right_x && app.layout.cursor.x <= right_x + HANDLE {
-        if app.settings.right_pane_width == 0.0 {
-            app.settings.right_pane_width = MIN_W;
-        } else {
-            app.layout.right_divider.dragging = true;
-            app.layout.right_divider.origin = app.layout.cursor.x;
-            app.layout.right_divider.start = app.settings.right_pane_width;
-        }
+    } else if app.settings.right_pane_width > 0.0
+        && app.layout.cursor.x >= right_x
+        && app.layout.cursor.x <= right_x + HANDLE
+    {
+        app.layout.right_divider.dragging = true;
+        app.layout.right_divider.origin = app.layout.cursor.x;
+        app.layout.right_divider.start = app.settings.right_pane_width;
     }
 
     if app.settings_dialog.open && app.settings_dialog.is_adding_label() {

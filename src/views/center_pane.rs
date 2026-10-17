@@ -936,7 +936,7 @@ pub(crate) fn center_pane<'a>(
 
     mouse_area(
         container(column![
-            super::session_tabs::session_tabs(conversation, lang),
+            super::session_tabs::session_tabs(conversation, lang, right_pane_collapsed),
             session_header(tab.header_title(), conversation, lang),
             pending_header(pending_user_prompt),
             if search_state.visible {
