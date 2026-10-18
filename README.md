@@ -10,7 +10,7 @@
 
 A pure-Rust native GUI coding agent using [iced](https://iced.rs) and [genai](https://crates.io/crates/genai) for multi-provider LLM.
 
-Most coding agents today run inside a terminal as TUIs. Crabot is built on the belief that a carefully designed GUI is easier and more efficient to operate: switch the AI model, toggle the work mode, and turn tools on/off with one click, with dropdown menus for preamble, skills, workspaces, AGENTS.md, session list, and prompt recipes.
+Most coding agents today run inside a terminal as TUIs. Crabot is built on the belief that a carefully designed GUI is easier and more efficient to operate: switch the AI model, toggle the work mode, turn tools on/off, and show/hide the right pane with one click, with dropdown menus for preamble, skills, workspaces, AGENTS.md, session list, and prompt recipes.
 
 <img src="doc/images/screenshot.webp" alt="screen shot" width="800">
 <img src="doc/images/screenshot-zh.webp" alt="screen shot" width="800">
@@ -19,6 +19,7 @@ Most coding agents today run inside a terminal as TUIs. Crabot is built on the b
 
 - [x] No TUI — just a GUI, easy for everyone to use.
 - [x] Multi-tab sessions view — switch between concurrent sessions, or let the agent delegate subtasks to new tabs.
+- [x] Prompt attachments — attach text and image files to a prompt, with clickable inline previews in the conversation.
 - [x] Configure through dialogs — a settings dialog with 8 tab pages (User Interface, AI Models, Prompt Recipes, Builtin Tools, Custom Tools, MCP Servers, Tool Playground, About), no need to write config files by hand.
 - [x] An explicit context window, with every detail customizable.
 - [x] Native, high-performance built-in tools.
@@ -51,6 +52,10 @@ If you know the structure of the LLM context window, you will appreciate the UI 
 Beyond the built-ins, you can add your own **custom CLI tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session.
 
 Grep-style tool output is normalized before it enters the conversation: a run of lines that share a file path (`path:12:text`, plus `path-12-text` context lines from `-A/-B/-C`) collapses into a `path:` heading followed by the original line numbers and text, so no repetition is paid for twice. What you read in the UI, in the session file, and in the HTML export is exactly what was sent to the model; the live stream stays raw.
+
+## Prompt Attachments
+
+The prompt editor's **Attachment ▾** menu adds text or image files to the next prompt (up to 20 files). Text files are inserted into the request up to the `read` limit and truncated with a marker; images go through the same downscaling and re-encoding pipeline as the `read` tool, and the selected model must accept image input. The chat lists every attachment with a clickable preview, while history keeps only the file path, so attachments are read again when a session is reloaded.
 
 ## Context Window & Sessions
 

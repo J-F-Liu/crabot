@@ -1,3 +1,17 @@
+# Crabot v1.0.0
+
+- **Prompt attachments** — attach text and image files to a prompt; text is inserted into the request, images are sent as image parts, and the chat shows every attachment with a clickable inline preview.
+- **Images in `read`** — the `read` tool now returns PNG/JPEG/GIF/WebP/BMP files as pictures for the model instead of dumping bytes, and oversized images are downscaled and re-encoded to fit per-model and per-request limits.
+- **Quieter tool output** — grep-style results collapse consecutive matches from one file under a single path heading, and tabs in tool output, edit diffs, and prompts render as blanks instead of box glyphs.
+- **Smarter `crate_source`** — resolves crates.io, git, and path dependencies, supports `name@version`, and falls back to a cache-wide search.
+- **Real host `uname`** — the `bash` tool runs the host's own `uname` (including Git Bash's on Windows), so the platform matches the machine instead of bashkit's virtual Linux sandbox.
+- **Retry SSE-level failures** — transient provider errors delivered inside a 200-status event stream are now retried like other transient failures.
+- **UI polish** — a tab-bar button toggles the right pane; Send is disabled while the prompt is blank; work modes are translated in Chinese; unchecked models stay visible in the provider list, and the model detail form no longer resizes.
+- **Refreshed model database** — embedded model data and pricing updated from models.dev/models-cn, with `examples/update_models.rs` to regenerate it.
+- **Faster builds** — reqwest now uses rustls' ring provider without aws-lc-rs, iced drops unused image codecs, and zip builds only the deflate backend.
+
+**Full Changelog**: [`v0.9.2...v1.0.0`](https://github.com/J-F-Liu/crabot/compare/v0.9.2...v1.0.0)
+
 # Crabot v0.9.2
 
 - **Host commands resolve like a shell** — bridged `bash` commands, `process`, and custom tools search `PATH`+`PATHEXT` before spawning, so Windows launchers (`npx.cmd`, `npm.cmd`) start instead of failing with "program not found"; a name that resolves nowhere reports bash's `command not found` (exit 127).

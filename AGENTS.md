@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Crabot is a pure-Rust native GUI coding agent built with [iced](https://iced.rs) (Elm architecture) and [genai](https://crates.io/crates/genai) for multi-provider LLM access. It ships with 12 built-in tools — the `bash` tool runs on an in-process [bashkit](https://crates.io/crates/bashkit) interpreter, so it works natively on Windows without a real bash — plus user-defined custom tools, MCP server tools, and multi-tab sessions.
+Crabot is a pure-Rust native GUI coding agent built with [iced](https://iced.rs) (Elm architecture) and [genai](https://crates.io/crates/genai) for multi-provider LLM access. It ships with 12 built-in tools — the `bash` tool runs on an in-process [bashkit](https://crates.io/crates/bashkit) interpreter, so it works natively on Windows without a real bash — plus prompt attachments, user-defined custom tools, MCP server tools, and multi-tab sessions.
 
 Everything configurable is meant to be visible and toggleable in the UI: model, work mode, tools, and the individual components of the system prompt.
 
@@ -10,13 +10,13 @@ Everything configurable is meant to be visible and toggleable in the UI: model, 
 
 ### Three-pane GUI
 
-A single window with a resizable left pane (model config, system-prompt sections, session picker, work mode, prompt editor, tool list), a center pane (session tabs, conversation turns, search bar, status bar), and a right pane (theme toggle, context-window/token stats, todo list, modified files with Revert / Revert All, process list, restart). All panes and the settings dialog live in `src/views/`.
+A single window with a resizable left pane (model config, system-prompt sections, session picker, work mode, prompt editor, tool list), a center pane (session tabs, conversation turns, search bar, status bar), and a right pane (collapsible from the tab bar; theme toggle, context-window/token stats, todo list, modified files with Revert / Revert All, process list, restart). All panes and the settings dialog live in `src/views/`.
 
 ### Data flow
 
 - **UI → state:** `App::update` (`src/app.rs`) dispatches domain messages to handlers in `src/app/` (`layout`, `conversation`, `prompt`, `tool_state`, `settings`, `overlay`, `session_state`, `snapshot`).
 - **Agent loop:** `llm::send_stream` sends a request with system prompt + tool declarations + history, streams reply chunks, executes tool calls, appends results, and repeats until the model stops calling tools. It handles cancellation, retries transient failures, and detects stalled streams. Independent tool calls run in parallel batches; interactive or file-mutating tools act as serial barriers.
-- **Persistence:** RON config in `~/.crabot/` (settings, models, tools, mcp); sessions as JSONL under `.agent/sessions/YYYY-MM/`, appended one message at a time so a crash mid-turn loses nothing.
+- **Persistence:** RON config in `~/.crabot/` (settings, models, tools, mcp); sessions as JSONL under `.agent/sessions/YYYY-MM/`, appended one message at a time so a crash mid-turn loses nothing; prompt attachments are recorded as path markers and materialized when a request is built.
 - **Snapshots:** `write`/`edit` targets are pre-imaged before tool execution into `.agent/snapshots/`, backing the right-pane Revert actions.
 - **Assets:** bundled with `include_dir!` and seeded to `~/.crabot/` on first boot.
 - **Extras:** MCP servers connect over stdio/HTTP via `rmcp`; an optional ACP bridge exposes sessions to external editors.
@@ -29,14 +29,15 @@ A single window with a resizable left pane (model config, system-prompt sections
 | `src/app/`                                            | Domain handlers split by concern (see data flow)                         |
 | `src/views/`                                          | UI panes, custom styling, settings dialog tabs, HTML export, self-update |
 | `src/widgets/`                                        | Custom widgets: `TextArea` (undo/redo), `DropDown`, `PopupMenu`          |
-| `src/llm/`                                            | Streaming agent loop, retry/stall handling, parallel tool-call execution |
+| `src/llm/`                                            | Streaming agent loop, retry/stall handling, parallel tool-call execution, attachment/image materialization |
 | `src/tools/`                                          | Tool trait, registry, built-ins, custom/MCP tools, process plumbing      |
 | `src/chat.rs`, `src/session.rs`                       | Conversation UI types; raw history, JSONL persistence, todos             |
-| `src/model.rs`, `src/model_database.rs`               | Model/provider/task-model types; embedded model database                 |
+| `src/model.rs`, `src/model_database.rs`               | Model/provider/task-model types; embedded model database generated from models.dev/models-cn |
 | `src/settings.rs`, `src/setup.rs`, `src/workspace.rs` | Persisted settings; first-boot seeding and logging; workspace scanning   |
-| `src/user.rs`, `src/i18n.rs`, `src/fonts.rs`          | Work modes and user prompt; translations; CJK font handling              |
+| `src/user.rs`, `src/i18n.rs`, `src/fonts.rs`          | Work modes, user prompt, and attachments; translations; CJK font handling |
 | `src/acp.rs`                                          | ACP bridge for external editor clients                                   |
 | `assets/`                                             | Bundled preambles, skills, default config, images                        |
+| `examples/`                                           | `update_models` regenerates the model database; session stats and JSONL conversion |
 | `tests/`                                              | Integration tests (`bash`, `process`, `tools`, `session`, `chat`, …)     |
 
 ## Tool System
@@ -59,7 +60,8 @@ Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and ov
 - **State & UI:** one root `App` with grouped state (models, settings, layout, prompt, tools, conversation, settings dialog, overlay) and a hierarchical message enum; each session tab owns its own streaming/search/scroll/model state.
 - **Streaming UX:** placeholders are pushed when a turn starts and updated in place; `bash` and `process` forward live output, coalesced and capped before rendering.
 - **Tool output normalization:** grep-style runs that repeat a file path (`path:12:text`, `path-12-text` for context) collapse into a `path:` heading plus the original `line…` tails (`src/tools/normalize.rs`), applied once in `build_tool_result` so the model, the UI, the session file, and the HTML export all carry the same text; the live stream stays raw.
-- **Images:** history stores only path markers; the request builder encodes the bytes (`src/llm/image.rs`) under a per-request allowance, spending it on the newest pictures and degrading the rest to a text notice.
+- **Images & attachments:** history stores only path markers. When a request is built, `src/llm/attachment.rs` reads text attachments (bounded by the `read` limit and truncated with a marker) and `src/llm/image.rs` encodes images under a per-request allowance, spending it on the newest pictures and degrading the rest to a text notice; chat previews are decoded lazily in `src/app/conversation.rs`.
+- **Model database:** `assets/models.json` is generated from models.dev/models-cn by `cargo run --example update_models`; don't hand-edit it.
 - **Style:** short, purposeful comments; keep functions small and names meaningful; run `cargo fmt` and `cargo clippy` before wrapping up.
 
 ## Repository
