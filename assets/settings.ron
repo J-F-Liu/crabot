@@ -76,17 +76,17 @@
     task_models: (
         easy: (
             provider_id: "deepseek",
-            model_id: "deepseek-v4-flash",
+            model_id: "deepseek-flash",
             thinking: true,
             thinking_level: "high",
-            context_window: 1048576,
+            context_window: 1000000,
         ),
         medium: (
             provider_id: "deepseek",
             model_id: "deepseek-v4-pro",
             thinking: true,
             thinking_level: "high",
-            context_window: 1048576,
+            context_window: 1000000,
         ),
         hard: (
             provider_id: "",
