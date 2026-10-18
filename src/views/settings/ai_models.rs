@@ -202,28 +202,26 @@ fn small_button(
 /// Height of the models row: the ID list on the left, the editor on the right.
 const MODELS_SECTION_HEIGHT: f32 = 240.0;
 
+/// Detail pane width, sharing the row with the model table.
+const MODEL_DETAIL_WIDTH: Length = Length::FillPortion(2);
+
 /// Rows visible in the model list; longer lists show the search box.
 const MODEL_LIST_SCROLL_ROWS: usize = 9;
 
-/// IDs shown in the model list: checked models first (configured order),
-/// then remaining fetched IDs.
+/// IDs shown: checked models first, then unchecked, then fetched.
 fn display_model_ids(state: &SettingsState) -> Vec<&str> {
-    let provider_ids: Vec<&str> = provider_models(state)
+    let mut ids: Vec<&str> = provider_models(state)
         .map(|ms| ms.iter().map(|m| m.id.as_str()).collect())
         .unwrap_or_default();
-    let fetched = &state.available_model_ids;
-    if fetched.is_empty() {
-        return provider_ids;
+    // Checked models stay visible even when /models no longer offers them.
+    for id in state
+        .unchecked_model_ids()
+        .chain(state.available_model_ids.iter().map(String::as_str))
+    {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
     }
-    // Checked models always stay visible — they may not be offered by the
-    // /models endpoint (custom or stale IDs) but are still in the config.
-    let tail: Vec<&str> = fetched
-        .iter()
-        .filter(|id| !provider_ids.contains(&id.as_str()))
-        .map(String::as_str)
-        .collect();
-    let mut ids = provider_ids;
-    ids.extend(tail);
     ids
 }
 
@@ -561,7 +559,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                 // and stays visible while a filter is applied.
                 let search = (!state.fetching_models
                     && (!state.model_filter.is_empty()
-                        || state.available_model_ids.len() > MODEL_LIST_SCROLL_ROWS))
+                        || display_model_ids(state).len() > MODEL_LIST_SCROLL_ROWS))
                     .then(|| {
                         text_input(lang.tr("Search models…"), &state.model_search)
                             .on_input(|v| SettingsEvent::Models(ModelsEvent::EditModelSearch(v)))
@@ -968,96 +966,80 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
             column![
                 scrollable(column(model_rows).spacing(1))
                     .height(Length::Fill)
-                    .width(Length::FillPortion(1)),
+                    .width(Length::Fill),
                 add_footer
             ]
             .spacing(2),
         )
         .padding(2)
+        .width(Length::Fill)
         .style(|_: &iced::Theme| container::Style {
             border: Border::default().rounded(4).width(1).color(color_border()),
             ..container::Style::default()
         });
 
-        // ── Details panel ────────────────────────────────────────
-        let details: Element<'_, SettingsEvent> = if let Some(selected_id) =
-            &state.selected_model_id
-        {
-            if let Some(model) =
-                provider_models(state).and_then(|ms| ms.iter().find(|m| &m.id == selected_id))
-            {
-                // Checked model: show the editable parameter form.
-                let offers = offers_for(state, &model.id);
-                match state.model_edit.as_ref() {
-                    Some(draft) => model_edit_panel(model, draft, offers, lang),
-                    None => readonly_model_detail(model, lang),
-                }
-            } else if let Some(details) = state.model_db.get(selected_id) {
-                let active_cost = active_offer(state, details);
-
-                let header = base_header(lang, &details.name, details.thinking, &[]);
-
-                let detail = model_detail_panel(
-                    active_cost,
-                    &details.input,
-                    details.context_window,
-                    details.max_tokens,
-                    header,
-                    lang,
-                );
-
-                // Show offer-source picker when multiple offers exist.
-                if details.offers.len() > 1 {
-                    column![
-                        container(
-                            row![
-                                text(lang.tr("Offer"))
-                                    .size(12)
-                                    .color(color_muted())
-                                    .width(60),
-                                offer_picker(&details.offers, Some(active_cost.source.clone()))
-                                    .text_size(12)
-                                    .width(Length::Fill),
-                            ]
-                            .spacing(10)
-                            .align_y(Alignment::Center),
-                        )
-                        .padding([4, 0]),
-                        detail,
-                    ]
-                    .spacing(6)
-                    .into()
-                } else {
-                    detail
-                }
-            } else {
-                container(
-                    text(lang.tr("Check the box to add this model,\nthen save to see parameters."))
-                        .size(11)
-                        .color(color_muted()),
-                )
-                .padding(8)
-                .style(form_card_style)
-                .width(Length::FillPortion(1))
-                .into()
-            }
-        } else {
-            container(
-                text(lang.tr("Click a model ID to see details."))
-                    .size(11)
-                    .color(color_muted()),
-            )
-            .padding(8)
-            .style(form_card_style)
-            .width(Length::FillPortion(1))
-            .into()
-        };
-        row![table, details].spacing(10).into()
+        row![table, model_details_view(state)].spacing(10).into()
     };
     row![header, body]
         .spacing(10)
         .height(Length::Fixed(MODELS_SECTION_HEIGHT))
         .into()
+}
+
+/// Right-hand panel: editable form for a checked model, preview otherwise.
+fn model_details_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
+    let Some(selected_id) = &state.selected_model_id else {
+        return detail_placeholder(lang.tr("Click a model ID to see details."));
+    };
+    if let Some(model) =
+        provider_models(state).and_then(|ms| ms.iter().find(|m| &m.id == selected_id))
+    {
+        let offers = offers_for(state, &model.id);
+        return match state.model_edit.as_ref() {
+            Some(draft) => model_edit_panel(model, draft, offers, lang),
+            None => readonly_model_detail(model, lang),
+        };
+    }
+    let Some(details) = state.model_db.get(selected_id) else {
+        return detail_placeholder(
+            lang.tr("Check the box to add this model,\nthen save to see parameters."),
+        );
+    };
+
+    let active_cost = active_offer(state, details);
+    let header = base_header(lang, &details.name, details.thinking, &[]);
+    let detail = model_detail_panel(
+        active_cost,
+        &details.input,
+        details.context_window,
+        details.max_tokens,
+        header,
+        lang,
+    );
+    if details.offers.len() <= 1 {
+        return detail;
+    }
+    column![
+        container(
+            row![
+                text(lang.tr("Offer"))
+                    .size(12)
+                    .color(color_muted())
+                    .width(60),
+                offer_picker(&details.offers, Some(active_cost.source.clone()))
+                    .text_size(12)
+                    .width(Length::Fill),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        )
+        .padding([4, 0]),
+        detail,
+    ]
+    .spacing(6)
+    .width(MODEL_DETAIL_WIDTH)
+    .into()
 }
 
 /// Renders the common lower half of the model detail panel.
@@ -1109,7 +1091,16 @@ fn model_detail_panel<'a>(
     container(column(rows).spacing(2))
         .padding(8)
         .style(form_card_style)
-        .width(Length::FillPortion(2))
+        .width(MODEL_DETAIL_WIDTH)
+        .into()
+}
+
+/// Muted placeholder shown when no model detail is available.
+fn detail_placeholder(message: &'static str) -> Element<'static, SettingsEvent> {
+    container(text(message).size(11).color(color_muted()))
+        .padding(8)
+        .style(form_card_style)
+        .width(MODEL_DETAIL_WIDTH)
         .into()
 }
 
@@ -1304,7 +1295,7 @@ fn model_edit_panel<'a>(
     container(scrollable(form).width(Length::Fill).height(Length::Fill))
         .padding(8)
         .style(form_card_style)
-        .width(Length::FillPortion(2))
+        .width(MODEL_DETAIL_WIDTH)
         .into()
 }
 
@@ -1404,7 +1395,9 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             state.fetching_models = false;
             match result {
                 Ok(ids) => {
-                    if !provider_id.is_empty() {
+                    if !provider_id.is_empty()
+                        && state.working_models.providers.contains_key(&provider_id)
+                    {
                         state
                             .cached_model_ids
                             .insert(provider_id.clone(), ids.clone());
@@ -1446,6 +1439,8 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
                         state.model_edit = None;
                     }
                 }
+                // Keep the unchecked row visible.
+                state.remember_unchecked_model(&id);
             }
         }
         ModelsEvent::SelectModelDetail(id) => {
@@ -1483,6 +1478,7 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
         }
         ModelsEvent::DeleteProvider(id) => {
             state.working_models.providers.shift_remove(&id);
+            state.forget_provider(&id);
             // Remove any labels referencing this provider
             state
                 .working_models

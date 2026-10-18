@@ -124,6 +124,8 @@ pub(crate) struct SettingsState {
     /// Generation of the current model fetch; mismatched results are stale.
     pub(crate) models_fetch_generation: u64,
     pub(super) available_model_ids: Vec<String>,
+    /// Unchecked IDs kept visible in the list, per provider.
+    unchecked_model_ids: HashMap<String, Vec<String>>,
     pub(super) models_fetch_error: Option<String>,
     /// Raw model-search text, applied as the filter on Enter.
     pub(super) model_search: String,
@@ -234,6 +236,7 @@ impl Default for SettingsState {
             fetching_models: false,
             models_fetch_generation: 0,
             available_model_ids: Vec::new(),
+            unchecked_model_ids: HashMap::new(),
             models_fetch_error: None,
             model_search: String::new(),
             model_filter: String::new(),
@@ -315,6 +318,35 @@ impl SettingsState {
     fn invalidate_models_fetch(&mut self) {
         self.bump_models_fetch_generation();
         self.fetching_models = false;
+    }
+
+    /// IDs unchecked this session for the current provider.
+    pub(super) fn unchecked_model_ids(&self) -> impl Iterator<Item = &str> {
+        self.unchecked_model_ids
+            .get(&self.selected_provider_id)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    }
+
+    /// Keep an unchecked ID visible in the model list.
+    pub(super) fn remember_unchecked_model(&mut self, id: &str) {
+        let ids = self
+            .unchecked_model_ids
+            .entry(self.selected_provider_id.clone())
+            .or_default();
+        if !ids.iter().any(|seen| seen == id) {
+            ids.push(id.to_string());
+        }
+    }
+
+    /// Drop per-provider caches and any pending fetch after a provider is removed.
+    pub(super) fn forget_provider(&mut self, provider_id: &str) {
+        self.unchecked_model_ids.remove(provider_id);
+        self.cached_model_ids.remove(provider_id);
+        if self.selected_provider_id == provider_id {
+            self.invalidate_models_fetch();
+        }
     }
 
     /// Clear the cached model list and display state for the current provider.
