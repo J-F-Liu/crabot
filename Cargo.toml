@@ -1,6 +1,6 @@
 [package]
 name = "crabot"
-version = "0.9.2"
+version = "1.0.0"
 edition = "2024"
 description = "A smart and powerful coding agent with native GUI."
 license = "MIT"
@@ -15,9 +15,9 @@ serde_json = "1"
 chrono = "0.4"
 rfd = "0.17"
 home = "0.5"
-# `default` is just `rustls-tls` = `reqwest/rustls`, which drags in aws-lc-rs;
-# our own reqwest entry below already enables TLS (rustls + ring provider).
-genai = { version = "=0.7.0-beta.24", default-features = false }
+# `default` would enable `rustls-tls` = `reqwest/rustls`, which drags in aws-lc-rs;
+# our own reqwest entry below already enables TLS (rustls + ring) and system-proxy.
+genai = { version = "=0.7.0-rc.8", default-features = false }
 futures = "0.3"
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -94,7 +94,9 @@ open = "5.4.0"
 semver = "1.0"
 # Only `ZipArchive::new` + `extract` are used, on our own deflate release assets;
 # `deflate` would also build zopfli (a compressor) for nothing.
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "8.6.0", default-features = false, features = [
+    "deflate-flate2",
+] }
 flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"
