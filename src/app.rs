@@ -707,6 +707,8 @@ pub(crate) enum Message {
     TogglePaneSection(PaneSection),
     /// Managed process started/exited; refresh the cached right-pane list.
     ProcessTick,
+    /// Emitted at each local midnight to refresh date-dependent state.
+    DateTick,
     /// The OS switched between light and dark appearance.
     SystemThemeChanged(bool),
     /// ACP HTTP server bridge events.
@@ -768,7 +770,7 @@ impl App {
         let enabled_tools_count = tools.enabled_tools.len();
         let enabled_mcp_count = tools.enabled_mcp_servers.len();
 
-        let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let date_str = prompt::current_date();
         let update_available = saved
             .last_update_version
             .as_ref()
@@ -985,6 +987,10 @@ impl App {
             // only reads the snapshot.
             Message::ProcessTick => {
                 self.running_processes = tools::process::running_processes();
+                Task::none()
+            }
+            Message::DateTick => {
+                prompt::refresh_date(self);
                 Task::none()
             }
             Message::SystemThemeChanged(dark) => {

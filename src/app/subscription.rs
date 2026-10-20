@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use futures::Stream;
 use iced::event;
 use iced::keyboard;
 use iced::mouse;
@@ -22,6 +23,30 @@ static LAST_CURSOR: std::sync::Mutex<Option<Point>> = std::sync::Mutex::new(None
 
 /// Interval between auto-repeat scroll ticks while an arrow is held.
 const SCROLL_REPEAT_MS: u64 = 50;
+
+/// Cap per sleep, so waking from OS suspend re-checks the date within an hour.
+const MAX_SLEEP_SPAN: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Emits once at each local midnight so date-dependent UI can roll over.
+fn midnight_events() -> impl Stream<Item = Message> {
+    futures::stream::unfold((), |()| async {
+        let start = chrono::Local::now().date_naive();
+        while chrono::Local::now().date_naive() == start {
+            tokio::time::sleep(until_next_midnight().min(MAX_SLEEP_SPAN)).await;
+        }
+        Some((Message::DateTick, ()))
+    })
+}
+
+/// Time from now until the next local midnight (at least one second).
+fn until_next_midnight() -> std::time::Duration {
+    let now = chrono::Local::now();
+    let midnight = (now.date_naive() + chrono::Days::new(1)).and_time(chrono::NaiveTime::MIN);
+    (midnight - now.naive_local())
+        .to_std()
+        .unwrap_or_default()
+        .max(std::time::Duration::from_secs(1))
+}
 
 /// Global event subscription mapping raw OS/input events to domain [`Message`]s.
 pub(crate) fn subscription(state: &App) -> Subscription<Message> {
@@ -177,6 +202,8 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
         iced::system::theme_changes()
             .map(|mode| Message::SystemThemeChanged(mode == iced::theme::Mode::Dark)),
         repeat_sub,
+        // Refresh the Date field when the local date rolls over at midnight.
+        Subscription::run(midnight_events),
         // One tick per process start/exit; each tick refreshes the cached
         // process list in App state (plus one initial snapshot tick).
         Subscription::run(process::events).map(|_| Message::ProcessTick),

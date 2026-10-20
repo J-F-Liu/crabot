@@ -33,6 +33,19 @@ impl PartialEq for FilepathEntry {
 
 use crate::app::{App, ConversationEvent, FocusedTarget, Message, PromptEvent};
 
+/// Today's local date in the format shown in the Date field.
+pub(crate) fn current_date() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Refresh the Date field after a date rollover.
+pub(crate) fn refresh_date(app: &mut App) {
+    let today = current_date();
+    if app.prompt.date.1 != today {
+        app.prompt.date.1 = today;
+    }
+}
+
 pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
     match event {
         PromptEvent::ToggleEnabled(name, enabled) => match name {
