@@ -1,8 +1,8 @@
-//! Per-session file snapshots backing the right-pane Revert buttons. The first
-//! `write`/`edit` on a file stores its original content in
-//! `.agent/snapshots/{session_id}/{hash}.existed`, or an empty `{hash}.created`
-//! when the file didn't exist yet; Revert restores the content or deletes the
-//! file. Snapshots may hold secrets — they live in gitignored `.agent/` and are
+//! Per-session file snapshots backing the right-pane Revert buttons: the first
+//! `write`/`edit` on a file stores its pre-image in `.agent/snapshots/{session_id}`
+//! (`{hash}.existed`, or an empty `{hash}.created` for new files), Revert
+//! restores or deletes it, and a click diffs it in VS Code against a copy in
+//! `.agent/diffs/`. Snapshots may hold secrets — `.agent/` is gitignored and
 //! deleted on tab close / app exit.
 
 use std::collections::hash_map::DefaultHasher;
@@ -28,6 +28,11 @@ fn snapshots_root(workspace: &Path) -> PathBuf {
 
 fn snapshot_dir(workspace: &Path, session_id: &str) -> PathBuf {
     snapshots_root(workspace).join(session_id)
+}
+
+/// Diff-side copies live beside the snapshots, so removing one never blocks the other.
+fn diffs_root(workspace: &Path) -> PathBuf {
+    workspace.join(".agent").join("diffs")
 }
 
 /// Advisory-lock file marking an instance as active on a workspace.
@@ -213,13 +218,20 @@ pub(crate) fn clear_snapshots(tab: &mut SessionTab) {
     }
 }
 
-/// Delete the session's snapshot files (tab closed / snapshot scope reset).
+/// Delete the session's snapshots and diff-side copies (tab closed / scope reset).
 pub(crate) fn cleanup(workspace: &Path, session_id: &str) {
-    if !workspace.as_os_str().is_empty()
-        && let Err(e) = std::fs::remove_dir_all(snapshot_dir(workspace, session_id))
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::debug!(session = %session_id, "failed to clean up snapshots: {e}");
+    if workspace.as_os_str().is_empty() {
+        return;
+    }
+    for dir in [
+        snapshot_dir(workspace, session_id),
+        diff_root(workspace, session_id),
+    ] {
+        if let Err(e) = std::fs::remove_dir_all(&dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(session = %session_id, dir = %dir.display(), "failed to clean up: {e}");
+        }
     }
 }
 
@@ -236,9 +248,11 @@ pub(crate) fn cleanup_snapshots(app: &mut App) {
         };
         match probe.try_lock() {
             Ok(()) => {
-                // Keep the snapshots root itself, clear only its entries.
-                if let Err(e) = clear_dir(&snapshots_root(&workspace)) {
-                    tracing::debug!(workspace = %workspace.display(), "failed to clean snapshots: {e}");
+                // Keep the roots themselves, clear only their entries.
+                for root in [snapshots_root(&workspace), diffs_root(&workspace)] {
+                    if let Err(e) = clear_dir(&root) {
+                        tracing::debug!(root = %root.display(), "failed to clean up: {e}");
+                    }
                 }
             }
             // Another instance still holds the shared lock — keep its snapshots.
@@ -264,6 +278,31 @@ fn clear_dir(dir: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+// ── Pre-image ↔ current pair ────────────────────────────────────
+// `super::diff` owns the flow; this module only supplies both sides.
+
+/// Snapshot content file of `path` plus its current on-disk location; `None`
+/// when either side is gone (nothing to diff).
+pub(crate) fn diff_sides(
+    workspace: &Path,
+    session_id: &str,
+    path: &str,
+) -> Option<(PathBuf, PathBuf)> {
+    let key = canonical_key(workspace, path)?;
+    let current = PathBuf::from(&key);
+    let (existed_file, created_file) = snapshot_paths(&snapshot_dir(workspace, session_id), &key);
+    // `created` is the empty marker of a file this session introduced.
+    let source = [existed_file, created_file]
+        .into_iter()
+        .find(|p| p.exists())?;
+    current.exists().then_some((source, current))
+}
+
+/// Directory holding diff-side copies; cleaned up with the session snapshots.
+pub(crate) fn diff_root(workspace: &Path, session_id: &str) -> PathBuf {
+    diffs_root(workspace).join(session_id)
 }
 
 // ── Background revert ──────────────────────────────────────────────

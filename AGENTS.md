@@ -10,14 +10,14 @@ Everything configurable is meant to be visible and toggleable in the UI: model, 
 
 ### Three-pane GUI
 
-A single window with a resizable left pane (model config, system-prompt sections, session picker, work mode, prompt editor, tool list), a center pane (session tabs, conversation turns, search bar, status bar), and a right pane (collapsible from the tab bar; theme toggle, context-window/token stats, todo list, modified files with Revert / Revert All, process list, restart). All panes and the settings dialog live in `src/views/`.
+A single window with a resizable left pane (model config, system-prompt sections, session picker, work mode, prompt editor, tool list), a center pane (session tabs, conversation turns, search bar, status bar), and a right pane (collapsible from the tab bar; theme toggle, context-window/token stats, todo list, modified files with Revert / Revert All and click-to-diff, process list, restart). All panes and the settings dialog live in `src/views/`.
 
 ### Data flow
 
-- **UI → state:** `App::update` (`src/app.rs`) dispatches domain messages to handlers in `src/app/` (`layout`, `conversation`, `prompt`, `tool_state`, `settings`, `overlay`, `session_state`, `snapshot`).
+- **UI → state:** `App::update` (`src/app.rs`) dispatches domain messages to handlers in `src/app/` (`layout`, `conversation`, `prompt`, `tool_state`, `settings`, `overlay`, `session_state`, `snapshot`, `diff`).
 - **Agent loop:** `llm::send_stream` sends a request with system prompt + tool declarations + history, streams reply chunks, executes tool calls, appends results, and repeats until the model stops calling tools. It handles cancellation, retries transient failures, and detects stalled streams. Independent tool calls run in parallel batches; interactive or file-mutating tools act as serial barriers.
 - **Persistence:** RON config in `~/.crabot/` (settings, models, tools, mcp); sessions as JSONL under `.agent/sessions/YYYY-MM/`, appended one message at a time so a crash mid-turn loses nothing; prompt attachments are recorded as path markers and materialized when a request is built.
-- **Snapshots:** `write`/`edit` targets are pre-imaged before tool execution into `.agent/snapshots/`, backing the right-pane Revert actions.
+- **Snapshots:** `write`/`edit` targets are pre-imaged before tool execution into `.agent/snapshots/`, backing the right-pane Revert actions; clicking a modified file spawns `code --diff` on a copy of that pre-image against the current file (`src/app/diff.rs`).
 - **Assets:** bundled with `include_dir!` and seeded to `~/.crabot/` on first boot.
 - **Extras:** MCP servers connect over stdio/HTTP via `rmcp`; an optional ACP bridge exposes sessions to external editors.
 

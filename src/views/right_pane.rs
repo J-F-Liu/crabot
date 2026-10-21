@@ -1,13 +1,17 @@
 use std::borrow::Cow;
+use std::time::Duration;
 
 use iced::{
     Alignment, Color, Element, Fill, Font, Length, alignment, font, padding,
-    widget::{Space, button, column, container, row, rule, scrollable, text, toggler},
+    widget::{Space, button, column, container, row, rule, scrollable, text, toggler, tooltip},
 };
 use iced_selection::Text as SelectableText;
 
 use super::icons;
-use super::styles::{pane_side, primary_button, primary_toggler, secondary_button, sel_primary};
+use super::styles::{
+    link_button, pane_side, primary_button, primary_toggler, secondary_button, sel_primary,
+    tooltip_style,
+};
 use super::theme::{CRABOT_DANGER, thin_horizontal, thin_vertical};
 use crate::RightPaneEvent;
 use crate::acp::AcpState;
@@ -126,6 +130,23 @@ fn file_row<'a>(path: &'a str) -> Element<'a, RightPaneEvent> {
     container(SelectableText::new(path).size(13).style(sel_primary))
         .padding([1, 0])
         .into()
+}
+
+/// Clickable path that opens the snapshot ↔ current diff in VS Code.
+fn diff_row<'a>(path: &'a str, tip: &'static str) -> Element<'a, RightPaneEvent> {
+    tooltip(
+        button(text(path).size(13))
+            .on_press(RightPaneEvent::OpenDiff(path.to_string()))
+            .style(link_button)
+            .width(Fill)
+            .padding([1, 4]),
+        text(tip).size(11).color(Color::WHITE),
+        tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .delay(Duration::from_millis(400))
+    .style(tooltip_style)
+    .into()
 }
 
 /// Build the todo-list section, returning `None` when the list is empty.
@@ -364,18 +385,27 @@ pub(crate) fn right_pane<'a>(
             trailing,
         ));
         if expanded || show_revert_all {
-            let can_revert = |p: &String| tab.snapshot_files.contains(p) && !tab.running();
+            let tip = lang.tr("Diff snapshot vs. current file in VS Code");
             let files: Vec<_> = session
                 .modified_files
                 .iter()
                 .map(|p| {
-                    if can_revert(p) {
-                        with_trailing(
-                            file_row(p),
-                            revert_button(lang.tr("Revert"), RightPaneEvent::RevertFile(p.clone())),
-                        )
+                    // No pre-image means neither a diff nor a Revert button.
+                    let snapshotted = tab.snapshot_files.contains(p);
+                    let path_row = if snapshotted {
+                        diff_row(p, tip)
                     } else {
                         file_row(p)
+                    };
+                    if snapshotted && !tab.running() {
+                        row![
+                            path_row,
+                            revert_button(lang.tr("Revert"), RightPaneEvent::RevertFile(p.clone())),
+                        ]
+                        .align_y(Alignment::Center)
+                        .into()
+                    } else {
+                        path_row
                     }
                 })
                 .collect();

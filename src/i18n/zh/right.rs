@@ -60,4 +60,22 @@ pub static TABLE: &[(&str, &str)] = &[
         "未设置工作区，无法还原文件。",
     ),
     ("Revert task failed: {e}", "还原任务失败：{e}"),
+    // ── snapshot diff in VS Code (app/diff.rs, views/right_pane.rs) ──
+    (
+        "Diff snapshot vs. current file in VS Code",
+        "在 VS Code 中对比快照与当前文件",
+    ),
+    (
+        "VS Code ('code') not found on PATH — install it to open the diff",
+        "未在 PATH 中找到 VS Code（'code'），安装后才能打开对比",
+    ),
+    (
+        "Failed to open the diff in VS Code: {e}",
+        "在 VS Code 中打开对比失败：{e}",
+    ),
+    (
+        "Nothing to diff — the snapshot or file is gone",
+        "无可对比内容——快照或文件已不存在",
+    ),
+    ("Diff task failed: {e}", "对比任务失败：{e}"),
 ];

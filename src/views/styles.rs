@@ -158,6 +158,35 @@ pub(crate) fn secondary_button(_theme: &Theme, status: button::Status) -> button
     }
 }
 
+/// Borderless text button — file paths that open an external diff.
+pub(crate) fn link_button(theme: &Theme, status: button::Status) -> button::Style {
+    flat_button(status, color_primary(theme))
+}
+
+/// Borderless button: transparent at rest, highlighted on hover/press.
+fn flat_button(status: button::Status, text_color: Color) -> button::Style {
+    let base = button::Style {
+        background: None,
+        text_color,
+        ..button::Style::default()
+    };
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(color_hover().into()),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(color_pressed().into()),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            text_color: color_muted(),
+            ..base
+        },
+    }
+}
+
 /// Destructive red button — irreversible actions like Revert All.
 pub(crate) fn danger_button(_theme: &Theme, status: button::Status) -> button::Style {
     colored(
@@ -471,27 +500,7 @@ pub(crate) fn pick_list_menu_style(_theme: &Theme) -> iced::widget::overlay::men
 
 /// Flat menu-item button style with hover highlight, like a native context menu.
 pub(crate) fn menu_item_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let base = button::Style {
-        background: None,
-        text_color: color_text_strong(),
-        border: Border::default(),
-        ..button::Style::default()
-    };
-    match status {
-        button::Status::Hovered => button::Style {
-            background: Some(color_hover().into()),
-            ..base
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(color_pressed().into()),
-            ..base
-        },
-        button::Status::Disabled => button::Style {
-            text_color: color_muted(),
-            ..base
-        },
-        _ => base,
-    }
+    flat_button(status, color_text_strong())
 }
 
 /// Muted style for a disabled DropDown.

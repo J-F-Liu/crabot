@@ -29,6 +29,7 @@ use crate::widgets::textarea::{self, TextArea};
 
 mod attention;
 pub(crate) mod conversation;
+pub(crate) mod diff;
 mod layout;
 mod overlay;
 pub(crate) mod prompt;
@@ -678,6 +679,8 @@ pub(crate) enum RightPaneEvent {
     RevertFile(String),
     /// Restore all snapshotted files of the current session.
     RevertAll,
+    /// Open the snapshot ↔ current diff of a modified file in VS Code.
+    OpenDiff(String),
     /// Dismiss the transient revert error message.
     DismissRevertError,
     /// Expand or collapse a right-pane section.
@@ -702,6 +705,10 @@ pub(crate) enum Message {
     RevertDone(usize, Result<String, String>),
     /// Revert All finished: (tab number, per-file outcomes).
     RevertAllDone(usize, Vec<Result<String, String>>),
+    /// Open the snapshot ↔ current diff of a modified file.
+    OpenDiff(String),
+    /// Diff launch finished: (tab number, Ok | Err(message)).
+    DiffDone(usize, Result<(), String>),
     DismissRevertError,
     /// Expand or collapse a right-pane section.
     TogglePaneSection(PaneSection),
@@ -953,7 +960,7 @@ impl App {
                             }
                         } else {
                             tracing::info!(exe = %exe.display(), "relaunching current executable");
-                            if let Err(e) = spawn_relaunch(&exe, &[]) {
+                            if let Err(e) = spawn_detached(&exe, &[]) {
                                 tracing::error!("failed to spawn replacement process: {e}");
                             }
                         }
@@ -968,6 +975,8 @@ impl App {
             Message::RevertAllDone(number, outcomes) => {
                 snapshot::revert_all_done(self, number, outcomes)
             }
+            Message::OpenDiff(path) => diff::open_diff(self, path),
+            Message::DiffDone(number, outcome) => diff::diff_done(self, number, outcome),
             Message::DismissRevertError => {
                 self.conversation.viewing_mut().modified_files_error = None;
                 Task::none()
@@ -1214,6 +1223,7 @@ impl App {
                     RightPaneEvent::Restart => Message::RestartApp,
                     RightPaneEvent::RevertFile(path) => Message::RevertFile(path),
                     RightPaneEvent::RevertAll => Message::RevertAll,
+                    RightPaneEvent::OpenDiff(path) => Message::OpenDiff(path),
                     RightPaneEvent::DismissRevertError => Message::DismissRevertError,
                     RightPaneEvent::ToggleSection(section) => Message::TogglePaneSection(section),
                     RightPaneEvent::ToggleAcpServer(enabled) => {
@@ -1298,18 +1308,23 @@ impl App {
     }
 }
 
-/// Spawn a detached replacement for app restart, nulls stdio, and on Unix
-/// starts a new session so the child outlives the parent's terminal.
-pub(crate) fn spawn_relaunch(
+/// Spawn a child that outlives crabot: nulled stdio, no console window, a new
+/// Unix session, and a reaper thread so it never becomes a zombie.
+pub(crate) fn spawn_detached(
     program: impl AsRef<std::ffi::OsStr>,
-    args: &[&str],
-) -> std::io::Result<std::process::Child> {
+    args: &[&std::ffi::OsStr],
+) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1323,5 +1338,9 @@ pub(crate) fn spawn_relaunch(
             });
         }
     }
-    cmd.spawn()
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
