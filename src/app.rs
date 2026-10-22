@@ -208,6 +208,8 @@ pub(crate) struct ToolState {
     pub(crate) mcp_pending: HashSet<String>,
     /// Per-server discovery counter; results tagged with an older epoch are stale.
     pub(crate) mcp_discovery_epoch: HashMap<String, u64>,
+    /// Pre-reload tool names per server, so a reload only enables genuinely new tools.
+    pub(crate) mcp_known_tools: HashMap<String, HashSet<String>>,
     pub(crate) tool_list_state: ToolListState,
 }
 
@@ -222,16 +224,23 @@ impl ToolState {
         *epoch
     }
 
-    /// Drop a server's discovery state (connection, error, pending, tools) and
-    /// bump its epoch so in-flight discoveries for the old config are stale.
-    /// Returns the tool names that left the registry.
+    /// Drop a server's connection, discovery state, and tools, bumping its epoch
+    /// so in-flight discoveries go stale. Returns the removed tool names, keeping
+    /// enabled state for names a built-in, custom, or other MCP tool still claims.
     pub(crate) fn drop_mcp_server(&mut self, server: &str) -> Vec<String> {
         tools::mcp::drop_connection(server);
         self.enabled_mcp_servers.remove(server);
         self.mcp_errors.remove(server);
         self.mcp_pending.remove(server);
+        self.mcp_known_tools.remove(server);
         self.next_epoch(server);
-        let removed = self.tool_registry.unregister_mcp_group(server);
+        let removed: Vec<String> = self
+            .tool_registry
+            .take_mcp_group(server)
+            .into_iter()
+            .map(|tool| tool.name)
+            .filter(|name| !self.tool_registry.owns_name(name))
+            .collect();
         self.enabled_tools.retain(|name| !removed.contains(name));
         removed
     }
@@ -241,7 +250,7 @@ impl ToolState {
         let epoch = self.next_epoch(&server.name);
         self.mcp_pending.insert(server.name.clone());
         Task::perform(
-            async move { tools::mcp::discover_mcp_server(server).await },
+            async move { tools::mcp::discover_mcp_server(server, epoch).await },
             move |(name, result)| {
                 Message::Tools(ToolEvent::McpToolsDiscovered((name, epoch, result)))
             },
@@ -779,6 +788,7 @@ impl App {
             mcp_errors: HashMap::new(),
             mcp_pending: HashSet::new(),
             mcp_discovery_epoch: HashMap::new(),
+            mcp_known_tools: HashMap::new(),
             tool_list_state: ToolListState::default(),
         };
         let tools_summary = tools.summary();

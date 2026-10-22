@@ -145,7 +145,7 @@ pub(crate) fn mcp_tools_section<'a>(
     lang: crabot::i18n::Lang,
 ) -> Element<'a, ToolListEvent> {
     let header = section_header(MCP_TOOLS, expanded, lang);
-    if !expanded || (groups.is_empty() && errors.is_empty()) {
+    if !expanded || (groups.is_empty() && errors.is_empty() && pending.is_empty()) {
         return column![header].into();
     }
     let mut rows: Vec<Element<'a, ToolListEvent>> = groups
@@ -162,13 +162,15 @@ pub(crate) fn mcp_tools_section<'a>(
             )
         })
         .collect();
-    // Error-only servers have no group yet (e.g. failed at boot).
+    // Servers still connecting or failed before listing have no group yet.
     let mut missing: Vec<&str> = errors
         .keys()
+        .chain(pending.iter())
         .filter(|name| !groups.iter().any(|(g, _)| g == *name))
         .map(String::as_str)
         .collect();
     missing.sort_unstable();
+    missing.dedup();
     rows.extend(missing.into_iter().map(|server| {
         mcp_server_group_view(
             server,

@@ -47,6 +47,16 @@ pub enum McpTransport {
     },
 }
 
+impl McpTransport {
+    /// Whether the transport has a command or URL to connect to.
+    pub fn has_target(&self) -> bool {
+        match self {
+            McpTransport::Stdio { cmd, .. } => !cmd.trim().is_empty(),
+            McpTransport::Http { url, .. } => !url.trim().is_empty(),
+        }
+    }
+}
+
 /// A single MCP server definition in `~/.crabot/mcp.ron`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServer {
@@ -111,6 +121,15 @@ pub struct McpTool {
     peer: Peer<RoleClient>,
 }
 
+/// LLM-facing tool name: `{server}_{remote}` when qualifying, else `remote`.
+pub fn tool_name(server_name: &str, qualify: bool, remote_name: &str) -> String {
+    if qualify {
+        format!("{server_name}_{remote_name}")
+    } else {
+        remote_name.to_string()
+    }
+}
+
 impl McpTool {
     fn new(
         server_name: &str,
@@ -119,11 +138,7 @@ impl McpTool {
         peer: Peer<RoleClient>,
     ) -> Self {
         let remote_name = remote.name.to_string();
-        let name = if qualify {
-            format!("{server_name}_{remote_name}")
-        } else {
-            remote_name.clone()
-        };
+        let name = tool_name(server_name, qualify, &remote_name);
         let description = remote
             .description
             .unwrap_or_else(|| "No description provided.".into());
@@ -304,7 +319,10 @@ fn format_call_tool_result(result: &rmcp::model::CallToolResult) -> String {
 /// sender whose receiver lives in the dropped service task. Without retaining
 /// the connections here, every discovered tool would be dead on arrival, with
 /// all `call_tool` requests failing as `TransportClosed`.
-static MCP_CONNECTIONS: LazyLock<Mutex<HashMap<String, McpConnection>>> =
+///
+/// The `u64` is the epoch of the discovery that produced the connection, so a
+/// superseded attempt cannot replace a newer one.
+static MCP_CONNECTIONS: LazyLock<Mutex<HashMap<String, (u64, McpConnection)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// State for an MCP connection.
@@ -313,10 +331,6 @@ pub struct McpConnection {
     _service: RunningService<RoleClient, ClientInfo>,
     /// Peer handle for making tool calls / listing tools.
     pub peer: Peer<RoleClient>,
-    /// Name of the server.
-    pub server_name: String,
-    /// Whether to qualify tool names with the server name.
-    pub qualify: bool,
 }
 
 impl McpConnection {
@@ -330,9 +344,32 @@ impl McpConnection {
     }
 }
 
+/// Retain `conn` for `server` unless a newer discovery already installed one.
+fn retain_connection(server: &str, epoch: u64, conn: McpConnection) {
+    let mut connections = crate::lock(&MCP_CONNECTIONS);
+    if connections
+        .get(server)
+        .is_some_and(|(current, _)| *current > epoch)
+    {
+        return; // `conn` drops here, killing its service.
+    }
+    connections.insert(server.to_string(), (epoch, conn));
+}
+
 /// Drop the connection for `server_name`, killing its child process if any.
 pub fn drop_connection(server_name: &str) {
     crate::lock(&MCP_CONNECTIONS).remove(server_name);
+}
+
+/// Drop `server`'s connection when it was produced by the discovery `epoch`.
+pub fn discard_connection(server: &str, epoch: u64) {
+    let mut connections = crate::lock(&MCP_CONNECTIONS);
+    if connections
+        .get(server)
+        .is_some_and(|(current, _)| *current <= epoch)
+    {
+        connections.remove(server);
+    }
 }
 
 /// Whether a live connection exists for `server_name`.
@@ -378,15 +415,10 @@ impl DiscoverFailure {
 }
 
 /// Wrap a live service as a retained connection.
-fn connection(
-    server: &McpServer,
-    service: RunningService<RoleClient, ClientInfo>,
-) -> McpConnection {
+fn connection(service: RunningService<RoleClient, ClientInfo>) -> McpConnection {
     McpConnection {
         peer: service.peer().clone(),
         _service: service,
-        server_name: server.name.clone(),
-        qualify: server.qualify_tool_names,
     }
 }
 
@@ -394,14 +426,13 @@ impl McpServer {
     /// Categorized connect attempt.
     async fn connect(&self) -> Result<McpConnection, ConnectError> {
         match &self.transport {
-            McpTransport::Stdio { cmd, env_vars } => connect_stdio(self, cmd, env_vars).await,
+            McpTransport::Stdio { cmd, env_vars } => connect_stdio(cmd, env_vars).await,
             McpTransport::Http { url, headers } => connect_http(self, url, headers).await,
         }
     }
 }
 
 async fn connect_stdio(
-    server: &McpServer,
     command: &str,
     env_vars: &IndexMap<String, String>,
 ) -> Result<McpConnection, ConnectError> {
@@ -432,7 +463,7 @@ async fn connect_stdio(
         .serve(transport)
         .await
         .map_err(|e| F::Connect.with(format!("Handshake failed: {e}")))?;
-    Ok(connection(server, service))
+    Ok(connection(service))
 }
 
 async fn connect_http(
@@ -468,11 +499,12 @@ async fn connect_http(
         .serve(transport)
         .await
         .map_err(|e| DiscoverFailure::Connect.with(format!("Handshake failed: {e}")))?;
-    Ok(connection(server, service))
+    Ok(connection(service))
 }
 
 /// Connect to one MCP server and discover its tools, reporting `(server_name, outcome)`.
-pub async fn discover_mcp_server(server: McpServer) -> (String, DiscoverResult) {
+/// `epoch` identifies the attempt so a superseded one cannot retain its connection.
+pub async fn discover_mcp_server(server: McpServer, epoch: u64) -> (String, DiscoverResult) {
     use DiscoverFailure as F;
     let name = server.name.clone();
     let timeout = Duration::from_millis(tool_limits().mcp_connect_timeout_ms);
@@ -501,8 +533,8 @@ pub async fn discover_mcp_server(server: McpServer) -> (String, DiscoverResult) 
                 .map(|t| McpTool::new(&name, qualify, t, peer.clone()))
                 .collect::<Vec<_>>();
             tracing::debug!(server = %name, tools = discovered.len(), "MCP tools discovered");
-            // Retain the connection; insert drops the old one (killing its child via Drop).
-            crate::lock(&MCP_CONNECTIONS).insert(name.clone(), conn);
+            // Retain the connection; only a newer discovery may replace it.
+            retain_connection(&name, epoch, conn);
             (name, Ok(discovered))
         }
         Ok(Err(e)) => {

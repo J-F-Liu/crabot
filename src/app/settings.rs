@@ -128,33 +128,13 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             app.refresh_tools_summary();
         }
         SettingsEvent::Mcp(McpEvent::SaveMcp) => {
-            // Snapshot current servers to detect removals / reconfigurations.
-            let old_servers = app.tools.tool_registry.mcp_servers.clone();
             app.settings_dialog.update(event);
             // Persist MCP servers and sync the tool registry.
             app.settings_dialog.working_mcp.save();
-            app.tools.tool_registry.mcp_servers = app.settings_dialog.working_mcp.servers.clone();
-            // Drop servers that were removed or reconfigured.
-            for old in &old_servers {
-                let stale = match app
-                    .tools
-                    .tool_registry
-                    .mcp_servers
-                    .iter()
-                    .find(|s| s.name == old.name)
-                {
-                    Some(new) => {
-                        new.transport != old.transport
-                            || new.qualify_tool_names != old.qualify_tool_names
-                    }
-                    None => true,
-                };
-                if stale {
-                    let removed = app.tools.drop_mcp_server(&old.name);
-                    tool_state::sync_tab_tool_names(app, &removed, &[]);
-                }
-            }
-            app.refresh_tools_summary();
+            let servers = app.settings_dialog.working_mcp.servers.clone();
+            let old_servers =
+                std::mem::replace(&mut app.tools.tool_registry.mcp_servers, servers.clone());
+            return tool_state::apply_saved_mcp_servers(app, &old_servers, &servers);
         }
         SettingsEvent::Models(ModelsEvent::SelectProvider(_))
         | SettingsEvent::Models(ModelsEvent::RefreshModels) => {

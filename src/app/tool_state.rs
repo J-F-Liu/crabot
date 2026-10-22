@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::app::{App, Message, ToolEvent};
 use crabot::HashSetExt;
@@ -18,6 +18,93 @@ pub(crate) fn sync_tab_tool_names(app: &mut App, removed: &[String], added: &[St
     }
 }
 
+/// The new name of `name`, or itself when it is not renamed.
+fn renamed(name: &str, renames: &HashMap<String, String>) -> String {
+    renames
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Move `enabled` entries onto their renamed names.
+fn rename_tools(enabled: &mut HashSet<String>, renames: &HashMap<String, String>) {
+    *enabled = enabled.iter().map(|name| renamed(name, renames)).collect();
+}
+
+/// Apply a tool-name mapping to every tab's option snapshot.
+fn sync_tab_tool_renames(app: &mut App, renames: &HashMap<String, String>) {
+    for tab in &mut app.conversation.session_tabs {
+        rename_tools(&mut tab.pane.enabled_tools, renames);
+    }
+}
+
+/// Whether the saved config needs a fresh connection and tool listing.
+fn is_reconfigured(old: &tools::mcp::McpServer, new: &tools::mcp::McpServer) -> bool {
+    old.transport != new.transport || old.qualify_tool_names != new.qualify_tool_names
+}
+
+/// Reload a reconfigured server, keeping its enabled state and tool picks.
+fn reload_mcp_server(
+    app: &mut App,
+    old: &tools::mcp::McpServer,
+    new: &tools::mcp::McpServer,
+) -> Task<Message> {
+    let tool_name = |tool: &tools::mcp::McpTool| {
+        tools::mcp::tool_name(&new.name, new.qualify_tool_names, &tool.remote_name)
+    };
+    let group = app.tools.tool_registry.take_mcp_group(&old.name);
+    let known = group.iter().map(&tool_name).collect();
+    // Never move an enabled flag onto or off a name another tool still claims.
+    let renames: HashMap<String, String> = group
+        .iter()
+        .map(|tool| (tool.name.clone(), tool_name(tool)))
+        .filter(|(from, to)| {
+            from != to
+                && !app.tools.tool_registry.owns_name(from)
+                && !app.tools.tool_registry.owns_name(to)
+        })
+        .collect();
+    rename_tools(&mut app.tools.enabled_tools, &renames);
+    sync_tab_tool_renames(app, &renames);
+    tools::mcp::drop_connection(&old.name);
+    app.tools.mcp_errors.remove(&old.name);
+    app.tools.mcp_known_tools.insert(old.name.clone(), known);
+    tracing::debug!(server = %old.name, renamed = renames.len(), "reloading MCP server");
+    app.tools.start_discovery(new.clone())
+}
+
+/// Apply a saved MCP server list: drop removed servers, reload reconfigured
+/// ones, and discover new ones. Refreshes the tools summary afterwards.
+pub(crate) fn apply_saved_mcp_servers(
+    app: &mut App,
+    old_servers: &[tools::mcp::McpServer],
+    servers: &[tools::mcp::McpServer],
+) -> Task<Message> {
+    let mut tasks: Vec<Task<Message>> = Vec::new();
+    for old in old_servers {
+        match servers.iter().find(|s| s.name == old.name) {
+            Some(new) if is_reconfigured(old, new) => {
+                tasks.push(reload_mcp_server(app, old, new));
+            }
+            Some(_) => {}
+            None => {
+                let removed = app.tools.drop_mcp_server(&old.name);
+                sync_tab_tool_names(app, &removed, &[]);
+            }
+        }
+    }
+    // New servers get listed like at boot; an empty card would only fail.
+    for new in servers {
+        let is_new = old_servers.iter().all(|old| old.name != new.name);
+        if is_new && new.transport.has_target() {
+            tracing::debug!(server = %new.name, "discovering new MCP server");
+            tasks.push(app.tools.start_discovery(new.clone()));
+        }
+    }
+    app.refresh_tools_summary();
+    Task::batch(tasks)
+}
+
 pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
     match event {
         ToolEvent::ToggleMcpServer(server, enabled) => {
@@ -26,7 +113,9 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
             if enabled {
                 app.tools.enabled_mcp_servers.set(server.clone(), true);
                 // Re-discover after a failure even if a stale connection lingers.
-                if (failed || !tools::mcp::has_connection(&server))
+                // A discovery already in flight for this server is awaited instead.
+                if !app.tools.mcp_pending.contains(&server)
+                    && (failed || !tools::mcp::has_connection(&server))
                     && let Some(config) = app.tools.tool_registry.find_mcp_server(&server)
                 {
                     return app.tools.start_discovery(config);
@@ -69,6 +158,8 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
                 > epoch
                 || app.tools.tool_registry.find_mcp_server(&server).is_none();
             if stale {
+                // A superseded attempt may still have retained its connection.
+                tools::mcp::discard_connection(&server, epoch);
                 return Task::none();
             }
             app.tools.mcp_pending.remove(&server);
@@ -79,15 +170,12 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
                     if !app.tools.enabled_mcp_servers.contains(&server) {
                         tools::mcp::drop_connection(&server);
                     }
-                    // A reconnect re-lists known tools: keep their per-tab state.
-                    let known: HashSet<String> = app
+                    // Known tools keep their state; only new ones use saved defaults.
+                    let known = app
                         .tools
-                        .tool_registry
-                        .mcp
-                        .iter()
-                        .find(|(name, _)| name == &server)
-                        .map(|(_, group)| group.iter().map(|t| t.name.clone()).collect())
-                        .unwrap_or_default();
+                        .mcp_known_tools
+                        .remove(&server)
+                        .unwrap_or_else(|| app.tools.tool_registry.mcp_tool_names(&server));
                     let added: Vec<String> = discovered
                         .iter()
                         .map(|t| t.name.clone())
@@ -102,6 +190,7 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
                 Err(failure) => {
                     app.tools.enabled_mcp_servers.remove(&server);
                     tools::mcp::drop_connection(&server);
+                    app.tools.mcp_known_tools.remove(&server);
                     // Keep the old group visible, annotated with the failure.
                     app.tools.mcp_errors.insert(server, failure);
                 }

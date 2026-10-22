@@ -68,18 +68,35 @@ impl ToolRegistry {
         upsert_group(&mut self.mcp, server_name, tools);
     }
 
-    /// Remove a server's tools from the registry, returning the removed tool names.
-    pub fn unregister_mcp_group(&mut self, server_name: &str) -> Vec<String> {
-        remove_group(&mut self.mcp, server_name)
-            .into_iter()
-            .flatten()
-            .map(|t| t.name)
-            .collect()
+    /// Remove a server's tools from the registry, returning them.
+    pub fn take_mcp_group(&mut self, server_name: &str) -> Vec<mcp::McpTool> {
+        remove_group(&mut self.mcp, server_name).unwrap_or_default()
     }
 
     /// Look up an MCP server config by name.
     pub fn find_mcp_server(&self, server: &str) -> Option<mcp::McpServer> {
         self.mcp_servers.iter().find(|s| s.name == server).cloned()
+    }
+
+    /// Whether a built-in, custom, or other MCP server's tool claims `name`.
+    /// Callers must already have removed the server's own group (`take_mcp_group`).
+    pub fn owns_name(&self, name: &str) -> bool {
+        self.builtin_names.iter().any(|n| n == name)
+            || self.custom_names.iter().any(|n| n == name)
+            || self
+                .mcp
+                .iter()
+                .flat_map(|(_, tools)| tools.iter())
+                .any(|tool| tool.name == name)
+    }
+
+    /// Names of the tools listed for `server`, empty when it is not listed yet.
+    pub fn mcp_tool_names(&self, server: &str) -> HashSet<String> {
+        self.mcp
+            .iter()
+            .find(|(name, _)| name == server)
+            .map(|(_, tools)| tools.iter().map(|t| t.name.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Return a clone of all custom tool names.
