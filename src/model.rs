@@ -61,6 +61,9 @@ impl ModelList {
             base_url: provider.base_url.clone(),
             api_type: provider.api_type.clone(),
             api_key: provider.api_key.clone(),
+            auth: provider.auth.clone(),
+            headers: provider.headers.clone(),
+            extra_body: provider.extra_body.clone(),
             strict: provider.strict_mode,
             model_id: model.id.clone(),
             max_tokens: model.max_tokens,
@@ -89,6 +92,9 @@ pub struct Provider {
     pub strict_mode: bool,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    /// Extra request-body JSON merged into every provider payload.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub extra_body: String,
     pub models: Vec<Model>,
 }
 
@@ -191,6 +197,11 @@ pub struct ModelInfo {
     pub base_url: String,
     pub api_type: String,
     pub api_key: String,
+    /// `apiKey` (send the key) or `none` (no auth); other values fall back to genai.
+    pub auth: String,
+    pub headers: BTreeMap<String, String>,
+    /// Provider-specific request-body JSON, merged by genai's `extra_body`.
+    pub extra_body: String,
     pub strict: bool,
     pub model_id: String,
     /// Output token cap; 0 means unset (provider/genai default applies).
@@ -245,6 +256,9 @@ pub struct TokenAmount {
     /// fresh input tokens
     pub input: i32,
     pub output: i32,
+    /// Thinking tokens included in `output`; displayed separately, not billed twice.
+    #[serde(default)]
+    pub reasoning: i32,
     pub cache_read: i32,
     #[serde(default)]
     pub cache_write: i32,
@@ -253,21 +267,22 @@ pub struct TokenAmount {
 impl TokenAmount {
     /// Extract token counts from a `genai::chat::Usage`.
     pub fn from_genai(usage: &genai::chat::Usage) -> Self {
-        let cache_read = usage
-            .prompt_tokens_details
-            .as_ref()
-            .and_then(|d| d.cached_tokens)
-            .unwrap_or(0);
-        let cache_write = usage
-            .prompt_tokens_details
-            .as_ref()
+        let prompt_details = usage.prompt_tokens_details.as_ref();
+        let cache_read = prompt_details.and_then(|d| d.cached_tokens).unwrap_or(0);
+        let cache_write = prompt_details
             .and_then(|d| d.cache_creation_tokens)
             .unwrap_or(0);
         let prompt = usage.prompt_tokens.unwrap_or(0);
         let input = (prompt - cache_read - cache_write).max(0);
+        let reasoning = usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens)
+            .unwrap_or(0);
         Self {
             prompt,
             input,
+            reasoning,
             cache_read,
             cache_write,
             output: usage.completion_tokens.unwrap_or(0),
@@ -282,6 +297,7 @@ impl TokenAmount {
     pub fn accumulate(&mut self, incoming: &TokenAmount) {
         self.prompt = incoming.prompt;
         self.input += incoming.input;
+        self.reasoning += incoming.reasoning;
         self.cache_read += incoming.cache_read;
         self.cache_write += incoming.cache_write;
         self.output += incoming.output;

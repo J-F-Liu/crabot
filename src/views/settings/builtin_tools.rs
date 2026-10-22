@@ -322,7 +322,9 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
                 num_input("120", &state.working_stream_stall_timeout, move |v| {
                     SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditStreamStallTimeout(v))
                 },),
-                lang.tr("Seconds with no stream data before giving up. 0 = off."),
+                lang.tr(
+                    "Seconds with no stream data or response headers before giving up. 0 = off."
+                ),
             ),
         ]
         .spacing(6),

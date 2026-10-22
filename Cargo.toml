@@ -17,7 +17,7 @@ rfd = "0.17"
 home = "0.5"
 # `default` would enable `rustls-tls` = `reqwest/rustls`, which drags in aws-lc-rs;
 # our own reqwest entry below already enables TLS (rustls + ring) and system-proxy.
-genai = { version = "=0.7.0-rc.8", default-features = false }
+genai = { version = "=0.7.0", default-features = false }
 futures = "0.3"
 tokio = { version = "1", features = [
     "rt-multi-thread",

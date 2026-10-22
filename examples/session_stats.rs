@@ -64,7 +64,7 @@ fn per_model_stats(path: &Path) -> Result<BTreeMap<String, PerModelStats>, Strin
                 entry.currency = currency;
                 prev_tally = Some((u64::from(requests), cost));
             }
-            SessionRecord::Message { .. } => {}
+            SessionRecord::Message { .. } | SessionRecord::Notice { .. } => {}
         }
     }
     Ok(out)

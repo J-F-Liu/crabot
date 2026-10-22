@@ -15,6 +15,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Token Usage: {}", "词元用量：{}"),
     ("Input tokens:", "输入词元数："),
     ("Output tokens:", "输出词元数："),
+    ("Reasoning tokens:", "推理词元数："),
     ("Cache read:", "缓存读取："),
     ("Cache write:", "缓存写入："),
     ("Session cost:", "会话成本："),

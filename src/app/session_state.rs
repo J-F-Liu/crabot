@@ -239,6 +239,8 @@ pub(crate) enum SessionEvent {
     TokenUsage(Option<genai::chat::Usage>),
     /// Auto-retry countdown after a transient failure (429/5xx/connection).
     RetryCountdown(RetryInfo),
+    /// Non-fatal warning appended to the conversation (not persisted to history).
+    Notice(String),
     Done,
     Error(String),
     Cancelled,
@@ -426,6 +428,15 @@ pub(crate) fn update(
             {
                 tc.refresh_md_cache();
             }
+        }
+        SessionEvent::Notice(text) => {
+            session.push_notice(text);
+            search.invalidate_offsets();
+            return if viewing {
+                maybe_scroll_to_end(&state.auto_scroll)
+            } else {
+                Task::none()
+            };
         }
         SessionEvent::Done => {
             session.stamp_response();

@@ -17,7 +17,7 @@ use iced::{
     },
 };
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tokio_util::sync::CancellationToken;
 
 use crabot::i18n::Lang;
@@ -117,6 +117,12 @@ pub(crate) struct SettingsState {
     pub(super) provider_api_type: String,
     pub(super) provider_auth: String,
     pub(super) provider_api_key: String,
+    /// Extra request-body JSON, edited as text.
+    pub(super) provider_extra_body: String,
+    /// Extra HTTP headers as a JSON object, edited as text.
+    pub(super) provider_headers: String,
+    /// Validation message for the two JSON fields; blocks the "Saved" feedback.
+    pub(super) provider_form_error: Option<String>,
     pub(super) provider_strict_mode: bool,
     pub(super) is_new_provider: bool,
     // Model fetching from /models endpoint
@@ -231,6 +237,9 @@ impl Default for SettingsState {
             provider_api_type: String::new(),
             provider_auth: String::new(),
             provider_api_key: String::new(),
+            provider_extra_body: String::new(),
+            provider_headers: String::new(),
+            provider_form_error: None,
             provider_strict_mode: false,
             is_new_provider: false,
             fetching_models: false,
@@ -292,6 +301,9 @@ impl SettingsState {
         self.provider_api_type = p.api_type.clone();
         self.provider_auth = p.auth.clone();
         self.provider_api_key = p.api_key.clone();
+        self.provider_extra_body = p.extra_body.clone();
+        self.provider_headers = serde_json::to_string(&p.headers).unwrap_or_default();
+        self.provider_form_error = None;
         self.provider_strict_mode = p.strict_mode;
         self.is_new_provider = false;
         self.selected_model_id = None;
@@ -364,6 +376,9 @@ impl SettingsState {
         self.provider_api_type = String::from("openai");
         self.provider_auth = String::from("apiKey");
         self.provider_api_key.clear();
+        self.provider_extra_body.clear();
+        self.provider_headers.clear();
+        self.provider_form_error = None;
         self.provider_strict_mode = false;
         self.is_new_provider = true;
         self.model_search.clear();
@@ -436,8 +451,8 @@ impl SettingsState {
         }
     }
 
-    /// Build a `Provider` from the current form fields.
-    fn build_provider(&self) -> Provider {
+    /// Build a `Provider` from the current form fields and validated JSON values.
+    fn build_provider(&self, headers: BTreeMap<String, String>, extra_body: String) -> Provider {
         Provider {
             name: self.provider_name.clone(),
             base_url: self.provider_base_url.clone(),
@@ -445,7 +460,8 @@ impl SettingsState {
             auth: self.provider_auth.clone(),
             api_key: self.provider_api_key.clone(),
             strict_mode: self.provider_strict_mode,
-            headers: Default::default(),
+            headers,
+            extra_body,
             models: vec![], // models preserved separately
         }
     }
@@ -464,11 +480,19 @@ impl SettingsState {
     /// Write the current form fields back into `working_models` for the
     /// selected provider (or create a new provider entry if `is_new_provider`).
     fn flush_current_provider(&mut self) {
+        let headers = parse_headers(&self.provider_headers);
+        let extra_body = parse_extra_body(&self.provider_extra_body);
+        let headers_invalid = headers.is_none();
+        let extra_body_invalid = extra_body.is_none();
+        // Recomputed before the name guard so fixing the JSON clears a stale error.
+        self.provider_form_error =
+            provider_json_error(self.is_new_provider, headers_invalid, extra_body_invalid);
         let name = self.provider_name.trim().to_string();
         if name.is_empty() {
             return;
         }
-        let provider = self.build_provider();
+        let provider =
+            self.build_provider(headers.unwrap_or_default(), extra_body.unwrap_or_default());
         if self.is_new_provider {
             let base = name.to_lowercase().replace(' ', "-");
             let mut id = base.clone();
@@ -487,10 +511,17 @@ impl SettingsState {
             }
             if let Some(existing) = self.working_models.providers.get_mut(&id) {
                 let models_list = std::mem::take(&mut existing.models);
-                let headers = std::mem::take(&mut existing.headers);
+                let old_headers = existing.headers.clone();
+                let old_extra_body = existing.extra_body.clone();
                 *existing = provider;
                 existing.models = models_list;
-                existing.headers = headers;
+                // Invalid JSON never overwrites the stored values.
+                if headers_invalid {
+                    existing.headers = old_headers;
+                }
+                if extra_body_invalid {
+                    existing.extra_body = old_extra_body;
+                }
             }
         }
     }
@@ -1090,4 +1121,59 @@ fn sidebar_tab_style(active: bool) -> impl Fn(&iced::Theme, button::Status) -> b
             }
         }
     }
+}
+
+/// Parse the headers JSON object; empty text means no headers.
+fn parse_headers(text: &str) -> Option<BTreeMap<String, String>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(BTreeMap::new());
+    }
+    serde_json::from_str(text).ok()
+}
+
+/// Parse the extra-body JSON; blank stays blank and only an object is accepted.
+fn parse_extra_body(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(String::new());
+    }
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .map(|_| text.to_string())
+}
+
+/// Shown when an existing provider's headers JSON can't be parsed.
+const HEADERS_INVALID: &str =
+    "Headers must be a JSON object of string values; the saved headers were left unchanged.";
+/// Shown when a new provider's headers JSON can't be parsed.
+const HEADERS_INVALID_NEW: &str =
+    "Headers must be a JSON object of string values; no headers will be saved.";
+/// Shown when an existing provider's extra body isn't a JSON object.
+const EXTRA_BODY_INVALID: &str =
+    "Extra Body must be a JSON object; the saved extra body was left unchanged.";
+/// Shown when a new provider's extra body isn't a JSON object.
+const EXTRA_BODY_INVALID_NEW: &str =
+    "Extra Body must be a JSON object; no extra body will be saved.";
+
+/// Validation message for the provider form's JSON fields, if any are invalid.
+fn provider_json_error(
+    is_new: bool,
+    headers_invalid: bool,
+    extra_body_invalid: bool,
+) -> Option<String> {
+    let (headers_msg, extra_body_msg) = if is_new {
+        (HEADERS_INVALID_NEW, EXTRA_BODY_INVALID_NEW)
+    } else {
+        (HEADERS_INVALID, EXTRA_BODY_INVALID)
+    };
+    let mut messages = Vec::new();
+    if headers_invalid {
+        messages.push(headers_msg);
+    }
+    if extra_body_invalid {
+        messages.push(extra_body_msg);
+    }
+    (!messages.is_empty()).then(|| messages.join(" "))
 }

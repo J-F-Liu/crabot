@@ -31,6 +31,8 @@ pub enum SessionRecord {
     },
     /// One history message, appended incrementally.
     Message { message: ChatMessage },
+    /// UI-only notice turn (e.g. a truncated reply); never part of the history.
+    Notice { at: usize, text: String },
     /// Cumulative usage snapshot — last record wins on load.
     Tally {
         tokens: TokenAmount,
@@ -39,6 +41,14 @@ pub enum SessionRecord {
         requests: u32,
         updated_at: String,
     },
+}
+
+/// A UI-only notice turn, anchored to the history length when it appeared.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoticeTurn {
+    /// Number of history messages already recorded when the notice was emitted.
+    pub at: usize,
+    pub text: String,
 }
 
 /// A conversation session, persisted to `.agent/sessions/` as `{id}.jsonl`.
@@ -53,6 +63,12 @@ pub struct Session {
     pub workspace: PathBuf,
     /// Raw genai messages — exact history sent to / received from the LLM.
     pub history: Vec<ChatMessage>,
+    /// Notice turns (warnings) shown between messages but never sent to the LLM.
+    #[serde(default)]
+    pub notices: Vec<NoticeTurn>,
+    /// Notice turns already written to the jsonl file.
+    #[serde(skip)]
+    pub persisted_notices: usize,
     /// Dialogs — each dialog groups one user prompt with its responses.
     #[serde(skip)]
     pub dialogs: Vec<Dialog>,
@@ -138,6 +154,8 @@ impl Session {
             model: None,
             workspace: PathBuf::new(),
             history: Vec::new(),
+            notices: Vec::new(),
+            persisted_notices: 0,
             dialogs: Vec::new(),
             persisted: 0,
             saved_meta: None,
@@ -162,6 +180,9 @@ impl Session {
         session.updated_at = String::new();
         session.cost = 0.0;
         session.persisted = 0;
+        // Notice turns are dialog-only; the copy rebuilds dialogs from history.
+        session.notices.clear();
+        session.persisted_notices = 0;
         session.saved_meta = None;
         session
     }
@@ -256,6 +277,17 @@ impl Session {
                 mode: None,
             });
         }
+    }
+
+    /// Append a notice turn (warning shown between messages) and persist it as
+    /// its own record so it survives a reload; it never enters `history`.
+    pub fn push_notice(&mut self, text: String) {
+        self.notices.push(NoticeTurn {
+            at: self.history.len(),
+            text: text.clone(),
+        });
+        self.push_turn(Turn::assistant(text, None));
+        let _ = self.save();
     }
 
     /// Mutable reference to the last turn across all dialogs.
@@ -446,6 +478,7 @@ impl Session {
         let mut accessed: Vec<String> = Vec::new();
         let mut modified: Vec<String> = Vec::new();
         let mut dialogs: Vec<Dialog> = Vec::new();
+        let mut notice_index = 0usize;
 
         /// Append `turn` to the last dialog, or start a new one if none exists.
         fn push_or_new(dialogs: &mut Vec<Dialog>, turn: Turn) {
@@ -459,7 +492,12 @@ impl Session {
             }
         }
 
-        for msg in &self.history {
+        for (index, msg) in self.history.iter().enumerate() {
+            // A notice emitted after `index` messages precedes this message's turn.
+            while let Some(notice) = self.notices.get(notice_index).filter(|n| n.at <= index) {
+                push_or_new(&mut dialogs, Turn::assistant(notice.text.clone(), None));
+                notice_index += 1;
+            }
             match msg.role {
                 ChatRole::System => {}
                 ChatRole::User => {
@@ -529,6 +567,11 @@ impl Session {
                     // Tool responses already paired with calls above; skip.
                 }
             }
+        }
+
+        // Notices emitted at the tail have no following message to anchor to.
+        for notice in &self.notices[notice_index..] {
+            push_or_new(&mut dialogs, Turn::assistant(notice.text.clone(), None));
         }
 
         self.modified_files = modified;
@@ -628,6 +671,11 @@ impl Session {
             buf.push('\n');
         }
         Self::push_messages(&mut buf, &self.history, start)?;
+        Self::push_notices(
+            &mut buf,
+            &self.notices,
+            self.persisted_notices.min(self.notices.len()),
+        )?;
         // Tally only on terminal stream events — avoids a redundant line per save.
         if with_tally {
             self.push_tally(&mut buf)?;
@@ -642,6 +690,7 @@ impl Session {
             .map_err(|e| format!("Failed to write session: {e}"))?;
 
         self.persisted = self.history.len();
+        self.persisted_notices = self.notices.len();
         self.saved_meta = Some(meta_json);
 
         // Remove a stale legacy `.json` sibling — the jsonl now holds everything.
@@ -715,6 +764,9 @@ impl Session {
                     session.created_at = created_at;
                 }
                 Ok(SessionRecord::Message { message }) => session.history.push(message),
+                Ok(SessionRecord::Notice { at, text }) => {
+                    session.notices.push(NoticeTurn { at, text });
+                }
                 Ok(SessionRecord::Tally {
                     requests,
                     tokens,
@@ -746,6 +798,7 @@ impl Session {
         }
 
         session.persisted = session.history.len();
+        session.persisted_notices = session.notices.len();
         session.saved_meta = serde_json::to_string(&session.meta_record()).ok();
         session.rebuild_dialogs();
         Ok(session)
@@ -790,6 +843,20 @@ impl Session {
                 message: msg.clone(),
             })
             .map_err(|e| format!("Failed to serialize message: {e}"))?;
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        Ok(())
+    }
+
+    /// Append `notices[start..]` as one `Notice` record line each.
+    fn push_notices(buf: &mut String, notices: &[NoticeTurn], start: usize) -> Result<(), String> {
+        for notice in &notices[start..] {
+            let line = serde_json::to_string(&SessionRecord::Notice {
+                at: notice.at,
+                text: notice.text.clone(),
+            })
+            .map_err(|e| format!("Failed to serialize notice: {e}"))?;
             buf.push_str(&line);
             buf.push('\n');
         }

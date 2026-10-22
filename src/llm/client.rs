@@ -6,7 +6,7 @@ use genai::adapter::AdapterKind;
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden, ServiceTarget};
 
-use crabot::model::resolve_api_key;
+use crabot::model::{ModelInfo, resolve_api_key};
 
 /// Adapter kind for a configured `api_type`; unknown values fall back to OpenAI.
 pub(super) fn adapter_kind(api_type: &str) -> AdapterKind {
@@ -14,14 +14,21 @@ pub(super) fn adapter_kind(api_type: &str) -> AdapterKind {
 }
 
 /// Build a genai `Client` with custom auth, endpoint, and adapter kind.
-pub(super) fn build_client(
-    base_url: &str,
-    api_key: &str,
-    api_type: &str,
-) -> Result<Client, genai::Error> {
+/// Forces `api_type` even when endpoint and auth are genai defaults.
+pub(super) fn build_client(model: &ModelInfo) -> Result<Client, genai::Error> {
+    let ModelInfo {
+        base_url,
+        api_type,
+        api_key,
+        auth,
+        ..
+    } = model;
+
+    let force_adapter = !api_type.trim().is_empty();
     let adapter_kind = adapter_kind(api_type);
     let has_custom_endpoint = !base_url.is_empty();
     let has_custom_key = !api_key.is_empty();
+    let no_auth = auth.eq_ignore_ascii_case("none");
 
     let mut builder = Client::builder();
     // LLM proxy off → no_proxy client so the registry/env proxy can't route LLM traffic.
@@ -29,13 +36,13 @@ pub(super) fn build_client(
         builder = builder.with_reqwest(direct_client().clone());
     }
 
-    if !has_custom_endpoint && !has_custom_key {
+    if !force_adapter && !has_custom_endpoint && !has_custom_key && !no_auth {
         return builder.build();
     }
 
-    let mut base_url = base_url.to_string();
-    // Ensure trailing slash so genai's URL join appends rather than replaces
+    // Ensure a trailing slash so genai's URL join appends rather than replaces
     // the last path segment (e.g. "/v1/" + "chat/completions" → "/v1/chat/completions").
+    let mut base_url = base_url.clone();
     if !base_url.ends_with('/') {
         base_url.push('/');
     }
@@ -56,7 +63,9 @@ pub(super) fn build_client(
                 default_endpoint
             };
 
-            let auth = if has_custom_key {
+            let auth = if no_auth {
+                AuthData::None
+            } else if has_custom_key {
                 AuthData::from_single(api_key.as_str())
             } else {
                 default_auth

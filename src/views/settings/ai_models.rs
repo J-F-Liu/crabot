@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use super::{
     NEW_LABEL_INPUT_ID, NEW_MODEL_ID_INPUT_ID, NEW_PROVIDER_NAME_INPUT_ID, SettingsEvent,
     SettingsState, SettingsTab, delete_button_style, field_row, form_card_style, label_col,
@@ -11,6 +13,7 @@ use crate::views::theme::{
 use crabot::i18n::Lang;
 use crabot::model::{Cost, Model, currency_symbol};
 use crabot::model_database::ModelDatabase;
+use genai::adapter::AdapterKind;
 use iced::{
     Alignment, Border, Color, Element, Length, mouse,
     widget::{
@@ -18,6 +21,20 @@ use iced::{
         text_input,
     },
 };
+
+// Adapters that need a special auth flow (GCP/AWS/OAuth) and cannot run on a
+// base URL + bearer key.
+const API_TYPES_EXCLUDED: &[&str] = &["vertex", "github_copilot", "bedrock_sigv4"];
+
+/// Provider-form API-type choices, derived from genai's registry so new
+/// adapters show up without a second list to maintain.
+static API_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    AdapterKind::all()
+        .iter()
+        .map(AdapterKind::as_lower_str)
+        .filter(|name| !API_TYPES_EXCLUDED.contains(name))
+        .collect()
+});
 
 // ── Events ──────────────────────────────────────────────────────────
 
@@ -31,6 +48,8 @@ pub(crate) enum ModelsEvent {
     EditProviderApiType(String),
     EditProviderAuth(String),
     EditProviderApiKey(String),
+    EditProviderExtraBody(String),
+    EditProviderHeaders(String),
     ToggleProviderStrictMode(bool),
     NewProvider,
     DeleteProvider(String),
@@ -490,15 +509,6 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
     let is_editing = !state.selected_provider_id.is_empty() || state.is_new_provider;
 
     let form: Element<_> = if is_editing {
-        const API_TYPES: &[&str] = &[
-            "openai",
-            "openai_resp",
-            "anthropic",
-            "gemini",
-            "groq",
-            "ollama",
-            "deepseek",
-        ];
         let selected_api_type = API_TYPES
             .iter()
             .find(|&&t| t == state.provider_api_type)
@@ -532,7 +542,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             {
                 row![
                     label_col(lang.tr("API Type")),
-                    styled_pick_list(API_TYPES, selected_api_type, |v| {
+                    styled_pick_list(API_TYPES.as_slice(), selected_api_type, |v| {
                         SettingsEvent::Models(ModelsEvent::EditProviderApiType(v.to_string()))
                     })
                     .width(Length::Fill),
@@ -553,6 +563,24 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                 None,
                 None,
                 move |v| SettingsEvent::Models(ModelsEvent::EditProviderApiKey(v)),
+            ),
+            field_row(
+                lang.tr("Extra Body (JSON)"),
+                &state.provider_extra_body,
+                lang.tr("Extra request body merged into every request"),
+                false,
+                None,
+                None,
+                move |v| SettingsEvent::Models(ModelsEvent::EditProviderExtraBody(v)),
+            ),
+            field_row(
+                lang.tr("Headers (JSON)"),
+                &state.provider_headers,
+                lang.tr("Extra HTTP headers, e.g. {\"X-Foo\":\"bar\"}"),
+                false,
+                None,
+                None,
+                move |v| SettingsEvent::Models(ModelsEvent::EditProviderHeaders(v)),
             ),
             {
                 // Search box appears once the model list is long enough to scroll,
@@ -576,9 +604,15 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                     search,
                 )
             },
-            models_section_view(state),
         ]
         .spacing(10);
+
+        // Invalid JSON keeps the stored value; say so instead of showing "Saved".
+        let form_body = match &state.provider_form_error {
+            Some(message) => form_body.push(form_error_row(message, lang)),
+            None => form_body,
+        };
+        let form_body = form_body.push(models_section_view(state));
 
         container(form_body)
             .padding(16)
@@ -642,6 +676,11 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
 }
 
 // ── Label section ──────────────────────────────────────────────────
+
+/// Inline validation message for the provider form's JSON fields.
+fn form_error_row<'a>(message: &'a str, lang: Lang) -> Element<'a, SettingsEvent> {
+    text(lang.tr(message)).size(12).color(CRABOT_DANGER).into()
+}
 
 /// Labels are shown as draggable capsules on a single (scrollable) row.
 /// The trailing "+" capsule opens a blank input capsule; the new label is
@@ -1339,7 +1378,11 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
             state.flush_current_provider();
             // Also confirm any pending label input.
             state.commit_new_label();
-            state.save_feedback = Some(SettingsTab::AiModels);
+            // An invalid JSON field left the stored value untouched; don't claim a clean save.
+            state.save_feedback = state
+                .provider_form_error
+                .is_none()
+                .then_some(SettingsTab::AiModels);
         }
         // ── Provider actions ──────────────────────────────────
         ModelsEvent::SelectProvider(id) => {
@@ -1359,6 +1402,14 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
         ModelsEvent::EditProviderApiType(v) => state.provider_api_type = v,
         ModelsEvent::EditProviderAuth(v) => state.provider_auth = v,
         ModelsEvent::EditProviderApiKey(v) => state.provider_api_key = v,
+        ModelsEvent::EditProviderExtraBody(v) => {
+            state.provider_extra_body = v;
+            state.provider_form_error = None;
+        }
+        ModelsEvent::EditProviderHeaders(v) => {
+            state.provider_headers = v;
+            state.provider_form_error = None;
+        }
         ModelsEvent::ToggleProviderStrictMode(v) => state.provider_strict_mode = v,
         ModelsEvent::RefreshModels => {
             state.bump_models_fetch_generation();

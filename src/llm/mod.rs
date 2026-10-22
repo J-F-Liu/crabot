@@ -3,10 +3,11 @@
 
 use futures::future::BoxFuture;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
+use genai::adapter::AdapterKind;
 use genai::chat::{
     CacheControl, ChatMessage, ChatOptions, ChatRequest, ChatRole, MessageContent, ReasoningEffort,
     ToolCall, ToolResponse,
@@ -30,8 +31,8 @@ use client::build_client;
 pub(crate) use image::ImageCache;
 pub use stream::DialogPhase;
 use stream::{
-    AttemptOutcome, MAX_ATTEMPTS, StreamCtx, failure_message, is_retryable, mark_cache_tail,
-    pause_before_retry, stream_attempt,
+    AttemptOutcome, DEFAULT_RETRY_DELAY, MAX_ATTEMPTS, RetryHint, StreamCtx, failure_message,
+    mark_cache_tail, pause_before_retry, retry_hint, stream_attempt,
 };
 use tool_call::{ExecutionCtx, is_serial_tool, run_parallel_batch, run_serial_tool};
 
@@ -64,6 +65,12 @@ pub struct SendConfig {
     /// Session-scoped encoded-image cache, reused across streams of the tab.
     pub image_cache: Arc<tokio::sync::Mutex<ImageCache>>,
 }
+
+/// Shown once the final response was cut off by the output-token limit.
+const TRUNCATED_NOTICE: &str = concat!(
+    "⚠️ The response was truncated by the model's max output token limit. ",
+    "Increase the model's max tokens or continue the conversation."
+);
 
 /// Push a message into the request and record it in history.
 async fn record_msg(
@@ -143,7 +150,7 @@ pub async fn send_stream(
         image_cache,
     } = config;
 
-    let client = match build_client(&model.base_url, &model.api_key, &model.api_type) {
+    let client = match build_client(&model) {
         Ok(client) => client,
         Err(error) => {
             tracing::error!(
@@ -183,31 +190,18 @@ pub async fn send_stream(
         }
     }
 
-    // Chat options: capture content for tool-call extraction, normalize reasoning.
-    let mut chat_options = ChatOptions::default()
-        .with_normalize_reasoning_content(true)
-        .with_capture_content(true)
-        .with_capture_reasoning_content(true)
-        .with_capture_tool_calls(true)
-        .with_capture_usage(true)
-        .with_extra_headers(("user-agent", user_agent));
-
-    if model.max_tokens > 0 {
-        chat_options = chat_options.with_max_tokens(model.max_tokens);
-    }
-
-    // Set reasoning effort; omit it entirely when thinking is off.
-    if model.thinking {
-        let reasoning_effort = model
-            .thinking_level
-            .to_lowercase()
-            .parse::<ReasoningEffort>()
-            .unwrap_or(ReasoningEffort::Medium);
-        chat_options = chat_options.with_reasoning_effort(reasoning_effort);
-    }
+    let adapter = client::adapter_kind(&model.api_type);
+    let chat_options = build_chat_options(
+        &model,
+        adapter,
+        user_agent,
+        stream_stall_timeout_secs,
+        &session_id,
+    );
 
     // Agent loop: keep calling the LLM until it responds without tool calls.
     let mut finished = false;
+    let mut truncated = false;
 
     // Publish what this route can consume, so `read` refuses an image the
     // model could not see and reports the dimensions the request will carry.
@@ -265,7 +259,7 @@ pub async fn send_stream(
                 &mut chat_req.messages,
                 &workspace,
                 model.vision,
-                client::adapter_kind(&model.api_type),
+                adapter,
                 &mut cache,
                 image_budget,
             )
@@ -285,9 +279,15 @@ pub async fn send_stream(
             let outcome =
                 stream_attempt(&stream_ctx, &chat_req, stream_stall_timeout_secs, on_event).await;
 
-            // Terminal outcomes break or return; transient ones yield a retry reason.
-            let reason = match outcome {
-                AttemptOutcome::Finished { msg } => break msg,
+            // Terminal outcomes break or return; transient ones yield a reason + delay.
+            let (reason, retry_delay) = match outcome {
+                AttemptOutcome::Finished {
+                    msg,
+                    truncated: was_truncated,
+                } => {
+                    truncated = was_truncated;
+                    break msg;
+                }
                 AttemptOutcome::Cancelled => {
                     tracing::info!(
                         model = %model.model_id,
@@ -297,10 +297,25 @@ pub async fn send_stream(
                     on_event(SessionEvent::Cancelled).await;
                     return;
                 }
-                AttemptOutcome::Failed { stage, error } => {
-                    if attempt < MAX_ATTEMPTS && is_retryable(&error) {
-                        error.to_string()
-                    } else {
+                AttemptOutcome::Failed { stage, error } => match retry_hint(&error) {
+                    Some(RetryHint::Retry { delay }) if attempt < MAX_ATTEMPTS => {
+                        (error.to_string(), delay.unwrap_or(DEFAULT_RETRY_DELAY))
+                    }
+                    Some(RetryHint::TooLong { delay }) if attempt < MAX_ATTEMPTS => {
+                        tracing::warn!(
+                            attempt,
+                            model = %model.model_id,
+                            delay_secs = delay.as_secs(),
+                            "provider requested a retry delay beyond the automatic limit"
+                        );
+                        on_event(SessionEvent::Error(format!(
+                            "The provider asked to retry after {}s, longer than the automatic retry limit. {error}",
+                            delay.as_secs()
+                        )))
+                        .await;
+                        return;
+                    }
+                    _ => {
                         tracing::error!(
                             attempt,
                             model = %model.model_id,
@@ -311,7 +326,7 @@ pub async fn send_stream(
                             .await;
                         return;
                     }
-                }
+                },
                 // Transient outcomes retried below like a failure.
                 outcome @ (AttemptOutcome::Empty | AttemptOutcome::Stalled) => {
                     let (reason, error) = if matches!(outcome, AttemptOutcome::Stalled) {
@@ -339,11 +354,19 @@ pub async fn send_stream(
                         on_event(SessionEvent::Error(error)).await;
                         return;
                     }
-                    reason
+                    (reason, DEFAULT_RETRY_DELAY)
                 }
             };
 
-            if !pause_before_retry(attempt, &model.model_id, &reason, on_event, &cancel_token).await
+            if !pause_before_retry(
+                attempt,
+                retry_delay,
+                &model.model_id,
+                &reason,
+                on_event,
+                &cancel_token,
+            )
+            .await
             {
                 on_event(SessionEvent::Cancelled).await;
                 return;
@@ -517,6 +540,9 @@ pub async fn send_stream(
     }
 
     if finished {
+        if truncated && !on_event(SessionEvent::Notice(TRUNCATED_NOTICE.into())).await {
+            return;
+        }
         tracing::info!(model = %model.model_id, session = %session_id, "LLM interaction complete");
         on_event(SessionEvent::Done).await;
     } else {
@@ -530,4 +556,112 @@ pub async fn send_stream(
         )))
         .await;
     }
+}
+
+/// Build per-request options from the model config.
+fn build_chat_options(
+    model: &ModelInfo,
+    adapter: AdapterKind,
+    user_agent: String,
+    header_timeout_secs: u64,
+    session_id: &str,
+) -> ChatOptions {
+    // Lowercase the names so a provider header replaces the built-in user agent
+    // instead of arriving as a second, order-dependent value.
+    let mut headers = std::collections::BTreeMap::from([("user-agent".to_string(), user_agent)]);
+    headers.extend(
+        model
+            .headers
+            .iter()
+            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string())),
+    );
+    let mut options = ChatOptions::default()
+        .with_normalize_reasoning_content(true)
+        .with_capture_content(true)
+        .with_capture_reasoning_content(true)
+        .with_capture_tool_calls(true)
+        .with_capture_usage(true)
+        .with_extra_headers(headers.into_iter().collect::<Vec<_>>());
+
+    if model.max_tokens > 0 {
+        options = options.with_max_tokens(model.max_tokens);
+    }
+    if header_timeout_secs > 0 {
+        options = options.with_stream_header_timeout(Duration::from_secs(header_timeout_secs));
+    }
+    if let Some(body) = extra_body(model) {
+        options = options.with_extra_body(body);
+    }
+
+    if model.thinking {
+        let effort = model
+            .thinking_level
+            .to_lowercase()
+            .parse::<ReasoningEffort>()
+            .unwrap_or(ReasoningEffort::Medium);
+        options = options.with_reasoning_effort(effort);
+    } else if adapter == AdapterKind::Anthropic {
+        // Anthropic models may think by default; `Zero` is the only opt-out.
+        options = options.with_reasoning_effort(ReasoningEffort::Zero);
+    }
+
+    trace_raw_frames(options, session_id, &model.model_id)
+}
+
+/// Provider-specific body JSON; invalid input is ignored with a warning.
+fn extra_body(model: &ModelInfo) -> Option<serde_json::Value> {
+    let text = model.extra_body.trim();
+    if text.is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) if value.is_object() => Some(value),
+        Ok(_) => {
+            tracing::warn!(
+                model = %model.model_id,
+                "provider extra_body must be a JSON object; ignoring"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(
+                model = %model.model_id,
+                %error,
+                "invalid provider extra_body JSON; ignoring"
+            );
+            None
+        }
+    }
+}
+
+/// Attach a raw-frame logger when `CRABOT_TRACE_RAW_FRAMES` is set.
+fn trace_raw_frames(options: ChatOptions, session_id: &str, model_id: &str) -> ChatOptions {
+    let enabled = std::env::var("CRABOT_TRACE_RAW_FRAMES").is_ok_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "off" | "no"
+        )
+    });
+    if !enabled {
+        return options;
+    }
+    let session = session_id.to_string();
+    let model = model_id.to_string();
+    options.with_raw_frame_fn(move |ctx, frame| {
+        const LIMIT: usize = 4096;
+        let truncated = frame.data.len() > LIMIT;
+        let data: String = frame.data.chars().take(LIMIT).collect();
+        tracing::info!(
+            target: "crabot::raw_frame",
+            session = %session,
+            model = %model,
+            stream_id = ctx.stream_id,
+            index = frame.index,
+            event = frame.event.unwrap_or_default(),
+            elapsed_us = frame.elapsed_us,
+            truncated,
+            data = %data,
+            "raw provider frame"
+        );
+    })
 }

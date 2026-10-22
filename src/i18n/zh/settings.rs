@@ -58,6 +58,32 @@ pub static TABLE: &[(&str, &str)] = &[
         "API Key or its enviroment variable name",
         "API 密钥或其环境变量名",
     ),
+    ("Extra Body (JSON)", "额外请求体（JSON）"),
+    (
+        "Extra request body merged into every request",
+        "合并进每次请求的额外请求体字段",
+    ),
+    ("Headers (JSON)", "请求头（JSON）"),
+    (
+        "Extra HTTP headers, e.g. {\"X-Foo\":\"bar\"}",
+        "额外 HTTP 请求头，例如 {\"X-Foo\":\"bar\"}",
+    ),
+    (
+        "Headers must be a JSON object of string values; the saved headers were left unchanged.",
+        "请求头必须是字符串键值对的 JSON 对象；已保存的请求头保持不变。",
+    ),
+    (
+        "Headers must be a JSON object of string values; no headers will be saved.",
+        "请求头必须是字符串键值对的 JSON 对象；不会保存任何请求头。",
+    ),
+    (
+        "Extra Body must be a JSON object; the saved extra body was left unchanged.",
+        "额外请求体必须是 JSON 对象；已保存的额外请求体保持不变。",
+    ),
+    (
+        "Extra Body must be a JSON object; no extra body will be saved.",
+        "额外请求体必须是 JSON 对象；不会保存额外请求体。",
+    ),
     ("Strict Mode", "严格模式"),
     ("Search models…", "搜索模型…"),
     (
@@ -131,8 +157,8 @@ pub static TABLE: &[(&str, &str)] = &[
         "触发续写提醒的上下文填充比例。",
     ),
     (
-        "Seconds with no stream data before giving up. 0 = off.",
-        "流式数据停滞多少秒后放弃。0 = 关闭。",
+        "Seconds with no stream data or response headers before giving up. 0 = off.",
+        "无流式数据或响应头多少秒后放弃。0 = 关闭。",
     ),
     ("Network", "网络"),
     ("LLM traffic via system proxy", "LLM 请求走系统代理"),

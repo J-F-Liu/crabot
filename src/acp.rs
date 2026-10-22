@@ -608,6 +608,15 @@ pub(crate) fn forward_event(session_id: &str, event: &SessionEvent) {
             end_message(session_id);
             AcpEvent::Error(message.clone())
         }
+        // Warnings (e.g. a truncated reply) are shown as their own message
+        // before the turn ends.
+        SessionEvent::Notice(text) => {
+            end_message(session_id);
+            AcpEvent::Text {
+                chunk: text.clone(),
+                message_id: current_message_id(session_id),
+            }
+        }
         // `MessageReady` marks a recorded message boundary (system, user,
         // tool, or assistant); the next content chunk starts a new ACP message.
         SessionEvent::MessageReady(_) => {
