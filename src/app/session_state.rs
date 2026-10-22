@@ -684,18 +684,18 @@ pub(crate) fn tab_model_config(app: &App, tab: &SessionTab) -> Option<ModelConfi
     tab.session
         .model
         .clone()
-        .or_else(|| app.models.get_config(&tab.selected_model).cloned())
+        .or_else(|| app.models.get_config(&tab.pane.selected_model).cloned())
 }
 
 /// The workspace a tab's session actually runs in: the session's stored
-/// workspace, falling back to the current prompt workspace.
+/// workspace, then the tab's own pick, then the live prompt workspace.
 fn tab_workspace(app: &App, tab: &SessionTab) -> PathBuf {
     let ws = &tab.session.workspace;
-    if ws.as_os_str().is_empty() || !ws.is_dir() {
-        app.prompt.workspace.1.clone()
-    } else {
-        ws.clone()
+    if !ws.as_os_str().is_empty() && ws.is_dir() {
+        return ws.clone();
     }
+    // The pane pick falls back to the live prompt workspace when unusable.
+    tab.pane.workspace_or(&app.prompt.workspace.1)
 }
 
 /// Whether the session started with a workspace layout — a successor session
@@ -794,8 +794,8 @@ fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
             tab.session.dialogs.last().and_then(|d| d.mode),
             tab_workspace(app, tab),
             session_started_with_tree(tab),
-            tab.selected_model.clone(),
-            tab.selected_preamble.clone(),
+            tab.pane.selected_model.clone(),
+            tab.pane.selected_preamble.clone(),
         )
     };
     tracing::info!(parent_tab = number, model = %model.model_id, "renew tool: spawning successor session");
@@ -853,8 +853,8 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
     let (parent_selected, parent_selected_preamble, parent_model, workspace, need_tree) = {
         let parent = &app.conversation.session_tabs[pos];
         (
-            parent.selected_model.clone(),
-            parent.selected_preamble.clone(),
+            parent.pane.selected_model.clone(),
+            parent.pane.selected_preamble.clone(),
             tab_model_config(app, parent),
             tab_workspace(app, parent),
             session_started_with_tree(parent),

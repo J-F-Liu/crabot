@@ -100,7 +100,7 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
                 return Task::none();
             };
             return Task::batch([
-                crate::app::prompt::set_workspace(app, path),
+                crate::app::prompt::apply_workspace(app, path),
                 crate::app::conversation::send_prompt(app),
             ]);
         }

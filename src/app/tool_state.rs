@@ -1,7 +1,22 @@
-use crate::app::{App, Message, ToolEvent, ToolState};
+use std::collections::HashSet;
+
+use crate::app::{App, Message, ToolEvent};
 use crabot::HashSetExt;
 use crabot::tools;
 use iced::Task;
+
+/// Drop `removed` tool names from `enabled` and add `added` ones.
+pub(crate) fn apply_names(enabled: &mut HashSet<String>, removed: &[String], added: &[String]) {
+    enabled.retain(|name| !removed.contains(name));
+    enabled.extend(added.iter().cloned());
+}
+
+/// Apply a tool-name change to every tab's option snapshot.
+pub(crate) fn sync_tab_tool_names(app: &mut App, removed: &[String], added: &[String]) {
+    for tab in &mut app.conversation.session_tabs {
+        apply_names(&mut tab.pane.enabled_tools, removed, added);
+    }
+}
 
 pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
     match event {
@@ -14,14 +29,24 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
                 if (failed || !tools::mcp::has_connection(&server))
                     && let Some(config) = app.tools.tool_registry.find_mcp_server(&server)
                 {
-                    let epoch = app.tools.next_epoch(&server);
-                    app.tools.mcp_pending.insert(server.clone());
-                    return ToolState::discover_task(config, epoch);
+                    return app.tools.start_discovery(config);
                 }
             } else {
-                // Turning off drops the connection and clears any failure.
-                // Bump the epoch so an in-flight discovery can't re-add tools.
-                tools::mcp::drop_connection(&server);
+                // Keep the connection while another tab enables the server
+                // (they are process-wide); bump the epoch so an in-flight
+                // discovery can't re-add the tools.
+                let still_used =
+                    app.conversation
+                        .session_tabs
+                        .iter()
+                        .enumerate()
+                        .any(|(pos, tab)| {
+                            pos != app.conversation.viewing
+                                && tab.pane.enabled_mcp_servers.contains(&server)
+                        });
+                if !still_used {
+                    tools::mcp::drop_connection(&server);
+                }
                 app.tools.enabled_mcp_servers.set(server.clone(), false);
                 app.tools.mcp_errors.remove(&server);
                 app.tools.mcp_pending.remove(&server);
@@ -54,18 +79,25 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
                     if !app.tools.enabled_mcp_servers.contains(&server) {
                         tools::mcp::drop_connection(&server);
                     }
-                    let names = discovered
+                    // A reconnect re-lists known tools: keep their per-tab state.
+                    let known: HashSet<String> = app
+                        .tools
+                        .tool_registry
+                        .mcp
+                        .iter()
+                        .find(|(name, _)| name == &server)
+                        .map(|(_, group)| group.iter().map(|t| t.name.clone()).collect())
+                        .unwrap_or_default();
+                    let added: Vec<String> = discovered
                         .iter()
                         .map(|t| t.name.clone())
-                        .collect::<Vec<_>>();
+                        .filter(|n| !known.contains(n) && app.settings.is_tool_enabled(n))
+                        .collect();
                     app.tools
                         .tool_registry
                         .register_mcp_group(server, discovered);
-                    app.tools.enabled_tools.extend(
-                        names
-                            .into_iter()
-                            .filter(|n| app.settings.is_tool_enabled(n)),
-                    );
+                    app.tools.enabled_tools.extend(added.iter().cloned());
+                    sync_tab_tool_names(app, &[], &added);
                 }
                 Err(failure) => {
                     app.tools.enabled_mcp_servers.remove(&server);

@@ -133,8 +133,8 @@ pub(crate) fn tools_view<'a>(
     })
 }
 
-/// Collapsible "MCP Tools" section; failed servers show the reason and
-/// retry by re-checking their box (label switches to "Reconnect..." meanwhile).
+/// Collapsible "MCP Tools" section; servers being (re)discovered show that on
+/// their label, and failed ones retry by re-checking their box.
 pub(crate) fn mcp_tools_section<'a>(
     expanded: bool,
     selected: &'a HashSet<String>,
@@ -186,7 +186,7 @@ pub(crate) fn mcp_tools_section<'a>(
 }
 
 /// One MCP server row: checkbox (annotated on failure) plus its tools, if any.
-/// A failed error-only server stays checked while its retry is in flight.
+/// A server being (re)discovered shows that on its label.
 fn mcp_server_group_view<'a>(
     server: &'a str,
     tools: Option<&'a [McpTool]>,
@@ -196,13 +196,11 @@ fn mcp_server_group_view<'a>(
     selected: &'a HashSet<String>,
     lang: crabot::i18n::Lang,
 ) -> Element<'a, ToolListEvent> {
-    let label = if pending {
-        format!("{server} ({})", lang.tr("Reconnect..."))
-    } else {
-        match error {
-            Some(failure) => format!("{server} ({})", failure_label(failure, lang)),
-            None => server.to_string(),
-        }
+    let label = match (pending, error) {
+        (true, Some(_)) => format!("{server} ({})", lang.tr("Reconnect...")),
+        (true, None) => format!("{server} ({})", lang.tr("Connecting...")),
+        (false, Some(failure)) => format!("{server} ({})", failure_label(failure, lang)),
+        (false, None) => server.to_string(),
     };
     let server_cb = server_checkbox(server, label, enabled);
     match tools {

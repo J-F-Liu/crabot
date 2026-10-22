@@ -49,7 +49,7 @@ If you know the structure of the LLM context window, you will appreciate the UI 
 | `renew`   | `prompt`                                                                                  | Hand off to a fresh session seeded with a summary when the context window is nearly full                                         |
 | `fetch`   | `url`, `format`                                                                           | Download web pages and convert them to clean Markdown                                                                            |
 
-Beyond the built-ins, you can add your own **custom CLI tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session.
+Beyond the built-ins, you can add your own **custom CLI tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session tab.
 
 Grep-style tool output is normalized before it enters the conversation: a run of lines that share a file path (`path:12:text`, plus `path-12-text` context lines from `-A/-B/-C`) collapses into a `path:` heading followed by the original line numbers and text, so no repetition is paid for twice. What you read in the UI, in the session file, and in the HTML export is exactly what was sent to the model; the live stream stays raw.
 

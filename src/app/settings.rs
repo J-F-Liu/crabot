@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use iced::Task;
 
-use crate::app::{App, Message, ModelSettingsEvent};
+use crate::app::{App, Message, ModelSettingsEvent, tool_state};
 use crate::tools;
 use crate::views::model_config;
 use crate::views::settings::{
@@ -55,7 +55,7 @@ pub(crate) fn open_settings(app: &mut App) -> Task<Message> {
 /// Handle model-config events that don't open settings (selection changes).
 pub(crate) fn handle_model_config(app: &mut App, event: model_config::Event) -> Task<Message> {
     let tab = app.conversation.viewing_mut();
-    if model_config::update(event, &mut app.models, &mut tab.selected_model) {
+    if model_config::update(event, &mut app.models, &mut tab.pane.selected_model) {
         app.models.save();
     }
     Task::none()
@@ -92,7 +92,7 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             app.models.save();
             // Validate every tab's selected_model against the updated model list.
             for tab in &mut app.conversation.session_tabs {
-                tab.selected_model = app.models.ensure_valid_label(&tab.selected_model);
+                tab.pane.selected_model = app.models.ensure_valid_label(&tab.pane.selected_model);
             }
         }
         SettingsEvent::Recipes(RecipesEvent::SavePromptRecipes) => {
@@ -121,12 +121,10 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             let new_names: HashSet<String> =
                 app.tools.tool_registry.custom_names().into_iter().collect();
             // Deleted tools lose their enabled state; new tools default to enabled.
-            for name in old_names.difference(&new_names) {
-                app.tools.enabled_tools.remove(name);
-            }
-            for name in new_names.difference(&old_names) {
-                app.tools.enabled_tools.insert(name.clone());
-            }
+            let removed: Vec<String> = old_names.difference(&new_names).cloned().collect();
+            let added: Vec<String> = new_names.difference(&old_names).cloned().collect();
+            tool_state::apply_names(&mut app.tools.enabled_tools, &removed, &added);
+            tool_state::sync_tab_tool_names(app, &removed, &added);
             app.refresh_tools_summary();
         }
         SettingsEvent::Mcp(McpEvent::SaveMcp) => {
@@ -152,7 +150,8 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
                     None => true,
                 };
                 if stale {
-                    app.tools.drop_mcp_server(&old.name);
+                    let removed = app.tools.drop_mcp_server(&old.name);
+                    tool_state::sync_tab_tool_names(app, &removed, &[]);
                 }
             }
             app.refresh_tools_summary();

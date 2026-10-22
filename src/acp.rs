@@ -494,16 +494,12 @@ fn new_session(
         let _ = reply.send(Err(format!("cwd is not a directory: {}", cwd.display())));
         return None;
     } else {
-        Some(crate::app::prompt::apply_workspace(app, cwd, true))
+        Some(crate::app::prompt::apply_workspace(app, cwd))
     };
-    let (model, preamble) = {
-        let viewing = app.conversation.viewing();
-        (
-            viewing.selected_model.clone(),
-            viewing.selected_preamble.clone(),
-        )
-    };
-    let new_tab_task = conversation::new_session(app, model, preamble, String::new());
+    // Inherit the left-pane options after the workspace adoption above, so the
+    // new tab starts in the client's cwd.
+    let options = app.new_tab_options();
+    let new_tab_task = conversation::new_session(app, options, String::new());
     let session_id = app.conversation.viewing().session.id.clone();
     tracing::info!(session_id, "acp: new session tab");
     let _ = reply.send(Ok(session_id));

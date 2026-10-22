@@ -33,6 +33,7 @@ pub(crate) mod diff;
 mod layout;
 mod overlay;
 pub(crate) mod prompt;
+pub(crate) mod prompt_options;
 pub(crate) mod session_state;
 mod session_tab;
 mod settings;
@@ -40,6 +41,7 @@ pub(crate) mod snapshot;
 mod subscription;
 mod tool_state;
 
+pub(crate) use prompt_options::PromptOptions;
 pub(crate) use session_tab::{AttachmentPreview, PreviewContent, SessionEndStatus, SessionTab};
 
 // ── App ───────────────────────────────────────────────────────────
@@ -98,6 +100,8 @@ pub(crate) struct FileTreePane {
 pub(crate) struct PromptWorkspaceState {
     pub(crate) preamble_enabled: bool,
     pub(crate) skills_enabled: bool,
+    /// Skill files picked for the viewing tab, in selection order.
+    pub(crate) selected_skills: Vec<String>,
     pub(crate) workspace: (bool, PathBuf),
     pub(crate) agents_md: (bool, String),
     pub(crate) date: (bool, String),
@@ -135,26 +139,23 @@ impl PromptWorkspaceState {
         }
     }
 
-    /// Concatenate all enabled components, returning the full system prompt.
-    /// Preamble and skills file contents are read from disk on every call.
-    pub(crate) fn get_system_prompt(
-        &self,
-        selected_preamble: &str,
-        selected_skills: &[String],
-    ) -> String {
-        let preamble = self
+    /// Concatenate the enabled components of `options`, returning the full
+    /// system prompt. `tools` is that tab's tools section; preamble and skills
+    /// are read from disk on every call.
+    pub(crate) fn get_system_prompt(&self, options: &PromptOptions, tools: &str) -> String {
+        let preamble = options
             .preamble_enabled
-            .then(|| prompt::load_prompt_file(&self.preamble_options, selected_preamble));
-        self.compose_system_prompt(preamble.as_deref(), selected_skills)
+            .then(|| prompt::load_prompt_file(&self.preamble_options, &options.selected_preamble));
+        self.compose_system_prompt(options, preamble.as_deref(), tools)
     }
 
     /// Like [`get_system_prompt`](Self::get_system_prompt), but with a
-    /// caller-provided preamble section replacing the configured one
-    /// (`None` omits the preamble component entirely).
+    /// caller-provided preamble replacing the configured one (`None` omits it).
     pub(crate) fn compose_system_prompt(
         &self,
+        options: &PromptOptions,
         preamble: Option<&str>,
-        selected_skills: &[String],
+        tools: &str,
     ) -> String {
         fn section(prompt: &mut String, content: &str) {
             if !content.is_empty() {
@@ -166,35 +167,31 @@ impl PromptWorkspaceState {
         if let Some(content) = preamble {
             section(&mut prompt, content);
         }
-        if self.workmode_enabled
+        if options.workmode_enabled
             && let Some(contents) = crabot::setup::ASSETS
                 .get_file("workmode.md")
                 .and_then(|file| file.contents_utf8())
         {
             section(&mut prompt, contents);
         }
-        if self.skills_enabled {
+        if options.skills_enabled {
             section(
                 &mut prompt,
-                &prompt::load_prompt_files(&self.skills_options, selected_skills),
+                &prompt::load_prompt_files(&self.skills_options, &options.selected_skills),
             );
         }
-        if self.tools.enabled {
-            section(&mut prompt, &self.tools.content.text());
+        if options.tools_enabled {
+            section(&mut prompt, tools);
         }
-        if let (true, workspace) = &self.workspace
-            && workspace.is_dir()
-        {
-            let path = crabot::tools::convert_path_to_unix_style(workspace);
+        if options.workspace_enabled && options.workspace.is_dir() {
+            let path = crabot::tools::convert_path_to_unix_style(&options.workspace);
             prompt.push_str(&format!("Current Workspace: {}\n", path));
         }
-        if self.agents_md.0 {
-            section(&mut prompt, &self.agents_md.1);
+        if options.agents_md_enabled {
+            section(&mut prompt, &options.agents_md);
         }
-        if let (true, date) = &self.date
-            && !date.is_empty()
-        {
-            prompt.push_str(&format!("Current Date: {}\n", date));
+        if options.date_enabled && !self.date.1.is_empty() {
+            prompt.push_str(&format!("Current Date: {}\n", self.date.1));
         }
         prompt
     }
@@ -207,7 +204,7 @@ pub(crate) struct ToolState {
     pub(crate) enabled_mcp_servers: HashSet<String>,
     /// Latest failure per MCP server, shown next to its name in the left pane.
     pub(crate) mcp_errors: HashMap<String, tools::mcp::DiscoverFailure>,
-    /// Servers with an in-flight discovery; shown as "Reconnect..." while retrying.
+    /// Servers with an in-flight discovery; shown as "Connecting..."/"Reconnect...".
     pub(crate) mcp_pending: HashSet<String>,
     /// Per-server discovery counter; results tagged with an older epoch are stale.
     pub(crate) mcp_discovery_epoch: HashMap<String, u64>,
@@ -227,33 +224,44 @@ impl ToolState {
 
     /// Drop a server's discovery state (connection, error, pending, tools) and
     /// bump its epoch so in-flight discoveries for the old config are stale.
-    pub(crate) fn drop_mcp_server(&mut self, server: &str) {
+    /// Returns the tool names that left the registry.
+    pub(crate) fn drop_mcp_server(&mut self, server: &str) -> Vec<String> {
         tools::mcp::drop_connection(server);
         self.enabled_mcp_servers.remove(server);
         self.mcp_errors.remove(server);
         self.mcp_pending.remove(server);
         self.next_epoch(server);
-        for name in self.tool_registry.unregister_mcp_group(server) {
-            self.enabled_tools.remove(&name);
-        }
+        let removed = self.tool_registry.unregister_mcp_group(server);
+        self.enabled_tools.retain(|name| !removed.contains(name));
+        removed
     }
 
-    /// Build a discovery task tagged with `epoch` (boot tasks use epoch 0).
-    pub(crate) fn discover_task(server: tools::mcp::McpServer, epoch: u64) -> Task<Message> {
+    /// Start discovery for `server`, superseding any in-flight one.
+    pub(crate) fn start_discovery(&mut self, server: tools::mcp::McpServer) -> Task<Message> {
+        let epoch = self.next_epoch(&server.name);
+        self.mcp_pending.insert(server.name.clone());
         Task::perform(
             async move { tools::mcp::discover_mcp_server(server).await },
-            // Boot tasks carry epoch 0; retries bump it and supersede them.
             move |(name, result)| {
                 Message::Tools(ToolEvent::McpToolsDiscovered((name, epoch, result)))
             },
         )
     }
 
-    /// Generate an XML-formatted summary of enabled tools.
+    /// Generate an XML-formatted summary of the live enabled tools.
     pub(crate) fn summary(&self) -> String {
+        self.summary_for(&self.enabled_tools, &self.enabled_mcp_servers)
+    }
+
+    /// Same summary for an arbitrary tool set (a tab's own).
+    pub(crate) fn summary_for(
+        &self,
+        enabled: &HashSet<String>,
+        enabled_mcp_servers: &HashSet<String>,
+    ) -> String {
         let all_tools = self
             .tool_registry
-            .enabled_tools(&self.enabled_tools, &self.enabled_mcp_servers);
+            .enabled_tools(enabled, enabled_mcp_servers);
         let mut result = String::new();
         result.push_str("<available-tools>\n");
 
@@ -267,11 +275,11 @@ impl ToolState {
 
         // Build the MCP tools prompt section for the system prompt.
         for server in &self.tool_registry.mcp_servers {
-            if self.enabled_mcp_servers.contains(&server.name)
+            if enabled_mcp_servers.contains(&server.name)
                 && !server.prompt.is_empty()
                 && self
                     .tool_registry
-                    .mcp_server_has_enabled_tool(&server.name, &self.enabled_tools)
+                    .mcp_server_has_enabled_tool(&server.name, enabled)
             {
                 result.push_str(&server.prompt);
             }
@@ -355,9 +363,9 @@ pub(crate) struct ConversationState {
 }
 
 impl ConversationState {
-    pub(crate) fn new(selected_model: String, selected_preamble: String) -> Self {
+    pub(crate) fn new(options: PromptOptions) -> Self {
         Self {
-            session_tabs: vec![SessionTab::new(1, selected_model, selected_preamble)],
+            session_tabs: vec![SessionTab::new(1, options)],
             viewing: 0,
             next_tab_number: 2,
             session_list: Vec::new(),
@@ -802,6 +810,7 @@ impl App {
         let prompt = PromptWorkspaceState {
             preamble_enabled: saved.preamble_enabled,
             skills_enabled: saved.skills_enabled,
+            selected_skills: saved.selected_skills.clone(),
             workspace: (saved.workspace_enabled, workspace_path.clone()),
             agents_md: (saved.agents_md_enabled, String::new()),
             date: (saved.date_enabled, date_str),
@@ -829,6 +838,14 @@ impl App {
             skills_menu_expanded: false,
         };
 
+        // The first tab starts from the persisted left-pane state.
+        let initial_options = PromptOptions::from_live(
+            &prompt,
+            &tools,
+            initial_selected_model,
+            initial_selected_preamble,
+        );
+
         let models_count = models.models.len();
         let right_pane_restore_width = saved.right_pane_width.max(theme::MIN_W);
         let mut app = Self {
@@ -849,7 +866,7 @@ impl App {
             },
             prompt,
             tools,
-            conversation: ConversationState::new(initial_selected_model, initial_selected_preamble),
+            conversation: ConversationState::new(initial_options),
             models,
             settings_saved,
             settings_dialog: crate::views::SettingsState::default(),
@@ -881,7 +898,7 @@ impl App {
         let discover_task = mcp_list
             .servers
             .into_iter()
-            .map(|s| ToolState::discover_task(s, 0))
+            .map(|server| app.tools.start_discovery(server))
             .fold(Task::none(), Task::chain);
         // Skip the network check when auto-check is disabled or a cached update is already available.
         let update_task =
@@ -1043,8 +1060,9 @@ impl App {
     /// toggles, …) written back; these always win over the on-disk copy.
     fn synced_settings(&self) -> crabot::settings::Settings {
         let mut settings = self.settings.clone();
-        settings.selected_model = self.conversation.viewing().selected_model.clone();
-        settings.selected_preamble = self.conversation.viewing().selected_preamble.clone();
+        settings.selected_model = self.conversation.viewing().pane.selected_model.clone();
+        settings.selected_preamble = self.conversation.viewing().pane.selected_preamble.clone();
+        settings.selected_skills = self.prompt.selected_skills.clone();
         settings.window_size = (
             self.layout.window_size.width,
             self.layout.window_size.height,
@@ -1122,14 +1140,14 @@ impl App {
             .as_ref()
             .or_else(|| {
                 self.models
-                    .get_config(&self.conversation.viewing().selected_model)
+                    .get_config(&self.conversation.viewing().pane.selected_model)
             })
     }
 
     /// Look up the currently selected model's config, cloned for ownership.
     pub(crate) fn selected_model_config(&self) -> Option<ModelConfig> {
         self.models
-            .get_config(&self.conversation.viewing().selected_model)
+            .get_config(&self.conversation.viewing().pane.selected_model)
             .cloned()
     }
 
@@ -1142,7 +1160,7 @@ impl App {
                 cfg.provider_id == model_config.provider_id && cfg.model_id == model_config.model_id
             })
             .map(|(label, _)| label.clone())
-            .unwrap_or_else(|| self.conversation.viewing().selected_model.clone())
+            .unwrap_or_else(|| self.conversation.viewing().pane.selected_model.clone())
     }
 
     // ── View composition ──────────────────────────────────────────

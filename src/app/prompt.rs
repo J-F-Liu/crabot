@@ -118,17 +118,17 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
                     Message::Prompt(PromptEvent::WorkspaceDialogResult(path))
                 });
             }
-            return set_workspace(app, entry.path);
+            return apply_workspace(app, entry.path);
         }
         PromptEvent::WorkspaceDialogResult(Some(path)) => {
-            return set_workspace(app, path);
+            return apply_workspace(app, path);
         }
         PromptEvent::WorkspaceDialogResult(None) => {}
         PromptEvent::SelectPreamble(entry) => {
-            app.conversation.viewing_mut().selected_preamble = entry.display.clone();
+            app.conversation.viewing_mut().pane.selected_preamble = entry.display.clone();
         }
         PromptEvent::ToggleSkill(name, enabled) => {
-            let skills = &mut app.settings.selected_skills;
+            let skills = &mut app.prompt.selected_skills;
             if enabled {
                 if !skills.contains(&name) {
                     skills.push(name);
@@ -319,14 +319,10 @@ async fn pick_attachment_files(kind: AttachmentKind, title: String) -> Option<Ve
 
 // ── Workspace & prompt-file helpers ───────────────────────────────
 
-/// Apply `path` as the current workspace: save the outgoing workspace's
-/// AGENTS.md preference, restore the incoming one, rebuild the files tree and
-/// AGENTS.md content, refresh picker options and the session list.
-///
-/// When `bump_recents` is set, `path` is also moved to the front of the
-/// recents list (explicit user selection).  Otherwise recents are left
-/// untouched (e.g. tab-switch driven sync).
-pub(crate) fn apply_workspace(app: &mut App, path: PathBuf, bump_recents: bool) -> Task<Message> {
+/// Apply `path` as the workspace on explicit user selection: keep the
+/// outgoing AGENTS.md preference, bump recents, and refresh the tree,
+/// AGENTS.md content and session list.
+pub(crate) fn apply_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
     // Save current workspace preference before switching.
     let cur = &app.prompt.workspace.1;
     if !cur.as_os_str().is_empty() {
@@ -334,45 +330,19 @@ pub(crate) fn apply_workspace(app: &mut App, path: PathBuf, bump_recents: bool) 
         app.settings.set_recent_workspace_enabled(cur, enabled);
     }
 
-    // Restore the incoming workspace's AGENTS.md preference (default: enabled);
-    // the file's existence is confirmed when the off-thread scan lands.
     let preferred = switch_workspace(app, &path);
+    app.settings.recent_workspaces.retain(|(p, _)| p != &path);
+    app.settings
+        .recent_workspaces
+        .insert(0, (path.clone(), preferred));
+    app.settings.recent_workspaces.truncate(10);
 
-    if bump_recents {
-        app.settings.recent_workspaces.retain(|(p, _)| p != &path);
-        app.settings
-            .recent_workspaces
-            .insert(0, (path.clone(), preferred));
-        app.settings.recent_workspaces.truncate(10);
-    }
-
-    // Files tree + AGENTS.md are scanned off the UI thread.
-    let scan_task = scan_workspace_content(path.clone(), Some(preferred));
-    let list_task =
-        if !bump_recents && let Some(entries) = app.conversation.session_list_cache.get(&path) {
-            // Tab-switch sync: reuse the cached list without re-scanning.
-            app.conversation.session_list = entries.clone();
-            app.conversation.session_list_loading = false;
-            Task::none()
-        } else {
-            // Explicit workspace selection or cache miss always re-scans.
-            app.conversation.session_list.clear();
-            app.conversation.session_list_loading = true;
-            crate::app::conversation::refresh_session_list(path)
-        };
-    scan_task.chain(list_task)
-}
-
-/// Switch the in-memory prompt workspace to `path` without persisting anything.
-pub(crate) fn sync_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
-    let preferred = switch_workspace(app, &path);
-    scan_workspace_content(path, Some(preferred))
+    // The tree and AGENTS.md are scanned off the UI thread.
+    scan_workspace_content(path.clone(), Some(preferred)).chain(session_list_task(app, path, false))
 }
 
 /// Make `path` the current prompt workspace: restore its AGENTS.md preference
-/// (default: enabled) and refresh the picker options. Returns the restored
-/// preference; the file's existence is confirmed when the off-thread scan
-/// lands. No persistence side effects.
+/// (default on) and refresh the picker options. Returns that preference.
 fn switch_workspace(app: &mut App, path: &Path) -> bool {
     let preferred = app
         .settings
@@ -381,11 +351,40 @@ fn switch_workspace(app: &mut App, path: &Path) -> bool {
         .find_map(|(p, e)| (p == path).then_some(*e))
         .unwrap_or(true);
     app.prompt.agents_md.0 = preferred;
+    set_workspace_path(app, path);
+    preferred
+}
+
+/// Point the pane at `path` and refresh the picker options; no scans.
+fn set_workspace_path(app: &mut App, path: &Path) {
     app.prompt.workspace.1 = path.to_path_buf();
     app.prompt.files.tree.clear();
     app.prompt.workspace_options =
         crate::views::build_workspace_options(&app.settings.recent_workspaces);
-    preferred
+}
+
+/// Switch the pane to a tab's workspace without touching its AGENTS.md toggle.
+pub(crate) fn restore_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
+    set_workspace_path(app, &path);
+    scan_workspace_content(path.clone(), None).chain(session_list_task(app, path, true))
+}
+
+/// Show `path`'s sessions: cached entries when `reuse_cache` and present,
+/// else a fresh off-thread scan.
+fn session_list_task(app: &mut App, path: PathBuf, reuse_cache: bool) -> Task<Message> {
+    let cached = app.conversation.session_list_cache.get(&path).cloned();
+    match cached {
+        Some(entries) if reuse_cache => {
+            app.conversation.session_list = entries;
+            app.conversation.session_list_loading = false;
+            Task::none()
+        }
+        _ => {
+            app.conversation.session_list.clear();
+            app.conversation.session_list_loading = true;
+            crate::app::conversation::refresh_session_list(path)
+        }
+    }
 }
 
 /// Result of an off-thread workspace scan: AGENTS.md presence and content.
@@ -395,7 +394,7 @@ pub(crate) struct WorkspaceScan {
     pub(crate) agents_md_exists: bool,
     pub(crate) agents_md_content: String,
     /// When set (workspace switch), AGENTS.md is enabled only while the file
-    /// exists. `None` (fresh-session refresh) leaves the toggle untouched.
+    /// exists; `None` (tab restore) leaves the toggle to the caller.
     pub(crate) agents_md_preferred: Option<bool>,
 }
 
@@ -441,19 +440,6 @@ pub(crate) fn request_files_tree(app: &App) -> Task<Message> {
     Task::perform(scan_files_tree(workspace), |tree| {
         Message::Prompt(PromptEvent::FileTreeReady(tree))
     })
-}
-
-/// Re-scan AGENTS.md when a fresh session tab is created; also re-enable the
-/// workspace-tree toggle so new sessions send the tree by default.
-pub(crate) fn refresh_workspace_content(app: &mut App) -> Task<Message> {
-    let workspace = app.prompt.workspace.1.clone();
-    app.prompt.files.enabled = true;
-    scan_workspace_content(workspace, None)
-}
-
-/// Apply `path` as the workspace on explicit user selection, bumping it to the top of recents.
-pub(crate) fn set_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
-    apply_workspace(app, path, true)
 }
 
 /// Read `AGENTS.md` from the workspace root, returning (exists, content).

@@ -16,7 +16,7 @@ use crate::app::session_tab::SessionTab;
 use crate::app::snapshot;
 use crate::app::{
     App, AttachmentPreview, ConversationEvent, FocusedTarget, Message, PreviewContent,
-    TabBarScrollState,
+    PromptOptions, TabBarScrollState,
 };
 use crate::llm::DialogPhase;
 use crate::tools::process;
@@ -145,10 +145,8 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             return iced::exit();
         }
         ConversationEvent::NewSession => {
-            let tab = app.conversation.viewing();
-            let model = tab.selected_model.clone();
-            let preamble = tab.selected_preamble.clone();
-            return new_session(app, model, preamble, String::new());
+            let options = app.new_tab_options();
+            return new_session(app, options, String::new());
         }
         ConversationEvent::LoadSession(entry) => return load_session(app, entry),
         ConversationEvent::SwitchTab(number) => return switch_tab(app, number),
@@ -436,61 +434,30 @@ fn push_tab(app: &mut App, tab: SessionTab) -> usize {
 
 /// New session tab that becomes the viewing one (user/renew/ACP tabs);
 /// `parent` is the spawning session's id, empty for user tabs.
-pub(crate) fn new_session(
-    app: &mut App,
-    selected_model: String,
-    selected_preamble: String,
-    parent: String,
-) -> Task<Message> {
-    let number = app.conversation.next_tab_number();
-    let mut tab = SessionTab::new(number, selected_model, selected_preamble);
-    tab.session.parent = parent;
-    tracing::debug!(tab = number, parent = %tab.session.parent, "new session tab opened");
-    app.conversation.viewing = push_tab(app, tab);
-
-    // Refresh workspace-dependent fields (AGENTS.md lands async).
-    let content_task = crate::app::prompt::refresh_workspace_content(app);
+pub(crate) fn new_session(app: &mut App, options: PromptOptions, parent: String) -> Task<Message> {
+    let pos = spawn_tab(app, options, parent);
+    let options_task = app.set_viewing(pos);
 
     // Fresh tab has no saved scroll offset — scroll to top.
-    views::scroll_to_start().discard().chain(content_task)
+    views::scroll_to_start().discard().chain(options_task)
 }
 
-/// Background session tab (task sub-agents) — Returns the new tab's position.
-fn new_background_session(
-    app: &mut App,
-    selected_model: String,
-    selected_preamble: String,
-    parent: String,
-) -> usize {
+/// Create a tab with the next number and `parent`'s session id, then push it.
+fn spawn_tab(app: &mut App, options: PromptOptions, parent: String) -> usize {
     let number = app.conversation.next_tab_number();
-    let mut tab = SessionTab::new(number, selected_model, selected_preamble);
+    let mut tab = SessionTab::new(number, options);
+    tracing::debug!(tab = number, parent = %parent, "new session tab opened");
     tab.session.parent = parent;
     push_tab(app, tab)
 }
 
-/// Synchronise the left-pane workspace fields to match the session's workspace.
-fn sync_prompt_workspace(app: &mut App, workspace: PathBuf) -> Task<Message> {
-    // Skip fresh tabs (empty workspace) and tabs already in sync.
-    if workspace.as_os_str().is_empty()
-        || !workspace.is_dir()
-        || workspace == app.prompt.workspace.1
-    {
-        return Task::none();
-    }
-    // Recents are left untouched for this tab-switch driven sync.
-    crate::app::prompt::apply_workspace(app, workspace, false)
-}
-
-/// Restore app state to match the newly-viewed tab.
-fn restore_viewing_tab(app: &mut App) -> Task<Message> {
-    let (session_workspace, scroll_offset) = {
-        let tab = app.conversation.viewing();
-        (tab.session.workspace.clone(), tab.scroll_offset)
-    };
-    let workspace_task = sync_prompt_workspace(app, session_workspace);
+/// Restore app state to match the tab at `pos`.
+fn restore_viewing_tab(app: &mut App, pos: usize) -> Task<Message> {
+    let scroll_offset = app.conversation.session_tabs[pos].scroll_offset;
+    let options_task = app.set_viewing(pos);
     views::scroll_to(scroll_offset)
         .discard()
-        .chain(workspace_task)
+        .chain(options_task)
 }
 
 /// Switch the viewing tab to the one with the given number.
@@ -503,13 +470,11 @@ pub(super) fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
         return Task::none();
     }
 
-    // Switch tab
-    app.conversation.viewing = pos;
     app.layout.focused = None;
     // Remove from pending-ask queue — the user is now viewing this tab.
     app.conversation.pending_ask_queue.retain(|&n| n != number);
 
-    let restore_task = restore_viewing_tab(app);
+    let restore_task = restore_viewing_tab(app, pos);
 
     let focus_task = pending_ask_focus_task(app, pos);
     restore_task.chain(focus_task)
@@ -559,8 +524,8 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
         return Task::none();
     }
     let was_viewing = pos == app.conversation.viewing;
-    let removed_model = app.conversation.session_tabs[pos].selected_model.clone();
-    let removed_preamble = app.conversation.session_tabs[pos].selected_preamble.clone();
+    // The last tab is replaced by a fresh one inheriting the closed tab's options.
+    let replacement = (app.conversation.session_tabs.len() == 1).then(|| app.new_tab_options());
     let removed_session = &app.conversation.session_tabs[pos].session;
     tracing::debug!(tab = number, session = %removed_session.id, "session tab closed");
     snapshot::cleanup(&removed_session.workspace, &removed_session.id);
@@ -572,14 +537,8 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
     // Clean up the pending-ask queue — the tab is gone.
     app.conversation.pending_ask_queue.retain(|&n| n != number);
 
-    if app.conversation.session_tabs.is_empty() {
-        let number = app.conversation.next_tab_number();
-        app.conversation.session_tabs.push(SessionTab::new(
-            number,
-            removed_model,
-            removed_preamble,
-        ));
-        app.conversation.viewing = 0;
+    if let Some(options) = replacement {
+        app.conversation.viewing = spawn_tab(app, options, String::new());
     } else if pos < app.conversation.viewing {
         app.conversation.viewing -= 1;
     } else if app.conversation.viewing >= app.conversation.session_tabs.len() {
@@ -588,9 +547,9 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
 
     app.layout.focused = None;
 
-    // Restore the newly-viewed tab's state if the closed tab was viewing.
+    // Restore the newly-viewed tab's state (options + scroll) if the closed tab was viewing.
     if was_viewing {
-        return restore_viewing_tab(app);
+        return restore_viewing_tab(app, app.conversation.viewing);
     }
     Task::none()
 }
@@ -647,14 +606,12 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
             let number = app.conversation.viewing_tab_number();
             // If the loaded session has a stored model, find the matching model name;
             // otherwise keep the viewing tab's current selection.
-            let selected_model = if let Some(ref model_config) = session.model {
-                app.find_model_label(model_config)
-            } else {
-                app.conversation.viewing().selected_model.clone()
-            };
-            let selected_preamble = app.conversation.viewing().selected_preamble.clone();
+            let mut options = app.capture_options();
+            if let Some(ref model_config) = session.model {
+                options.selected_model = app.find_model_label(model_config);
+            }
             let tab = app.conversation.viewing_mut();
-            *tab = SessionTab::from_session(number, session, selected_model, selected_preamble);
+            *tab = SessionTab::from_session(number, session, options);
             // Scroll to top for a freshly loaded session.
             return views::scroll_to_start().discard();
         }
@@ -758,37 +715,36 @@ fn ask_action(app: &mut App, action: AskAction) -> Task<Message> {
 
 // ── successor spawns (renew / task tools) ─────────────────────────
 
-/// Point the prompt workspace at `workspace` before spawning a successor
-/// session — `start_dialog` derives the stream workspace from it.
-fn sync_spawn_workspace(app: &mut App, workspace: &Path) -> Task<Message> {
-    if workspace.as_os_str().is_empty() || workspace == app.prompt.workspace.1 {
-        Task::none()
-    } else {
-        crate::app::prompt::sync_workspace(app, workspace.to_path_buf())
-    }
+/// Options for a successor spawned from `parent_pos`: the parent's pane state
+/// with the spawn's own model, preamble, and workspace applied.
+fn successor_options(
+    app: &App,
+    parent_pos: Option<usize>,
+    spawn: &SuccessorSpawn,
+) -> PromptOptions {
+    let mut options = parent_pos.map_or_else(|| app.new_tab_options(), |pos| app.tab_options(pos));
+    options.files_enabled = true;
+    options.selected_model = spawn.selected_model.clone();
+    options.selected_preamble = spawn.selected_preamble.clone();
+    options.workspace = spawn.workspace.clone();
+    options
 }
 
 /// Complete a renew spawn once its workspace scan has landed off-thread.
 fn continue_renew_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
-    let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
-    let parent_id = app
-        .conversation
-        .tab_pos(spawn.number)
+    let parent_pos = app.conversation.tab_pos(spawn.number);
+    let parent_id = parent_pos
         .map(|p| app.conversation.session_tabs[p].session.id.clone())
         .unwrap_or_default();
-    let new_task = new_session(
-        app,
-        spawn.selected_model,
-        spawn.selected_preamble,
-        parent_id,
-    );
+    let options = successor_options(app, parent_pos, &spawn);
+    let new_task = new_session(app, options, parent_id);
     let tab_pos = app.conversation.viewing;
     let SpawnKind::Renew { mode } = &spawn.kind else {
         return Task::none();
     };
     let user_prompt = UserPrompt::new(*mode, spawn.prompt, spawn.workspace_tree);
     let launch_task = launch_dialog(app, tab_pos, &spawn.model, user_prompt, None);
-    workspace_task.chain(new_task).chain(launch_task)
+    new_task.chain(launch_task)
 }
 
 /// Complete a task-tool spawn once its workspace scan and preamble read finish.
@@ -797,6 +753,7 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     let Some(parent_pos) = app.conversation.tab_pos(spawn.number) else {
         return Task::none();
     };
+    let options = successor_options(app, Some(parent_pos), &spawn);
     let SpawnKind::Task {
         call_id,
         title,
@@ -805,23 +762,12 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
     else {
         return Task::none();
     };
-    // Sync the prompt workspace BEFORE composing the system prompt.
-    let workspace_task = sync_spawn_workspace(app, &spawn.workspace);
-    let system_prompt = preamble.as_deref().map(|preamble| {
-        app.prompt
-            .compose_system_prompt(Some(preamble), &app.settings.selected_skills)
-    });
     let parent = &app.conversation.session_tabs[parent_pos];
     let parent_path = parent.task_path.clone();
     let parent_id = parent.session.id.clone();
     // Spawn in the background — the parent keeps the view; the new tab shows
     // a running indicator and can be clicked to inspect.
-    let tab_pos = new_background_session(
-        app,
-        spawn.selected_model,
-        spawn.selected_preamble,
-        parent_id,
-    );
+    let tab_pos = spawn_tab(app, options, parent_id);
     let tab_model_label = app.find_model_label(&spawn.model);
     {
         let tab = &mut app.conversation.session_tabs[tab_pos];
@@ -829,15 +775,21 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
         task_path.push(tab.number);
         tab.task_path = Some(task_path);
         tab.task_call_id = Some(call_id);
-        tab.selected_model = tab_model_label;
+        tab.pane.selected_model = tab_model_label;
         // Set the tool-provided title before the first save so the Meta line carries it.
         if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
             tab.session.title = title;
         }
     }
+    // A background tab's tools section comes from its own enabled tools.
+    let tab_options = &app.conversation.session_tabs[tab_pos].pane;
+    let system_prompt = preamble.as_deref().map(|preamble| {
+        let tools_section = app.tools_section(tab_pos, tab_options);
+        app.prompt
+            .compose_system_prompt(tab_options, Some(preamble), &tools_section)
+    });
     let user_prompt = UserPrompt::new(None, spawn.prompt, spawn.workspace_tree);
-    let launch_task = launch_dialog(app, tab_pos, &spawn.model, user_prompt, system_prompt);
-    workspace_task.chain(launch_task)
+    launch_dialog(app, tab_pos, &spawn.model, user_prompt, system_prompt)
 }
 
 /// Handle search-bar events on the viewing tab.
@@ -1126,39 +1078,37 @@ fn compact_session(app: &mut App) -> Task<Message> {
 /// Derive a copy of the viewing session into a new tab and switch to it.
 fn derive_session(app: &mut App, derive: fn(&Session) -> Session, verb: &str) -> Task<Message> {
     let number = app.conversation.next_tab_number();
-    let (source_id, tab) = {
+    let mut options = app.new_tab_options();
+    let (source_id, session) = {
         let view = app.conversation.viewing();
         let session = derive(&view.session);
-        // Keep the derived session's model label when known, else the source picker's.
-        let selected_model = session
-            .model
-            .as_ref()
-            .map(|m| app.find_model_label(m))
-            .unwrap_or_else(|| view.selected_model.clone());
-        let tab = SessionTab::from_session(
-            number,
-            session,
-            selected_model,
-            view.selected_preamble.clone(),
-        );
-        (view.session.id.clone(), tab)
+        // Keep the derived session's model label when known.
+        if let Some(model) = session.model.as_ref() {
+            options.selected_model = app.find_model_label(model);
+        }
+        (view.session.id.clone(), session)
     };
     tracing::debug!(tab = number, source = %source_id, "session {verb}");
+    let tab = SessionTab::from_session(number, session, options);
     let pos = push_tab(app, tab);
-    app.conversation.viewing = pos;
     // Surface the new session in the list without persisting an extra entry.
     surface_session_in_list(app, pos);
     // Fresh tab has no saved offset — restore_viewing_tab scrolls to top.
-    restore_viewing_tab(app)
+    restore_viewing_tab(app, pos)
 }
 
 // ── Stream orchestration ──────────────────────────────────────────
 
 /// Apply the selected model to the tab's session and persist it.
-fn prepare_session_tab(app: &mut App, tab_pos: usize, model_config: &ModelConfig) {
+fn prepare_session_tab(
+    app: &mut App,
+    tab_pos: usize,
+    model_config: &ModelConfig,
+    workspace: PathBuf,
+) {
     let tab = &mut app.conversation.session_tabs[tab_pos];
     tab.session.model = Some(model_config.clone());
-    tab.session.workspace = app.prompt.workspace.1.clone();
+    tab.session.workspace = workspace;
     tab.session.save().ok();
 }
 
@@ -1201,21 +1151,22 @@ pub(crate) fn start_dialog(
         return Task::none();
     };
 
-    prepare_session_tab(app, tab_pos, model_config);
+    // A background sub-agent is not the viewing tab: build its request from
+    // the tab's own options, not the live pane.
+    let options = app.tab_options(tab_pos);
+    let workspace = options.workspace_or(&app.prompt.workspace.1);
+
+    prepare_session_tab(app, tab_pos, model_config, workspace.clone());
     let tab_number = app.conversation.session_tabs[tab_pos].number;
     surface_session_in_list(app, tab_pos);
 
-    let is_viewing = tab_pos == app.conversation.viewing;
-
-    // Compute the system prompt before re-borrowing the tab (needs `&app`).
-    // The task tool passes an override (mode preamble); otherwise assemble
-    // from the configured components, reading preamble/skills from disk.
+    // Needs `&app`, so build it before re-borrowing the tab below.
     let system_prompt = match system_prompt_override {
         Some(override_prompt) => override_prompt,
-        None => app.prompt.get_system_prompt(
-            &app.conversation.session_tabs[tab_pos].selected_preamble,
-            &app.settings.selected_skills,
-        ),
+        None => {
+            let tools_section = app.tools_section(tab_pos, &options);
+            app.prompt.get_system_prompt(&options, &tools_section)
+        }
     };
 
     // Re-borrow for the remaining setup.
@@ -1236,7 +1187,7 @@ pub(crate) fn start_dialog(
     let mut tools = app
         .tools
         .tool_registry
-        .enabled_tools(&app.tools.enabled_tools, &app.tools.enabled_mcp_servers);
+        .enabled_tools(&options.enabled_tools, &options.enabled_mcp_servers);
     // Bind the todo tool to this tab's own list so parallel sessions don't clobber each other's todos.
     if let Some(pos) = tools.iter().position(|t| t.name() == "todo") {
         tools[pos] = std::sync::Arc::new(crate::tools::todo::TodoTool::new(tab.todo_items.clone()));
@@ -1253,7 +1204,7 @@ pub(crate) fn start_dialog(
 
     let config = crate::llm::SendConfig {
         model,
-        workspace: app.prompt.workspace.1.clone(),
+        workspace,
         session_id: tab.session.id.clone(),
         tab_number,
         system_prompt,
@@ -1277,7 +1228,7 @@ pub(crate) fn start_dialog(
     }
 
     Task::batch([
-        if is_viewing {
+        if tab_pos == app.conversation.viewing {
             scroll_to_end().discard()
         } else {
             Task::none()

@@ -51,6 +51,7 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── tool sections (tool_list.rs) ──
     ("MCP Tools", "MCP 工具"),
     ("Reconnect...", "重连中…"),
+    ("Connecting...", "连接中…"),
     ("command not found", "找不到命令"),
     ("failed to launch", "启动失败"),
     ("connection failed", "连接失败"),

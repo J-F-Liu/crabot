@@ -33,12 +33,12 @@ pub(crate) fn left_pane<'a>(
 ) -> Element<'a, LeftPaneEvent> {
     let lang = settings.language;
     let left_w: f32 = settings.left_pane_width;
-    let selected_model: &String = &conversation.viewing().selected_model;
-    let selected_preamble: &str = &conversation.viewing().selected_preamble;
+    let selected_model: &String = &conversation.viewing().pane.selected_model;
+    let selected_preamble: &str = &conversation.viewing().pane.selected_preamble;
     let agents_md_exists: bool = prompt.agents_md_exists;
     let tool_list_state: &ToolListState = &tools.tool_list_state;
     let preamble_options: &[FilepathEntry] = &prompt.preamble_options;
-    let selected_skills: &[String] = &settings.selected_skills;
+    let selected_skills: &[String] = &prompt.selected_skills;
     let skills_options: &[FilepathEntry] = &prompt.skills_options;
     let workspace_options: &[FilepathEntry] = &prompt.workspace_options;
     let files: &crate::app::FileTreePane = &prompt.files;

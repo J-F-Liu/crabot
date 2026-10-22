@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::app::prompt_options::PromptOptions;
 use crate::app::session_state::SessionState;
 use crate::llm::DialogPhase;
 use crate::model::TokenAmount;
@@ -62,10 +63,8 @@ pub(crate) struct SessionTab {
     pub(crate) todo_items: TodoList,
     /// Saved scroll position (absolute y-offset) to restore when switching back to this tab.
     pub(crate) scroll_offset: Option<f32>,
-    /// The model selected for this tab (restored when switching back to this tab).
-    pub(crate) selected_model: String,
-    /// The preamble file selected for this tab (restored when switching back to this tab).
-    pub(crate) selected_preamble: String,
+    /// Left-pane options owned by this tab (restored when switching back to it).
+    pub(crate) pane: PromptOptions,
     /// End status indicator — set when a stream finishes, cleared when a new dialog starts.
     pub(crate) end_status: Option<SessionEndStatus>,
     /// Hierarchical label path, e.g. `Some([1, 2])` → "Session 1-2" (task
@@ -85,8 +84,7 @@ impl SessionTab {
     fn from_parts(
         number: usize,
         session: Session,
-        selected_model: String,
-        selected_preamble: String,
+        pane: PromptOptions,
         latest_tokens: TokenAmount,
         todo_items: TodoList,
     ) -> Self {
@@ -104,8 +102,7 @@ impl SessionTab {
             search: SearchState::default(),
             todo_items,
             scroll_offset: None,
-            selected_model,
-            selected_preamble,
+            pane,
             end_status: None,
             task_path: None,
             task_call_id: None,
@@ -115,38 +112,25 @@ impl SessionTab {
     }
 
     /// Create a fresh (unsaved, empty) tab with the given number.
-    pub(crate) fn new(number: usize, selected_model: String, selected_preamble: String) -> Self {
+    pub(crate) fn new(number: usize, pane: PromptOptions) -> Self {
         Self::from_parts(
             number,
             Session::new(),
-            selected_model,
-            selected_preamble,
+            pane,
             TokenAmount::default(),
             TodoList::default(),
         )
     }
 
     /// Build a tab from a previously-saved session loaded from disk.
-    pub(crate) fn from_session(
-        number: usize,
-        session: Session,
-        selected_model: String,
-        selected_preamble: String,
-    ) -> Self {
+    pub(crate) fn from_session(number: usize, session: Session, pane: PromptOptions) -> Self {
         let latest_tokens = TokenAmount {
             prompt: session.tokens.prompt,
             output: session.tokens.output,
             ..Default::default()
         };
         let todo_items = todo::create_todo_list(session.last_todo_items());
-        Self::from_parts(
-            number,
-            session,
-            selected_model,
-            selected_preamble,
-            latest_tokens,
-            todo_items,
-        )
+        Self::from_parts(number, session, pane, latest_tokens, todo_items)
     }
 
     /// Whether this tab has an active LLM stream.

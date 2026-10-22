@@ -290,7 +290,6 @@ fn merge_settings(baseline: &Settings, ours: &Settings, disk: &Settings) -> Sett
     merge_untouched!(ours, baseline, disk, merged;
         left_pane_width,
         right_pane_width,
-        selected_skills,
         recent_workspaces,
         font_scale,
         prompt_recipes,
