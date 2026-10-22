@@ -953,6 +953,15 @@ impl App {
         self.prompt.tools.content = text_editor::Content::with_text(&summary);
     }
 
+    /// App title plus the viewing tab's workspace folder name, when set.
+    pub(crate) fn window_title(&self) -> String {
+        let app = crabot::app_title();
+        match crabot::workspace::folder_name(&self.prompt.workspace.1) {
+            Some(name) => format!("{app} - {name}"),
+            None => app.to_string(),
+        }
+    }
+
     pub(crate) fn update(&mut self, msg: Message) -> Task<Message> {
         match msg {
             Message::Layout(event) => layout::update(self, event),

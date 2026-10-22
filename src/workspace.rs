@@ -2,6 +2,17 @@ use chrono::DateTime;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+// ── workspace naming ─────────────────────────────────────────────────
+
+/// Folder name of `path`, or its root spelling (`/`, `D:\`); `None` if empty.
+pub fn folder_name(path: &Path) -> Option<String> {
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    let name = path.file_name().unwrap_or(path.as_os_str());
+    Some(name.to_string_lossy().into_owned())
+}
+
 // ── files tree builder ───────────────────────────────────────────────
 
 /// Max directory depth to scan (root = depth 0, its children = depth 1, …).

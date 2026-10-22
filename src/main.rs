@@ -80,7 +80,7 @@ pub fn main() -> iced::Result {
             icon,
             ..Default::default()
         })
-        .title(crabot::app_title())
+        .title(App::window_title)
         .antialiasing(true)
         .run()
 }

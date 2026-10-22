@@ -245,10 +245,7 @@ pub fn build_md_file_options(subdir: &str) -> Vec<FilepathEntry> {
 
 /// Display label for a workspace path: the folder name, or "unknown".
 fn workspace_display(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("unknown")
-        .to_string()
+    crabot::workspace::folder_name(path).unwrap_or_else(|| "unknown".to_string())
 }
 
 pub fn build_workspace_options(recent: &[(PathBuf, bool)]) -> Vec<FilepathEntry> {
