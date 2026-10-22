@@ -1,8 +1,16 @@
+use std::fmt;
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use include_dir::{Dir, include_dir};
+use tracing::field::{Field, Visit};
+use tracing_subscriber::fmt::format::{Format, Writer};
+use tracing_subscriber::fmt::time::{FormatTime, SystemTime};
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/assets");
@@ -62,6 +70,77 @@ pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// Collapses consecutive identical records (same level, target, and fields);
+/// `iced_winit` repeats its surface error every frame while minimized.
+#[derive(Default)]
+struct DedupeFormat {
+    inner: Format,
+    state: Mutex<DedupeState>,
+}
+
+#[derive(Default)]
+struct DedupeState {
+    last: Option<String>,
+    suppressed: usize,
+}
+
+impl DedupeState {
+    /// Admits a new key, returning the duplicates it ends; `None` drops one.
+    fn admit(&mut self, key: String) -> Option<usize> {
+        if self.last.as_ref() == Some(&key) {
+            self.suppressed += 1;
+            return None;
+        }
+        self.last = Some(key);
+        Some(std::mem::take(&mut self.suppressed))
+    }
+}
+
+/// Keys on level, target, and fields rather than the timestamped line.
+fn event_key(event: &tracing::Event<'_>) -> String {
+    let meta = event.metadata();
+    let mut key = format!("{} {} ", meta.level(), meta.target());
+    event.record(&mut FieldVisitor(&mut key));
+    key
+}
+
+/// Appends every field; log-bridge records carry the real target in `log.target`.
+struct FieldVisitor<'a>(&'a mut String);
+
+impl Visit for FieldVisitor<'_> {
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        let _ = write!(self.0, "{}={value:?};", field.name());
+    }
+}
+
+impl<S, N> FormatEvent<S, N> for DedupeFormat
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> fmt::Result {
+        let key = event_key(event);
+        let admitted = crate::lock(&self.state).admit(key);
+        let Some(suppressed) = admitted else {
+            return Ok(());
+        };
+        // Note the collapsed run just before the next distinct record.
+        if suppressed > 0 {
+            SystemTime.format_time(&mut writer)?;
+            writeln!(
+                writer,
+                "  WARN crabot: suppressed {suppressed} consecutive duplicate log record(s)"
+            )?;
+        }
+        self.inner.format_event(ctx, writer, event)
+    }
+}
+
 /// Initialize the tracing logger: daily-rolling files under `~/.crabot/logs/`.
 /// In debug builds output is also mirrored to stderr for development.
 ///
@@ -84,7 +163,8 @@ pub fn init_logging() -> tracing_appender::non_blocking::WorkerGuard {
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false) // No ANSI color codes in log files.
-        .with_writer(non_blocking);
+        .with_writer(non_blocking)
+        .event_format(DedupeFormat::default());
 
     let registry = tracing_subscriber::registry().with(filter).with(file_layer);
 
