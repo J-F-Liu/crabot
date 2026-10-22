@@ -128,6 +128,40 @@ struct ParamDef {
     required: bool,
     /// Default value from the schema, if any.
     default: Option<serde_json::Value>,
+    /// Values of an `enum` constraint, including `anyOf`/`oneOf` branches.
+    enum_values: Vec<String>,
+}
+
+/// Collect allowed values from a JSON Schema node: its own `enum`/`const`
+/// plus `anyOf`/`oneOf` variants (the usual MCP shape), deduplicated in
+/// first-seen order.
+fn collect_enum_values(schema: &serde_json::Value, out: &mut Vec<String>) {
+    let own: Vec<&serde_json::Value> = schema
+        .get("enum")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(schema.get("const"))
+        .collect();
+    for value in own {
+        let text = match value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if !out.contains(&text) {
+            out.push(text);
+        }
+    }
+    for key in ["anyOf", "oneOf"] {
+        for variant in schema
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            collect_enum_values(variant, out);
+        }
+    }
 }
 
 /// Extract top-level parameter definitions from a JSON Schema object.
@@ -185,6 +219,9 @@ fn extract_params(schema: &serde_json::Value) -> Vec<ParamDef> {
 
             let default = prop.get("default").cloned();
 
+            let mut enum_values = Vec::new();
+            collect_enum_values(prop, &mut enum_values);
+
             ParamDef {
                 name: name.clone(),
                 param_type,
@@ -192,6 +229,7 @@ fn extract_params(schema: &serde_json::Value) -> Vec<ParamDef> {
                 description,
                 required,
                 default,
+                enum_values,
             }
         })
         .collect()
@@ -286,6 +324,15 @@ pub(crate) fn coerce_value(raw: &str, param_type: &str) -> serde_json::Value {
 }
 
 // ── Parameter field rendering ───────────────────────────────────
+
+/// Muted helper text shown under a parameter name.
+fn param_note(content: String) -> Element<'static, SettingsEvent> {
+    text(content)
+        .size(11)
+        .color(color_muted())
+        .wrapping(Wrapping::Word)
+        .into()
+}
 
 fn render_param_field<'a>(
     p: &ParamDef,
@@ -568,17 +615,6 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
 
                     let type_badge = text(format!("[{}]", p_type)).size(11).color(color_muted());
 
-                    let desc_text = if p_desc.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            text(p_desc)
-                                .size(11)
-                                .color(color_muted())
-                                .wrapping(Wrapping::Word),
-                        )
-                    };
-
                     let mut col = column![
                         row![
                             text(p_name).size(13).color(color_text_strong()).width(120),
@@ -589,8 +625,16 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
                     ]
                     .spacing(2);
 
-                    if let Some(d) = desc_text {
-                        col = col.push(d);
+                    if !p_desc.is_empty() {
+                        col = col.push(param_note(p_desc));
+                    }
+                    if !p.enum_values.is_empty() {
+                        let allowed = format!(
+                            "{} {}",
+                            lang.tr("Allowed values:"),
+                            p.enum_values.join(" · ")
+                        );
+                        col = col.push(param_note(allowed));
                     }
                     col = col.push(field);
 

@@ -273,6 +273,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("(no description)", "（无描述）"),
     ("Description:", "描述："),
     ("Parameters:", "参数："),
+    ("Allowed values:", "可选值："),
     ("This tool takes no parameters.", "该工具不需要任何参数。"),
     ("optional", "可选"),
     ("＋ Add item", "＋ 添加项"),
