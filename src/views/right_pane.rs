@@ -117,12 +117,7 @@ fn collapse_toggle(
     section: PaneSection,
     lang: Lang,
 ) -> Element<'static, RightPaneEvent> {
-    let (icon, tip) = if expanded {
-        (&icons::CHEVRONS_DOWN, lang.tr("Collapse"))
-    } else {
-        (&icons::CHEVRONS_RIGHT, lang.tr("Expand"))
-    };
-    icons::icon_action(icon, tip, RightPaneEvent::ToggleSection(section))
+    icons::chevron_action(expanded, lang, RightPaneEvent::ToggleSection(section))
 }
 
 /// Selectable row for a single file path.

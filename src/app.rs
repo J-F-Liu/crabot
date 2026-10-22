@@ -233,6 +233,7 @@ impl ToolState {
         self.mcp_errors.remove(server);
         self.mcp_pending.remove(server);
         self.mcp_known_tools.remove(server);
+        self.tool_list_state.forget_server(server);
         self.next_epoch(server);
         let removed: Vec<String> = self
             .tool_registry
@@ -564,6 +565,12 @@ pub(crate) enum PromptEvent {
 pub(crate) enum ToolEvent {
     ToggleMcpServer(String, bool),
     ToggleAgentTool(String, bool),
+    /// Select or clear every tool of one MCP server.
+    SetMcpServerTools(String, bool),
+    /// Cycle one MCP server's tool grid between 1, 2, and 3 columns.
+    CycleMcpColumns(String),
+    /// Expand or collapse one MCP server's tool grid.
+    ToggleMcpServerExpanded(String),
     McpToolsDiscovered((String, u64, crabot::tools::mcp::DiscoverResult)),
 }
 

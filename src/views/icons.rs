@@ -9,6 +9,7 @@ use iced::{
 
 use super::styles::{icon_button_style, tooltip_style};
 use super::theme::{color_muted, color_text_strong};
+use crabot::i18n::Lang;
 
 /// Lucide "copy" icon.
 pub(crate) const COPY: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>"##;
@@ -82,11 +83,24 @@ pub(crate) fn icon_action<M: Clone + 'static>(
     tip: &'static str,
     on_press: M,
 ) -> Element<'static, M> {
-    tooltip(
+    with_tooltip(
         button(svg_icon(icon))
             .on_press(on_press)
             .padding(6)
-            .style(icon_button_style),
+            .style(icon_button_style)
+            .into(),
+        tip,
+    )
+}
+
+/// Wrap `content` in the standard dark tooltip shown below on hover.
+#[must_use]
+pub(crate) fn with_tooltip<M: 'static>(
+    content: Element<'static, M>,
+    tip: &'static str,
+) -> Element<'static, M> {
+    tooltip(
+        content,
         text(tip).size(11).color(Color::WHITE),
         tooltip::Position::Bottom,
     )
@@ -94,4 +108,19 @@ pub(crate) fn icon_action<M: Clone + 'static>(
     .delay(Duration::from_millis(400))
     .style(tooltip_style)
     .into()
+}
+
+/// Chevron button that collapses or expands a section, with a tooltip.
+#[must_use]
+pub(crate) fn chevron_action<M: Clone + 'static>(
+    expanded: bool,
+    lang: Lang,
+    on_press: M,
+) -> Element<'static, M> {
+    let (icon, tip) = if expanded {
+        (CHEVRONS_DOWN, lang.tr("Collapse"))
+    } else {
+        (CHEVRONS_RIGHT, lang.tr("Expand"))
+    };
+    icon_action(icon, tip, on_press)
 }

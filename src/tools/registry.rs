@@ -81,11 +81,22 @@ impl ToolRegistry {
     /// Whether a built-in, custom, or other MCP server's tool claims `name`.
     /// Callers must already have removed the server's own group (`take_mcp_group`).
     pub fn owns_name(&self, name: &str) -> bool {
+        self.claims_name(name, None)
+    }
+
+    /// [`Self::owns_name`] for callers that still hold the group named `server`.
+    pub fn owns_name_except(&self, name: &str, server: &str) -> bool {
+        self.claims_name(name, Some(server))
+    }
+
+    /// Whether a built-in, custom, or MCP tool other than `except_server` claims `name`.
+    fn claims_name(&self, name: &str, except_server: Option<&str>) -> bool {
         self.builtin_names.iter().any(|n| n == name)
             || self.custom_names.iter().any(|n| n == name)
             || self
                 .mcp
                 .iter()
+                .filter(|(server, _)| Some(server.as_str()) != except_server)
                 .flat_map(|(_, tools)| tools.iter())
                 .any(|tool| tool.name == name)
     }

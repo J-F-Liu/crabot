@@ -135,7 +135,7 @@ pub(crate) fn left_pane<'a>(
                     )
                     .map(map_tool_list_event),
                     mcp_tools_section(
-                        tool_list_state.mcp_expanded,
+                        tool_list_state,
                         enabled_tools,
                         &tool_registry.mcp,
                         enabled_mcp_servers,
@@ -171,6 +171,15 @@ fn map_tool_list_event(event: super::tool_list::ToolListEvent) -> LeftPaneEvent 
         }
         ToolListEvent::ToggleAgentTool(name, enabled) => {
             LeftPaneEvent::Tools(ToolEvent::ToggleAgentTool(name, enabled))
+        }
+        ToolListEvent::SetMcpServerTools(server, enabled) => {
+            LeftPaneEvent::Tools(ToolEvent::SetMcpServerTools(server, enabled))
+        }
+        ToolListEvent::CycleMcpColumns(server) => {
+            LeftPaneEvent::Tools(ToolEvent::CycleMcpColumns(server))
+        }
+        ToolListEvent::ToggleMcpServerExpanded(server) => {
+            LeftPaneEvent::Tools(ToolEvent::ToggleMcpServerExpanded(server))
         }
     }
 }

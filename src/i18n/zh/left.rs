@@ -50,6 +50,11 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Level", "级别"),
     // ── tool sections (tool_list.rs) ──
     ("MCP Tools", "MCP 工具"),
+    ("Select All", "全选"),
+    ("Deselect All", "全不选"),
+    ("1 col", "1 列"),
+    ("{} cols", "{} 列"),
+    ("Grid columns: click to cycle", "点击切换列数"),
     ("Reconnect...", "重连中…"),
     ("Connecting...", "连接中…"),
     ("command not found", "找不到命令"),

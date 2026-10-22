@@ -147,6 +147,25 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
             app.tools.enabled_tools.set(tool_name, enabled);
             app.refresh_tools_summary();
         }
+        ToolEvent::SetMcpServerTools(server, enabled) => {
+            let names = app.tools.tool_registry.mcp_tool_names(&server);
+            if enabled {
+                app.tools.enabled_tools.extend(names);
+            } else {
+                // Never clear a name a built-in, custom, or other server still claims.
+                for name in names {
+                    if !app.tools.tool_registry.owns_name_except(&name, &server) {
+                        app.tools.enabled_tools.remove(&name);
+                    }
+                }
+            }
+            app.refresh_tools_summary();
+        }
+        ToolEvent::CycleMcpColumns(server) => app.tools.tool_list_state.cycle_mcp_columns(&server),
+        ToolEvent::ToggleMcpServerExpanded(server) => app
+            .tools
+            .tool_list_state
+            .toggle_mcp_server_expanded(&server),
         ToolEvent::McpToolsDiscovered((server, epoch, result)) => {
             // Drop superseded results or servers removed meanwhile.
             let stale = app
