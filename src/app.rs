@@ -534,6 +534,8 @@ pub(crate) enum PromptEvent {
     SelectWorkspace(FilepathEntry),
     WorkspaceDialogResult(Option<PathBuf>),
     SelectPreamble(FilepathEntry),
+    /// Preamble pick list opened; rescan its options.
+    RefreshPreambleOptions,
     /// Toggle a skill file in the multi-selection.
     ToggleSkill(String, bool),
     /// Open/close the skills multi-select dropdown.
@@ -775,11 +777,8 @@ impl App {
         let preamble_options = crate::views::build_md_file_options("preamble");
         let skills_options = crate::views::build_md_file_options("skills");
 
-        // Drop skill selections whose files no longer exist (e.g. a skill
-        // file deleted from ~/.crabot/skills).
-        saved
-            .selected_skills
-            .retain(|name| skills_options.iter().any(|entry| &entry.display == name));
+        // Drop skills whose files vanished since the last run.
+        prompt::retain_available_skills(&skills_options, &mut saved.selected_skills);
 
         let workspace_path = saved.workspace.clone();
         let enabled_mcp_servers: HashSet<_> = saved

@@ -64,6 +64,7 @@ pub(crate) fn preamble_picker_view<'a>(
             .on_toggle(move |v| PromptEvent::ToggleEnabled(PREAMBLE, v))
             .width(Fill),
         styled_pick_list(options, selected, PromptEvent::SelectPreamble)
+            .on_open(PromptEvent::RefreshPreambleOptions)
             .padding([4, 8])
             .width(Fill),
     ]
@@ -240,6 +241,8 @@ pub fn build_md_file_options(subdir: &str) -> Vec<FilepathEntry> {
             }
         }
     }
+    // `read_dir` order is unspecified; sort so rescans keep the menu stable.
+    entries.sort_by(|a, b| a.display.cmp(&b.display));
     entries
 }
 

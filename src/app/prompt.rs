@@ -127,6 +127,7 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         PromptEvent::SelectPreamble(entry) => {
             app.conversation.viewing_mut().pane.selected_preamble = entry.display.clone();
         }
+        PromptEvent::RefreshPreambleOptions => refresh_preamble_options(app),
         PromptEvent::ToggleSkill(name, enabled) => {
             let skills = &mut app.prompt.selected_skills;
             if enabled {
@@ -138,6 +139,10 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
             }
         }
         PromptEvent::ToggleSkillsMenu => {
+            if !app.prompt.skills_menu_expanded {
+                // Rescan on open so on-disk changes show up without a restart.
+                refresh_skills_options(app);
+            }
             app.prompt.skills_menu_expanded = !app.prompt.skills_menu_expanded;
         }
         PromptEvent::DismissSkillsMenu => {
@@ -468,6 +473,26 @@ pub(crate) fn load_prompt_file(options: &[FilepathEntry], selected: &str) -> Str
                 .ok()
         })
         .unwrap_or_default()
+}
+
+/// Drop skill names with no matching file in `options`.
+pub(crate) fn retain_available_skills(options: &[FilepathEntry], selected: &mut Vec<String>) {
+    selected.retain(|name| options.iter().any(|entry| &entry.display == name));
+}
+
+/// Rescan the preamble picker options on open.
+fn refresh_preamble_options(app: &mut App) {
+    app.prompt.preamble_options = crate::views::build_md_file_options("preamble");
+}
+
+/// Rescan the skill picker options on open; drop vanished selections (all tabs).
+fn refresh_skills_options(app: &mut App) {
+    let options = crate::views::build_md_file_options("skills");
+    retain_available_skills(&options, &mut app.prompt.selected_skills);
+    for tab in &mut app.conversation.session_tabs {
+        retain_available_skills(&options, &mut tab.pane.selected_skills);
+    }
+    app.prompt.skills_options = options;
 }
 
 /// Read each selected file in order, joining non-empty contents with a blank line.
