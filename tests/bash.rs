@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{TempDir, crabot_workspace};
+use common::{TempDir, await_tool, crabot_workspace, run_tool, test_runtime};
 use tokio_util::sync::CancellationToken;
 
 use crabot::tools::{ToolRegistry, tmp_host_dir};
@@ -94,25 +94,7 @@ fn bash_tool(
     (bash, args)
 }
 
-/// Multi-thread test runtime (tool execution needs `spawn_blocking`).
-fn test_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime")
-}
-
-/// Join a spawned tool task like `llm::tool_call::await_tool` does.
-async fn await_tool(
-    handle: tokio::task::JoinHandle<Result<String, String>>,
-) -> Result<String, String> {
-    handle
-        .await
-        .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
-}
-
-/// Run the `bash` tool exactly like `llm::tool_call::call_tool` does: on a blocking
-/// thread with a tokio runtime context.
+/// Run the `bash` tool exactly like the agent loop: blocking thread + runtime.
 fn run_bash(command: &str, workspace: &Path, timeout_ms: Option<u64>) -> Result<String, String> {
     run_bash_with_cancel(command, workspace, timeout_ms, CancellationToken::new())
 }
@@ -125,13 +107,7 @@ fn run_bash_with_cancel(
     cancel: CancellationToken,
 ) -> Result<String, String> {
     let (bash, args) = bash_tool(command, timeout_ms);
-    let workspace = workspace.to_path_buf();
-    test_runtime().block_on(async {
-        await_tool(tokio::task::spawn_blocking(move || {
-            bash.execute(&args, &workspace, &cancel)
-        }))
-        .await
-    })
+    run_tool(bash, args, workspace, cancel)
 }
 
 /// Like [`run_bash`] but via `execute_streaming`, forwarding capped output
@@ -1212,8 +1188,8 @@ fn bashkit_cancel_includes_partial_output() {
 
 // ── streaming output ────────────────────────────────────────
 
-/// External commands (`git` → HostCommandBuiltin) stream their output live
-/// from the pipe drain, and the final result must still contain everything.
+/// External commands (`git` → `HostCommand`) stream their output through the
+/// command's pipe pumps, and the final result must still contain everything.
 #[test]
 fn bashkit_streaming_external_output() {
     // Three slow git invocations; each hash line streams while the script is
@@ -1454,21 +1430,56 @@ fn bashkit_host_preferred_tools_run_the_host_binary() {
     }
 }
 
-/// bashkit runs `&` jobs and pipeline producers concurrently, which would let
-/// `head -1` stop this producer on SIGPIPE; the tool pins jobs sequential, so
-/// the producer runs to the interpreter's own limit.
+/// Concurrent pipeline stages stop the producer when `head -1` closes the pipe.
 #[test]
-fn bashkit_pipeline_producers_stay_sequential() {
-    let err = run_bash(
+fn bashkit_pipeline_stops_the_producer() {
+    let result = run_bash(
         "while :; do echo x; done | head -1",
         &crabot_workspace(),
-        Some(1000),
+        Some(5000),
     )
-    .expect_err("the producer must not be stopped by SIGPIPE");
-    assert!(
-        err.contains("resource limit") || err.contains("timed out"),
-        "unexpected: {err}"
-    );
+    .unwrap();
+    assert_eq!(result.trim(), "x", "unexpected: {result}");
+}
+
+/// A bridged command's stdout is routed through shell redirects (VFS file).
+#[test]
+fn bashkit_host_command_redirect_writes_the_file() {
+    let result = run_bash(
+        "git rev-parse HEAD > /tmp/crabot_host_redirect.txt; cat /tmp/crabot_host_redirect.txt",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_sha_lines(&result, 1);
+}
+
+/// A bridged command reads the pipeline's live stdin.
+#[test]
+fn bashkit_host_command_reads_piped_stdin() {
+    let result = run_bash(
+        "printf 'crabot\\n' | git hash-object --stdin",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_sha_lines(&result, 1);
+}
+
+/// Output larger than the OS pipe buffer must keep draining, piped or redirected.
+#[test]
+fn bashkit_host_command_large_output() {
+    const PIPE: &str = "git cat-file blob HEAD:assets/models.json | wc -c";
+    const FILE: &str = "git cat-file blob HEAD:assets/models.json > /tmp/crabot_host_large.txt; \
+                        wc -c < /tmp/crabot_host_large.txt";
+    for script in [PIPE, FILE] {
+        let result = run_bash(script, &crabot_workspace(), Some(20_000)).unwrap();
+        let bytes: usize = result.trim().parse().expect("wc -c byte count");
+        assert!(
+            bytes > 64 * 1024,
+            "{script}: expected the whole file, got {bytes}"
+        );
+    }
 }
 
 /// A `&` before a closing keyword (`if …; then cmd & fi`) is a detach request.

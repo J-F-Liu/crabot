@@ -83,31 +83,40 @@ pub(crate) use fallback::Uname;
 mod fallback {
     use std::sync::OnceLock;
 
-    use bashkit::{Builtin, BuiltinContext, ExecResult, async_trait};
+    use bashkit::{Command, CommandContext, CommandStatus, ExecResult, async_trait};
 
-    use super::super::bash_kit::real_hostname;
-    use super::{host_msystem, host_uname};
+    use super::super::bash_kit::{HostCommand, real_hostname};
+    use super::host_msystem;
 
     /// `uname` — the host's own binary where there is one, host facts otherwise.
     pub(crate) struct Uname {
-        /// The bridged host binary; `None` answers from [`host_facts`].
-        host: Option<Box<dyn Builtin>>,
+        /// The bridged host command; `None` answers from [`host_facts`].
+        host: Option<HostCommand>,
     }
 
     impl Uname {
-        /// `bridge` builds the host-command builtin for the resolved `uname` path.
-        pub(crate) fn new(bridge: impl FnOnce(String) -> Box<dyn Builtin>) -> Self {
-            let host = host_uname().map(|path| bridge(path.to_string_lossy().into_owned()));
+        /// `host` is the bridged host binary, when one was found.
+        pub(crate) fn new(host: Option<HostCommand>) -> Self {
             Self { host }
         }
     }
 
     #[async_trait]
-    impl Builtin for Uname {
-        async fn execute(&self, ctx: BuiltinContext<'_>) -> bashkit::Result<ExecResult> {
+    impl Command for Uname {
+        async fn execute(&self, ctx: CommandContext<'_>) -> bashkit::Result<CommandStatus> {
             match &self.host {
                 Some(host) => host.execute(ctx).await,
-                None => Ok(answer(ctx.args, &host_facts())),
+                None => {
+                    let result = answer(ctx.args, &host_facts());
+                    // Empty writes fail on a closed (`n>&-`) destination.
+                    if !result.stdout.is_empty() {
+                        ctx.stdout.write_all(result.stdout.as_bytes()).await?;
+                    }
+                    if !result.stderr.is_empty() {
+                        ctx.stderr.write_all(result.stderr.as_bytes()).await?;
+                    }
+                    Ok(CommandStatus::with_code(result.exit_code))
+                }
             }
         }
     }

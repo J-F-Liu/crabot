@@ -1,19 +1,53 @@
 //! Shared helpers for the integration tests.
 #![allow(dead_code)] // every test binary compiles the full API but uses a slice
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{env, fs, io, process};
+
+use crabot::tools::ToolRef;
+use tokio_util::sync::CancellationToken;
+
+/// A multi-thread runtime for tool execution (`spawn_blocking` needs it).
+pub fn test_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime")
+}
+
+/// Join a spawned tool task like `llm::tool_call::await_tool` does.
+pub async fn await_tool(
+    handle: tokio::task::JoinHandle<Result<String, String>>,
+) -> Result<String, String> {
+    handle
+        .await
+        .unwrap_or_else(|e| Err(format!("Tool execution panicked: {e}")))
+}
+
+/// Run a tool on a blocking thread with a runtime context, like the agent loop.
+pub fn run_tool(
+    tool: ToolRef,
+    args: serde_json::Value,
+    workspace: &Path,
+    cancel: CancellationToken,
+) -> Result<String, String> {
+    let workspace = workspace.to_path_buf();
+    test_runtime().block_on(async {
+        await_tool(tokio::task::spawn_blocking(move || {
+            tool.execute(&args, &workspace, &cancel)
+        }))
+        .await
+    })
+}
 
 /// The workspace root tools run against in tests.
 pub fn crabot_workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// A per-instance-unique temp dir, recursively removed on drop.
-///
-/// The unique suffix keeps parallel tests that share a prefix from clearing each
-/// other's tree; `path` is public so call sites stay terse.
+/// A per-instance-unique temp dir, recursively removed on drop. `path` is
+/// public so call sites stay terse.
 pub struct TempDir {
     pub path: PathBuf,
 }

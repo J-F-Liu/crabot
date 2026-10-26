@@ -155,15 +155,6 @@ impl WaitError {
             WaitError::Timeout(m) | WaitError::Cancelled(m) | WaitError::Other(m) => m,
         }
     }
-
-    /// bash exit-code convention: 124 = timeout, 130 = cancel (SIGINT), 1 = other.
-    pub(crate) fn exit_code(&self) -> i32 {
-        match self {
-            WaitError::Timeout(_) => 124,
-            WaitError::Cancelled(_) => 130,
-            WaitError::Other(_) => 1,
-        }
-    }
 }
 
 /// Wait for a child process to finish, with a hard timeout.

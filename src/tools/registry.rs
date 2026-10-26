@@ -234,7 +234,9 @@ pub fn build_tools(tools: &[ToolRef], strict: bool) -> Vec<GenaiTool> {
 /// Build a helpful error message when an unknown tool is requested.
 pub fn unknown_tool_message(name: &str) -> String {
     let hint = match name {
-        "grep" => Some("use the search tool instead"),
+        "grep" => Some(
+            "use the `search` tool instead; inside bash, prefer `rg` over `grep -r` because `grep -r` does not read `.gitignore`",
+        ),
         "cat" => Some("use the read tool instead"),
         "ls" | "dir" => Some("use the find or bash tool instead"),
         "mv" | "cp" | "rm" | "mkdir" => Some("use the bash tool instead"),

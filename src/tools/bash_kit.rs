@@ -1,6 +1,6 @@
 //! In-process bashkit interpreter for the `bash` tool.
 //!
-//! External commands are bridged to host executables via [`HostCommandBuiltin`]
+//! External commands are bridged to host executables via [`HostCommand`]
 //! — no real bash process, so the same path works natively on Windows. Scripts
 //! the interpreter cannot faithfully handle (parse errors, dynamic command
 //! names, `eval`/`exec`/`source`, path-based or glob-shaped names, a declaration
@@ -14,9 +14,8 @@
 //! the interpreter starts answering itself must be extracted here (see
 //! `every_interpreter_wrapper_is_handled`).
 //!
-//! [`HOST_PREFERRED`] hands host-tool builtins back to the host; `which`/`type`
-//! skip the rootfs's per-builtin `/bin` stubs (see [`is_command_file`]); `&`
-//! jobs are pinned to one at a time (see [`build_bash`]).
+//! [`HOST_PREFERRED`] hands host-tool builtins back to the host, and `which`/
+//! `type` skip the rootfs's per-builtin `/bin` stubs (see [`is_command_file`]).
 //!
 //! `uname` is bridged to the host's own binary (MSYS's included) rather than
 //! answered by bashkit's virtual `Linux … sandbox` builtin; a Windows host
@@ -26,8 +25,8 @@
 //! script's `$PATH` (native form) first, then the host's — so shell shims a
 //! bare name hides (`npx` → `npx.cmd`) run like in real bash.
 //!
-//! Detaching a process is a request this tool cannot serve — jobs are pinned to
-//! run synchronously and the process group is killed on timeout — so
+//! Detaching a process is a request this tool cannot serve — background jobs
+//! still end with the script, and the process group is killed on timeout — so
 //! [`detach_request`] refuses those scripts with a `process` tool hint.
 //!
 //! Windows path translation is bidirectional, MSYS2-style:
@@ -41,12 +40,10 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use tokio_util::sync::CancellationToken;
 
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use bashkit::analysis::{AnalyzedCommand, ScriptAnalysis, analyze_with_limits};
 use bashkit::parser::{
@@ -54,15 +51,12 @@ use bashkit::parser::{
     SimpleCommand, Word, WordPart,
 };
 use bashkit::{
-    Bash, Builtin, BuiltinContext, ExecResult, ExecutionLimits, FileSystem, HttpLimits,
-    NetworkAllowlist, async_trait, vfs_join,
+    Bash, Builtin, BuiltinContext, Command, CommandContext, CommandInput, CommandOutput,
+    CommandStatus, ExecResult, ExecutionLimits, FileSystem, HttpLimits, NetworkAllowlist,
+    async_trait, vfs_join,
 };
 
-use super::{
-    CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, WaitError, create_pipe_pair,
-    pipe_to_stdio, set_pipe_nonblocking, set_sender_noninheritable, timeout_message,
-    wait_with_timeout, write_stdin_bounded,
-};
+use super::{CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, timeout_message};
 use crate::lock;
 
 /// Per-stream output cap (head-only backstop; crabot's own truncation is the visible limit).
@@ -719,17 +713,13 @@ fn collect_find_commands(command: &AnalyzedCommand, names: &mut Vec<String>) -> 
 
 /// Execute `command` through the in-process bashkit interpreter.
 ///
-/// `plan.external_names` are bridged to host executables. The whole script
-/// shares one deadline (`timeout`) plus the caller's cancel flag. When `sink`
-/// is set, output streams live (host commands via pipe drains, builtins via the
-/// callback + flush ticker); timeout/cancel errors report partial output like
-/// the real-bash route.
+/// `plan.external_names` are bridged to host executables; the whole script
+/// shares `timeout` and the caller's cancel flag. `sink` streams output live,
+/// and timeout/cancel errors carry the partial output.
 ///
 /// # Panics
 ///
-/// Uses `Handle::block_on`, so it must run on a blocking thread inside the
-/// runtime context (`tokio::task::spawn_blocking`), never from an async task
-/// or outside a runtime. Keep every call site inside `spawn_blocking`.
+/// Uses `Handle::block_on`: call only from `spawn_blocking`.
 pub(crate) fn execute(
     command: &str,
     workspace: &Path,
@@ -738,60 +728,75 @@ pub(crate) fn execute(
     plan: ScriptPlan,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
-    let shared_cancel = CancellationToken::new();
-    let deadline_ms = Arc::new(AtomicU64::new(
-        now_ms().saturating_add(timeout.as_millis() as u64),
-    ));
-
-    // Script-level forwarder: coalescing and partial capture apply per script, not per command.
+    // Script-level forwarder: coalescing and partial capture apply per script.
     let forwarder = Arc::new(Mutex::new(ChunkForwarder::new(sink)));
 
-    // One mount table for the rewrite and the interpreter, so both agree on
-    // where host paths live in the VFS.
+    // One mount table for the rewrite and the interpreter.
     let home_mount = real_home_mount();
     let mount_specs = mounts(workspace, home_mount.as_ref());
     // Windows: rewrite host-style paths in builtin args to VFS form.
     let script = rewrite_host_paths(command, &plan.analysis, &mount_specs);
 
-    let mut bash = build_bash(
-        workspace,
-        timeout + Duration::from_secs(1), // backstop; outer select fires first
-        &plan,
-        Arc::clone(&deadline_ms),
-        shared_cancel.clone(),
-        Arc::clone(&forwarder),
-        mount_specs,
-        home_mount,
-    );
+    let mut bash = build_bash(workspace, timeout, &plan, mount_specs, home_mount);
 
     let handle = tokio::runtime::Handle::current();
     let result = handle
         .block_on(async {
+            // Flush time-due chunks while output is quiet.
+            let _ticker = FlushTicker(tokio::spawn(flush_ticker(Arc::clone(&forwarder))));
+            let push = |stream: OutStream, forwarder: Arc<Mutex<ChunkForwarder>>| {
+                move |bytes: Vec<u8>| {
+                    let forwarder = Arc::clone(&forwarder);
+                    async move {
+                        lock(&forwarder).push(stream, &bytes);
+                        Ok::<(), bashkit::Error>(())
+                    }
+                }
+            };
+            let execution = bash
+                .execute(&script)
+                .capture(MAX_STREAM_BYTES)
+                .stdout_fn(push(OutStream::Stdout, Arc::clone(&forwarder)))
+                .stderr_fn(push(OutStream::Stderr, Arc::clone(&forwarder)));
             tokio::select! {
-                // Cancel first: bashkit aborts at the next command boundary via `shared_cancel`.
                 biased;
-                _ = cancel.cancelled() => {
-                    shared_cancel.cancel();
-                    Err(error_with_partial(&forwarder, CANCEL_REASON))
+                _ = cancel.cancelled() => Err(error_with_partial(&forwarder, CANCEL_REASON)),
+                result = execution => {
+                    result.map_err(|error| script_error(error, &forwarder, timeout))
                 }
-                result = run_script(&mut bash, &script, &plan.external_names, &forwarder) => {
-                    result.map_err(|e| e.to_string())
-                }
-                _ = tokio::time::sleep(timeout) => {
-                    // Abort any in-flight host command too: its own deadline is
-                    // `timeout + 1s` (backstop), but the script is already over.
-                    shared_cancel.cancel();
+                // Backstop in case an interpreter path misses its own deadline.
+                _ = tokio::time::sleep(timeout + Duration::from_secs(1)) => {
                     Err(error_with_partial(&forwarder, &timeout_message(timeout)))
                 }
             }
         })
         .map(|result| format_exec_result(&result));
 
-    // Flush carried/coalesced bytes; skip if a wedged host task holds the lock.
-    if let Ok(mut guard) = forwarder.try_lock() {
+    // Flush carried/coalesced bytes; the aborted ticker may still hold the lock.
+    if let Some(mut guard) = super::try_lock_for(&forwarder, Duration::from_millis(200)) {
         guard.finish();
     }
     result
+}
+
+/// Map an interpreter failure to the tool error, keeping partial output.
+fn script_error(
+    error: bashkit::Error,
+    forwarder: &Arc<Mutex<ChunkForwarder>>,
+    timeout: Duration,
+) -> String {
+    use bashkit::{Error, ExecutionBudgetExceeded as Budget, LimitExceeded};
+    match error {
+        Error::Cancelled
+        | Error::ResourceLimit(LimitExceeded::ExecutionBudget(Budget::Cancelled)) => {
+            error_with_partial(forwarder, CANCEL_REASON)
+        }
+        Error::ResourceLimit(LimitExceeded::Timeout(_))
+        | Error::ResourceLimit(LimitExceeded::ExecutionBudget(Budget::Deadline { .. })) => {
+            error_with_partial(forwarder, &timeout_message(timeout))
+        }
+        error => error.to_string(),
+    }
 }
 
 /// Timeout/cancel error with captured partial output; falls back to the bare
@@ -805,34 +810,7 @@ fn error_with_partial(forwarder: &Arc<Mutex<ChunkForwarder>>, reason: &str) -> S
     msg
 }
 
-/// Callback route for builtin-only scripts (host commands already stream via
-/// pipe drains; the callback would re-emit their output). Also feeds the
-/// script-level partial-output capture.
-async fn run_script(
-    bash: &mut Bash,
-    command: &str,
-    external_names: &[String],
-    forwarder: &Arc<Mutex<ChunkForwarder>>,
-) -> Result<ExecResult, bashkit::Error> {
-    if external_names.is_empty() {
-        let forwarder = Arc::clone(forwarder);
-        // Flush time-due chunks during quiet stretches (no pipe drains here).
-        let _ticker = FlushTicker(tokio::spawn(flush_ticker(Arc::clone(&forwarder))));
-        bash.exec_streaming(
-            command,
-            Box::new(move |stdout, stderr| {
-                let mut guard = lock(&forwarder);
-                guard.push(OutStream::Stdout, stdout.as_bytes());
-                guard.push(OutStream::Stderr, stderr.as_bytes());
-            }),
-        )
-        .await
-    } else {
-        bash.exec(command).await
-    }
-}
-
-/// Periodically tick the forwarder while a builtin-only script runs.
+/// Periodically tick the forwarder while the script runs.
 async fn flush_ticker(forwarder: Arc<Mutex<ChunkForwarder>>) {
     loop {
         tokio::time::sleep(super::COALESCE_MS).await;
@@ -854,14 +832,10 @@ impl Drop for FlushTicker {
 ///
 /// Applies the mount table, seeds env, bridges external command names, and
 /// installs the path-aware `which`/`type` replacements.
-#[allow(clippy::too_many_arguments)] // one knob per interpreter concern
 fn build_bash(
     workspace: &Path,
     timeout: Duration,
     plan: &ScriptPlan,
-    deadline_ms: Arc<AtomicU64>,
-    cancel: CancellationToken,
-    forwarder: Arc<Mutex<ChunkForwarder>>,
     mount_specs: Vec<RealMount>,
     home_mount: Option<RealMount>,
 ) -> Bash {
@@ -891,11 +865,6 @@ fn build_bash(
             .max_stdout_bytes(MAX_STREAM_BYTES)
             .max_stderr_bytes(MAX_STREAM_BYTES),
     );
-
-    // bashkit runs `&` jobs and shell-code pipeline producers concurrently,
-    // but a bridged command holds the script's output forwarder for its whole
-    // life, so overlap would stall the pipeline until the timeout.
-    builder = builder.concurrent_jobs(false);
 
     // Real host identity — whoami/hostname/uname -n report the actual host.
     if let Some(username) = real_username() {
@@ -973,62 +942,47 @@ fn build_bash(
         )
         .builtin("type", Box::new(TypeBuiltin { lookup }));
 
-    // Bridge each host command the script calls; `uname` joins them, since
-    // bashkit's own builtin reports a virtual `Linux … sandbox` platform.
-    let host_command = |name: String| -> Box<dyn Builtin> {
-        Box::new(HostCommandBuiltin {
-            name,
-            mounts: Arc::clone(&shared_mounts),
-            cancel: cancel.clone(),
-            deadline_ms: Arc::clone(&deadline_ms),
-            timeout,
-            forwarder: forwarder.clone(),
-            home: home_mount.clone(),
-        })
+    // Bridge each host command; bashkit's own `uname` reports a virtual platform.
+    let host_command = |program: String| HostCommand {
+        program,
+        mounts: Arc::clone(&shared_mounts),
+        home: home_mount.clone(),
     };
     for name in &plan.external_names {
-        builder = builder.builtin(name.clone(), host_command(name.clone()));
+        builder = builder.command(name.clone(), host_command(name.clone()));
     }
-    // Unix always has a host `uname` on `PATH`; Windows may have none, so there
-    // the builtin replaces bashkit's virtual one and covers that case too.
+    // Unix always has `uname`; Windows may not, so the fallback covers it.
     #[cfg(windows)]
     {
-        builder = builder.builtin("uname", Box::new(super::uname::Uname::new(host_command)));
+        let host = super::uname::host_uname()
+            .map(|path| host_command(path.to_string_lossy().into_owned()));
+        builder = builder.command("uname", super::uname::Uname::new(host));
     }
     #[cfg(not(windows))]
     if let Some(uname) = super::uname::host_uname() {
-        builder = builder.builtin("uname", host_command(uname.to_string_lossy().into_owned()));
+        builder = builder.command("uname", host_command(uname.to_string_lossy().into_owned()));
     }
 
-    // bashkit warns on stderr per read-write mount; silence stderr while
-    // building (locked so concurrent builds can't swap each other's handles).
+    // bashkit warns on stderr per read-write mount; silence it while building.
     let _lock = lock(&SILENCER_LOCK);
     let _silence = stderr_silencer::StderrSilencer::new();
     builder.build()
 }
 
-/// Serializes `Bash::build` — the stderr swap is process-wide, so concurrent
-/// silencers would save and restore each other's handles.
+/// Serializes `Bash::build`: the stderr swap is process-wide.
 static SILENCER_LOCK: Mutex<()> = Mutex::new(());
 
-/// Builtin that executes a host command directly (no bash involved).
-struct HostCommandBuiltin {
-    name: String,
+/// Host command bridged into the interpreter as a streaming command.
+pub(crate) struct HostCommand {
+    /// Program to spawn: a `PATH` name or the resolved host `uname` path.
+    program: String,
     /// VFS mount table, shared with `build_bash` via Arc.
     mounts: Arc<[RealMount]>,
-    cancel: CancellationToken,
-    deadline_ms: Arc<AtomicU64>,
-    /// Total user-visible timeout for the whole script (used in error messages).
-    timeout: Duration,
-    /// Script-level forwarder: live streaming via pipe drains + partial capture.
-    forwarder: Arc<Mutex<ChunkForwarder>>,
     /// Seeded home mount; maps the interpreter's VFS HOME to the host path.
     home: Option<RealMount>,
 }
 
-/// Mirror the script env (`export`, prefix assignments, `unset`) into the child:
-/// native `PATH`, VFS HOME remapped to its host path, no secrets. `path` is the
-/// script's `PATH` — real bash keeps it exported, so the child inherits it too.
+/// Mirror the script env into the child: native `PATH`, remapped HOME, no secrets.
 fn apply_child_env(
     cmd: &mut std::process::Command,
     env: &HashMap<String, String>,
@@ -1063,116 +1017,177 @@ fn apply_child_env(
     }
 }
 
+impl HostCommand {
+    /// Build the child command, or the reason it cannot run.
+    fn prepare(&self, ctx: &CommandContext<'_>) -> Result<tokio::process::Command, String> {
+        let cwd = resolve_cwd(ctx.cwd, &self.mounts)?;
+        let path = ctx.env.get("PATH").map(String::as_str);
+        let paths = path_lists_for_host(path, &self.mounts);
+        let mut cmd =
+            tokio::process::Command::new(super::resolve_command(&self.program, &paths, &cwd));
+        cmd.args(convert_args_for_host(ctx.args, &self.mounts))
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        apply_child_env(
+            cmd.as_std_mut(),
+            ctx.env,
+            path,
+            self.home.as_ref(),
+            &self.mounts,
+        );
+        super::detach_child(cmd.as_std_mut());
+        Ok(cmd)
+    }
+}
+
 #[async_trait]
-impl Builtin for HostCommandBuiltin {
-    async fn execute(&self, ctx: BuiltinContext<'_>) -> bashkit::Result<ExecResult> {
-        if self.cancel.is_cancelled() {
-            // Record cancel as a failed command (130), NOT a script abort:
-            // `ExecResult::err` keeps the script running, like real bash after
-            // a non-zero exit. The whole-script abort comes from the outer
-            // `select!` in `execute`, which drops the interpreter within ~50ms.
-            return Ok(ExecResult::err(CANCEL_REASON, 130));
-        }
-        let remaining = remaining_timeout(self.deadline_ms.load(Ordering::Relaxed));
-        if remaining.is_zero() {
-            return Ok(ExecResult::err(timeout_message(self.timeout), 124));
-        }
-
-        let prepared = (|| -> Result<_, String> {
-            let cwd = resolve_cwd(ctx.cwd, &self.mounts)?;
-            let path = command_path(&ctx);
-            let paths = path_lists_for_host(path, &self.mounts);
-            let mut cmd =
-                std::process::Command::new(super::resolve_command(&self.name, &paths, &cwd));
-            cmd.args(convert_args_for_host(ctx.args, &self.mounts));
-            cmd.current_dir(cwd);
-            apply_child_env(&mut cmd, ctx.env, path, self.home.as_ref(), &self.mounts);
-            let stdin_writer = match ctx.stdin {
-                Some(data) => {
-                    let (stdin_tx, stdin_rx) = create_pipe_pair("stdin")?;
-                    set_pipe_nonblocking(&stdin_tx)?;
-                    set_sender_noninheritable(&stdin_tx)?;
-                    cmd.stdin(pipe_to_stdio(stdin_rx));
-                    Some((data.as_bytes().to_vec(), stdin_tx))
-                }
-                None => {
-                    cmd.stdin(Stdio::null());
-                    None
-                }
-            };
-
-            let (stdout_tx, stdout_rx) = create_pipe_pair("stdout")?;
-            let (stderr_tx, stderr_rx) = create_pipe_pair("stderr")?;
-            cmd.stdout(pipe_to_stdio(stdout_tx));
-            cmd.stderr(pipe_to_stdio(stderr_tx));
-
-            super::detach_child(&mut cmd);
-            Ok((cmd, stdin_writer, stdout_rx, stderr_rx))
-        })();
-        let (mut cmd, stdin_writer, stdout_rx, stderr_rx) = match prepared {
-            Ok(prepared) => prepared,
-            Err(e) => return Ok(ExecResult::err(e, 1)),
+impl Command for HostCommand {
+    async fn execute(&self, ctx: CommandContext<'_>) -> bashkit::Result<CommandStatus> {
+        let diagnostic = ctx.stderr.clone();
+        let name = ctx.name;
+        let mut cmd = match self.prepare(&ctx) {
+            Ok(cmd) => cmd,
+            Err(error) => {
+                let _ = diagnostic.write_all(error.as_bytes()).await;
+                return Ok(CommandStatus::with_code(1));
+            }
         };
-
-        let child = match cmd.spawn() {
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
-            // Not on `$PATH` anywhere we searched — report it like real bash.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(ExecResult::err(
-                    format!("bash: {}: command not found", self.name),
-                    127,
-                ));
+            Err(error) => {
+                let message = if error.kind() == std::io::ErrorKind::NotFound {
+                    format!("bash: {name}: command not found\n")
+                } else {
+                    format!("bash: {name}: {error}\n")
+                };
+                let _ = diagnostic.write_all(message.as_bytes()).await;
+                return Ok(CommandStatus::with_code(127));
             }
-            Err(e) => return Ok(ExecResult::err(format!("bash: {}: {e}", self.name), 127)),
         };
 
-        // Feed stdin in a side thread: bounded writes (cancel + 5s), so a
-        // surviving grandchild holding the pipe open can't hang the script.
-        if let Some((data, mut stdin_tx)) = stdin_writer {
-            let cancel = self.cancel.clone();
-            std::thread::spawn(move || {
-                let _ = write_stdin_bounded(
-                    &mut stdin_tx,
-                    &data,
-                    &cancel,
-                    Instant::now() + Duration::from_secs(5),
-                );
-            });
-        }
-
-        let cancel = self.cancel.clone();
-        let timeout = self.timeout;
-        let forwarder = Arc::clone(&self.forwarder);
-        // spawn_blocking so the outer select can still observe timeout/cancel.
-        let result = tokio::task::spawn_blocking(move || {
-            // No contention: callback/ticker routes never coexist with host
-            // commands, so holding the script-level lock is safe.
-            let mut guard = lock(&forwarder);
-            wait_with_timeout(
-                child,
-                Some(stdout_rx),
-                Some(stderr_rx),
-                remaining,
-                timeout,
-                true,
-                &cancel,
-                Some(&mut guard),
-            )
-        })
+        let status = match wait_with_pipes(
+            &mut child,
+            ctx.stdin.clone(),
+            ctx.stdout.clone(),
+            ctx.stderr.clone(),
+        )
         .await
-        .unwrap_or_else(|e| Err(WaitError::Other(format!("Host command task panicked: {e}"))));
-
-        match result {
-            Ok(output) => Ok(ExecResult {
-                stdout: output.stdout.into(),
-                stderr: output.stderr.into(),
-                exit_code: super::exit_code_of(&output.status),
-                ..Default::default()
-            }),
-            Err(e) => {
-                let code = e.exit_code();
-                Ok(ExecResult::err(e.into_message(), code))
+        {
+            Ok(status) => status,
+            Err(bashkit::Error::Io(error)) => {
+                let message = format!("bash: {name}: {error}\n");
+                let _ = diagnostic.write_all(message.as_bytes()).await;
+                return Ok(CommandStatus::with_code(1));
             }
+            Err(error) => return Err(error),
+        };
+        Ok(CommandStatus::with_code(super::exit_code_of(&status)))
+    }
+}
+
+/// Wait for `child` while pumping its stdio, so a full pipe can't block it.
+async fn wait_with_pipes(
+    child: &mut tokio::process::Child,
+    stdin: CommandInput,
+    stdout: CommandOutput,
+    stderr: CommandOutput,
+) -> bashkit::Result<std::process::ExitStatus> {
+    let mut guard = KillTree(child.id());
+    let mut feed = Box::pin(feed_stdin(stdin, child.stdin.take()));
+    let mut out = Box::pin(pump(child.stdout.take(), stdout));
+    let mut err = Box::pin(pump(child.stderr.take(), stderr));
+
+    let (mut feed_done, mut out_done, mut err_done) = (false, false, false);
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => break status,
+            result = &mut feed, if !feed_done => {
+                feed_done = true;
+                result?;
+            }
+            result = &mut out, if !out_done => {
+                out_done = true;
+                result?;
+            }
+            result = &mut err, if !err_done => {
+                err_done = true;
+                result?;
+            }
+        }
+    };
+    guard.0 = None; // reaped: never signal a reused pid
+    drop(feed);
+    // A grandchild may still hold the pipes open after the child exits.
+    let drained = tokio::time::timeout(Duration::from_secs(2), async {
+        if !out_done {
+            out.as_mut().await?;
+        }
+        if !err_done {
+            err.as_mut().await?;
+        }
+        Ok::<(), bashkit::Error>(())
+    })
+    .await;
+    if let Ok(result) = drained {
+        result?;
+    }
+    status.map_err(bashkit::Error::Io)
+}
+
+/// Kill the child's process tree if the command is dropped before reaping.
+struct KillTree(Option<u32>);
+
+impl Drop for KillTree {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            super::kill_process_tree(pid);
+        }
+    }
+}
+
+/// Feed the shell's stdin into the child; a closed child ends it.
+async fn feed_stdin(
+    input: CommandInput,
+    mut stdin: Option<tokio::process::ChildStdin>,
+) -> bashkit::Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let Some(stdin) = stdin.as_mut() else {
+        return Ok(());
+    };
+    while let Some(chunk) = input.read_chunk().await? {
+        if stdin.write_all(&chunk).await.is_err() {
+            break; // child closed stdin
+        }
+    }
+    Ok(())
+}
+
+/// Copy a child pipe into a shell stream; a closed reader stops it.
+async fn pump<R>(reader: Option<R>, out: CommandOutput) -> bashkit::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let Some(mut reader) = reader else {
+        return Ok(());
+    };
+    let mut buf = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut buf).await?;
+        if read == 0 {
+            return Ok(());
+        }
+        match out.write_all(&buf[..read]).await {
+            Ok(()) => {}
+            Err(bashkit::Error::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -1215,7 +1230,7 @@ impl CommandKind {
 
 /// Command lookup shared by [`WhichBuiltin`] and [`TypeBuiltin`].
 struct CommandLookup {
-    /// VFS mount table, shared with [`HostCommandBuiltin`].
+    /// VFS mount table, shared with [`HostCommand`].
     mounts: Arc<[RealMount]>,
     /// Functions the script defines — bashkit's analysis collects them, since
     /// a custom builtin cannot see the interpreter's own table.
@@ -1264,7 +1279,11 @@ impl CommandLookup {
                 .into_iter()
                 .collect();
         }
-        let path = command_path(ctx);
+        let path = ctx
+            .variables
+            .get("PATH")
+            .or_else(|| ctx.env.get("PATH"))
+            .map(String::as_str);
         let mut found = Vec::new();
         for dir in path_dirs(path, ctx.cwd) {
             if let Some(file) = self.probe(&dir, name, &extensions, &ctx.fs).await {
@@ -1321,7 +1340,7 @@ impl CommandLookup {
         ctx: &BuiltinContext<'_>,
     ) -> Option<String> {
         // An unmounted cwd has no host answer either — the bridge refused to
-        // spawn there ([`HostCommandBuiltin`]) — and a stand-in cwd would only
+        // spawn there ([`HostCommand`]) — and a stand-in cwd would only
         // resolve relative `$PATH` entries against the wrong directory.
         let cwd = resolve_cwd(ctx.cwd, &self.mounts).ok()?;
         let paths = path_lists_for_host(path, &self.mounts);
@@ -1486,14 +1505,6 @@ fn split_options(args: &[String]) -> (Vec<&str>, Vec<&str>) {
         }
     }
     (options, operands)
-}
-
-/// The script's `PATH`: a `PATH=…` assignment shadows the seeded environment.
-fn command_path<'a>(ctx: &'a BuiltinContext<'_>) -> Option<&'a str> {
-    ctx.variables
-        .get("PATH")
-        .or_else(|| ctx.env.get("PATH"))
-        .map(String::as_str)
 }
 
 /// `PATH` directories in order; a relative entry resolves against the cwd.
@@ -2097,7 +2108,7 @@ fn mounted_vfs(arg: &str, mounts: &[RealMount]) -> Option<String> {
 }
 
 /// VFS mount table in match order (specific mounts before broad ones).
-/// Single source of truth for `build_bash` and `HostCommandBuiltin`.
+/// Single source of truth for `build_bash` and `HostCommand`.
 fn mounts(workspace: &Path, home: Option<&RealMount>) -> Vec<RealMount> {
     let mut list = vec![
         RealMount::rw(workspace, super::convert_path_to_unix_style(workspace)),
@@ -2243,17 +2254,6 @@ fn home_host_path() -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn remaining_timeout(deadline_ms: u64) -> Duration {
-    Duration::from_millis(deadline_ms.saturating_sub(now_ms()))
 }
 
 /// Format an `ExecResult` like `format_command_output`, using the raw bytes

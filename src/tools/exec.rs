@@ -259,39 +259,6 @@ pub(crate) fn peek_pipe_available(handle: windows_sys::Win32::Foundation::HANDLE
     Some(bytes_avail)
 }
 
-/// Prevent a pipe sender's handle from being inherited by spawned children.
-///
-/// On both platforms a child holding the write end of its own stdin pipe would
-/// never see EOF, so we explicitly mark the sender end non-inheritable.
-pub(crate) fn set_sender_noninheritable(sender: &unnamed_pipe::Sender) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        let fd = sender.as_raw_fd();
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-            return Err(format!(
-                "Failed to set FD_CLOEXEC: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
-        // SAFETY: `sender`'s handle is live; clears its inherit flag.
-        let ok = unsafe { SetHandleInformation(sender.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) };
-        if ok == 0 {
-            return Err(format!(
-                "Failed to clear handle inheritance: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
-    }
-}
-
 /// Map an `ExitStatus` to a bash-style exit code (`128 + signal` for signal
 /// death). Falls back to -1 when neither is available.
 pub(crate) fn exit_code_of(status: &std::process::ExitStatus) -> i32 {
