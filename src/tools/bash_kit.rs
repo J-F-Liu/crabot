@@ -3,14 +3,20 @@
 //! External commands are bridged to host executables via [`HostCommandBuiltin`]
 //! — no real bash process, so the same path works natively on Windows. Scripts
 //! the interpreter cannot faithfully handle (parse errors, dynamic command
-//! names, `eval`/`exec`/`source`, path-based or glob-shaped names) make
-//! [`analyze_script`] return `Err`, falling back to real `bash -c`.
+//! names, `eval`/`exec`/`source`, path-based or glob-shaped names, a declaration
+//! operand bashkit mis-splits) make [`analyze_script`] return `Err`, falling
+//! back to real `bash -c`.
 //!
-//! Wrapper builtins (`timeout`, `xargs`, `find -exec`) hide commands in their
-//! arguments; [`analyze_script`] extracts those names from literal arguments.
-//! `watch`/`parallel` stubs never run commands and `env` refuses them, so
-//! scripts that would involve one fall back to real bash. Mirrors bashkit
-//! 0.18.1 — re-verify when bumping.
+//! Wrapper builtins (`timeout`, `xargs`, `find -exec`, and the runners `env`,
+//! `nice`, `sudo`, `flock`, `busybox`) hide commands in their arguments;
+//! [`analyze_script`] extracts those names. `watch`/`parallel` stubs never run
+//! commands, so those scripts fall back too. Mirrors bashkit 0.20.1: a wrapper
+//! the interpreter starts answering itself must be extracted here (see
+//! `every_interpreter_wrapper_is_handled`).
+//!
+//! [`HOST_PREFERRED`] hands host-tool builtins back to the host; `which`/`type`
+//! skip the rootfs's per-builtin `/bin` stubs (see [`is_command_file`]); `&`
+//! jobs are pinned to one at a time (see [`build_bash`]).
 //!
 //! `uname` is bridged to the host's own binary (MSYS's included) rather than
 //! answered by bashkit's virtual `Linux … sandbox` builtin; a Windows host
@@ -20,9 +26,9 @@
 //! script's `$PATH` (native form) first, then the host's — so shell shims a
 //! bare name hides (`npx` → `npx.cmd`) run like in real bash.
 //!
-//! Detaching a process is a request this tool cannot serve — the interpreter
-//! runs background jobs synchronously and kills the process group on timeout —
-//! so [`detach_request`] refuses those scripts with a `process` tool hint.
+//! Detaching a process is a request this tool cannot serve — jobs are pinned to
+//! run synchronously and the process group is killed on timeout — so
+//! [`detach_request`] refuses those scripts with a `process` tool hint.
 //!
 //! Windows path translation is bidirectional, MSYS2-style:
 //! [`convert_args_for_host`] rewrites VFS paths in bridged-command args to
@@ -86,12 +92,38 @@ pub(crate) fn builtin_names() -> &'static HashSet<String> {
     NAMES.get_or_init(|| {
         let mut names: HashSet<String> = Bash::new().builtin_names().into_iter().collect();
         // `Bash::new()` skips builder-registered builtins; `build_bash`
-        // registers them via `.python()` — only when the host has none.
+        // registers them via `.cpython()` — only when the host has none.
         if !host_python_available() {
             names.extend(PYTHON_NAMES.map(String::from));
         }
         names
     })
+}
+
+/// Names whose in-process stand-in cannot serve a real workspace, so the host
+/// binary wins where one exists: `make` (recipes run in the sandbox),
+/// `openssl` (only `rand`), `man` (builtin help), and `ps`/`free`/`nproc`
+/// (sandbox values, unlike crabot's own `uname`/`hostname`/`TZ`).
+const HOST_PREFERRED: [&str; 6] = ["make", "openssl", "man", "ps", "free", "nproc"];
+
+/// The [`HOST_PREFERRED`] names this host resolves; the rest keep bashkit's answer.
+fn host_preferred() -> &'static HashSet<&'static str> {
+    static NAMES: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let lists = super::host_path_lists(None);
+        let cwd = std::env::current_dir().unwrap_or_default();
+        HOST_PREFERRED
+            .iter()
+            .copied()
+            .filter(|name| super::resolve_command(name, &lists, &cwd) != Path::new(name))
+            .collect()
+    })
+}
+
+/// Whether `which`, `type`, the path rewrite, and the bridge agree that `name`
+/// is answered in-process.
+fn is_interpreter_builtin(name: &str) -> bool {
+    builtin_names().contains(name) && !host_preferred().contains(name)
 }
 
 /// Static analysis result: names to bridge plus the argument table the
@@ -112,7 +144,9 @@ pub(crate) fn analyze_script(script: &str) -> Result<ScriptPlan, ()> {
     if analysis.is_opaque() {
         return Err(());
     }
-    let builtins = builtin_names();
+    if splits_declaration_operand(script) {
+        return Err(());
+    }
     let mut names = Vec::new();
     for command in &analysis.commands {
         let Some(name) = command.name.as_deref() else {
@@ -125,15 +159,21 @@ pub(crate) fn analyze_script(script: &str) -> Result<ScriptPlan, ()> {
         // Wrappers hide a command in their arguments — extract it for bridging,
         // or fall back when it cannot run faithfully in-process.
         match name {
-            "find" => collect_find_commands(command, &mut names, builtins)?,
-            "timeout" => collect_timeout_command(command, &mut names, builtins)?,
-            "xargs" => collect_xargs_command(command, &mut names, builtins)?,
+            "find" => collect_find_commands(command, &mut names)?,
+            "timeout" => collect_timeout_command(command, &mut names)?,
+            "xargs" => collect_xargs_command(command, &mut names)?,
+            // Runners the interpreter answers itself run the command they wrap
+            // through this interpreter — the wrapped name must be bridged.
+            "env" => collect_env_command(command, &mut names)?,
+            "nice" => collect_nice_command(command, &mut names)?,
+            "sudo" => collect_sudo_command(command, &mut names)?,
+            "flock" => collect_flock_command(command, &mut names)?,
+            "busybox" => collect_busybox_command(command, &mut names)?,
             "watch" => return Err(()), // its stub never runs the wrapped command
             "parallel" => return Err(()), // its stub only reports a dry-run plan
-            "env" if env_would_run_command(command)? => return Err(()), // stub refuses commands
             _ => {}
         }
-        push_external(name, &mut names, builtins);
+        push_external(name, &mut names);
     }
     Ok(ScriptPlan {
         external_names: names,
@@ -176,8 +216,7 @@ impl Detach {
 /// The detach request in `script`, if any: a `&` background operator or a
 /// detaching wrapper in command position.
 ///
-/// Unparsable scripts yield `None` (real bash reports the syntax error), as do
-/// `&`s bashkit's parser drops (`if …; then sleep 30 & fi`).
+/// Unparsable scripts yield `None` (real bash reports the syntax error).
 pub(crate) fn detach_request(script: &str) -> Option<Detach> {
     // Cheap prescan: most scripts contain neither a `&` nor a wrapper name.
     if !script.contains('&') && !DETACH_WRAPPERS.iter().any(|name| script.contains(name)) {
@@ -192,13 +231,6 @@ fn detach_in_commands(commands: &[ShellCommand]) -> Option<Detach> {
     commands.iter().find_map(detach_in_command)
 }
 
-/// First detach request among command lists, in source order.
-fn first_detach<'a>(lists: impl IntoIterator<Item = &'a Vec<ShellCommand>>) -> Option<Detach> {
-    lists
-        .into_iter()
-        .find_map(|commands| detach_in_commands(commands))
-}
-
 /// Detach request inside one command, recursing into every nested body.
 fn detach_in_command(command: &ShellCommand) -> Option<Detach> {
     match command {
@@ -211,9 +243,49 @@ fn detach_in_command(command: &ShellCommand) -> Option<Detach> {
                 _ => detach_in_command(cmd),
             })
         }),
-        ShellCommand::Compound(compound, redirects) => detach_in_compound(compound)
+        ShellCommand::Compound(compound, redirects) => compound_bodies(compound)
+            .into_iter()
+            .find_map(detach_in_commands)
             .or_else(|| detach_in_words(redirects.iter().map(|redirect| &redirect.target))),
         ShellCommand::Function(def) => detach_in_command(&def.body),
+    }
+}
+
+/// Every command list a compound command holds, in source order.
+fn compound_bodies(compound: &CompoundCommand) -> Vec<&[ShellCommand]> {
+    match compound {
+        CompoundCommand::If(stmt) => [&stmt.condition, &stmt.then_branch]
+            .into_iter()
+            .chain(
+                stmt.elif_branches
+                    .iter()
+                    .flat_map(|(condition, body)| [condition, body]),
+            )
+            .chain(stmt.else_branch.iter())
+            .map(Vec::as_slice)
+            .collect(),
+        CompoundCommand::For(stmt) => vec![&stmt.body],
+        CompoundCommand::ArithmeticFor(stmt) => vec![&stmt.body],
+        CompoundCommand::While(stmt) => vec![&stmt.condition, &stmt.body],
+        CompoundCommand::Until(stmt) => vec![&stmt.condition, &stmt.body],
+        CompoundCommand::Case(stmt) => stmt
+            .cases
+            .iter()
+            .map(|item| item.commands.as_slice())
+            .collect(),
+        CompoundCommand::Select(stmt) => vec![&stmt.body],
+        CompoundCommand::Subshell(commands) | CompoundCommand::BraceGroup(commands) => {
+            vec![commands.as_slice()]
+        }
+        // The single command `time`/`coproc` wraps counts as a body of its own.
+        CompoundCommand::Time(stmt) => stmt
+            .command
+            .as_deref()
+            .map(std::slice::from_ref)
+            .into_iter()
+            .collect(),
+        CompoundCommand::Coproc(stmt) => vec![std::slice::from_ref(&stmt.body)],
+        CompoundCommand::Arithmetic(_) | CompoundCommand::Conditional(_) => Vec::new(),
     }
 }
 
@@ -243,15 +315,19 @@ fn detach_in_words<'a>(words: impl IntoIterator<Item = &'a Word>) -> Option<Deta
 
 /// The detaching wrapper a word names, when every part of it is literal.
 fn detach_wrapper(word: &Word) -> Option<&'static str> {
-    let text = word
-        .parts
+    let text = literal_text(word)?;
+    DETACH_WRAPPERS.into_iter().find(|wrapper| *wrapper == text)
+}
+
+/// The text a word holds, when every part of it is literal.
+fn literal_text(word: &Word) -> Option<String> {
+    word.parts
         .iter()
         .map(|part| match part {
             WordPart::Literal(text) => Some(text.as_str()),
             _ => None,
         })
-        .collect::<Option<String>>()?;
-    DETACH_WRAPPERS.into_iter().find(|wrapper| *wrapper == text)
+        .collect()
 }
 
 /// Detach request inside a word's command and process substitutions.
@@ -263,44 +339,84 @@ fn detach_in_word(word: &Word) -> Option<Detach> {
     })
 }
 
-/// Detach request inside a compound command's conditions and bodies.
-fn detach_in_compound(compound: &CompoundCommand) -> Option<Detach> {
-    match compound {
-        CompoundCommand::If(stmt) => first_detach(
-            [&stmt.condition, &stmt.then_branch]
-                .into_iter()
-                .chain(
-                    stmt.elif_branches
-                        .iter()
-                        .flat_map(|(cond, body)| [cond, body]),
-                )
-                .chain(stmt.else_branch.iter()),
-        ),
-        CompoundCommand::For(stmt) => detach_in_commands(&stmt.body),
-        CompoundCommand::ArithmeticFor(stmt) => detach_in_commands(&stmt.body),
-        CompoundCommand::While(stmt) => first_detach([&stmt.condition, &stmt.body]),
-        CompoundCommand::Until(stmt) => first_detach([&stmt.condition, &stmt.body]),
-        CompoundCommand::Case(stmt) => first_detach(stmt.cases.iter().map(|item| &item.commands)),
-        CompoundCommand::Select(stmt) => detach_in_commands(&stmt.body),
-        CompoundCommand::Subshell(commands) | CompoundCommand::BraceGroup(commands) => {
-            detach_in_commands(commands)
+// ── Declaration operands bashkit 0.20 mis-splits ───────────────────
+
+/// Builtins whose `name=value` operand goes through `interpreter/declare.rs`.
+const DECLARATION_BUILTINS: [&str; 5] = ["export", "readonly", "declare", "typeset", "local"];
+
+/// Whether a declaration builtin gets a mixed-quote operand
+/// (`export PATH="/x":$PATH`) that bashkit 0.20 splits on `IFS`, truncating it
+/// where bash keeps it whole — such scripts take the real-`bash` route.
+///
+/// Drop this guard once bashkit keeps the operand whole (0.18 did).
+fn splits_declaration_operand(script: &str) -> bool {
+    // Cheap prescan: a script naming no declaration builtin cannot assign one.
+    if !DECLARATION_BUILTINS
+        .iter()
+        .any(|name| script.contains(name))
+    {
+        return false;
+    }
+    // A syntax error is `analyze_with_limits`' to report, not this walk's.
+    Parser::new(script)
+        .parse()
+        .is_ok_and(|parsed| operand_splits_in_commands(&parsed.commands))
+}
+
+/// Whether any command, nested bodies included, carries a mis-split operand.
+fn operand_splits_in_commands(commands: &[ShellCommand]) -> bool {
+    commands.iter().any(command_splits_operand)
+}
+
+/// Whether one command carries a mis-split declaration operand.
+fn command_splits_operand(command: &ShellCommand) -> bool {
+    match command {
+        ShellCommand::Simple(cmd) => simple_splits_operand(cmd),
+        ShellCommand::Pipeline(pipeline) => operand_splits_in_commands(&pipeline.commands),
+        ShellCommand::List(list) => {
+            command_splits_operand(&list.first)
+                || list.rest.iter().any(|(_, cmd)| command_splits_operand(cmd))
         }
-        CompoundCommand::Time(stmt) => stmt.command.as_deref().and_then(detach_in_command),
-        CompoundCommand::Coproc(stmt) => detach_in_command(&stmt.body),
-        CompoundCommand::Arithmetic(_) | CompoundCommand::Conditional(_) => None,
+        ShellCommand::Compound(compound, _) => compound_bodies(compound)
+            .into_iter()
+            .any(operand_splits_in_commands),
+        ShellCommand::Function(def) => command_splits_operand(&def.body),
     }
 }
 
-/// Names that must never be bridged: opaque builtins (`command`, `exec`),
-/// interpreter re-entries (`eval`/`source`/`.`/`bash`/`sh`), path-based
-/// (`./s.sh`) and glob-shaped (`$TOOL`, `x*`) names. `[` is exempt — its
-/// name is literally `[`.
+/// Whether a declaration builtin's operand list holds a mis-split value.
+fn simple_splits_operand(cmd: &SimpleCommand) -> bool {
+    literal_text(&cmd.name).is_some_and(|name| {
+        DECLARATION_BUILTINS.contains(&name.as_str()) && cmd.args.iter().any(operand_would_split)
+    })
+}
+
+/// `name=…'…'$x`: the operand shape whose mixed quoting sends bashkit's
+/// expansion down the splitting path its declaration rule skips.
+fn operand_would_split(word: &Word) -> bool {
+    let assignment = matches!(
+        word.parts.first(),
+        Some(WordPart::Literal(text)) if text.contains('=')
+    );
+    let quoted = |index: usize| word.part_quoted.get(index).copied().unwrap_or(word.quoted);
+    let (mut quoted_part, mut unquoted_expansion) = (false, false);
+    for (index, part) in word.parts.iter().enumerate() {
+        if quoted(index) {
+            quoted_part = true;
+        } else if !matches!(part, WordPart::Literal(_)) {
+            unquoted_expansion = true;
+        }
+    }
+    // `x=/a:'b c'` keeps its value; `x="/a":$b` splits.
+    assignment && quoted_part && unquoted_expansion
+}
+
+/// Names that must never be bridged: opaque builtins (`command`/`exec`),
+/// interpreter re-entries (`eval`/`source`/`.`/`bash`/`sh`), and path-based or
+/// glob-shaped names. `[` is exempt — its name is literally `[`.
 ///
-/// The other wrappers in bashkit's `analysis::COMMAND_WRAPPERS` — `doas`,
-/// `nice`, `nohup`, `setsid`, `stdbuf`, `sudo` — need no special handling:
-/// they are not builtins, so bridging the wrapper itself runs the host
-/// binary, which spawns the wrapped command exactly like real bash does.
-/// (The detaching ones never reach the bridge — see [`detach_request`].)
+/// Wrappers that are not builtins (`doas`, `setsid`, `stdbuf`) are bridged
+/// themselves and spawn the wrapped command like real bash.
 fn is_unbridgeable(name: &str) -> bool {
     matches!(
         name,
@@ -309,43 +425,178 @@ fn is_unbridgeable(name: &str) -> bool {
         || (name != "[" && name.contains(['$', '`', '*', '?', '[']))
 }
 
-/// Append `name` once, unless it is a builtin — names often appear both
-/// literally and wrapped.
-fn push_external(name: &str, names: &mut Vec<String>, builtins: &HashSet<String>) {
-    if !builtins.contains(name) && !names.iter().any(|n| n == name) {
+/// Append `name` once, unless the interpreter answers it.
+fn push_external(name: &str, names: &mut Vec<String>) {
+    if !is_interpreter_builtin(name) && !names.iter().any(|n| n == name) {
         names.push(name.to_string());
     }
 }
 
-/// Register a wrapped command name; `None` (no command there) is fine, but a
-/// non-literal or unbridgeable name forces a fallback.
-fn push_wrapped_arg(
-    arg: Option<&str>,
-    names: &mut Vec<String>,
-    builtins: &HashSet<String>,
-) -> Result<(), ()> {
+/// Register a wrapped command name; a non-literal or unbridgeable one falls back.
+fn push_wrapped_arg(arg: Option<&str>, names: &mut Vec<String>) -> Result<(), ()> {
     let Some(cmd) = arg else {
         return Ok(()); // no command — wrapper default or bashkit's own error
     };
     if is_unbridgeable(cmd) {
         return Err(()); // cannot bridge — fall back
     }
-    push_external(cmd, names, builtins);
+    push_external(cmd, names);
     Ok(())
 }
 
-/// True when `env` would run a command — its stub refuses, so the script
-/// falls back to real bash (print mode stays in-process).
-fn env_would_run_command(command: &AnalyzedCommand) -> Result<bool, ()> {
-    for arg in command.literal_args().ok_or(())? {
-        if arg == "-u" {
-            return Err(()); // bashkit's stub errors on `-u` — fall back
+/// `env [-i] [-u NAME] [-C DIR] [NAME=VALUE]... [COMMAND [ARG]...]` — register
+/// the COMMAND; assignment-only invocations keep the interpreter's `env`.
+fn collect_env_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    if matches!(args.first().copied(), Some("--help" | "--version")) {
+        return Ok(()); // help prints; nothing runs
+    }
+    let i = skip_options(&args, &ENV_OPTS)?;
+    // `NAME=VALUE` operands configure the child; the first other one runs.
+    match args[i..].iter().find(|arg| !is_env_assignment(arg)) {
+        Some(command) => push_wrapped_arg(Some(command), names),
+        None => Ok(()),
+    }
+}
+
+/// `NAME=VALUE` as `env` reads one: any non-empty name before the `=`.
+fn is_env_assignment(arg: &str) -> bool {
+    arg.split_once('=')
+        .is_some_and(|(name, _)| !name.is_empty())
+}
+
+/// `nice [-n N] [--adjustment=N] [COMMAND [ARG]...]` — register the COMMAND.
+fn collect_nice_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    // A leading `--help`/`--version` is answered by the interpreter itself.
+    if matches!(args.first().copied(), Some("--help" | "--version")) {
+        return Ok(());
+    }
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        if *arg == "--" {
+            i += 1;
+            break;
         }
-        if !(arg == "-i" || arg == "--ignore-environment" || arg.contains('=')) {
-            return Ok(true); // COMMAND
+        if matches!(*arg, "-n" | "--adjustment") {
+            i += 2; // flag and its value
+        } else if is_nice_adjustment(arg) {
+            i += 1; // `-n5`, `--adjustment=5`, `-5`
+        } else if arg.starts_with('-') && arg.len() > 1 {
+            return Err(()); // unknown option — bashkit would run it as the command
+        } else {
+            break; // COMMAND
         }
     }
-    Ok(false) // print/assignment mode — the stub is faithful
+    push_wrapped_arg(args.get(i).copied(), names)
+}
+
+/// A `nice` adjustment: `-n5`, `--adjustment=5`, or bare `-5`.
+fn is_nice_adjustment(arg: &str) -> bool {
+    fn digits(value: &str) -> bool {
+        !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
+    }
+    arg.strip_prefix("--adjustment=").is_some()
+        || arg.strip_prefix("-n").is_some_and(digits)
+        || arg.strip_prefix('-').is_some_and(digits)
+}
+
+/// `sudo [-OPTIONS] [VAR=VALUE]... COMMAND [ARG]...` — register the COMMAND.
+/// `-s`/`-i` hand it to a shell instead, and only real bash can run that.
+fn collect_sudo_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        match *arg {
+            "--" => {
+                i += 1;
+                break;
+            }
+            // Options with a value.
+            "-u" | "--user" | "-g" | "--group" | "-C" | "--close-from" | "-p" | "--prompt"
+            | "-h" | "--host" | "-r" | "--role" | "-t" | "--type" | "-U" | "--other-user"
+            | "-D" | "--chdir" | "-T" | "--command-timeout" => i += 2,
+            // A login/interactive shell — fall back rather than script it here.
+            "-s" | "--shell" | "-i" | "--login" => return Err(()),
+            // The policy alone: nothing runs.
+            "-l" | "--list" => return Ok(()),
+            "-v" | "--validate" | "-k" | "--reset-timestamp" | "-K" | "--remove-timestamp"
+                if args.len() == i + 1 =>
+            {
+                return Ok(());
+            }
+            a if a.starts_with("--") && a.len() > 2 => i += 1,
+            a if a.starts_with('-') && a.len() > 1 => {
+                // Clustered short flags (`-nE`); a value flag at the end of
+                // the cluster takes the next operand (`-nu root`).
+                if a[1..].contains(['s', 'i']) {
+                    return Err(());
+                }
+                let last = a.as_bytes()[a.len() - 1];
+                i += if b"ugCphrtUDT".contains(&last) { 2 } else { 1 };
+            }
+            _ => break, // COMMAND or VAR=VALUE
+        }
+    }
+    // Leading `VAR=VALUE` operands go to the command's environment, not to it.
+    let rest = args.get(i..).unwrap_or_default();
+    let start = rest.iter().take_while(|arg| is_var_assignment(arg)).count();
+    push_wrapped_arg(rest.get(start).copied(), names)
+}
+
+/// `NAME=VALUE` as `sudo` reads one: a shell identifier before the `=`.
+fn is_var_assignment(arg: &str) -> bool {
+    arg.split_once('=').is_some_and(|(name, _)| {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// `flock [OPTIONS] FILE|FD [COMMAND [ARG]...]` — register the COMMAND;
+/// `-c`/`--command` hands a shell string to real bash instead.
+fn collect_flock_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    if matches!(args.first().copied(), Some("--help" | "--version")) {
+        return Ok(()); // help prints; nothing runs
+    }
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        match *arg {
+            "--" => {
+                i += 1;
+                break;
+            }
+            "-s" | "--shared" | "-x" | "--exclusive" | "-u" | "--unlock" | "-n" | "--nb"
+            | "--nonblock" | "-o" | "--close" | "-F" | "--no-fork" | "--verbose" => i += 1,
+            "-w" | "--wait" | "--timeout" | "-E" | "--conflict-exit-code" => i += 2,
+            a if a.starts_with("--wait=")
+                || a.starts_with("--timeout=")
+                || a.starts_with("--conflict-exit-code=") =>
+            {
+                i += 1
+            }
+            a if a.starts_with('-') && a.len() > 1 && a != "-c" => return Err(()),
+            _ => break, // FILE|FD
+        }
+    }
+    match args.get(i + 1).copied() {
+        Some("-c" | "--command") => Err(()),
+        command => push_wrapped_arg(command, names),
+    }
+}
+
+/// `busybox APPLET [ARG]...` — register the applet, which the interpreter
+/// answers as a builtin of that name.
+fn collect_busybox_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    match args.first().copied() {
+        // Applet listings and help print; nothing runs.
+        None | Some("--list" | "--list-full" | "-l" | "--help" | "--version") => Ok(()),
+        Some(applet) => push_wrapped_arg(Some(applet.rsplit('/').next().unwrap_or(applet)), names),
+    }
 }
 
 /// Option surface of a bashkit wrapper builtin, mirroring its parser.
@@ -367,6 +618,13 @@ const TIMEOUT_OPTS: WrapperOpts = WrapperOpts {
     lenient: true,
 };
 
+const ENV_OPTS: WrapperOpts = WrapperOpts {
+    with_value: &["-u", "--unset", "-C", "--chdir"],
+    attached: &["-u", "-C", "--unset=", "--chdir="],
+    plain: &["-i", "--ignore-environment", "-0", "--null"],
+    lenient: false,
+};
+
 const XARGS_OPTS: WrapperOpts = WrapperOpts {
     with_value: &["-I", "-n", "-d", "-P", "--max-procs", "--process-slot-var"],
     attached: &[
@@ -381,12 +639,15 @@ const XARGS_OPTS: WrapperOpts = WrapperOpts {
     lenient: false,
 };
 
-/// Scan past the wrapper's option/value args; returns the COMMAND position.
-/// `Err` when an unknown option would make bashkit fail before dispatching.
+/// Scan past `--` and the wrapper's option/value args; returns the first
+/// operand's index. `Err` when an unknown option would make bashkit fail first.
 fn skip_options(args: &[&str], opts: &WrapperOpts) -> Result<usize, ()> {
     let mut i = 0;
     while i < args.len() {
         let arg = args[i];
+        if arg == "--" {
+            return Ok(i + 1); // end of options
+        }
         if opts.with_value.contains(&arg) {
             i += 2; // flag + value
         } else if opts.attached.iter().any(|f| arg.starts_with(f)) {
@@ -410,36 +671,24 @@ fn skip_options(args: &[&str], opts: &WrapperOpts) -> Result<usize, ()> {
 
 /// `timeout [OPTION] DURATION COMMAND [ARG]...` — register the wrapped
 /// COMMAND (a missing one is bashkit's error to report).
-fn collect_timeout_command(
-    command: &AnalyzedCommand,
-    names: &mut Vec<String>,
-    builtins: &HashSet<String>,
-) -> Result<(), ()> {
+fn collect_timeout_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
     let args = command.literal_args().ok_or(())?;
     let i = skip_options(&args, &TIMEOUT_OPTS)?;
-    push_wrapped_arg(args.get(i + 1).copied(), names, builtins)
+    push_wrapped_arg(args.get(i + 1).copied(), names)
 }
 
 /// `xargs [OPTION]... [COMMAND [ARG]...]` — register the wrapped COMMAND
 /// (bashkit defaults to the `echo` builtin when absent).
-fn collect_xargs_command(
-    command: &AnalyzedCommand,
-    names: &mut Vec<String>,
-    builtins: &HashSet<String>,
-) -> Result<(), ()> {
+fn collect_xargs_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
     let args = command.literal_args().ok_or(())?;
     let i = skip_options(&args, &XARGS_OPTS)?;
-    push_wrapped_arg(args.get(i).copied(), names, builtins)
+    push_wrapped_arg(args.get(i).copied(), names)
 }
 
 /// `find [PATH]... [EXPRESSION]` — register the command of every
 /// `-exec`/`-execdir` template (first template arg, up to `;`/`\;`/`+`).
 /// Unknown predicates make bashkit fail before dispatching → fall back.
-fn collect_find_commands(
-    command: &AnalyzedCommand,
-    names: &mut Vec<String>,
-    builtins: &HashSet<String>,
-) -> Result<(), ()> {
+fn collect_find_commands(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
     let args = command.literal_args().ok_or(())?;
     let mut i = 0;
     while i < args.len() {
@@ -455,7 +704,7 @@ fn collect_find_commands(
                     i += 1;
                 }
                 if let Some(cmd) = cmd {
-                    push_wrapped_arg(Some(cmd), names, builtins)?;
+                    push_wrapped_arg(Some(cmd), names)?;
                 }
                 i += 1; // past the terminator
             }
@@ -643,6 +892,11 @@ fn build_bash(
             .max_stderr_bytes(MAX_STREAM_BYTES),
     );
 
+    // bashkit runs `&` jobs and shell-code pipeline producers concurrently,
+    // but a bridged command holds the script's output forwarder for its whole
+    // life, so overlap would stall the pipeline until the timeout.
+    builder = builder.concurrent_jobs(false);
+
     // Real host identity — whoami/hostname/uname -n report the actual host.
     if let Some(username) = real_username() {
         builder = builder.username(username);
@@ -696,23 +950,16 @@ fn build_bash(
         builder = builder.env("MSYSTEM", msystem);
     }
 
-    // Embedded Python (Monty) registers `python`/`python3` builtins — only
-    // when the host has none (see `host_python_available`); otherwise those
-    // names bridge to the host interpreter (real stdlib, `pip`).
-    //
-    // Monty is a from-scratch, sandboxed Python 3.12 subset — not CPython — so
-    // its stdlib is tiny and there is no third-party import or network.
-    // Implemented modules: `sys`, `typing`, `asyncio` (gather only), `pathlib`,
-    // `os` (getenv/environ only), `math`, `json`, `datetime`, `unicodedata`.
-    // bashkit disables `re` here (regex-backtracking DoS risk); common modules
-    // like `shutil`, `random`, `hashlib`, `socket`, `subprocess`, `http`,
-    // `collections`, `functools`, `itertools`, `csv` are NOT implemented.
-    // File I/O works via `pathlib.Path` and `open()` bridged to the VFS.
+    // Embedded Python: real CPython 3.14 in a Wasm sandbox, registered only
+    // when the host has none; each call is a fresh instance over the VFS,
+    // capped at `CPythonLimits` and inheriting the script's own deadline.
     if !host_python_available() {
-        builder = builder.python().env("BASHKIT_ALLOW_INPROCESS_PYTHON", "1");
+        builder =
+            builder.cpython_with_limits(bashkit::CPythonLimits::default().max_duration(timeout));
     }
 
-    // bashkit's own `which`/`type` never search `$PATH` — replace both.
+    // bashkit's own `which`/`type` search its virtual `/bin` and `/usr/bin`
+    // stubs; these two report what actually runs — replace both.
     let lookup = Arc::new(CommandLookup {
         mounts: Arc::clone(&shared_mounts),
         functions: plan.analysis.functions.iter().cloned().collect(),
@@ -932,9 +1179,8 @@ impl Builtin for HostCommandBuiltin {
 
 // ── Introspection builtins (`which`, `type`) ────────────────────────
 //
-// bashkit's versions know only interpreter state, never `$PATH`. These
-// replacements resolve a name through the VFS (probing `PATHEXT`), then through
-// the host search [`HostCommandBuiltin`] spawns with, and print VFS paths.
+// bashkit answers from its virtual `/bin` stubs; these resolve through the
+// script's `$PATH` (probing `PATHEXT`), then the host search, printing VFS paths.
 
 /// What a command name resolves to, in the shell's lookup order.
 enum CommandKind {
@@ -984,7 +1230,7 @@ impl CommandLookup {
             Some(CommandKind::Function)
         } else if is_keyword(name) {
             Some(CommandKind::Keyword)
-        } else if builtin_names().contains(name) {
+        } else if is_interpreter_builtin(name) {
             Some(CommandKind::Builtin)
         } else {
             None
@@ -1288,6 +1534,11 @@ async fn is_command_file(vfs: &Path, mounts: &[RealMount], fs: &Arc<dyn FileSyst
     if meta.file_type.is_dir() {
         return false;
     }
+    // The default rootfs answers `/bin`/`/usr/bin` with a per-builtin stub;
+    // without the host file behind it, there is nothing to spawn.
+    if !host.is_file() {
+        return false;
+    }
     if cfg!(windows) {
         // `which_in` applies the rule `PATH` probing uses for an absolute path:
         // a real executable image — the VFS cannot tell a PE from data. It also
@@ -1566,7 +1817,6 @@ use ArgClass::{Convert, Protect};
 /// Census of every literal argument: `Protect` on any occurrence wins.
 #[cfg(windows)]
 fn classify_args(analysis: &ScriptAnalysis) -> ArgCensus {
-    let builtins = builtin_names();
     let mut census = HashMap::new();
     for command in &analysis.commands {
         let Some(name) = command.name.as_deref() else {
@@ -1574,7 +1824,7 @@ fn classify_args(analysis: &ScriptAnalysis) -> ArgCensus {
         };
         // Bridged host commands keep native paths; protect-all builtins take
         // no file operands.
-        if !builtins.contains(name) || PROTECT_ALL_BUILTINS.contains(&name) {
+        if !is_interpreter_builtin(name) || PROTECT_ALL_BUILTINS.contains(&name) {
             for arg in command.args.iter().flatten() {
                 add_census(&mut census, arg, Protect);
             }
@@ -1611,7 +1861,8 @@ fn add_census(census: &mut ArgCensus, arg: &str, class: ArgClass) {
 #[cfg(windows)]
 const PROTECT_ALL_BUILTINS: &[&str] = &[
     "echo", "printf", "test", "[", "expr", // output/format text
-    "env", "timeout", "xargs", // wrappers: args carry bridged commands
+    // Wrappers: args carry bridged commands.
+    "env", "timeout", "xargs", "nice", "sudo", "flock", "busybox",
     // (`watch`/`parallel` need no entry: their stubs fail analysis first)
     "read", "declare", "typeset", "local", "export", "unset", "set", "shopt", "return", "exit",
     "wait", "kill", "sleep", "seq", "true", "false", "shift", "let", "alias", "unalias", "type",

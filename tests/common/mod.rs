@@ -5,6 +5,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{env, fs, io, process};
 
+/// The workspace root tools run against in tests.
+pub fn crabot_workspace() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
 /// A per-instance-unique temp dir, recursively removed on drop.
 ///
 /// The unique suffix keeps parallel tests that share a prefix from clearing each

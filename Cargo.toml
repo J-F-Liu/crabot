@@ -101,12 +101,13 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"
 linkify = "0.11.0"
-bashkit = { version = "=0.18.2", default-features = false, features = [
+bashkit = { version = "=0.20.1", default-features = false, features = [
     "http_client",
     "realfs",
-    # 0.18: the feature also pins monty =0.0.19 and get-size2 =0.10.1, so the
-    # embedded-Python graph cannot drift from the versions resolved here.
-    "python",
+    # Embedded Python is real CPython 3.14 in Wasm (since 0.19), replacing
+    # Monty (`python`), a subset. The feature pins bashkit-cpython-wasm
+    # =0.20.1 and wasmtime =48.0.7; bashkit also offers `terminal`, unused.
+    "cpython",
     # 0.17: crypto backend is explicit now (ring = default, aws-lc-rs = FIPS).
     "ring",
     # 0.17: named-TZ support moved behind this feature; off ⇒ `date` errors on host TZ.

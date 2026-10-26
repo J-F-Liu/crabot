@@ -6,7 +6,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::TempDir;
+use common::{TempDir, crabot_workspace};
 use tokio_util::sync::CancellationToken;
 
 use crabot::tools::{ToolRegistry, tmp_host_dir};
@@ -77,11 +77,6 @@ fn drive_root_of(path: &Path) -> (PathBuf, char) {
 fn drive_probe(path: &Path, name: &str) -> (PathBuf, String) {
     let (root, letter) = drive_root_of(path);
     (root.join(name), format!("/{letter}/{name}"))
-}
-
-/// The crabot repository root (used as the test workspace where git exists).
-fn crabot_workspace() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Registered bash tool plus the JSON args for `command`.
@@ -247,6 +242,17 @@ fn write_shim(dir: &Path, name: &str, message: &str) -> String {
     write_command(dir, name, &format!("echo {message}"))
 }
 
+/// `export PATH=…` putting `dirs` (VFS spelling) in front of `$PATH`.
+/// Quoted whole: a mixed-quote operand (`'/dir':$PATH`) falls back to real bash,
+/// where the interpreter's own `which`/`type` no longer answer.
+fn prepend_path(dirs: &[&Path]) -> String {
+    let dirs: Vec<String> = dirs
+        .iter()
+        .map(|dir| crabot::tools::convert_path_to_unix_style(dir))
+        .collect();
+    format!("export PATH=\"{}:$PATH\"", dirs.join(":"))
+}
+
 // ── bashkit syntax features ─────────────────────────────────
 
 /// `cargo --version && git --version` — external-command bridge + `&&` list.
@@ -274,19 +280,18 @@ fn bashkit_if_control_flow() {
     assert!(result.contains("ok"), "unexpected: {result}");
 }
 
-// ── embedded python (host python, or bashkit's Monty) ───────
+// ── embedded python (host python, or the embedded CPython sandbox) ─
 
-/// `python` resolves either way: to the host interpreter when one exists,
-/// otherwise to bashkit's embedded Monty.
+/// `python` resolves to the host interpreter when one exists, else to the
+/// embedded CPython 3.14 sandbox (`tests/python.rs` hides the host).
 #[test]
 fn bashkit_python_builtin() {
     let result = run_bash("python -c 'print(1 + 2)'", &crabot_workspace(), None).unwrap();
     assert!(result.contains("3"), "unexpected: {result}");
 }
 
-/// `python3 --version` reports the interpreter in use: host CPython when one
-/// exists, Monty otherwise (a lone `python` without `python3` fails like
-/// real bash).
+/// `python3 --version` reports whichever interpreter is in use; a lone `python`
+/// without `python3` fails like real bash.
 #[test]
 fn bashkit_python3_version() {
     let result = run_bash("python3 --version", &crabot_workspace(), None).unwrap();
@@ -295,13 +300,15 @@ fn bashkit_python3_version() {
         host_command_exists("python3"),
     ) {
         (_, true) => assert!(result.contains("Python "), "unexpected: {result}"),
-        (false, false) => assert!(result.contains("monty"), "unexpected: {result}"),
-        (true, false) => assert!(!result.contains("monty"), "unexpected: {result}"),
+        // Embedded: real CPython, never Monty's banner.
+        (false, false) => assert!(result.contains("Python "), "unexpected: {result}"),
+        (true, false) => assert!(!result.contains("Python "), "unexpected: {result}"),
     }
+    assert!(!result.contains("monty"), "unexpected: {result}");
 }
 
-/// Python file I/O reaches the workspace in both modes (host cwd vs Monty's
-/// VFS-bridged `open()`); `rb` keeps the assertion locale-independent.
+/// Python file I/O reaches the workspace in both modes (host cwd vs the
+/// sandbox's VFS-bridged `open()`); `rb` keeps the assertion locale-independent.
 #[test]
 fn bashkit_python_vfs_open() {
     let result = run_bash(
@@ -314,7 +321,7 @@ fn bashkit_python_vfs_open() {
 }
 
 /// Python output must arrive in live chunks in both modes: pipe drains for
-/// the host interpreter, the interpreter callback for Monty.
+/// the host interpreter, the interpreter callback for the embedded sandbox.
 #[test]
 fn bashkit_python_streaming() {
     let (result, chunks) = stream_and_collect(
@@ -623,7 +630,7 @@ fn bashkit_which_searches_vfs_path() {
     let file = write_shim(&tmp.path, "mytool", "tool-ran");
     let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
     let result = run_bash(
-        &format!("export PATH='{dir}':$PATH; which mytool; mytool"),
+        &format!("{}; which mytool; mytool", prepend_path(&[&tmp.path])),
         &crabot_workspace(),
         None,
     )
@@ -636,11 +643,24 @@ fn bashkit_which_searches_vfs_path() {
 }
 
 /// A name only the interpreter dispatches (`json`) is still reported by name, so
-/// `which <builtin>` works as an availability check.
+/// `which <builtin>` works as an availability check — the rootfs `/bin` stubs
+/// resolve on Unix, and only the bridge's host check rejects them.
 #[test]
 fn bashkit_which_reports_interpreter_names() {
-    let result = run_bash("which json", &crabot_workspace(), None).unwrap();
-    assert_eq!(result.trim(), "json", "unexpected: {result}");
+    let result = run_bash("which json; which -a json", &crabot_workspace(), None).unwrap();
+    assert_eq!(result.trim(), "json\njson", "unexpected: {result}");
+}
+
+/// A path the root filesystem answers alone names nothing the bridge can spawn.
+#[test]
+fn bashkit_which_skips_virtual_rootfs_stubs() {
+    let result = run_bash(
+        "which /usr/bin/json; echo rc=$?; type -P /usr/bin/json; echo t=$?",
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result.trim(), "rc=1\nt=1", "unexpected: {result}");
 }
 
 /// `-a` lists every match, in `$PATH` order.
@@ -656,7 +676,10 @@ fn bashkit_which_all_lists_every_match() {
         crabot::tools::convert_path_to_unix_style(&second.path),
     );
     let result = run_bash(
-        &format!("export PATH='{a}':'{b}':$PATH; which -a mytool"),
+        &format!(
+            "{}; which -a mytool",
+            prepend_path(&[&first.path, &second.path])
+        ),
         &crabot_workspace(),
         None,
     )
@@ -742,9 +765,8 @@ fn bashkit_type_reports_missing_names() {
 fn bashkit_which_requires_the_executable_bit() {
     let tmp = TempDir::new("which_exec_bit").unwrap();
     fs::write(tmp.join("mytool"), "echo nope\n").unwrap();
-    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
     let result = run_bash(
-        &format!("export PATH='{dir}':$PATH; which mytool; echo rc=$?"),
+        &format!("{}; which mytool; echo rc=$?", prepend_path(&[&tmp.path])),
         &crabot_workspace(),
         None,
     )
@@ -759,9 +781,8 @@ fn bashkit_which_requires_the_executable_bit() {
 fn bashkit_which_skips_extensionless_non_executable() {
     let tmp = TempDir::new("which_plain").unwrap();
     fs::write(tmp.join("plain"), "not a program\n").unwrap();
-    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
     let result = run_bash(
-        &format!("export PATH='{dir}':$PATH; which plain; echo rc=$?"),
+        &format!("{}; which plain; echo rc=$?", prepend_path(&[&tmp.path])),
         &crabot_workspace(),
         None,
     )
@@ -1392,12 +1413,74 @@ fn bashkit_find_exec_batch_runs_host_command() {
     assert_sha_lines(&result, 1);
 }
 
-/// `env CMD` — the stub refuses commands, so the script falls back to real
-/// bash, which runs the wrapped command natively.
+/// `env CMD` — the interpreter runs the wrapped command in a scratch
+/// environment; the wrapped name is bridged like any other.
 #[test]
 fn bashkit_env_runs_host_command() {
     let result = run_bash("env FOO=bar git --version", &crabot_workspace(), None).unwrap();
     assert!(result.contains("git version"), "unexpected: {result}");
+}
+
+/// `nice`, `sudo`, `flock` and `busybox` run the wrapped command through the
+/// interpreter, so its name must still be bridged (not left to the `$PATH` search).
+#[test]
+fn bashkit_runner_builtins_run_host_commands() {
+    for script in [
+        "nice -n 5 git --version",
+        "sudo git --version",
+        "flock /tmp/crabot-runner.lock git --version",
+        "busybox git --version",
+    ] {
+        let result = run_bash(script, &crabot_workspace(), None).unwrap();
+        assert!(result.contains("git version"), "{script}: {result}");
+    }
+}
+
+/// Where the host has the real `make`/`openssl`, its answer wins — the sandbox
+/// `make` runs recipes in the sandbox, and `openssl` implements only `rand`.
+#[test]
+fn bashkit_host_preferred_tools_run_the_host_binary() {
+    if host_command_exists("make") {
+        // The sandbox's own `make --version` says it is a "bashkit sandboxed subset".
+        let result = run_bash("make --version", &crabot_workspace(), None).unwrap();
+        assert!(result.contains("GNU Make"), "unexpected: {result}");
+        assert!(!result.contains("bashkit"), "unexpected: {result}");
+    }
+    if host_command_exists("openssl") {
+        // The sandbox's `openssl` implements `rand` alone.
+        let result = run_bash("openssl version", &crabot_workspace(), None).unwrap();
+        assert!(result.contains("OpenSSL"), "unexpected: {result}");
+        assert!(!result.contains("Exit code"), "unexpected: {result}");
+    }
+}
+
+/// bashkit runs `&` jobs and pipeline producers concurrently, which would let
+/// `head -1` stop this producer on SIGPIPE; the tool pins jobs sequential, so
+/// the producer runs to the interpreter's own limit.
+#[test]
+fn bashkit_pipeline_producers_stay_sequential() {
+    let err = run_bash(
+        "while :; do echo x; done | head -1",
+        &crabot_workspace(),
+        Some(1000),
+    )
+    .expect_err("the producer must not be stopped by SIGPIPE");
+    assert!(
+        err.contains("resource limit") || err.contains("timed out"),
+        "unexpected: {err}"
+    );
+}
+
+/// A `&` before a closing keyword (`if …; then cmd & fi`) is a detach request.
+#[test]
+fn bashkit_background_before_a_closing_keyword_is_refused() {
+    let err = run_bash(
+        "if true; then sleep 30 & fi; echo done",
+        &crabot_workspace(),
+        Some(1000),
+    )
+    .unwrap_err();
+    assert!(err.contains("process tool"), "unexpected: {err}");
 }
 
 /// `env` print mode stays in-process and still sees exported variables.
@@ -1529,6 +1612,19 @@ fn bashkit_host_command_gets_host_path() {
 fn bashkit_eval_falls_back_to_real_bash() {
     let result = run_bash("eval \"cargo --version\"", &crabot_workspace(), None).unwrap();
     assert!(result.contains("cargo "), "unexpected: {result}");
+}
+
+/// `export PATH="/a b":$PATH` — bashkit splits the operand on `IFS`, so the
+/// script takes the real-`bash` route and the value keeps its space.
+#[test]
+fn bashkit_mixed_quote_declaration_operand_keeps_its_value() {
+    let result = run_bash(
+        r#"export CRABOT_SPLIT='/a b':$PATH; echo "[${CRABOT_SPLIT%%:*}]""#,
+        &crabot_workspace(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result.trim(), "[/a b]", "unexpected: {result}");
 }
 
 /// Dynamic command name (`$TOOL`) falls back to real `bash -c`.

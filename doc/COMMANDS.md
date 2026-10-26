@@ -175,9 +175,9 @@ This environment is a custom bash build (5.2.15) in which all entries — includ
 
 ## Runtimes
 
-| Command              | Description               |
-| -------------------- | ------------------------- |
-| `python` / `python3` | Python 3.12.0 interpreter |
+| Command              | Description                                                        |
+| -------------------- | ------------------------------------------------------------------ |
+| `python` / `python3` | Host interpreter when one is on `PATH`, else CPython 3.14 (Wasm)   |
 
 ---
 
