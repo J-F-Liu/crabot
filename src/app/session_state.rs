@@ -76,6 +76,8 @@ pub(crate) struct SessionState {
     pub(crate) renew_hint_cooldown: Cell<u32>,
     /// Auto-retry countdown after a transient LLM failure (429/5xx/connection).
     pub(crate) retry: Option<RetryInfo>,
+    /// Failure label shown until the next request starts.
+    pub(crate) last_error: Option<Cow<'static, str>>,
     /// Encoded images attached to this session's requests, shared with the
     /// stream tasks and dropped when the tab closes. Async-locked because a
     /// request encodes pictures between awaits.
@@ -104,6 +106,7 @@ impl SessionState {
             scroll_throttle: Cell::new(Instant::now()),
             renew_hint_cooldown: Cell::new(0),
             retry: None,
+            last_error: None,
             image_cache: Arc::new(tokio::sync::Mutex::new(crate::llm::ImageCache::default())),
         }
     }
@@ -149,15 +152,19 @@ impl SessionState {
         lang: crabot::i18n::Lang,
         session_empty: bool,
     ) -> Cow<'static, str> {
-        // While auto-retrying, surface the countdown in the status bar.
-        if let Some(retry) = self.retry {
-            return Cow::Owned(
-                lang.tr("Retry in {seconds} second{s} ({attempt}/{max})")
-                    .replace("{seconds}", &retry.seconds_left.to_string())
-                    .replace("{s}", if retry.seconds_left == 1 { "" } else { "s" })
-                    .replace("{attempt}", &retry.attempt.to_string())
-                    .replace("{max}", &retry.max_attempts.to_string()),
-            );
+        // While auto-retrying, surface the failure reason and countdown.
+        if let Some(retry) = self.retry.as_ref() {
+            let countdown = lang
+                .tr("Retry in {seconds} second{s} ({attempt}/{max})")
+                .replace("{seconds}", &retry.seconds_left.to_string())
+                .replace("{s}", if retry.seconds_left == 1 { "" } else { "s" })
+                .replace("{attempt}", &retry.attempt.to_string())
+                .replace("{max}", &retry.max_attempts.to_string());
+            return Cow::Owned(format!("❌ {} · {countdown}", lang.tr(&retry.status)));
+        }
+        // After a terminal failure, keep the reason visible until the next request.
+        if let Some(error) = &self.last_error {
+            return Cow::Owned(format!("❌ {}", lang.tr(error)));
         }
         match self.phase {
             DialogPhase::LlmLoading => Cow::Borrowed("⏳ Loading LLM…"),
@@ -175,7 +182,7 @@ impl SessionState {
 }
 
 /// Auto-retry countdown shown in the status bar.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct RetryInfo {
     /// Attempt that runs after the countdown.
     pub(crate) attempt: u32,
@@ -183,6 +190,8 @@ pub(crate) struct RetryInfo {
     pub(crate) max_attempts: u32,
     /// Seconds remaining until the next attempt.
     pub(crate) seconds_left: u32,
+    /// Short label for the failure that triggered this retry, e.g. `response timeout`.
+    pub(crate) status: Cow<'static, str>,
 }
 
 /// Request displayed by the builtin ask tool.
@@ -242,7 +251,11 @@ pub(crate) enum SessionEvent {
     /// Non-fatal warning appended to the conversation (not persisted to history).
     Notice(String),
     Done,
-    Error(String),
+    Error {
+        message: String,
+        /// Short status-bar label for the failure.
+        status: Cow<'static, str>,
+    },
     Cancelled,
     PhaseChange(DialogPhase),
     Stop,
@@ -447,8 +460,9 @@ pub(crate) fn update(
                 Task::none()
             };
         }
-        SessionEvent::Error(err) => {
-            record_error_turn(session, &err);
+        SessionEvent::Error { message, status } => {
+            state.last_error = Some(status);
+            record_error_turn(session, &message);
             // Stamp after the error turn so the Tally's updated_at covers it.
             clear_pending_with_notice(state, session);
             session.stamp_response();
@@ -1055,7 +1069,7 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
     let asked = matches!(event, SessionEvent::AskRequest(_));
     let is_cancelled = matches!(event, SessionEvent::Cancelled);
     let task_error = match &event {
-        SessionEvent::Error(err) => Some(err.clone()),
+        SessionEvent::Error { message, .. } => Some(message.clone()),
         _ => None,
     };
 

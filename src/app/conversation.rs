@@ -1198,6 +1198,7 @@ pub(crate) fn start_dialog(
     }
     tab.session_state.phase = DialogPhase::LlmLoading;
     tab.end_status = None;
+    tab.session_state.last_error = None;
     // Fresh token per stream: a stale cancel can't leak into the next run.
     tab.session_state.cancel_token = CancellationToken::new();
     let cancel_token = tab.session_state.cancel_token.clone();

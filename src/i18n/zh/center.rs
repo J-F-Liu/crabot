@@ -78,4 +78,11 @@ pub static TABLE: &[(&str, &str)] = &[
         "Retry in {seconds} second{s} ({attempt}/{max})",
         "将在 {seconds} 秒后重试（{attempt}/{max}）",
     ),
+    // ── status line failure label (app/session_state.rs) ──
+    ("response timeout", "响应超时"),
+    ("connection error", "连接错误"),
+    ("empty response", "空响应"),
+    ("client setup failed", "客户端初始化失败"),
+    ("max iterations reached", "达到最大迭代次数"),
+    ("request failed", "请求失败"),
 ];

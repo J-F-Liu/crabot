@@ -32,7 +32,7 @@ pub(crate) use image::ImageCache;
 pub use stream::DialogPhase;
 use stream::{
     AttemptOutcome, DEFAULT_RETRY_DELAY, MAX_ATTEMPTS, RetryHint, StreamCtx, failure_message,
-    mark_cache_tail, pause_before_retry, retry_hint, stream_attempt,
+    failure_status, mark_cache_tail, pause_before_retry, retry_hint, stream_attempt,
 };
 use tool_call::{ExecutionCtx, is_serial_tool, run_parallel_batch, run_serial_tool};
 
@@ -159,9 +159,10 @@ pub async fn send_stream(
                 error = %error,
                 "failed to build LLM client"
             );
-            on_event(SessionEvent::Error(format!(
-                "Failed to set up the LLM client: {error}"
-            )))
+            on_event(SessionEvent::Error {
+                message: format!("Failed to set up the LLM client: {error}"),
+                status: "client setup failed".into(),
+            })
             .await;
             return;
         }
@@ -279,8 +280,8 @@ pub async fn send_stream(
             let outcome =
                 stream_attempt(&stream_ctx, &chat_req, stream_stall_timeout_secs, on_event).await;
 
-            // Terminal outcomes break or return; transient ones yield a reason + delay.
-            let (reason, retry_delay) = match outcome {
+            // Transient outcomes yield a reason, status label, and delay.
+            let (reason, status, retry_delay) = match outcome {
                 AttemptOutcome::Finished {
                     msg,
                     truncated: was_truncated,
@@ -298,9 +299,11 @@ pub async fn send_stream(
                     return;
                 }
                 AttemptOutcome::Failed { stage, error } => match retry_hint(&error) {
-                    Some(RetryHint::Retry { delay }) if attempt < MAX_ATTEMPTS => {
-                        (error.to_string(), delay.unwrap_or(DEFAULT_RETRY_DELAY))
-                    }
+                    Some(RetryHint::Retry { delay }) if attempt < MAX_ATTEMPTS => (
+                        error.to_string(),
+                        failure_status(&error),
+                        delay.unwrap_or(DEFAULT_RETRY_DELAY),
+                    ),
                     Some(RetryHint::TooLong { delay }) if attempt < MAX_ATTEMPTS => {
                         tracing::warn!(
                             attempt,
@@ -308,10 +311,13 @@ pub async fn send_stream(
                             delay_secs = delay.as_secs(),
                             "provider requested a retry delay beyond the automatic limit"
                         );
-                        on_event(SessionEvent::Error(format!(
-                            "The provider asked to retry after {}s, longer than the automatic retry limit. {error}",
-                            delay.as_secs()
-                        )))
+                        on_event(SessionEvent::Error {
+                            message: format!(
+                                "The provider asked to retry after {}s, longer than the automatic retry limit. {error}",
+                                delay.as_secs()
+                            ),
+                            status: failure_status(&error),
+                        })
                         .await;
                         return;
                     }
@@ -322,23 +328,28 @@ pub async fn send_stream(
                             error = %error,
                             "LLM request failed"
                         );
-                        on_event(SessionEvent::Error(failure_message(stage, &error, attempt)))
-                            .await;
+                        on_event(SessionEvent::Error {
+                            message: failure_message(stage, &error, attempt),
+                            status: failure_status(&error),
+                        })
+                        .await;
                         return;
                     }
                 },
                 // Transient outcomes retried below like a failure.
                 outcome @ (AttemptOutcome::Empty | AttemptOutcome::Stalled) => {
-                    let (reason, error) = if matches!(outcome, AttemptOutcome::Stalled) {
+                    let (reason, status, error) = if matches!(outcome, AttemptOutcome::Stalled) {
                         let stalled =
                             format!("stream stalled: no data for {stream_stall_timeout_secs}s");
                         (
                             stalled.clone(),
+                            "response timeout".into(),
                             format!("LLM {stalled}; the connection may have died. Please retry."),
                         )
                     } else {
                         (
                             "empty assistant response".into(),
+                            "empty response".into(),
                             format!(
                                 "LLM returned an empty response {attempt} times. Please retry."
                             ),
@@ -351,10 +362,14 @@ pub async fn send_stream(
                             session = %session_id,
                             "giving up: {reason}"
                         );
-                        on_event(SessionEvent::Error(error)).await;
+                        on_event(SessionEvent::Error {
+                            message: error,
+                            status,
+                        })
+                        .await;
                         return;
                     }
-                    (reason, DEFAULT_RETRY_DELAY)
+                    (reason, status, DEFAULT_RETRY_DELAY)
                 }
             };
 
@@ -363,6 +378,7 @@ pub async fn send_stream(
                 retry_delay,
                 &model.model_id,
                 &reason,
+                status,
                 on_event,
                 &cancel_token,
             )
@@ -551,9 +567,10 @@ pub async fn send_stream(
             max_iterations,
             "exceeded maximum tool-calling iterations"
         );
-        on_event(SessionEvent::Error(format!(
-            "Exceeded maximum tool-calling iterations ({max_iterations})"
-        )))
+        on_event(SessionEvent::Error {
+            message: format!("Exceeded maximum tool-calling iterations ({max_iterations})"),
+            status: "max iterations reached".into(),
+        })
         .await;
     }
 }

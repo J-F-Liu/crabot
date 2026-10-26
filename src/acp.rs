@@ -604,7 +604,7 @@ pub(crate) fn forward_event(session_id: &str, event: &SessionEvent) {
             end_message(session_id);
             AcpEvent::Done { cancelled: true }
         }
-        SessionEvent::Error(message) => {
+        SessionEvent::Error { message, .. } => {
             end_message(session_id);
             AcpEvent::Error(message.clone())
         }

@@ -2,6 +2,7 @@
 //! and transient-failure retry classification.
 
 use futures::{StreamExt, future::BoxFuture};
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
@@ -74,17 +75,9 @@ fn is_retryable_reqwest(e: &reqwest::Error) -> bool {
 /// Whether an SSE `error` payload carries a retryable code.
 /// The code may sit at the top level or under `error`, as a number or a string.
 fn is_retryable_body(body: &serde_json::Value) -> bool {
-    body.get("code")
-        .or_else(|| body.pointer("/error/code"))
-        .and_then(code_as_u64)
+    body_error_code(body)
+        .and_then(|code| code.trim().parse().ok())
         .is_some_and(is_retryable_code)
-}
-
-/// Read an error code that a provider sent as a number or a numeric string.
-fn code_as_u64(value: &serde_json::Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_str()?.trim().parse().ok())
 }
 
 /// What the retry layer should do with a transient failure.
@@ -172,6 +165,71 @@ fn is_transient(e: &genai::Error) -> bool {
             error.downcast_ref::<genai::webc::StreamTimeout>().is_some()
         }
         _ => false,
+    }
+}
+
+// ── Failure status ─────────────────────────────────────────────────
+
+/// Short failure label: HTTP status, transport error, or provider error code.
+pub(super) fn failure_status(error: &genai::Error) -> Cow<'static, str> {
+    // Stream errors may wrap the real failure; label the inner error.
+    if let genai::Error::WebStream { error: inner, .. } = error
+        && let Some(nested) = inner.downcast_ref::<genai::Error>()
+    {
+        return failure_status(nested);
+    }
+    if let Some(status) = error.status() {
+        return match status.canonical_reason() {
+            Some(reason) => Cow::Owned(format!("{} {reason}", status.as_u16())),
+            None => Cow::Owned(format!("HTTP {}", status.as_u16())),
+        };
+    }
+    if let Some(label) = transport_label(error) {
+        return Cow::Borrowed(label);
+    }
+    if let genai::Error::ChatResponse { body, .. } = error
+        && let Some(code) = body_error_code(body)
+    {
+        return Cow::Owned(code);
+    }
+    Cow::Borrowed("request failed")
+}
+
+/// Timeouts and connection failures carry no HTTP status.
+fn transport_label(error: &genai::Error) -> Option<&'static str> {
+    fn reqwest_label(e: &reqwest::Error) -> Option<&'static str> {
+        if e.is_connect() {
+            Some("connection error")
+        } else if e.is_timeout() {
+            Some("response timeout")
+        } else {
+            None
+        }
+    }
+    match error {
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
+            genai::webc::Error::Reqwest(e) => reqwest_label(e),
+            _ => None,
+        },
+        genai::Error::WebStream { error: inner, .. } => {
+            if inner.downcast_ref::<genai::webc::StreamTimeout>().is_some() {
+                return Some("response timeout");
+            }
+            inner
+                .downcast_ref::<reqwest::Error>()
+                .and_then(reqwest_label)
+        }
+        _ => None,
+    }
+}
+
+/// Provider error code carried at the top level or under `error`.
+fn body_error_code(body: &serde_json::Value) -> Option<String> {
+    match body.get("code").or_else(|| body.pointer("/error/code"))? {
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => None,
     }
 }
 
@@ -438,6 +496,7 @@ pub(super) async fn pause_before_retry(
     delay: Duration,
     model_id: &str,
     reason: &str,
+    status: Cow<'static, str>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
     cancel_token: &CancellationToken,
 ) -> bool {
@@ -454,6 +513,7 @@ pub(super) async fn pause_before_retry(
             attempt: attempt + 1,
             max_attempts: MAX_ATTEMPTS,
             seconds_left,
+            status: status.clone(),
         }))
         .await
         {
