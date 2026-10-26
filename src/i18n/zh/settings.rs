@@ -58,6 +58,8 @@ pub static TABLE: &[(&str, &str)] = &[
         "API Key or its enviroment variable name",
         "API 密钥或其环境变量名",
     ),
+    ("More", "更多"),
+    ("Less", "收起"),
     ("Extra Body (JSON)", "额外请求体（JSON）"),
     (
         "Extra request body merged into every request",

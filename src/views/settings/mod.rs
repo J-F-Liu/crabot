@@ -123,6 +123,8 @@ pub(crate) struct SettingsState {
     pub(super) provider_headers: String,
     /// Validation message for the two JSON fields; blocks the "Saved" feedback.
     pub(super) provider_form_error: Option<String>,
+    /// Whether the advanced provider fields (extra body, headers) are shown.
+    pub(super) provider_advanced: bool,
     pub(super) provider_strict_mode: bool,
     pub(super) is_new_provider: bool,
     // Model fetching from /models endpoint
@@ -240,6 +242,7 @@ impl Default for SettingsState {
             provider_extra_body: String::new(),
             provider_headers: String::new(),
             provider_form_error: None,
+            provider_advanced: false,
             provider_strict_mode: false,
             is_new_provider: false,
             fetching_models: false,

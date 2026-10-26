@@ -48,6 +48,8 @@ pub(crate) enum ModelsEvent {
     EditProviderApiType(String),
     EditProviderAuth(String),
     EditProviderApiKey(String),
+    /// Expand/collapse the advanced provider fields (extra body, headers).
+    ToggleProviderAdvanced,
     EditProviderExtraBody(String),
     EditProviderHeaders(String),
     ToggleProviderStrictMode(bool),
@@ -520,7 +522,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             .find(|&&t| t == state.provider_auth)
             .copied();
 
-        let form_body = column![
+        let mut form_body = column![
             field_row(
                 lang.tr("Name"),
                 &state.provider_name,
@@ -555,57 +557,55 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                 .spacing(10)
                 .align_y(Alignment::Center)
             },
-            field_row(
-                lang.tr("API Key"),
-                &state.provider_api_key,
-                lang.tr("API Key or its enviroment variable name"),
-                false,
-                None,
-                None,
-                move |v| SettingsEvent::Models(ModelsEvent::EditProviderApiKey(v)),
-            ),
-            field_row(
-                lang.tr("Extra Body (JSON)"),
-                &state.provider_extra_body,
-                lang.tr("Extra request body merged into every request"),
-                false,
-                None,
-                None,
-                move |v| SettingsEvent::Models(ModelsEvent::EditProviderExtraBody(v)),
-            ),
-            field_row(
-                lang.tr("Headers (JSON)"),
-                &state.provider_headers,
-                lang.tr("Extra HTTP headers, e.g. {\"X-Foo\":\"bar\"}"),
-                false,
-                None,
-                None,
-                move |v| SettingsEvent::Models(ModelsEvent::EditProviderHeaders(v)),
-            ),
-            {
-                // Search box appears once the model list is long enough to scroll,
-                // and stays visible while a filter is applied.
-                let search = (!state.fetching_models
-                    && (!state.model_filter.is_empty()
-                        || display_model_ids(state).len() > MODEL_LIST_SCROLL_ROWS))
-                    .then(|| {
-                        text_input(lang.tr("Search models…"), &state.model_search)
-                            .on_input(|v| SettingsEvent::Models(ModelsEvent::EditModelSearch(v)))
-                            .on_submit(SettingsEvent::Models(ModelsEvent::ApplyModelFilter))
-                            .size(12)
-                            .padding([2, 6])
-                            .width(Length::Fixed(160.0))
-                            .into()
-                    });
-                checkbox_row(
-                    lang.tr("Strict Mode"),
-                    state.provider_strict_mode,
-                    |v| SettingsEvent::Models(ModelsEvent::ToggleProviderStrictMode(v)),
-                    search,
-                )
-            },
+            api_key_row(state),
         ]
         .spacing(10);
+
+        // Extra Body and Headers stay hidden until "More" is clicked.
+        if state.provider_advanced {
+            form_body = form_body
+                .push(field_row(
+                    lang.tr("Extra Body (JSON)"),
+                    &state.provider_extra_body,
+                    lang.tr("Extra request body merged into every request"),
+                    false,
+                    None,
+                    None,
+                    move |v| SettingsEvent::Models(ModelsEvent::EditProviderExtraBody(v)),
+                ))
+                .push(field_row(
+                    lang.tr("Headers (JSON)"),
+                    &state.provider_headers,
+                    lang.tr("Extra HTTP headers, e.g. {\"X-Foo\":\"bar\"}"),
+                    false,
+                    None,
+                    None,
+                    move |v| SettingsEvent::Models(ModelsEvent::EditProviderHeaders(v)),
+                ));
+        }
+
+        form_body = form_body.push({
+            // Search box appears once the model list is long enough to scroll,
+            // and stays visible while a filter is applied.
+            let search = (!state.fetching_models
+                && (!state.model_filter.is_empty()
+                    || display_model_ids(state).len() > MODEL_LIST_SCROLL_ROWS))
+                .then(|| {
+                    text_input(lang.tr("Search models…"), &state.model_search)
+                        .on_input(|v| SettingsEvent::Models(ModelsEvent::EditModelSearch(v)))
+                        .on_submit(SettingsEvent::Models(ModelsEvent::ApplyModelFilter))
+                        .size(12)
+                        .padding([2, 6])
+                        .width(Length::Fixed(160.0))
+                        .into()
+                });
+            checkbox_row(
+                lang.tr("Strict Mode"),
+                state.provider_strict_mode,
+                |v| SettingsEvent::Models(ModelsEvent::ToggleProviderStrictMode(v)),
+                search,
+            )
+        });
 
         // Invalid JSON keeps the stored value; say so instead of showing "Saved".
         let form_body = match &state.provider_form_error {
@@ -821,6 +821,35 @@ fn chip_input_style(_theme: &iced::Theme, _status: text_input::Status) -> text_i
 }
 
 // ── Form helpers ──────────────────────────────────────────────────
+
+/// API Key input row with a trailing "More"/"Less" button that expands or
+/// collapses the advanced provider fields (extra body, headers).
+fn api_key_row<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
+    let lang = state.language;
+    let input = text_input(
+        lang.tr("API Key or its enviroment variable name"),
+        &state.provider_api_key,
+    )
+    .width(Length::Fill)
+    .padding(4)
+    .size(13)
+    .on_input(|v| SettingsEvent::Models(ModelsEvent::EditProviderApiKey(v)));
+
+    let toggle_label = if state.provider_advanced {
+        lang.tr("Less")
+    } else {
+        lang.tr("More")
+    };
+    let more = small_button(
+        toggle_label,
+        Some(SettingsEvent::Models(ModelsEvent::ToggleProviderAdvanced)),
+    );
+
+    row![label_col(lang.tr("API Key")), input, more]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
+}
 
 fn checkbox_row<'a>(
     label: &'static str,
@@ -1402,6 +1431,9 @@ pub(super) fn update(state: &mut SettingsState, event: ModelsEvent) {
         ModelsEvent::EditProviderApiType(v) => state.provider_api_type = v,
         ModelsEvent::EditProviderAuth(v) => state.provider_auth = v,
         ModelsEvent::EditProviderApiKey(v) => state.provider_api_key = v,
+        ModelsEvent::ToggleProviderAdvanced => {
+            state.provider_advanced = !state.provider_advanced;
+        }
         ModelsEvent::EditProviderExtraBody(v) => {
             state.provider_extra_body = v;
             state.provider_form_error = None;
