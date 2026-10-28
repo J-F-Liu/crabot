@@ -3,7 +3,36 @@ use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
-use crate::tools::Tool;
+use crate::chat::strip_error_envelope;
+use crate::tools::{CANCEL_REASON, Tool};
+
+/// Result content recorded when an ask times out; the model continues without an answer.
+pub const TIMEOUT_REASON: &str = "User did not respond before the timeout.";
+/// Result content recorded when the stream is cancelled while the ask is pending.
+pub const CANCELLED_BY_USER: &str = "Session cancelled by user.";
+/// Result content recorded when the ask event channel closes.
+pub const EVENT_CHANNEL_CLOSED: &str = "Ask event channel closed.";
+/// Result content recorded when the response channel closes.
+pub const RESPONSE_CHANNEL_CLOSED: &str = "Response channel closed.";
+
+/// Question text of an ask call; empty when absent.
+pub fn ask_question(args: &Value) -> &str {
+    args.get("question")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+/// True when `content` is an ask failure or timeout notice rather than a user answer.
+pub fn is_ask_failure(content: &str) -> bool {
+    [
+        TIMEOUT_REASON,
+        CANCELLED_BY_USER,
+        EVENT_CHANNEL_CLOSED,
+        RESPONSE_CHANNEL_CLOSED,
+        CANCEL_REASON,
+    ]
+    .contains(&strip_error_envelope(content))
+}
 
 /// A request for input from the user. The UI completes this tool call.
 pub struct AskTool;

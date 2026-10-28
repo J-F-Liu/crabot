@@ -11,6 +11,9 @@ use tokio_util::sync::CancellationToken;
 use genai::chat::{ToolCall, ToolResponse};
 
 use crate::app::session_state::{ASK_TIMEOUT_SECS, AskRequest, SessionEvent};
+use crate::tools::ask::{
+    CANCELLED_BY_USER, EVENT_CHANNEL_CLOSED, RESPONSE_CHANNEL_CLOSED, TIMEOUT_REASON, ask_question,
+};
 use crate::tools::{self, ToolRef, group_repeated_paths};
 use crabot::chat::{ToolResult as ChatToolResult, envelope_error};
 use crabot::lock;
@@ -371,9 +374,9 @@ pub(super) async fn run_serial_tool(
 /// Error for a failed event delivery: user Stop vs. a dead UI channel.
 fn event_send_error(cancel_token: &CancellationToken) -> String {
     if cancel_token.is_cancelled() {
-        "Session cancelled by user.".into()
+        CANCELLED_BY_USER.into()
     } else {
-        "Ask event channel closed.".into()
+        EVENT_CHANNEL_CLOSED.into()
     }
 }
 
@@ -407,26 +410,20 @@ async fn wait_for_result(
         tokio::select! {
             biased;
             _ = cancel_token.cancelled() => return Err(crate::tools::CANCEL_REASON.into()),
-            result = receiver.recv() => return result.unwrap_or_else(|| Err("Response channel closed.".into())),
+            result = receiver.recv() => return result.unwrap_or_else(|| Err(RESPONSE_CHANNEL_CLOSED.into())),
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
         }
     }
 }
 
-/// Handle a builtin ask-tool call: parse arguments, emit the question to the
-/// UI, then wait for user response, cancellation, or `ASK_TIMEOUT_SECS`.
+/// Emit an ask request and wait for an answer, cancellation, or timeout.
 async fn handle_ask_tool(
     tc: &ToolCall,
     ask_receiver: &mut tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>,
     ctx: &ExecutionCtx<'_>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
 ) -> Result<String, String> {
-    let question = tc
-        .fn_arguments
-        .get("question")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let question = ask_question(&tc.fn_arguments).to_string();
     let options: Vec<String> = tc
         .fn_arguments
         .get("options")
@@ -444,10 +441,7 @@ async fn handle_ask_tool(
         ctx.cancel_token,
         SessionEvent::AskRequest(AskRequest { question, options }),
         ctx.ask_deadline,
-        (
-            Duration::from_secs(ASK_TIMEOUT_SECS),
-            "User did not respond before the timeout.",
-        ),
+        (Duration::from_secs(ASK_TIMEOUT_SECS), TIMEOUT_REASON),
     )
     .await
 }

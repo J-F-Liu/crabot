@@ -23,7 +23,7 @@ use crabot::chat::{
     TextContent, ToolCall, ToolResult, Turn, TurnBody, attachment_marker_items, replace_emoji,
 };
 use crabot::lock;
-use crabot::session::Session;
+use crabot::session::{RENEW_HINT_PROMPT, Session};
 use crabot::user::{UserPrompt, WorkMode};
 use genai::chat::{ChatMessage, ChatRole};
 
@@ -298,6 +298,13 @@ pub(crate) fn update(
         }
         SessionEvent::ToolCalls(tcs) => {
             *modified_files_error = None;
+            // An `ask` call starts its own dialog, like a user prompt.
+            if let Some(index) = tcs
+                .iter()
+                .find_map(|tc| session.open_ask_dialog(&tc.name, &tc.args))
+            {
+                expanded_dialogs.insert(index);
+            }
             session.push_turn(Turn::from_tool_results(vec![]));
             session.push_turn(Turn::from_tool_calls(tcs));
             return if viewing {
@@ -513,8 +520,7 @@ pub(crate) fn update(
                 {
                     let prompt = UserPrompt::new(
                         session.dialogs.last().and_then(|d| d.mode),
-                        "Context fill ratio is near its limit, consider calling the renew tool to continue current task."
-                            .into(),
+                        RENEW_HINT_PROMPT.into(),
                         None,
                     );
                     state.inject_prompt(prompt);

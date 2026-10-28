@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use common::TempDir;
 use crabot::chat::TurnBody;
 use crabot::model::ModelConfig;
-use crabot::session::{Session, SessionRecord, list_session_paths};
+use crabot::session::{RENEW_HINT_PROMPT, Session, SessionRecord, list_session_paths};
 use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent, ToolCall, ToolResponse};
 
 /// A temp dir guard plus the `workspace/` subdir a session persists into.
@@ -32,7 +32,29 @@ fn tool_call(call_id: &str, fn_name: &str, args: serde_json::Value) -> ChatMessa
 
 /// A tool message answering `call_id`.
 fn tool_result(call_id: &str) -> ChatMessage {
-    ChatMessage::new(ChatRole::Tool, vec![ToolResponse::new(call_id, "ok")])
+    tool_result_with(call_id, "ok")
+}
+
+/// A tool message answering `call_id` with `content`.
+fn tool_result_with(call_id: &str, content: &str) -> ChatMessage {
+    ChatMessage::new(ChatRole::Tool, vec![ToolResponse::new(call_id, content)])
+}
+
+/// A user prompt carrying a work-mode prefix.
+fn user_prompt(mode: &str, text: &str) -> ChatMessage {
+    ChatMessage::new(
+        ChatRole::User,
+        MessageContent::from_parts(vec![format!("work-mode: {mode}").into(), text.into()]),
+    )
+}
+
+/// An assistant message carrying one `ask` call.
+fn ask_call(call_id: &str, question: &str) -> ChatMessage {
+    tool_call(
+        call_id,
+        "ask",
+        serde_json::json!({ "question": question, "options": [] }),
+    )
 }
 
 /// History roles in order.
@@ -83,6 +105,49 @@ fn rebuild_dialogs_renders_attachment_blocks() {
             .iter()
             .all(|msg| attachment_marker_items(msg).is_none())
     );
+}
+
+#[test]
+fn ask_opens_dialog_like_user_prompt() {
+    use crabot::user::WorkMode;
+
+    let mut session = Session::new();
+    session.history.push(user_prompt("code", "fix it"));
+    session.history.push(tool_call(
+        "c1",
+        "read",
+        serde_json::json!({ "path": "a.rs" }),
+    ));
+    session.history.push(tool_result("c1"));
+    session.history.push(ChatMessage::assistant("which file?"));
+    session.history.push(ask_call("c2", "Which file?"));
+    session.history.push(tool_result_with("c2", "a.rs"));
+    session.history.push(ChatMessage::assistant("fixed"));
+    session.rebuild_dialogs();
+
+    // Rebuild: the ask opens a dialog; the regular tool stays in the first one.
+    assert_eq!(session.dialogs.len(), 2);
+    assert_eq!(session.dialogs[0].turns.len(), 3); // prompt, read, text
+    assert_eq!(session.dialogs[1].title, "Which file?");
+    assert_eq!(session.dialogs[1].mode, Some(WorkMode::from("code")));
+    let TurnBody::Tool(trs) = &session.dialogs[1].turns[0].body else {
+        panic!("ask should open the dialog");
+    };
+    assert_eq!(trs[0].result, Ok("a.rs".into()));
+    assert_eq!(session.dialogs[1].turns.len(), 2); // ask + final text
+
+    // Live: ask opens and inherits the mode; other tools do not.
+    assert_eq!(
+        session.open_ask_dialog("read", &serde_json::json!({})),
+        None
+    );
+    let index = session.open_ask_dialog(
+        "ask",
+        &serde_json::json!({ "question": "Continue?", "options": [] }),
+    );
+    assert_eq!(index, Some(2));
+    assert_eq!(session.dialogs[2].title, "Continue?");
+    assert_eq!(session.dialogs[2].mode, Some(WorkMode::from("code")));
 }
 
 #[test]
@@ -534,6 +599,41 @@ fn compact_skips_assistant_replies_with_tool_calls() {
     assert_eq!(session.history.len(), 2);
     assert_eq!(compacted.history.len(), 1);
     assert_eq!(compacted.history[0].role, ChatRole::User);
+}
+
+#[test]
+fn compact_preserves_successful_ask_answers() {
+    use crabot::user::WorkMode;
+
+    let mut session = Session::new();
+    session.history.push(user_prompt("code", "fix it"));
+    // Auto-injected renew hints are not user prompts.
+    session.history.push(user_prompt("code", RENEW_HINT_PROMPT));
+    session.history.push(ask_call("c1", "Which file?"));
+    session.history.push(tool_result_with("c1", "a.rs"));
+    session.history.push(ask_call("c2", "Continue?"));
+    session
+        .history
+        .push(tool_result_with("c2", "Error: Session cancelled by user."));
+    session.history.push(ChatMessage::assistant("fixed a.rs"));
+
+    let compacted = session.compact();
+
+    // Only the successful ask becomes a user prompt; the failed one is dropped.
+    assert_eq!(
+        roles(&compacted),
+        vec![ChatRole::User, ChatRole::User, ChatRole::Assistant]
+    );
+    let ask_prompt = compacted.history[1]
+        .content
+        .joined_texts()
+        .expect("ask prompt text");
+    assert!(ask_prompt.contains("Which file?"));
+    assert!(ask_prompt.contains("Answer: a.rs"));
+    assert_eq!(compacted.dialogs.len(), 2);
+    assert_eq!(compacted.dialogs[1].title, "Which file?");
+    assert_eq!(compacted.dialogs[1].mode, Some(WorkMode::from("code")));
+    assert_eq!(tool_turns(&compacted), 0);
 }
 
 #[test]

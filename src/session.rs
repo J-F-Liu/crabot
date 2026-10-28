@@ -1,4 +1,4 @@
-use genai::chat::{ChatMessage, ChatRole, ContentPart};
+use genai::chat::{ChatMessage, ChatRole, ContentPart, MessageContent};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -13,8 +13,12 @@ use crate::chat::{
     is_enveloped_error, strip_error_envelope,
 };
 use crate::model::{Currency, ModelConfig, TokenAmount, currency_symbol};
+use crate::tools::ask::{ask_question, is_ask_failure};
 use crate::tools::todo::TodoItem;
-use crate::user::WorkMode;
+use crate::user::{UserPrompt, WorkMode};
+
+/// Prompt injected when the context is nearly full, suggesting `renew`.
+pub const RENEW_HINT_PROMPT: &str = "Context fill ratio is near its limit, consider calling the renew tool to continue current task.";
 
 /// One self-contained line in a `{id}.jsonl` session file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,22 +211,28 @@ impl Session {
         session
     }
 
-    /// Compact: fresh copy where each dialog keeps only its user prompt and
-    /// final text answer; tool activity, partial replies and system-prompt
-    /// records are dropped.
+    /// Keep user prompts, answered asks with preambles, and final replies.
     pub fn compact(&self) -> Self {
         let mut session = self.fresh_copy();
+        let asks = ask_answers(&self.history);
         // Keep the last text-only assistant reply per dialog; flush it before
         // the next user prompt and at the end.
         let mut answer: Option<ChatMessage> = None;
-        let mut compacted = Vec::with_capacity(session.dialogs.len() * 2);
-        for msg in &session.history {
+        // Work mode of the latest user prompt, carried into ask prompts.
+        let mut mode: Option<WorkMode> = None;
+        let mut compacted = Vec::with_capacity(self.dialogs.len() * 2);
+        for msg in &self.history {
             match msg.role {
                 ChatRole::User => {
-                    // Image markers and attachment markers are plumbing, not prompts.
-                    if image_marker_paths(msg).is_some() || attachment_marker_items(msg).is_some() {
+                    // Image markers, attachment markers, and auto-injected hints are plumbing.
+                    if image_marker_paths(msg).is_some()
+                        || attachment_marker_items(msg).is_some()
+                        || msg.content.parts().last().and_then(|p| p.as_text())
+                            == Some(RENEW_HINT_PROMPT)
+                    {
                         continue;
                     }
+                    mode = mode_from_user_message(msg);
                     compacted.extend(answer.take());
                     compacted.push(msg.clone());
                 }
@@ -231,6 +241,29 @@ impl Session {
                         && msg.content.joined_texts().is_some_and(|t| !t.is_empty()) =>
                 {
                     answer = Some(msg.clone());
+                }
+                ChatRole::Assistant => {
+                    // Preserve text that introduced an answered ask.
+                    if msg
+                        .content
+                        .tool_calls()
+                        .iter()
+                        .any(|tc| tc.fn_name == "ask" && asks.contains_key(tc.call_id.as_str()))
+                        && let Some(text) = msg.content.joined_texts()
+                        && !text.trim().is_empty()
+                    {
+                        compacted.extend(answer.take());
+                        compacted.push(ChatMessage::assistant(text));
+                    }
+                }
+                ChatRole::Tool => {
+                    for tr in msg.content.tool_responses() {
+                        let Some((question, response)) = asks.get(tr.call_id.as_str()) else {
+                            continue;
+                        };
+                        compacted.extend(answer.take());
+                        compacted.push(ask_user_message(question, response, mode));
+                    }
                 }
                 _ => {}
             }
@@ -256,11 +289,15 @@ impl Session {
         if self.title.is_empty() {
             self.title = title.clone();
         }
-        self.dialogs.push(Dialog {
-            title,
-            turns: Vec::new(),
-            mode,
-        });
+        self.dialogs.push(Dialog::new(title, Vec::new(), mode));
+    }
+
+    /// Open a user-prompt-like dialog for an `ask` call; returns its index.
+    pub fn open_ask_dialog(&mut self, name: &str, args: &serde_json::Value) -> Option<usize> {
+        let title = ask_dialog_title(name, args)?;
+        let mode = self.dialogs.last().and_then(|d| d.mode);
+        self.add_dialog(title, mode);
+        Some(self.dialogs.len() - 1)
     }
 
     /// Push a turn.  A `User` turn starts a new dialog; all other roles
@@ -271,11 +308,8 @@ impl Session {
         if let Some(last) = self.dialogs.last_mut() {
             last.turns.push(turn);
         } else {
-            self.dialogs.push(Dialog {
-                title: String::new(),
-                turns: vec![turn],
-                mode: None,
-            });
+            self.dialogs
+                .push(Dialog::new(String::new(), vec![turn], None));
         }
     }
 
@@ -484,11 +518,7 @@ impl Session {
         fn push_or_new(dialogs: &mut Vec<Dialog>, turn: Turn) {
             match dialogs.last_mut() {
                 Some(d) => d.turns.push(turn),
-                None => dialogs.push(Dialog {
-                    title: String::new(),
-                    turns: vec![turn],
-                    mode: None,
-                }),
+                None => dialogs.push(Dialog::new(String::new(), vec![turn], None)),
             }
         }
 
@@ -511,21 +541,11 @@ impl Session {
                         continue;
                     }
                     let parts = msg.content.parts();
-                    // Extract work mode from the first part if present (e.g. "work-mode: code").
-                    let mode = parts
-                        .first()
-                        .and_then(|p| p.as_text())
-                        .and_then(|t| t.strip_prefix("work-mode: "))
-                        .filter(|s| !s.is_empty())
-                        .map(WorkMode::from);
+                    let mode = mode_from_user_message(msg);
                     let text = parts.last().and_then(|p| p.as_text()).unwrap_or_default();
                     let title = Self::derive_title(text);
                     let turn = Turn::user(text);
-                    dialogs.push(Dialog {
-                        title,
-                        turns: vec![turn],
-                        mode,
-                    });
+                    dialogs.push(Dialog::new(title, vec![turn], mode));
                 }
                 ChatRole::Assistant => {
                     let text = msg.content.joined_texts().unwrap_or_default();
@@ -559,6 +579,14 @@ impl Session {
                         trs.push(tr);
                     }
                     if !trs.is_empty() {
+                        // An `ask` call opens its own dialog, like a user prompt.
+                        if let Some(title) = trs
+                            .iter()
+                            .find_map(|tr| ask_dialog_title(&tr.name, &tr.args))
+                        {
+                            let mode = dialogs.last().and_then(|d| d.mode);
+                            dialogs.push(Dialog::new(title, Vec::new(), mode));
+                        }
                         let turn = Turn::from_tool_results(trs);
                         push_or_new(&mut dialogs, turn);
                     }
@@ -889,6 +917,59 @@ impl Session {
             created_at: self.created_at.clone(),
         }
     }
+}
+
+// ── Ask tool helpers ────────────────────────────────────────────────
+
+/// Title for an `ask` call's dialog; `None` for other tools.
+fn ask_dialog_title(name: &str, args: &serde_json::Value) -> Option<String> {
+    (name == "ask").then(|| Session::derive_title(ask_question(args)))
+}
+
+/// Work mode declared by a user message's leading `work-mode: …` part.
+fn mode_from_user_message(msg: &ChatMessage) -> Option<WorkMode> {
+    msg.content
+        .parts()
+        .first()
+        .and_then(|p| p.as_text())
+        .and_then(|t| t.strip_prefix("work-mode: "))
+        .filter(|s| !s.is_empty())
+        .map(WorkMode::from)
+}
+
+/// Successful, non-empty ask answers keyed by call id, with their questions.
+fn ask_answers(history: &[ChatMessage]) -> HashMap<&str, (&str, &str)> {
+    let mut questions: HashMap<&str, &str> = HashMap::new();
+    let mut answers = HashMap::new();
+    for msg in history {
+        match msg.role {
+            ChatRole::Assistant => {
+                for tc in msg.content.tool_calls() {
+                    if tc.fn_name == "ask" {
+                        questions.insert(tc.call_id.as_str(), ask_question(&tc.fn_arguments));
+                    }
+                }
+            }
+            ChatRole::Tool => {
+                for tr in msg.content.tool_responses() {
+                    if let Some(question) = questions.remove(tr.call_id.as_str())
+                        && !tr.content.trim().is_empty()
+                        && !is_ask_failure(&tr.content)
+                    {
+                        answers.insert(tr.call_id.as_str(), (question, tr.content.as_str()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    answers
+}
+
+/// Render an answered `ask` call as a user prompt for compacted history.
+fn ask_user_message(question: &str, answer: &str, mode: Option<WorkMode>) -> ChatMessage {
+    let prompt = UserPrompt::new(mode, format!("{question}\n\nAnswer: {answer}"), None);
+    ChatMessage::user(MessageContent::from_parts(prompt.to_content_parts()))
 }
 
 /// Workspace root of a session file — the grandparent of the innermost

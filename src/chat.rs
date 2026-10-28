@@ -544,6 +544,15 @@ pub struct Dialog {
 }
 
 impl Dialog {
+    /// Dialog with the given title, turns, and work mode.
+    pub fn new(title: impl Into<String>, turns: Vec<Turn>, mode: Option<WorkMode>) -> Self {
+        Self {
+            title: title.into(),
+            turns,
+            mode,
+        }
+    }
+
     /// Title shown in the dialog header ("Dialog N" fallback for empty titles).
     pub fn display_title(&self, index: usize) -> String {
         if self.title.is_empty() {
