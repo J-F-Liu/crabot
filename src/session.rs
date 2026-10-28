@@ -324,6 +324,19 @@ impl Session {
         let _ = self.save();
     }
 
+    /// Reference to the last turn across all dialogs.
+    pub fn last_turn(&self) -> Option<&Turn> {
+        self.dialogs.last().and_then(|d| d.turns.last())
+    }
+
+    /// Whether the last turn still has a pending call to `name`.
+    pub fn has_pending_call(&self, name: &str) -> bool {
+        matches!(
+            self.last_turn().map(|turn| &turn.body),
+            Some(TurnBody::Temp(calls)) if calls.iter().any(|call| call.name == name)
+        )
+    }
+
     /// Mutable reference to the last turn across all dialogs.
     pub fn last_turn_mut(&mut self) -> Option<&mut Turn> {
         self.dialogs.last_mut().and_then(|d| d.turns.last_mut())

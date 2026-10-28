@@ -100,9 +100,14 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool, lang: Lang) -> Element<'a, 
     let number = tab.number;
     let running = tab.running();
 
-    // Status indicator: ○ while streaming (raised slightly), colored ● after a terminal event.
+    // Status dot: ○ while streaming (raised, orange while awaiting a task), ● when ended.
     let status = if running {
-        Some(("○", theme::CRABOT_PRIMARY, 2.0))
+        let color = if tab.waiting_for_task() {
+            theme::CRABOT_ORANGE
+        } else {
+            theme::CRABOT_PRIMARY
+        };
+        Some(("○", color, 2.0))
     } else {
         tab.end_status.map(|s| ("●", end_status_color(s), 0.0))
     };

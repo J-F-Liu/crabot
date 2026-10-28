@@ -138,6 +138,12 @@ impl SessionTab {
         self.session_state.phase != DialogPhase::Idle
     }
 
+    /// Whether this tab is blocked on a `task` call awaiting its sub-agent report.
+    pub(crate) fn waiting_for_task(&self) -> bool {
+        self.session_state.phase == DialogPhase::ToolExecuting
+            && self.session.has_pending_call("task")
+    }
+
     /// Untitled placeholder for [`Self::header_title`]; views localize it.
     pub(crate) const NEW_SESSION_TITLE: &str = "New session";
 

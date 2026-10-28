@@ -34,6 +34,8 @@ pub(crate) const CRABOT_DANGER: Color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
 pub(crate) const CRABOT_DANGER_HOVER: Color = Color::from_rgb8(0xC9, 0x3A, 0x3A);
 pub(crate) const CRABOT_DANGER_PRESSED: Color = Color::from_rgb8(0xAF, 0x2E, 0x2E);
 pub(crate) const CRABOT_YELLOW: Color = Color::from_rgb8(0xF0, 0xCC, 0x00);
+/// Tab dot color while awaiting a `task` sub-agent.
+pub(crate) const CRABOT_ORANGE: Color = Color::from_rgb8(0xFF, 0x8C, 0x00);
 
 // ── dark theme colors ─────────────────────────────────────────
 
