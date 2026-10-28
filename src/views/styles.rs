@@ -503,21 +503,6 @@ pub(crate) fn menu_item_style(_theme: &Theme, status: button::Status) -> button:
     flat_button(status, color_text_strong())
 }
 
-/// Muted style for a disabled DropDown.
-pub(crate) fn disabled_dropdown_style(
-    _theme: &Theme,
-    _status: crate::widgets::dropdown::Status,
-) -> crate::widgets::dropdown::Style {
-    let colors = dropdown_colors();
-    crate::widgets::dropdown::Style {
-        text_color: color_muted(),
-        placeholder_color: color_muted(),
-        handle_color: color_muted(),
-        background: colors.surface.into(),
-        border: colors.border,
-    }
-}
-
 /// Hover/pressed trigger colors are shared with [`color_hover`] / [`color_pressed`].
 struct DropdownColors {
     hover: Color,
@@ -601,6 +586,21 @@ pub(crate) fn secondary_dropdown_style(
         placeholder_color: color_muted(),
         handle_color: color_muted(),
         background: colors.trigger_background(status.into()),
+        border: colors.border,
+    }
+}
+
+/// Muted, hover-less trigger for a `DropDown` whose session is running.
+pub(crate) fn muted_dropdown_style(
+    _theme: &Theme,
+    _status: crate::widgets::dropdown::Status,
+) -> crate::widgets::dropdown::Style {
+    let colors = dropdown_colors();
+    crate::widgets::dropdown::Style {
+        text_color: color_muted(),
+        placeholder_color: color_muted(),
+        handle_color: color_muted(),
+        background: colors.surface.into(),
         border: colors.border,
     }
 }

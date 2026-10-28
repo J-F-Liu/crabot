@@ -909,7 +909,10 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
             }
         }
     } else {
-        (app.find_model_label(configured), configured.clone())
+        let label = app
+            .find_model_label(configured)
+            .unwrap_or_else(|| parent_selected.clone());
+        (label, configured.clone())
     };
     // Stale config would silently no-op `start_dialog` and strand the parent.
     if app.models.get_model_info(&model).is_none() {

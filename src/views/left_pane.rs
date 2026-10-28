@@ -17,7 +17,6 @@ use super::tool_list::{
 use super::user_prompt::user_prompt_view;
 use crate::FilepathEntry;
 use crate::app::{ConversationState, PromptWorkspaceState, ToolState};
-use crate::llm::DialogPhase;
 use crate::views::session_list::SessionEntry;
 use crate::widgets::textarea::TextArea;
 use crate::{LeftPaneEvent, PromptEvent, ToolEvent};
@@ -59,7 +58,6 @@ pub(crate) fn left_pane<'a>(
     let recipe_dropdown_expanded: bool = prompt.recipe_dropdown_expanded;
     let attachment_menu_expanded: bool = prompt.attachment_menu_expanded;
     let attachments: &[crabot::user::UserAttachment] = &prompt.attachments;
-    let streaming: DialogPhase = conversation.viewing().session_state.phase;
     let session_options: &[SessionEntry] = &conversation.session_list;
     let current_session_id: &str = &conversation.viewing().session.id;
     let enabled_mcp_servers: &HashSet<String> = &tools.enabled_mcp_servers;
@@ -97,9 +95,9 @@ pub(crate) fn left_pane<'a>(
                     },
                     date_field_view(&prompt.date, lang).map(LeftPaneEvent::Prompt),
                     session_view(
-                        streaming,
                         session_options,
                         current_session_id,
+                        conversation.viewing_is_streaming(),
                         conversation.session_list_loading,
                         lang,
                     )

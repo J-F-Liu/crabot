@@ -7,7 +7,6 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use crate::ConversationEvent;
-use crate::llm::DialogPhase;
 use crate::widgets::dropdown::DropDown;
 
 /// Lightweight session metadata for dropdown listing.
@@ -74,9 +73,9 @@ impl PartialEq for SessionEntry {
 }
 
 pub(crate) fn session_view<'a>(
-    streaming: DialogPhase,
     session_options: &'a [SessionEntry],
     current_session_id: &'a str,
+    running: bool,
     loading: bool,
     lang: crabot::i18n::Lang,
 ) -> Element<'a, ConversationEvent> {
@@ -98,19 +97,19 @@ pub(crate) fn session_view<'a>(
         .padding([5, 8])
         .into()
     } else {
-        let mut list = DropDown::new(session_options, selected, ConversationEvent::LoadSession)
+        let list = DropDown::new(session_options, selected, ConversationEvent::LoadSession)
             .width(Fill)
             .menu_width(600.0)
             .text_size(14.0)
             .item_is_header(|i| session_options.get(i).is_some_and(|e| e.is_header))
             .header_font(header_font)
-            .item_indent(16.0);
-
-        list = if streaming != DialogPhase::Idle {
-            list.style(crate::views::disabled_dropdown_style)
+            .item_indent(16.0)
+            .on_open(ConversationEvent::SessionPickerFocused);
+        // A running session keeps the muted look but stays pickable.
+        let list = if running {
+            list.style(crate::views::muted_dropdown_style)
         } else {
             list.style(crate::views::secondary_dropdown_style)
-                .on_open(ConversationEvent::SessionPickerFocused)
         };
 
         container(list).into()

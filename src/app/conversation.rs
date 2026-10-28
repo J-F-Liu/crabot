@@ -460,6 +460,27 @@ fn restore_viewing_tab(app: &mut App, pos: usize) -> Task<Message> {
         .chain(options_task)
 }
 
+/// Show `session` in a new tab, surface it in the picker, and switch to it.
+fn open_session_tab(app: &mut App, session: Session, options: PromptOptions) -> Task<Message> {
+    let number = app.conversation.next_tab_number();
+    let pos = push_tab(app, SessionTab::from_session(number, session, options));
+    tracing::debug!(tab = number, "session opened in a new tab");
+    surface_session_in_list(app, pos);
+    restore_viewing_tab(app, pos)
+}
+
+/// `options` pointed at `session`'s stored model when it has one.
+fn session_options(app: &App, mut options: PromptOptions, session: &Session) -> PromptOptions {
+    if let Some(label) = session
+        .model
+        .as_ref()
+        .and_then(|model| app.find_model_label(model))
+    {
+        options.selected_model = label;
+    }
+    options
+}
+
 /// Switch the viewing tab to the one with the given number.
 pub(super) fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
     close_header_menu(app);
@@ -596,30 +617,22 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
         return Task::none();
     }
 
-    // Block loading into the viewing tab while it is streaming.
-    if app.conversation.viewing_is_streaming() {
-        return Task::none();
-    }
-
-    match Session::load(&entry.path) {
-        Ok(session) => {
-            let number = app.conversation.viewing_tab_number();
-            // If the loaded session has a stored model, find the matching model name;
-            // otherwise keep the viewing tab's current selection.
-            let mut options = app.capture_options();
-            if let Some(ref model_config) = session.model {
-                options.selected_model = app.find_model_label(model_config);
-            }
-            let tab = app.conversation.viewing_mut();
-            *tab = SessionTab::from_session(number, session, options);
-            // Scroll to top for a freshly loaded session.
-            return views::scroll_to_start().discard();
-        }
+    let session = match Session::load(&entry.path) {
+        Ok(session) => session,
         Err(error) => {
             tracing::warn!("Failed to load session: {error}");
+            return Task::none();
         }
+    };
+    let options = session_options(app, app.capture_options(), &session);
+    // A running tab keeps its stream, so the session opens in a new tab.
+    if app.conversation.viewing_is_streaming() {
+        return open_session_tab(app, session, options);
     }
-    Task::none()
+    // An idle tab takes the session over, keeping its number.
+    let number = app.conversation.viewing_tab_number();
+    *app.conversation.viewing_mut() = SessionTab::from_session(number, session, options);
+    views::scroll_to_start().discard()
 }
 
 fn navigate_session(app: &mut App, up: bool) -> Task<Message> {
@@ -627,6 +640,7 @@ fn navigate_session(app: &mut App, up: bool) -> Task<Message> {
     let list_empty = app.conversation.session_list.is_empty();
     let is_picker_focused = app.layout.focused == Some(FocusedTarget::SessionPicker);
 
+    // A pick opens a new tab while running, so arrows must not navigate.
     if !is_picker_focused || viewing_is_streaming || list_empty {
         let task = views::scroll_by(if up { -SCROLL_STEP } else { SCROLL_STEP });
         return if up {
@@ -775,7 +789,10 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
         task_path.push(tab.number);
         tab.task_path = Some(task_path);
         tab.task_call_id = Some(call_id);
-        tab.pane.selected_model = tab_model_label;
+        // The tab already carries `spawn.selected_model`; prefer its resolved label.
+        if let Some(label) = tab_model_label {
+            tab.pane.selected_model = label;
+        }
         // Set the tool-provided title before the first save so the Meta line carries it.
         if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
             tab.session.title = title;
@@ -1077,24 +1094,13 @@ fn compact_session(app: &mut App) -> Task<Message> {
 
 /// Derive a copy of the viewing session into a new tab and switch to it.
 fn derive_session(app: &mut App, derive: fn(&Session) -> Session, verb: &str) -> Task<Message> {
-    let number = app.conversation.next_tab_number();
-    let mut options = app.new_tab_options();
     let (source_id, session) = {
         let view = app.conversation.viewing();
-        let session = derive(&view.session);
-        // Keep the derived session's model label when known.
-        if let Some(model) = session.model.as_ref() {
-            options.selected_model = app.find_model_label(model);
-        }
-        (view.session.id.clone(), session)
+        (view.session.id.clone(), derive(&view.session))
     };
-    tracing::debug!(tab = number, source = %source_id, "session {verb}");
-    let tab = SessionTab::from_session(number, session, options);
-    let pos = push_tab(app, tab);
-    // Surface the new session in the list without persisting an extra entry.
-    surface_session_in_list(app, pos);
-    // Fresh tab has no saved offset — restore_viewing_tab scrolls to top.
-    restore_viewing_tab(app, pos)
+    tracing::debug!(source = %source_id, "session {verb}");
+    let options = session_options(app, app.new_tab_options(), &session);
+    open_session_tab(app, session, options)
 }
 
 // ── Stream orchestration ──────────────────────────────────────────

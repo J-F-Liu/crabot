@@ -1176,8 +1176,8 @@ impl App {
             .cloned()
     }
 
-    /// Find the model label matching the given config, falling back to the viewing tab's label.
-    pub(crate) fn find_model_label(&self, model_config: &ModelConfig) -> String {
+    /// The label whose config matches `model_config`, when the model list has one.
+    pub(crate) fn find_model_label(&self, model_config: &ModelConfig) -> Option<String> {
         self.models
             .models
             .iter()
@@ -1185,7 +1185,6 @@ impl App {
                 cfg.provider_id == model_config.provider_id && cfg.model_id == model_config.model_id
             })
             .map(|(label, _)| label.clone())
-            .unwrap_or_else(|| self.conversation.viewing().pane.selected_model.clone())
     }
 
     // ── View composition ──────────────────────────────────────────
