@@ -1,24 +1,42 @@
-//! Taskbar attention for background sessions: `Done` flashes the taskbar
-//! once (Windows), `AskRequest` flashes until the window regains focus.
+//! Taskbar attention for background sessions: a finished turn flashes once,
+//! a pending `ask` or a failed run keeps flashing until the window is focused.
 
 use iced::{Task, window};
 
 use crate::app::Message;
 
-/// Raise attention for a session event in an unfocused window.
-pub(crate) fn raise(window_focused: bool, finished: bool, asked: bool) -> Task<Message> {
-    if window_focused || (!finished && !asked) {
-        return Task::none();
-    }
-    #[cfg(windows)]
-    if finished {
-        win32::flash_once();
-        return Task::none();
-    }
-    request(Some(window::UserAttention::Informational))
+/// How long the taskbar keeps asking for attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Attention {
+    /// A single one-shot request.
+    Flash,
+    /// Repeat flashing until the window regains focus.
+    UntilFocused,
 }
 
-/// Drop an outstanding flash, e.g. when an ask resolved while unfocused.
+/// Raise attention for an unfocused window.
+pub(crate) fn raise(window_focused: bool, attention: Attention) -> Task<Message> {
+    if window_focused {
+        return Task::none();
+    }
+    // Windows flashes only the taskbar button: once, or repeatedly until focus.
+    #[cfg(windows)]
+    return match attention {
+        Attention::Flash => {
+            win32::flash_once();
+            Task::none()
+        }
+        Attention::UntilFocused => request(Some(window::UserAttention::Informational)),
+    };
+    // Elsewhere the dock or taskbar bounces once, or repeats until focus.
+    #[cfg(not(windows))]
+    request(Some(match attention {
+        Attention::Flash => window::UserAttention::Informational,
+        Attention::UntilFocused => window::UserAttention::Critical,
+    }))
+}
+
+/// Drop an outstanding request nothing needs any more.
 pub(crate) fn clear() -> Task<Message> {
     request(None)
 }

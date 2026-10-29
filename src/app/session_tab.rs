@@ -144,6 +144,13 @@ impl SessionTab {
             && self.session.has_pending_call("task")
     }
 
+    /// Whether this tab wants the window's attention: an `ask` is waiting, or a
+    /// top-level run failed. Sub-agent outcomes go to the parent tab.
+    pub(crate) fn needs_attention(&self) -> bool {
+        self.session_state.ask_request.is_some()
+            || (self.task_parent().is_none() && self.end_status == Some(SessionEndStatus::Error))
+    }
+
     /// Untitled placeholder for [`Self::header_title`]; views localize it.
     pub(crate) const NEW_SESSION_TITLE: &str = "New session";
 

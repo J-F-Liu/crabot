@@ -9,7 +9,7 @@ use iced::widget::scrollable::Viewport;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::app::attention;
+use crate::app::attention::{self, Attention};
 use crate::app::conversation::{dispatch_pending, switch_tab};
 use crate::app::{App, ConversationEvent, Message, SessionEndStatus, SessionTab};
 use crate::llm::DialogPhase;
@@ -251,6 +251,7 @@ pub(crate) enum SessionEvent {
     /// Non-fatal warning appended to the conversation (not persisted to history).
     Notice(String),
     Done,
+    /// A terminal failure; the run stopped without finishing.
     Error {
         message: String,
         /// Short status-bar label for the failure.
@@ -259,6 +260,16 @@ pub(crate) enum SessionEvent {
     Cancelled,
     PhaseChange(DialogPhase),
     Stop,
+}
+
+impl SessionEvent {
+    /// A terminal failure.
+    pub(crate) fn error(message: impl Into<String>, status: impl Into<Cow<'static, str>>) -> Self {
+        Self::Error {
+            message: message.into(),
+            status: status.into(),
+        }
+    }
 }
 
 /// Handle a streaming event for a specific tab.
@@ -1022,6 +1033,16 @@ pub(super) fn process_pending_ask_queue(app: &mut App) -> Task<Message> {
     Task::none()
 }
 
+/// Taskbar attention an event asks for (sub-agent outcomes go to the parent).
+fn attention_for(event: &SessionEvent, sub_agent: bool) -> Option<Attention> {
+    match event {
+        SessionEvent::AskRequest(_) => Some(Attention::UntilFocused),
+        SessionEvent::Done => (!sub_agent).then_some(Attention::Flash),
+        SessionEvent::Error { .. } => (!sub_agent).then_some(Attention::UntilFocused),
+        _ => None,
+    }
+}
+
 /// Route a tagged stream event to the owning tab.
 pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -> Task<Message> {
     // Renew/task requests are intercepted here — they spawn successor sessions.
@@ -1075,13 +1096,13 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
     let context_window = model_config.as_ref().map(|cfg| cfg.context_window);
 
     let finished = matches!(event, SessionEvent::Done);
-    let asked = matches!(event, SessionEvent::AskRequest(_));
     let is_cancelled = matches!(event, SessionEvent::Cancelled);
     let task_error = match &event {
         SessionEvent::Error { message, .. } => Some(message.clone()),
         _ => None,
     };
-
+    let sub_agent = app.conversation.session_tabs[pos].task_parent().is_some();
+    let attention = attention_for(&event, sub_agent);
     // Remember whether this tab had an active ask so we can detect a clear.
     let had_ask = app.conversation.session_tabs[pos]
         .session_state
@@ -1164,19 +1185,20 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
         deliver_task_report(app, parent, call_id, result);
     }
 
-    // Drop stale ask flashes; Done/AskRequest otherwise raises attention.
-    let attention_task = if !finished
-        && !app.layout.window_focused
-        && had_ask
-        && app
-            .conversation
-            .session_tabs
-            .iter()
-            .all(|t| t.session_state.ask_request.is_none())
-    {
-        attention::clear()
-    } else {
-        attention::raise(app.layout.window_focused, finished, asked)
+    // A pending ask or failed run outranks this event's one-shot flash.
+    let needs_attention = app
+        .conversation
+        .session_tabs
+        .iter()
+        .any(SessionTab::needs_attention);
+    let attention = match attention {
+        Some(_) if needs_attention => Some(Attention::UntilFocused),
+        other => other,
+    };
+    let attention_task = match attention {
+        Some(attention) => attention::raise(app.layout.window_focused, attention),
+        None if had_ask && !needs_attention => attention::clear(),
+        None => Task::none(),
     };
 
     switch_task

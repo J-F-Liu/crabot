@@ -159,10 +159,10 @@ pub async fn send_stream(
                 error = %error,
                 "failed to build LLM client"
             );
-            on_event(SessionEvent::Error {
-                message: format!("Failed to set up the LLM client: {error}"),
-                status: "client setup failed".into(),
-            })
+            on_event(SessionEvent::error(
+                format!("Failed to set up the LLM client: {error}"),
+                "client setup failed",
+            ))
             .await;
             return;
         }
@@ -311,13 +311,13 @@ pub async fn send_stream(
                             delay_secs = delay.as_secs(),
                             "provider requested a retry delay beyond the automatic limit"
                         );
-                        on_event(SessionEvent::Error {
-                            message: format!(
+                        on_event(SessionEvent::error(
+                            format!(
                                 "The provider asked to retry after {}s, longer than the automatic retry limit. {error}",
                                 delay.as_secs()
                             ),
-                            status: failure_status(&error),
-                        })
+                            failure_status(&error),
+                        ))
                         .await;
                         return;
                     }
@@ -328,10 +328,10 @@ pub async fn send_stream(
                             error = %error,
                             "LLM request failed"
                         );
-                        on_event(SessionEvent::Error {
-                            message: failure_message(stage, &error, attempt),
-                            status: failure_status(&error),
-                        })
+                        on_event(SessionEvent::error(
+                            failure_message(stage, &error, attempt),
+                            failure_status(&error),
+                        ))
                         .await;
                         return;
                     }
@@ -362,11 +362,7 @@ pub async fn send_stream(
                             session = %session_id,
                             "giving up: {reason}"
                         );
-                        on_event(SessionEvent::Error {
-                            message: error,
-                            status,
-                        })
-                        .await;
+                        on_event(SessionEvent::error(error, status)).await;
                         return;
                     }
                     (reason, status, DEFAULT_RETRY_DELAY)
@@ -567,10 +563,10 @@ pub async fn send_stream(
             max_iterations,
             "exceeded maximum tool-calling iterations"
         );
-        on_event(SessionEvent::Error {
-            message: format!("Exceeded maximum tool-calling iterations ({max_iterations})"),
-            status: "max iterations reached".into(),
-        })
+        on_event(SessionEvent::error(
+            format!("Exceeded maximum tool-calling iterations ({max_iterations})"),
+            "max iterations reached",
+        ))
         .await;
     }
 }
