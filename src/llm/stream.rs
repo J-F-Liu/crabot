@@ -170,7 +170,10 @@ fn is_transient(e: &genai::Error) -> bool {
 
 // ── Failure status ─────────────────────────────────────────────────
 
-/// Short failure label: HTTP status, transport error, or provider error code.
+/// Longest provider reason kept in a status label, in characters.
+const MAX_REASON_CHARS: usize = 60;
+
+/// Status-bar label: HTTP status, transport failure, provider reason, or the error itself.
 pub(super) fn failure_status(error: &genai::Error) -> Cow<'static, str> {
     // Stream errors may wrap the real failure; label the inner error.
     if let genai::Error::WebStream { error: inner, .. } = error
@@ -179,49 +182,146 @@ pub(super) fn failure_status(error: &genai::Error) -> Cow<'static, str> {
         return failure_status(nested);
     }
     if let Some(status) = error.status() {
-        return match status.canonical_reason() {
-            Some(reason) => Cow::Owned(format!("{} {reason}", status.as_u16())),
-            None => Cow::Owned(format!("HTTP {}", status.as_u16())),
+        let code = match status.canonical_reason() {
+            Some(reason) => format!("{} {reason}", status.as_u16()),
+            None => format!("HTTP {}", status.as_u16()),
         };
+        let reasoned = provider_reason(error).map(|reason| format!("{code}: {reason}"));
+        return Cow::Owned(reasoned.unwrap_or(code));
     }
-    if let Some(label) = transport_label(error) {
+    if let Some(label) = static_label(error) {
         return Cow::Borrowed(label);
     }
-    if let genai::Error::ChatResponse { body, .. } = error
-        && let Some(code) = body_error_code(body)
-    {
-        return Cow::Owned(code);
+    if let Some(reason) = provider_reason(error) {
+        return Cow::Owned(reason);
     }
-    Cow::Borrowed("request failed")
+    last_line(&error.to_string()).map_or(Cow::Borrowed("request failed"), Cow::Owned)
 }
 
-/// Timeouts and connection failures carry no HTTP status.
-fn transport_label(error: &genai::Error) -> Option<&'static str> {
-    fn reqwest_label(e: &reqwest::Error) -> Option<&'static str> {
-        if e.is_connect() {
-            Some("connection error")
-        } else if e.is_timeout() {
-            Some("response timeout")
-        } else {
-            None
-        }
-    }
+/// Provider-supplied explanation, when the failure carries one.
+fn provider_reason(error: &genai::Error) -> Option<String> {
     match error {
-        genai::Error::WebAdapterCall { webc_error, .. }
-        | genai::Error::WebModelCall { webc_error, .. } => match webc_error {
-            genai::webc::Error::Reqwest(e) => reqwest_label(e),
+        // The code only prefixes a reason that says something else.
+        genai::Error::ChatResponse { body, .. } => {
+            match (reason_from_body(body), body_error_code(body)) {
+                (Some(reason), Some(code)) if !reason.eq_ignore_ascii_case(&code) => {
+                    Some(format!("{code}: {reason}"))
+                }
+                (reason, code) => reason.or(code),
+            }
+        }
+        genai::Error::HttpError { body, .. } => reason_from_text(body),
+        genai::Error::WebModelCall { webc_error, .. }
+        | genai::Error::WebAdapterCall { webc_error, .. } => match webc_error {
+            genai::webc::Error::ResponseFailedStatus { body, .. } => reason_from_text(body),
             _ => None,
         },
+        genai::Error::ChatResponseGeneration { cause, .. }
+        | genai::Error::WebStream { cause, .. } => last_line(cause),
+        _ => None,
+    }
+}
+
+/// Fixed label for transport failures and shapes that explain themselves.
+fn static_label(error: &genai::Error) -> Option<&'static str> {
+    match error {
+        genai::Error::NoChatResponse { .. } => Some("empty response"),
+        genai::Error::StreamParse { .. } => Some("invalid stream data"),
+        genai::Error::InvalidJsonResponseElement { .. } => Some("invalid response"),
+        genai::Error::RequiresApiKey { .. }
+        | genai::Error::NoAuthData { .. }
+        | genai::Error::NoAuthResolver { .. } => Some("missing API key"),
+        genai::Error::ClientBuildFail { .. } => Some("client setup failed"),
+        genai::Error::WebModelCall { webc_error, .. }
+        | genai::Error::WebAdapterCall { webc_error, .. } => match webc_error {
+            genai::webc::Error::Reqwest(e) => reqwest_label(e),
+            genai::webc::Error::ResponseFailedNotJson { .. }
+            | genai::webc::Error::ResponseFailedInvalidJson { .. } => Some("invalid response"),
+            _ => None,
+        },
+        // A stalled or dropped stream wraps the transport error.
         genai::Error::WebStream { error: inner, .. } => {
             if inner.downcast_ref::<genai::webc::StreamTimeout>().is_some() {
-                return Some("response timeout");
+                Some("response timeout")
+            } else {
+                inner
+                    .downcast_ref::<reqwest::Error>()
+                    .and_then(reqwest_label)
             }
-            inner
-                .downcast_ref::<reqwest::Error>()
-                .and_then(reqwest_label)
         }
         _ => None,
     }
+}
+
+/// Transport label; a mid-stream drop surfaces as a body or decode error.
+fn reqwest_label(e: &reqwest::Error) -> Option<&'static str> {
+    if e.is_timeout() {
+        Some("response timeout")
+    } else if e.is_connect() || e.is_request() || e.is_body() || e.is_decode() {
+        Some("connection error")
+    } else {
+        None
+    }
+}
+
+/// Reason inside a provider error body — under `error` (Anthropic) or at the
+/// top level (OpenAI): a message-like field, a code, or a bare string.
+fn reason_from_body(body: &serde_json::Value) -> Option<String> {
+    const FIELDS: [&str; 9] = [
+        "/error/message",
+        "/message",
+        "/error/detail",
+        "/error/msg",
+        "/error/type",
+        "/type",
+        "/error",
+        "/error/code",
+        "/code",
+    ];
+    FIELDS
+        .iter()
+        .find_map(|pointer| body.pointer(pointer).and_then(serde_json::Value::as_str))
+        .or_else(|| body.as_str())
+        .and_then(first_line)
+}
+
+/// Reason from a raw response body: JSON when it parses, else its first line.
+fn reason_from_text(text: &str) -> Option<String> {
+    let text = text.trim();
+    // An HTML page says less than the HTTP status it arrived with.
+    if text.starts_with('<') {
+        return None;
+    }
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(body) => reason_from_body(&body),
+        Err(_) => first_line(text),
+    }
+}
+
+/// First non-empty line of `text` — a summary precedes the details.
+fn first_line(text: &str) -> Option<String> {
+    text.lines().map(short).find(|line| !line.is_empty())
+}
+
+/// Last non-empty line of `text` — genai puts the cause after the context.
+fn last_line(text: &str) -> Option<String> {
+    text.lines().rev().map(short).find(|line| !line.is_empty())
+}
+
+/// Collapse whitespace and truncate to the status-bar budget.
+fn short(text: &str) -> String {
+    let mut compact = String::with_capacity(text.len().min(MAX_REASON_CHARS * 4));
+    for word in text.split_whitespace() {
+        if !compact.is_empty() {
+            compact.push(' ');
+        }
+        compact.push_str(word);
+    }
+    if let Some((cut, _)) = compact.char_indices().nth(MAX_REASON_CHARS) {
+        compact.truncate(cut);
+        compact.push('…');
+    }
+    compact
 }
 
 /// Provider error code carried at the top level or under `error`.

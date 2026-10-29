@@ -81,7 +81,10 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── status line failure label (app/session_state.rs) ──
     ("response timeout", "响应超时"),
     ("connection error", "连接错误"),
+    ("invalid response", "响应无效"),
+    ("invalid stream data", "流数据无效"),
     ("empty response", "空响应"),
+    ("missing API key", "缺少 API 密钥"),
     ("client setup failed", "客户端初始化失败"),
     ("max iterations reached", "达到最大迭代次数"),
     ("request failed", "请求失败"),
