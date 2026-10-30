@@ -130,6 +130,8 @@ pub struct Settings {
     pub fill_ratio_threshold: f32,
     /// Max agent-loop iterations (tool-calling rounds) before giving up.
     pub max_iterations: usize,
+    /// Max concurrently running `task` sub-agents; excess spawns queue up.
+    pub task_max_concurrency: usize,
     /// Seconds of LLM stream silence before giving up (0 = off).
     pub stream_stall_timeout: u64,
     /// Configurable limits for the built-in tools (timeouts, output caps, …).
@@ -181,6 +183,7 @@ impl Default for Settings {
             prompt_recipes: IndexMap::new(),
             fill_ratio_threshold: 25.0,
             max_iterations: 100,
+            task_max_concurrency: 5,
             // Anthropic heartbeats every ~15-30s; 120s of silence means a dead stream.
             stream_stall_timeout: 120,
             tool_limits: ToolLimits::default(),
@@ -295,6 +298,7 @@ fn merge_settings(baseline: &Settings, ours: &Settings, disk: &Settings) -> Sett
         prompt_recipes,
         fill_ratio_threshold,
         max_iterations,
+        task_max_concurrency,
         stream_stall_timeout,
         tool_limits,
         task_models,

@@ -24,6 +24,8 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Todo List", "待办列表"),
     ("Running Processes", "运行中的进程"),
     ("Running Processes: {}", "运行中的进程：{}"),
+    ("Task Queue", "任务队列"),
+    ("Task Queue: {}", "任务队列：{}"),
     ("Accessed Files", "访问过的文件"),
     ("Modified Files", "修改过的文件"),
     ("Revert", "还原"),

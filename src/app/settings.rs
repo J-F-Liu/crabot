@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use iced::Task;
 
-use crate::app::{App, Message, ModelSettingsEvent, tool_state};
+use crate::app::{App, Message, ModelSettingsEvent, session_state, tool_state};
 use crate::tools;
 use crate::views::model_config;
 use crate::views::settings::{
@@ -108,6 +108,8 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             app.settings_dialog.apply_builtin_tools(&mut app.settings);
             app.save_settings();
             tools::init_tool_limits(app.settings.tool_limits);
+            // A raised sub-agent limit should start queued tasks right away.
+            return session_state::process_task_queue(app);
         }
         SettingsEvent::CustomTools(CustomToolsEvent::SaveTools) => {
             app.settings_dialog.update(event);

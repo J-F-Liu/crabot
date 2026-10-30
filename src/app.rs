@@ -4,7 +4,7 @@
 //! and the boot / update / view / subscription methods that drive the GUI.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::path::PathBuf;
 
@@ -42,6 +42,7 @@ mod subscription;
 mod tool_state;
 
 pub(crate) use prompt_options::PromptOptions;
+pub(crate) use session_state::QueuedTask;
 pub(crate) use session_tab::{AttachmentPreview, PreviewContent, SessionEndStatus, SessionTab};
 
 // ── App ───────────────────────────────────────────────────────────
@@ -361,7 +362,11 @@ pub(crate) struct ConversationState {
     /// Refreshed on explicit workspace switch; reused on tab-switch workspace sync.
     pub(crate) session_list_cache: HashMap<PathBuf, Vec<SessionEntry>>,
     /// Queue of tab numbers whose ask-tool requests arrived while the viewing tab already had an unanswered ask.
-    pub(crate) pending_ask_queue: std::collections::VecDeque<usize>,
+    pub(crate) pending_ask_queue: VecDeque<usize>,
+    /// Task-tool requests waiting for a free sub-agent slot, oldest first.
+    pub(crate) task_queue: VecDeque<QueuedTask>,
+    /// Sub-agent spawns between dequeue and their tab going live; each holds a slot.
+    pub(crate) task_spawns_in_flight: usize,
     /// Current scroll state of the tab bar: offset, viewport width, content width.
     pub(crate) tab_bar_scroll: TabBarScrollState,
     /// Direction being held for tab-bar scroll auto-repeat, if any.
@@ -381,7 +386,9 @@ impl ConversationState {
             session_list: Vec::new(),
             session_list_loading: false,
             session_list_cache: HashMap::new(),
-            pending_ask_queue: std::collections::VecDeque::new(),
+            pending_ask_queue: VecDeque::new(),
+            task_queue: VecDeque::new(),
+            task_spawns_in_flight: 0,
             tab_bar_scroll: TabBarScrollState::default(),
             tab_bar_held_direction: None,
             tab_bar_hovered_direction: None,
@@ -410,6 +417,32 @@ impl ConversationState {
             .iter()
             .enumerate()
             .filter_map(|(i, t)| t.running().then_some(i))
+    }
+
+    /// Sub-agent slots in use: live task tabs plus spawns still being prepared.
+    pub(crate) fn task_slots_used(&self) -> usize {
+        self.task_spawns_in_flight
+            + self
+                .session_tabs
+                .iter()
+                .filter(|t| t.holds_task_slot())
+                .count()
+    }
+
+    /// Position of the tab that still blocks on the given `task` call.
+    pub(crate) fn waiting_task_pos(&self, number: usize, call_id: &str) -> Option<usize> {
+        self.tab_pos(number)
+            .filter(|&pos| self.session_tabs[pos].waiting_for_task_call(call_id))
+    }
+
+    /// Reserve a slot for a spawn whose async workspace scan is starting.
+    pub(crate) fn reserve_task_slot(&mut self) {
+        self.task_spawns_in_flight += 1;
+    }
+
+    /// Release a reserved slot once its spawn created a tab or was abandoned.
+    pub(crate) fn release_task_slot(&mut self) {
+        self.task_spawns_in_flight = self.task_spawns_in_flight.saturating_sub(1);
     }
 
     /// Position of a tab by its stable number.
@@ -449,6 +482,7 @@ impl ConversationState {
     /// Request all running tabs to stop streaming.
     pub(crate) fn stop(&mut self) {
         self.pending_ask_queue.clear();
+        self.task_queue.clear();
         for tab in &mut self.session_tabs {
             if tab.running() {
                 tab.session_state.stop();
@@ -1028,6 +1062,7 @@ impl App {
                     PaneSection::ContextWindow => &mut self.pane_sections.context_window,
                     PaneSection::TokenUsage => &mut self.pane_sections.token_usage,
                     PaneSection::Processes => &mut self.pane_sections.processes,
+                    PaneSection::TaskQueue => &mut self.pane_sections.task_queue,
                     PaneSection::AccessedFiles => &mut self.pane_sections.accessed_files,
                     PaneSection::ModifiedFiles => &mut self.pane_sections.modified_files,
                 };
@@ -1254,6 +1289,7 @@ impl App {
                     self.conversation.viewing(),
                     &self.pane_sections,
                     &self.running_processes,
+                    &self.conversation.task_queue,
                     theme::is_dark(),
                     &self.acp,
                     self.settings.language,

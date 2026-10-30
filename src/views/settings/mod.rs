@@ -171,6 +171,8 @@ pub(crate) struct SettingsState {
     pub(super) expanded_recipe_mode: Option<usize>,
     /// Working copy of max agent-loop iterations (raw text) — parsed on Save.
     pub(crate) working_max_iterations: String,
+    /// Working copy of the sub-agent concurrency limit (raw text) — parsed on Save.
+    pub(crate) working_task_max_concurrency: String,
     /// Working copy of the context-fill renew threshold, percent (raw text) — parsed on Save.
     pub(crate) working_fill_ratio_threshold: String,
     /// Working copy of the stream stall timeout (s, raw text) — parsed on Save.
@@ -268,6 +270,7 @@ impl Default for SettingsState {
             working_prompt_recipes: indexmap::IndexMap::new(),
             expanded_recipe_mode: None,
             working_max_iterations: String::new(),
+            working_task_max_concurrency: String::new(),
             working_fill_ratio_threshold: String::new(),
             working_stream_stall_timeout: String::new(),
             working_use_system_proxy_llm: true,
@@ -642,6 +645,7 @@ impl SettingsState {
     /// Load builtin-tool settings into the dialog's working copies (on dialog open).
     pub(crate) fn load_builtin_tools(&mut self, settings: &crabot::settings::Settings) {
         self.working_max_iterations = settings.max_iterations.to_string();
+        self.working_task_max_concurrency = settings.task_max_concurrency.to_string();
         self.working_fill_ratio_threshold = settings.fill_ratio_threshold.to_string();
         self.working_stream_stall_timeout = settings.stream_stall_timeout.to_string();
         self.working_use_system_proxy_llm = settings.use_system_proxy_for_llm;
@@ -654,6 +658,7 @@ impl SettingsState {
     /// Apply the parsed agent limits and task models to `settings`.
     pub(crate) fn apply_builtin_tools(&self, settings: &mut crabot::settings::Settings) {
         settings.max_iterations = self.parsed_max_iterations();
+        settings.task_max_concurrency = self.parsed_task_max_concurrency();
         settings.fill_ratio_threshold = self.parsed_fill_ratio_threshold();
         settings.stream_stall_timeout = self.parsed_stream_stall_timeout();
         settings.use_system_proxy_for_llm = self.working_use_system_proxy_llm;
@@ -665,6 +670,11 @@ impl SettingsState {
     /// Parsed max agent-loop iterations, falling back to the current default.
     pub(crate) fn parsed_max_iterations(&self) -> usize {
         builtin_tools::parse_num(&self.working_max_iterations, 100, None, false)
+    }
+
+    /// Parsed sub-agent concurrency limit, clamped to (0, 64].
+    pub(crate) fn parsed_task_max_concurrency(&self) -> usize {
+        builtin_tools::parse_num(&self.working_task_max_concurrency, 5, Some(64), false)
     }
 
     /// Parsed context-fill renew threshold (percent), clamped to (0, 100].

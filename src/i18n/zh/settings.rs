@@ -148,11 +148,16 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── Builtin Tools page (builtin_tools.rs) ──
     ("Agent", "智能体"),
     ("Max iterations", "最大迭代次数"),
+    ("Max concurrent sub-agents", "最大并发子智能体数"),
     ("Renew threshold (%)", "续写阈值 (%)"),
     ("Stream stall timeout (s)", "流式停滞超时 (s)"),
     (
         "Tool-calling rounds before the agent gives up.",
         "智能体放弃前的工具调用轮数。",
+    ),
+    (
+        "Sub-agents the task tool runs at once; extra spawns wait in the Task Queue.",
+        "任务工具同时运行的子智能体上限，超出的任务在任务队列中排队等待。",
     ),
     (
         "Context fill ratio that triggers a renew reminder.",

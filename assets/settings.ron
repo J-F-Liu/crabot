@@ -55,6 +55,7 @@
     },
     fill_ratio_threshold: 25.0,
     max_iterations: 100,
+    task_max_concurrency: 5,
     stream_stall_timeout: 120,
     tool_limits: (
         command_timeout_ms: 120000,

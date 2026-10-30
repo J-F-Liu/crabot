@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use iced::{
@@ -8,14 +9,15 @@ use iced::{
 use iced_selection::Text as SelectableText;
 
 use super::icons;
+use super::session_tabs::localize_tab_label;
 use super::styles::{
     link_button, pane_side, primary_button, primary_toggler, secondary_button, sel_primary,
     tooltip_style,
 };
-use super::theme::{CRABOT_DANGER, thin_horizontal, thin_vertical};
+use super::theme::{CRABOT_DANGER, color_muted, thin_horizontal, thin_vertical};
 use crate::RightPaneEvent;
 use crate::acp::AcpState;
-use crate::app::SessionTab;
+use crate::app::{QueuedTask, SessionTab};
 use crabot::i18n::Lang;
 use crabot::model::ModelConfig;
 use crabot::tools::{
@@ -34,6 +36,7 @@ pub(crate) enum PaneSection {
     ContextWindow,
     TokenUsage,
     Processes,
+    TaskQueue,
     AccessedFiles,
     ModifiedFiles,
 }
@@ -45,6 +48,7 @@ pub(crate) struct PaneSections {
     pub(crate) context_window: bool,
     pub(crate) token_usage: bool,
     pub(crate) processes: bool,
+    pub(crate) task_queue: bool,
     pub(crate) accessed_files: bool,
     pub(crate) modified_files: bool,
 }
@@ -55,6 +59,7 @@ impl Default for PaneSections {
             context_window: true,
             token_usage: true,
             processes: true,
+            task_queue: true,
             accessed_files: true,
             modified_files: true,
         }
@@ -174,8 +179,16 @@ fn todo_section(todo_items: &[TodoItem], lang: Lang) -> Option<Element<'static, 
     )
 }
 
-/// Running-processes rows: one per process tagged with its owning session,
-/// horizontally scrollable when wider than the pane.
+/// Row list that scrolls horizontally only when a row outgrows the pane.
+fn row_list<'a>(rows: Vec<Element<'a, RightPaneEvent>>) -> Element<'a, RightPaneEvent> {
+    scrollable(column(rows).spacing(3))
+        .direction(thin_horizontal())
+        .width(Length::Fill)
+        .spacing(2)
+        .into()
+}
+
+/// Running-processes rows: one per process tagged with its owning session.
 fn process_section(
     processes: &[process::RunningProcess],
     lang: Lang,
@@ -197,12 +210,36 @@ fn process_section(
             .into()
         })
         .collect();
-    // Shrink-width content: the viewport scrolls only when a row overflows.
-    scrollable(column(rows).spacing(3))
-        .direction(thin_horizontal())
-        .width(Length::Fill)
-        .spacing(2)
-        .into()
+    row_list(rows)
+}
+
+/// Queued sub-agent spawns, oldest first, tagged with their originating session.
+fn task_queue_section<'a>(
+    task_queue: &'a VecDeque<QueuedTask>,
+    lang: Lang,
+) -> Element<'a, RightPaneEvent> {
+    let rows: Vec<Element<'a, RightPaneEvent>> = task_queue
+        .iter()
+        .map(|queued| {
+            // Owner tag as in the process rows, with the task's mode when it has one.
+            let mut origin = localize_tab_label(&queued.parent_label, lang);
+            if let Some(mode) = queued.request.mode.as_deref() {
+                origin.push_str(" · ");
+                origin.push_str(mode);
+            }
+            container(
+                row![
+                    text(origin).size(14).color(color_muted()),
+                    text(queued.label()).size(14),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+            )
+            .padding([1, 0])
+            .into()
+        })
+        .collect();
+    row_list(rows)
 }
 
 /// The pane entry takes many narrow state slices; the signature is shared
@@ -214,6 +251,7 @@ pub(crate) fn right_pane<'a>(
     tab: &'a SessionTab,
     sections: &PaneSections,
     processes: &[process::RunningProcess],
+    task_queue: &'a VecDeque<QueuedTask>,
     dark_mode: bool,
     acp: &AcpState,
     lang: Lang,
@@ -344,6 +382,30 @@ pub(crate) fn right_pane<'a>(
         ));
         if expanded {
             items.push(process_section(processes, lang));
+        }
+    }
+
+    // ── queued sub-agent spawns ──
+    if !task_queue.is_empty() {
+        let expanded = sections.task_queue;
+        // Collapsed shows only the waiting count.
+        let header = if expanded {
+            Cow::Borrowed(lang.tr("Task Queue"))
+        } else {
+            Cow::from(
+                lang.tr("Task Queue: {}")
+                    .replace("{}", &task_queue.len().to_string()),
+            )
+        };
+        items.push(rule::horizontal(1).into());
+        items.push(collapsible_header(
+            header,
+            expanded,
+            PaneSection::TaskQueue,
+            lang,
+        ));
+        if expanded {
+            items.push(task_queue_section(task_queue, lang));
         }
     }
 

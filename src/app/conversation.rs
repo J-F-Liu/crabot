@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::app::session_state::{self, AskAction, SessionEvent, SpawnKind, SuccessorSpawn};
+use crate::app::session_state::{
+    self, AskAction, SessionEvent, SpawnKind, SuccessorSpawn, TASK_DROPPED, fail_task_spawn,
+};
 use crate::app::session_tab::SessionTab;
 use crate::app::snapshot;
 use crate::app::{
@@ -555,7 +557,8 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
     // JSON-RPC handler forever.
     crate::acp::end_session(&removed_session.id, false, Some("session closed".into()));
     app.conversation.session_tabs.remove(pos);
-    // Clean up the pending-ask queue — the tab is gone.
+    // Clean up the pending-ask queue — the tab is gone. Queued task requests
+    // need a waiting stream, and a streaming tab cannot be closed.
     app.conversation.pending_ask_queue.retain(|&n| n != number);
 
     if let Some(options) = replacement {
@@ -763,19 +766,27 @@ fn continue_renew_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
 
 /// Complete a task-tool spawn once its workspace scan and preamble read finish.
 fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
-    // Parent tab may have been closed while the scan was in flight.
-    let Some(parent_pos) = app.conversation.tab_pos(spawn.number) else {
-        return Task::none();
-    };
-    let options = successor_options(app, Some(parent_pos), &spawn);
+    // The scan is done: this spawn's reserved slot becomes the spawned tab.
+    app.conversation.release_task_slot();
     let SpawnKind::Task {
         call_id,
         title,
         preamble,
-    } = spawn.kind
+    } = &spawn.kind
     else {
         return Task::none();
     };
+    // The parent may have closed or stopped waiting while the scan ran.
+    let Some(parent_pos) = app.conversation.waiting_task_pos(spawn.number, call_id) else {
+        tracing::warn!(
+            parent_tab = spawn.number,
+            call_id = %call_id,
+            "task spawn dropped: parent closed or no longer waiting"
+        );
+        fail_task_spawn(app, spawn.number, call_id, TASK_DROPPED.into());
+        return session_state::process_task_queue(app);
+    };
+    let options = successor_options(app, Some(parent_pos), &spawn);
     let parent = &app.conversation.session_tabs[parent_pos];
     let parent_path = parent.task_path.clone();
     let parent_id = parent.session.id.clone();
@@ -788,13 +799,13 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
         let mut task_path = parent_path.unwrap_or_else(|| vec![spawn.number]);
         task_path.push(tab.number);
         tab.task_path = Some(task_path);
-        tab.task_call_id = Some(call_id);
+        tab.task_call_id = Some(call_id.clone());
         // The tab already carries `spawn.selected_model`; prefer its resolved label.
         if let Some(label) = tab_model_label {
             tab.pane.selected_model = label;
         }
         // Set the tool-provided title before the first save so the Meta line carries it.
-        if let Some(title) = title.filter(|t| !t.trim().is_empty()) {
+        if let Some(title) = title.clone().filter(|t| !t.trim().is_empty()) {
             tab.session.title = title;
         }
     }

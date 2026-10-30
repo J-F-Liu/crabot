@@ -23,7 +23,7 @@ use crabot::chat::{
     TextContent, ToolCall, ToolResult, Turn, TurnBody, attachment_marker_items, replace_emoji,
 };
 use crabot::lock;
-use crabot::session::{RENEW_HINT_PROMPT, Session};
+use crabot::session::{RENEW_HINT_PROMPT, Session, first_line_label};
 use crabot::user::{UserPrompt, WorkMode};
 use genai::chat::{ChatMessage, ChatRole};
 
@@ -33,6 +33,9 @@ const MIN_CW_FOR_RENEW_HINT: u32 = 1_000_000;
 pub(crate) const ASK_TIMEOUT_SECS: u64 = 120;
 /// Seconds added to the ask deadline each time the user clicks "Extend".
 pub(crate) const ASK_EXTEND_SECS: u64 = 300;
+/// Tool result for a task dropped because its parent stopped waiting.
+pub(super) const TASK_DROPPED: &str =
+    "Subtask was not started: the parent session no longer waits for it.";
 
 /// Streaming session state bundled together for the LLM interaction lifecycle.
 #[derive(Debug)]
@@ -218,6 +221,33 @@ pub(crate) enum AskAction {
 
 /// Task-tool spawn request — defined in the lib crate next to the tool.
 pub(crate) use crabot::tools::TaskRequest;
+
+/// A task-tool call parked until a sub-agent slot frees up.
+#[derive(Debug)]
+pub(crate) struct QueuedTask {
+    /// Originating (parent) tab number — its stream still waits for the report.
+    pub(crate) parent: usize,
+    /// Parent tab label ("Session 3", "Session 1-3") for the queue row.
+    pub(crate) parent_label: String,
+    /// The pending spawn request.
+    pub(crate) request: TaskRequest,
+}
+
+impl QueuedTask {
+    /// Longest label the queue row keeps before an ellipsis.
+    const LABEL_MAX_CHARS: usize = 40;
+
+    /// One-line label: the title, else the prompt's first non-empty line.
+    pub(crate) fn label(&self) -> String {
+        let title = self.request.title.as_deref().unwrap_or_default();
+        let text = if title.trim().is_empty() {
+            &self.request.prompt
+        } else {
+            title
+        };
+        first_line_label(text, Self::LABEL_MAX_CHARS)
+    }
+}
 
 /// Events emitted from the streaming runtime channel.
 #[derive(Debug, Clone)]
@@ -756,7 +786,7 @@ fn session_started_with_tree(tab: &SessionTab) -> bool {
 fn deliver_task_report(
     app: &mut App,
     parent_number: usize,
-    call_id: String,
+    call_id: &str,
     result: Result<String, String>,
 ) {
     let delivered = if let Some(pos) = app.conversation.tab_pos(parent_number)
@@ -765,7 +795,7 @@ fn deliver_task_report(
             .task_sender
             .as_ref()
     {
-        sender.send((call_id.clone(), result)).is_ok()
+        sender.send((call_id.to_string(), result)).is_ok()
     } else {
         false
     };
@@ -775,15 +805,9 @@ fn deliver_task_report(
     }
 }
 
-/// Deliver a failure report for a task spawn and stop.
-fn fail_task_spawn(
-    app: &mut App,
-    number: usize,
-    call_id: String,
-    message: String,
-) -> Task<Message> {
+/// Deliver a failure report for a task spawn.
+pub(super) fn fail_task_spawn(app: &mut App, number: usize, call_id: &str, message: String) {
     deliver_task_report(app, number, call_id, Err(message));
-    Task::none()
 }
 
 /// Which tool triggered this successor spawn — each carries its own payload.
@@ -869,11 +893,60 @@ fn handle_renew(app: &mut App, number: usize, prompt: String) -> Task<Message> {
     )
 }
 
-/// Handle a task-tool request: spawn a sub-agent session tab with a mode
-/// preamble and difficulty-selected model, delivering its final report to the
-/// parent on completion. The workspace scan runs off the UI thread; the spawn
-/// itself happens in [`super::conversation::continue_task_spawn`].
+/// Queue a task-tool request, then start whatever fits under the limit.
 fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Task<Message> {
+    let Some(pos) = app.conversation.tab_pos(number) else {
+        // Parent closed mid-request — no stream is left to collect the report.
+        tracing::warn!(
+            parent_tab = number,
+            call_id = %request.call_id,
+            "task request dropped: parent tab is gone"
+        );
+        return Task::none();
+    };
+    app.conversation.task_queue.push_back(QueuedTask {
+        parent: number,
+        parent_label: app.conversation.session_tabs[pos].tab_label(),
+        request,
+    });
+    process_task_queue(app)
+}
+
+/// Start queued sub-agent spawns while slots are free, oldest request first.
+pub(super) fn process_task_queue(app: &mut App) -> Task<Message> {
+    let limit = app.settings.task_max_concurrency.max(1);
+    let mut spawns = Vec::new();
+    while app.conversation.task_slots_used() < limit {
+        let Some(queued) = app.conversation.task_queue.pop_front() else {
+            break;
+        };
+        // An orphaned request has nowhere to go — fail its `task` call instead.
+        if app
+            .conversation
+            .waiting_task_pos(queued.parent, &queued.request.call_id)
+            .is_none()
+        {
+            tracing::warn!(
+                parent_tab = queued.parent,
+                call_id = %queued.request.call_id,
+                "queued task dropped: parent no longer waits for it"
+            );
+            fail_task_spawn(
+                app,
+                queued.parent,
+                &queued.request.call_id,
+                TASK_DROPPED.into(),
+            );
+            continue;
+        }
+        spawns.push(start_task_spawn(app, queued.parent, queued.request));
+    }
+    Task::batch(spawns)
+}
+
+/// Resolve and prepare one sub-agent spawn, reserving its slot until
+/// [`super::conversation::continue_task_spawn`] creates the tab.
+fn start_task_spawn(app: &mut App, number: usize, request: TaskRequest) -> Task<Message> {
     let Some(pos) = app.conversation.tab_pos(number) else {
         return Task::none();
     };
@@ -911,12 +984,13 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
         match parent_model {
             Some(cfg) => (parent_selected, cfg),
             None => {
-                return fail_task_spawn(
+                fail_task_spawn(
                     app,
                     number,
-                    call_id.clone(),
+                    &call_id,
                     "No model available for the subtask.".into(),
                 );
+                return Task::none();
             }
         }
     } else {
@@ -927,20 +1001,22 @@ fn handle_task_request(app: &mut App, number: usize, request: TaskRequest) -> Ta
     };
     // Stale config would silently no-op `start_dialog` and strand the parent.
     if app.models.get_model_info(&model).is_none() {
-        return fail_task_spawn(
+        fail_task_spawn(
             app,
             number,
-            call_id,
+            &call_id,
             format!(
                 "Subtask model is no longer resolvable: '{}' (provider '{}' / model '{}').",
                 selected_model, model.provider_id, model.model_id
             ),
         );
+        return Task::none();
     }
 
     // The sub-agent inherits the parent's workspace; the tree and mode
     // preamble are scanned off the UI thread.
     let ws = workspace.clone();
+    app.conversation.reserve_task_slot();
     Task::perform(
         async move {
             let tree = if need_tree {
@@ -1101,6 +1177,7 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
         SessionEvent::Error { message, .. } => Some(message.clone()),
         _ => None,
     };
+    let terminated = finished || is_cancelled || task_error.is_some();
     let sub_agent = app.conversation.session_tabs[pos].task_parent().is_some();
     let attention = attention_for(&event, sub_agent);
     // Remember whether this tab had an active ask so we can detect a clear.
@@ -1162,7 +1239,7 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
 
     // Task sub-agent that just terminated — deliver its final report to the parent.
     if let Some(parent) = app.conversation.session_tabs[pos].task_parent()
-        && (finished || is_cancelled || task_error.is_some())
+        && terminated
         && let Some(call_id) = app.conversation.session_tabs[pos].task_call_id.take()
     {
         let result = if let Some(err) = task_error {
@@ -1182,8 +1259,16 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
             ok = result.is_ok(),
             "sub-agent finished, delivering report to parent"
         );
-        deliver_task_report(app, parent, call_id, result);
+        deliver_task_report(app, parent, &call_id, result);
     }
+
+    // Free this run's slot: trim its own requests early, then start the next one.
+    let task_queue_task = if terminated {
+        app.conversation.task_queue.retain(|q| q.parent != number);
+        process_task_queue(app)
+    } else {
+        Task::none()
+    };
 
     // A pending ask or failed run outranks this event's one-shot flash.
     let needs_attention = app
@@ -1205,5 +1290,6 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
         .chain(update_task.discard())
         .chain(dispatch_task)
         .chain(queue_task)
+        .chain(task_queue_task)
         .chain(attention_task)
 }

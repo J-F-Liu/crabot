@@ -20,6 +20,8 @@ use crabot::tools::ToolLimits;
 pub(crate) enum BuiltinToolsEvent {
     /// Edit the max agent-loop iterations field (raw text).
     EditMaxIterations(String),
+    /// Edit the sub-agent concurrency limit field (raw text).
+    EditTaskMaxConcurrency(String),
     /// Edit the context-fill renew threshold field (raw text).
     EditFillRatioThreshold(String),
     /// Edit the stream stall timeout field (s, raw text; 0 disables).
@@ -311,6 +313,15 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
                 lang.tr("Tool-calling rounds before the agent gives up."),
             ),
             setting_row(
+                lang.tr("Max concurrent sub-agents"),
+                num_input("5", &state.working_task_max_concurrency, move |v| {
+                    SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditTaskMaxConcurrency(v))
+                },),
+                lang.tr(
+                    "Sub-agents the task tool runs at once; extra spawns wait in the Task Queue."
+                ),
+            ),
+            setting_row(
                 lang.tr("Renew threshold (%)"),
                 num_input("25", &state.working_fill_ratio_threshold, move |v| {
                     SettingsEvent::BuiltinTools(BuiltinToolsEvent::EditFillRatioThreshold(v))
@@ -535,6 +546,7 @@ fn tier_row<'a>(
 pub(super) fn update(state: &mut SettingsState, event: BuiltinToolsEvent) {
     match event {
         BuiltinToolsEvent::EditMaxIterations(v) => state.working_max_iterations = v,
+        BuiltinToolsEvent::EditTaskMaxConcurrency(v) => state.working_task_max_concurrency = v,
         BuiltinToolsEvent::EditFillRatioThreshold(v) => state.working_fill_ratio_threshold = v,
         BuiltinToolsEvent::EditStreamStallTimeout(v) => state.working_stream_stall_timeout = v,
         BuiltinToolsEvent::ToggleUseSystemProxyLlm(v) => state.working_use_system_proxy_llm = v,
@@ -587,6 +599,8 @@ pub(super) fn update(state: &mut SettingsState, event: BuiltinToolsEvent) {
             // Normalize fields to their parsed values, falling back to the defaults.
             let max_iters = state.parsed_max_iterations();
             state.working_max_iterations = max_iters.to_string();
+            let max_sub_agents = state.parsed_task_max_concurrency();
+            state.working_task_max_concurrency = max_sub_agents.to_string();
             let fill_ratio = state.parsed_fill_ratio_threshold();
             state.working_fill_ratio_threshold = fill_ratio.to_string();
             let stall = state.parsed_stream_stall_timeout();

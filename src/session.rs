@@ -145,6 +145,19 @@ pub fn fix_history(history: &mut [ChatMessage]) {
     }
 }
 
+/// First non-blank line of `text`, truncated to `max` chars with an ellipsis.
+pub fn first_line_label(text: &str, max: usize) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    match line.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", &line[..end]),
+        None => line.to_string(),
+    }
+}
+
 impl Session {
     /// Create a new session.
     pub fn new() -> Self {
@@ -337,6 +350,15 @@ impl Session {
         )
     }
 
+    /// Whether the last turn still has a pending call with the given id.
+    pub fn has_pending_call_id(&self, call_id: &str) -> bool {
+        matches!(
+            self.last_turn().map(|turn| &turn.body),
+            Some(TurnBody::Temp(calls))
+                if calls.iter().any(|call| call.call_id.as_deref() == Some(call_id))
+        )
+    }
+
     /// Mutable reference to the last turn across all dialogs.
     pub fn last_turn_mut(&mut self) -> Option<&mut Turn> {
         self.dialogs.last_mut().and_then(|d| d.turns.last_mut())
@@ -406,17 +428,7 @@ impl Session {
     /// Derive a short title from text content: the first non-blank line,
     /// truncated to 144 characters.
     pub fn derive_title(text: &str) -> String {
-        // Skip whitespace-only lines so the title reflects real content.
-        let first_line = text
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .unwrap_or("");
-        if let Some((idx, _)) = first_line.char_indices().nth(144) {
-            format!("{}…", &first_line[..idx])
-        } else {
-            first_line.to_string()
-        }
+        first_line_label(text, 144)
     }
 
     /// Whether the session has any dialogs.

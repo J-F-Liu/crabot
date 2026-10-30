@@ -144,6 +144,18 @@ impl SessionTab {
             && self.session.has_pending_call("task")
     }
 
+    /// Whether this tab occupies a sub-agent slot: a live task tab that is not
+    /// blocked on its own subtask (a blocked parent frees its slot).
+    pub(crate) fn holds_task_slot(&self) -> bool {
+        self.task_parent().is_some() && self.running() && !self.waiting_for_task()
+    }
+
+    /// Whether this tab is still blocked on the given `task` call.
+    pub(crate) fn waiting_for_task_call(&self, call_id: &str) -> bool {
+        self.session_state.phase == DialogPhase::ToolExecuting
+            && self.session.has_pending_call_id(call_id)
+    }
+
     /// Whether this tab wants the window's attention: an `ask` is waiting, or a
     /// top-level run failed. Sub-agent outcomes go to the parent tab.
     pub(crate) fn needs_attention(&self) -> bool {
