@@ -311,7 +311,7 @@ mod tests {
             name: "crate_source".to_string(),
             description: "Find the local source directory of a Rust crate in the cargo cache. Resolves crates.io packages, git dependencies, and path dependencies of the current workspace, falling back to a search of the whole cache. Returns the directory holding the crate's full source, for inspecting a crate's API or implementation, or debugging a dependency." .to_string(),
             instruction:
-                "Look up Rust crate version and source locations. Before inspecting a Rust dependency's source code, use crate_source to find its local path." .to_string(),
+                "Look up Rust crate version and source locations. Before inspecting a Rust dependency's source code, use crate_source to find its local path. Don't grep Rust source files across the whole .cargo/registry." .to_string(),
             parameters: vec![
                 ToolParameter {
                     name: "crate".to_string(),
