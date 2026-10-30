@@ -21,6 +21,12 @@ pub static TABLE: &[(&str, &str)] = &[
     ),
     ("Revert All", "全部还原"),
     ("Cancel", "取消"),
+    ("Stop Subtask", "停止子任务"),
+    ("Return \"{}\" to {}?", "是否返回“{}”结果给 {}？"),
+    (
+        "No: keep this session open and send a new prompt or resend; the result is returned to the parent when the session finishes. Closing this tab or opening another session in it reports cancellation to the parent immediately.",
+        "否：保持此会话打开，发送新提示词或重新发送；会话完成后会将结果返回给父级。关闭此标签页或在此标签页打开其他会话，会立即向父级返回取消结果。",
+    ),
     // ── update.rs ──
     ("Install New Version", "安装新版本"),
     ("Download Failed", "下载失败"),

@@ -491,6 +491,16 @@ impl ConversationState {
     }
 }
 
+/// Pending "return cancellation to parent?" decision for a stopped sub-agent.
+pub(crate) struct StopSubtaskConfirm {
+    /// Stopped child tab.
+    pub(crate) tab: usize,
+    /// Waiting parent tab.
+    pub(crate) parent: usize,
+    /// Parent label; the view localizes it.
+    pub(crate) parent_label: String,
+}
+
 /// Overlays: empty-workspace confirmation, restart button, update banner.
 pub(crate) struct OverlayState {
     pub(crate) show_workspace_dialog: bool,
@@ -499,6 +509,8 @@ pub(crate) struct OverlayState {
     pub(crate) show_revert_all_confirm: bool,
     /// Owning tab number captured when the dialog opened (Ctrl+1..9 still works under the modal).
     pub(crate) revert_all_tab: usize,
+    /// Pending sub-agent stop confirmation.
+    pub(crate) stop_subtask: Option<StopSubtaskConfirm>,
     pub(crate) update_available: Option<String>,
     pub(crate) download_state: crate::views::update::UpdateDownloadState,
 }
@@ -703,6 +715,8 @@ pub(crate) enum OverlayEvent {
     EmptyWorkspaceConfirm(Option<PathBuf>),
     /// User answered the Revert-All confirmation dialog.
     RevertAllConfirm(bool),
+    /// User answered the sub-agent stop confirmation.
+    StopSubtaskConfirm(bool),
 }
 
 // ── Pane-level event types ─────────────────────────────────────────
@@ -929,6 +943,7 @@ impl App {
                 default_workspace_path: setup::default_workspace_path(),
                 show_revert_all_confirm: false,
                 revert_all_tab: 0,
+                stop_subtask: None,
                 update_available,
                 download_state: crate::views::update::UpdateDownloadState::Idle,
             },
@@ -1266,6 +1281,13 @@ impl App {
             iced::widget::stack![
                 main,
                 crate::views::revert_all_modal(self.settings.language).map(Message::Overlay)
+            ]
+            .into()
+        } else if let Some(confirm) = &self.overlay.stop_subtask {
+            iced::widget::stack![
+                main,
+                crate::views::stop_subtask_modal(confirm, self.settings.language)
+                    .map(Message::Overlay)
             ]
             .into()
         } else {

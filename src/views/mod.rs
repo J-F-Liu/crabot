@@ -30,7 +30,7 @@ pub(crate) use center_pane::{
     scroll_page_down, scroll_page_up, scroll_to, scroll_to_end, scroll_to_start,
 };
 pub(crate) use left_pane::left_pane;
-pub(crate) use modal::{revert_all_modal, workspace_modal};
+pub(crate) use modal::{revert_all_modal, stop_subtask_modal, workspace_modal};
 pub(crate) use right_pane::{PaneSection, PaneSections, right_pane};
 pub(crate) use search_bar::SearchEvent;
 pub(crate) use settings::{

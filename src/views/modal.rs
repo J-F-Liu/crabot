@@ -6,8 +6,11 @@ use iced::{
 };
 
 use crate::OverlayEvent;
+use crate::app::StopSubtaskConfirm;
+use crate::app::session_state::USER_CANCELLED_TASK;
 use crabot::i18n::Lang;
 
+use super::session_tabs::localize_tab_label;
 use super::styles::{danger_button, primary_button, secondary_button};
 use super::theme::{CRABOT_DIALOG_RADIUS, CRABOT_MODAL_SCRIM, CRABOT_PRIMARY, color_dialog_bg};
 
@@ -78,16 +81,11 @@ pub fn workspace_modal(default_path: &Path, lang: Lang) -> Element<'_, OverlayEv
                 .replace("{}", &default_path.display().to_string()),
         )
         .size(14),
-        row![
-            button(text(lang.tr("Yes"))).style(primary_button).on_press(
-                OverlayEvent::EmptyWorkspaceConfirm(Some(default_path.to_path_buf()))
-            ),
-            button(text(lang.tr("No")))
-                .style(secondary_button)
-                .on_press(OverlayEvent::EmptyWorkspaceConfirm(None)),
-        ]
-        .spacing(20)
-        .padding(10),
+        yes_no_buttons(
+            OverlayEvent::EmptyWorkspaceConfirm(Some(default_path.to_path_buf())),
+            OverlayEvent::EmptyWorkspaceConfirm(None),
+            lang,
+        ),
     )
 }
 
@@ -111,4 +109,48 @@ pub fn revert_all_modal(lang: Lang) -> Element<'static, OverlayEvent> {
         .spacing(20)
         .padding(10),
     )
+}
+
+/// Ask whether a stopped sub-agent reports its cancellation to the parent.
+pub fn stop_subtask_modal(
+    confirm: &StopSubtaskConfirm,
+    lang: Lang,
+) -> Element<'static, OverlayEvent> {
+    let parent = localize_tab_label(&confirm.parent_label, lang);
+    let question = lang
+        .tr("Return \"{}\" to {}?")
+        .replacen("{}", USER_CANCELLED_TASK, 1)
+        .replacen("{}", &parent, 1);
+    let explanation = lang.tr(
+        "No: keep this session open and send a new prompt or resend; the result is returned to the parent when the session finishes. Closing this tab or opening another session in it reports cancellation to the parent immediately.",
+    );
+    modal(
+        OverlayEvent::StopSubtaskConfirm(false),
+        lang.tr("Stop Subtask"),
+        text(format!("{question}\n\n{explanation}")).size(14),
+        yes_no_buttons(
+            OverlayEvent::StopSubtaskConfirm(true),
+            OverlayEvent::StopSubtaskConfirm(false),
+            lang,
+        ),
+    )
+}
+
+/// Primary "Yes" / secondary "No" buttons for confirmation modals.
+fn yes_no_buttons(
+    yes: OverlayEvent,
+    no: OverlayEvent,
+    lang: Lang,
+) -> Element<'static, OverlayEvent> {
+    row![
+        button(text(lang.tr("Yes")))
+            .style(primary_button)
+            .on_press(yes),
+        button(text(lang.tr("No")))
+            .style(secondary_button)
+            .on_press(no),
+    ]
+    .spacing(20)
+    .padding(10)
+    .into()
 }

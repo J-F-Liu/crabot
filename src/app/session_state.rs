@@ -11,7 +11,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app::attention::{self, Attention};
 use crate::app::conversation::{dispatch_pending, switch_tab};
-use crate::app::{App, ConversationEvent, Message, SessionEndStatus, SessionTab};
+use crate::app::{
+    App, ConversationEvent, Message, SessionEndStatus, SessionTab, StopSubtaskConfirm,
+};
 use crate::llm::DialogPhase;
 use crate::model::{Cost, ModelConfig, TokenAmount};
 use crate::tools::TASK_MODES;
@@ -36,6 +38,8 @@ pub(crate) const ASK_EXTEND_SECS: u64 = 300;
 /// Tool result for a task dropped because its parent stopped waiting.
 pub(super) const TASK_DROPPED: &str =
     "Subtask was not started: the parent session no longer waits for it.";
+/// Result returned to a parent when the user stops its sub-agent.
+pub(crate) const USER_CANCELLED_TASK: &str = "User cancelled this task";
 
 /// Streaming session state bundled together for the LLM interaction lifecycle.
 #[derive(Debug)]
@@ -571,6 +575,7 @@ pub(crate) fn update(
             state.phase = phase;
         }
         SessionEvent::Stop => {
+            // Sub-agent confirmations are intercepted in `session_event`.
             state.stop();
         }
         // RenewRequest / TaskRequest are intercepted earlier in session_event.
@@ -808,6 +813,44 @@ fn deliver_task_report(
 /// Deliver a failure report for a task spawn.
 pub(super) fn fail_task_spawn(app: &mut App, number: usize, call_id: &str, message: String) {
     deliver_task_report(app, number, call_id, Err(message));
+}
+
+/// Stop confirmation data when a sub-agent's parent still waits; `None` otherwise.
+fn stop_confirmation(app: &App, number: usize) -> Option<StopSubtaskConfirm> {
+    let tab = app
+        .conversation
+        .session_tabs
+        .iter()
+        .find(|tab| tab.number == number && tab.running())?;
+    let parent = tab.task_parent()?;
+    let call_id = tab.task_call_id.as_deref()?;
+    let parent_pos = app.conversation.waiting_task_pos(parent, call_id)?;
+    Some(StopSubtaskConfirm {
+        tab: number,
+        parent,
+        parent_label: app.conversation.session_tabs[parent_pos].tab_label(),
+    })
+}
+
+/// Answer a pending sub-agent task call with a cancellation.
+pub(super) fn cancel_pending_task(app: &mut App, number: usize) {
+    app.overlay
+        .stop_subtask
+        .take_if(|confirm| confirm.tab == number || confirm.parent == number);
+    if let Some((parent, call_id)) = take_task_report(app, number) {
+        deliver_task_report(app, parent, &call_id, Err(USER_CANCELLED_TASK.into()));
+    }
+}
+
+/// Take a tab's pending `(parent, call_id)` task report.
+fn take_task_report(app: &mut App, number: usize) -> Option<(usize, String)> {
+    let tab = app
+        .conversation
+        .session_tabs
+        .iter_mut()
+        .find(|tab| tab.number == number)?;
+    let parent = tab.task_parent()?;
+    tab.task_call_id.take().map(|call_id| (parent, call_id))
 }
 
 /// Which tool triggered this successor spawn — each carries its own payload.
@@ -1141,6 +1184,26 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
         return Task::none();
     };
 
+    // A stopped sub-agent asks whether its parent gets a cancellation result.
+    if matches!(event, SessionEvent::Stop) {
+        // One confirmation at a time.
+        if app.overlay.stop_subtask.is_some() {
+            return Task::none();
+        }
+        if let Some(confirm) = stop_confirmation(app, number) {
+            tracing::info!(
+                subtask_tab = number,
+                parent_tab = confirm.parent,
+                "sub-agent stop requires parent report confirmation"
+            );
+            app.overlay.stop_subtask = Some(confirm);
+            let tab = &mut app.conversation.session_tabs[pos];
+            tab.suppress_cancel_report = true;
+            tab.session_state.stop();
+            return Task::none();
+        }
+    }
+
     let switch_task =
         if pos != app.conversation.viewing && matches!(event, SessionEvent::AskRequest(_)) {
             if app
@@ -1178,6 +1241,13 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
         _ => None,
     };
     let terminated = finished || is_cancelled || task_error.is_some();
+    // Terminal events clear the hold; only a cancelled run is withheld.
+    let cancel_report_held = terminated
+        && std::mem::take(&mut app.conversation.session_tabs[pos].suppress_cancel_report)
+        && is_cancelled;
+    if cancel_report_held {
+        tracing::info!(subtask_tab = number, "cancellation report withheld");
+    }
     let sub_agent = app.conversation.session_tabs[pos].task_parent().is_some();
     let attention = attention_for(&event, sub_agent);
     // Remember whether this tab had an active ask so we can detect a clear.
@@ -1238,14 +1308,14 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
     }
 
     // Task sub-agent that just terminated — deliver its final report to the parent.
-    if let Some(parent) = app.conversation.session_tabs[pos].task_parent()
-        && terminated
-        && let Some(call_id) = app.conversation.session_tabs[pos].task_call_id.take()
+    if terminated
+        && !cancel_report_held
+        && let Some((parent, call_id)) = take_task_report(app, number)
     {
         let result = if let Some(err) = task_error {
             Err(format!("Subtask failed: {err}"))
         } else if is_cancelled {
-            Err("Subtask was cancelled.".into())
+            Err(USER_CANCELLED_TASK.into())
         } else {
             Ok(
                 final_assistant_text(&app.conversation.session_tabs[pos].session).unwrap_or_else(
@@ -1260,6 +1330,13 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
             "sub-agent finished, delivering report to parent"
         );
         deliver_task_report(app, parent, &call_id, result);
+    }
+
+    // A terminal parent no longer waits; a finished child resolves the question.
+    if terminated {
+        app.overlay.stop_subtask.take_if(|confirm| {
+            confirm.parent == number || (confirm.tab == number && !is_cancelled)
+        });
     }
 
     // Free this run's slot: trim its own requests early, then start the next one.

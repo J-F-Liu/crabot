@@ -73,6 +73,8 @@ pub(crate) struct SessionTab {
     pub(crate) task_path: Option<Vec<usize>>,
     /// Task-tool call_id this tab was spawned for — tags the final report to the parent.
     pub(crate) task_call_id: Option<String>,
+    /// Hold this run's cancellation report for the stop confirmation.
+    pub(crate) suppress_cancel_report: bool,
     /// Raw file paths whose original content was snapshotted this run.
     pub(crate) snapshot_files: HashSet<String>,
     /// Transient error from the last Revert action.
@@ -106,6 +108,7 @@ impl SessionTab {
             end_status: None,
             task_path: None,
             task_call_id: None,
+            suppress_cancel_report: false,
             snapshot_files: HashSet::new(),
             modified_files_error: None,
         }

@@ -110,6 +110,13 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
                 return crate::app::snapshot::revert_all(app);
             }
         }
+        OverlayEvent::StopSubtaskConfirm(report_to_parent) => {
+            if let Some(confirm) = app.overlay.stop_subtask.take()
+                && report_to_parent
+            {
+                crate::app::session_state::cancel_pending_task(app, confirm.tab);
+            }
+        }
     }
     Task::none()
 }

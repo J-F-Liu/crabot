@@ -549,12 +549,12 @@ fn close_tab(app: &mut App, number: usize) -> Task<Message> {
     let was_viewing = pos == app.conversation.viewing;
     // The last tab is replaced by a fresh one inheriting the closed tab's options.
     let replacement = (app.conversation.session_tabs.len() == 1).then(|| app.new_tab_options());
+    // A child stopped with "No" still owes its parent a task result.
+    session_state::cancel_pending_task(app, number);
     let removed_session = &app.conversation.session_tabs[pos].session;
     tracing::debug!(tab = number, session = %removed_session.id, "session tab closed");
     snapshot::cleanup(&removed_session.workspace, &removed_session.id);
-    // Resolve any ACP prompt feed still registered for this session — a feed
-    // orphaned by a failed pending-prompt relaunch would otherwise hang its
-    // JSON-RPC handler forever.
+    // Resolve any ACP feed still registered for this session so its handler cannot hang.
     crate::acp::end_session(&removed_session.id, false, Some("session closed".into()));
     app.conversation.session_tabs.remove(pos);
     // Clean up the pending-ask queue — the tab is gone. Queued task requests
@@ -634,6 +634,8 @@ fn load_session(app: &mut App, entry: views::session_list::SessionEntry) -> Task
     }
     // An idle tab takes the session over, keeping its number.
     let number = app.conversation.viewing_tab_number();
+    // The replaced tab may owe its parent a task result.
+    session_state::cancel_pending_task(app, number);
     *app.conversation.viewing_mut() = SessionTab::from_session(number, session, options);
     views::scroll_to_start().discard()
 }
@@ -1216,6 +1218,7 @@ pub(crate) fn start_dialog(
     tab.session_state.phase = DialogPhase::LlmLoading;
     tab.end_status = None;
     tab.session_state.last_error = None;
+    tab.suppress_cancel_report = false;
     // Fresh token per stream: a stale cancel can't leak into the next run.
     tab.session_state.cancel_token = CancellationToken::new();
     let cancel_token = tab.session_state.cancel_token.clone();
