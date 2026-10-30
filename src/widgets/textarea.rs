@@ -158,12 +158,9 @@ impl TextArea {
         self.content.move_to(cursor);
     }
 
-    /// Clears all text content and resets the undo/redo history.
+    /// Empties the content but keeps it on the undo stack, so `undo` recalls it.
     pub fn clear(&mut self) {
-        self.content = text_editor::Content::new();
-        self.undo_stack.clear();
-        self.redo_stack.clear();
-        self.last_edit = None;
+        self.replace_text("");
     }
 
     /// Replaces all text content and resets the undo/redo history.

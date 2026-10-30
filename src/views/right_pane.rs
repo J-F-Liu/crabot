@@ -85,11 +85,6 @@ fn token_row<'a>(label: &'a str, value: String) -> Element<'a, RightPaneEvent> {
     with_trailing(text(label).size(16), text(value).size(16).font(MONO))
 }
 
-/// The reasoning-token share of the output (a subset of `output`, not of the prompt).
-fn reasoning_row(lang: Lang, tokens: i32) -> Element<'static, RightPaneEvent> {
-    token_row(lang.tr("Reasoning tokens:"), tokens.to_string())
-}
-
 fn section_header(title: Cow<'static, str>) -> Element<'static, RightPaneEvent> {
     text(title).size(14).font(BOLD).into()
 }
@@ -297,9 +292,6 @@ pub(crate) fn right_pane<'a>(
             lang.tr("Output tokens:"),
             session.tokens.output.to_string(),
         ));
-        if session.tokens.reasoning > 0 {
-            items.push(reasoning_row(lang, session.tokens.reasoning));
-        }
         items.push(token_row(
             lang.tr("Cache read:"),
             session.tokens.cache_read.to_string(),
