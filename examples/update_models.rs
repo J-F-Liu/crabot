@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 const MODELS_CN_URL: &str = "https://null-object-0000.github.io/models-cn/v1/api.json";
@@ -96,10 +96,24 @@ struct CnProvider {
 struct CnModel {
     id: String,
     name: String,
+    #[serde(deserialize_with = "null_default")]
     aliases: Vec<String>,
+    #[serde(deserialize_with = "null_default")]
     capabilities: CnCapabilities,
+    #[serde(deserialize_with = "null_default")]
     limits: CnLimits,
+    #[serde(deserialize_with = "null_default")]
     prices: Vec<CnPrice>,
+}
+
+/// models-cn marks undocumented blocks with an explicit `null`, which
+/// `#[serde(default)]` does not cover.
+fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Default, Deserialize)]
