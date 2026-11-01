@@ -1,6 +1,6 @@
 [package]
 name = "crabot"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "A smart and powerful coding agent with native GUI."
 license = "MIT"
@@ -103,12 +103,11 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"
 linkify = "0.11.0"
-bashkit = { version = "=0.20.1", default-features = false, features = [
+bashkit = { version = "=0.20.2", default-features = false, features = [
     "http_client",
     "realfs",
     # Embedded Python is real CPython 3.14 in Wasm (since 0.19), replacing
-    # Monty (`python`), a subset. The feature pins bashkit-cpython-wasm
-    # =0.20.1 and wasmtime =48.0.7; bashkit also offers `terminal`, unused.
+    # Monty (`python`), a subset.
     "cpython",
     # 0.17: crypto backend is explicit now (ring = default, aws-lc-rs = FIPS).
     "ring",
