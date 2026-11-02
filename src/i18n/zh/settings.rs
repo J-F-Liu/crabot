@@ -204,7 +204,6 @@ pub static TABLE: &[(&str, &str)] = &[
         "任务工具按难度层级为子智能体指定模型；勾选“继承”则使用父会话的模型。",
     ),
     ("Easy", "简单"),
-    ("Medium", "中等"),
     ("Hard", "困难"),
     ("Inherit parent model", "继承父会话模型"),
     ("Inherit", "继承"),

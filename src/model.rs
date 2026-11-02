@@ -161,32 +161,63 @@ impl ModelConfig {
     }
 }
 
-/// Model configurations used by the `task` tool to pick a sub-agent model per
-/// difficulty tier. An empty config means "inherit the parent session's model".
+/// Difficulty tiers for the `task` tool, each mapped to a [`TaskModels`] entry.
+#[derive(Debug, Clone, Copy)]
+pub enum TaskTier {
+    Easy,
+    Hard,
+}
+
+impl TaskTier {
+    /// All tiers, in display order.
+    pub const ALL: [TaskTier; 2] = [TaskTier::Easy, TaskTier::Hard];
+
+    /// Lowercase name, also the tool-schema value.
+    pub fn name(self) -> &'static str {
+        match self {
+            TaskTier::Easy => "easy",
+            TaskTier::Hard => "hard",
+        }
+    }
+
+    /// Display label, also its translation key.
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskTier::Easy => "Easy",
+            TaskTier::Hard => "Hard",
+        }
+    }
+
+    /// Parse a schema value (case-insensitive); unknown names yield `None`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|tier| tier.name().eq_ignore_ascii_case(name))
+    }
+}
+
+/// Sub-agent models for the `task` tool, one per tier; an empty config inherits
+/// the parent session's model.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskModels {
     pub easy: ModelConfig,
-    pub medium: ModelConfig,
     pub hard: ModelConfig,
 }
 
 impl TaskModels {
-    /// The configured model for a difficulty tier; unknown tiers fall back to
-    /// `medium`. An empty config means "inherit the parent session's model".
-    pub fn get_config(&self, tier: &str) -> &ModelConfig {
+    /// The configured model for a tier.
+    pub fn get_config(&self, tier: TaskTier) -> &ModelConfig {
         match tier {
-            "easy" => &self.easy,
-            "hard" => &self.hard,
-            _ => &self.medium,
+            TaskTier::Easy => &self.easy,
+            TaskTier::Hard => &self.hard,
         }
     }
 
     /// Set the model config for a difficulty tier.
-    pub fn set_config(&mut self, tier: &str, config: ModelConfig) {
+    pub fn set_config(&mut self, tier: TaskTier, config: ModelConfig) {
         match tier {
-            "easy" => self.easy = config,
-            "hard" => self.hard = config,
-            _ => self.medium = config,
+            TaskTier::Easy => self.easy = config,
+            TaskTier::Hard => self.hard = config,
         }
     }
 }

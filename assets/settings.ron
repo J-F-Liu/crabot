@@ -82,13 +82,6 @@
             thinking_level: "high",
             context_window: 1000000,
         ),
-        medium: (
-            provider_id: "deepseek",
-            model_id: "deepseek-v4-pro",
-            thinking: true,
-            thinking_level: "high",
-            context_window: 1000000,
-        ),
         hard: (
             provider_id: "",
             model_id: "",

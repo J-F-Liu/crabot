@@ -3,6 +3,7 @@ use tokio_util::sync::CancellationToken;
 
 use serde_json::{Value, json};
 
+use crate::model::TaskTier;
 use crate::tools::Tool;
 
 /// Request emitted by the builtin task tool to spawn a sub-agent session.
@@ -17,28 +18,18 @@ pub struct TaskRequest {
     /// Execution mode — selects the sub-agent's preamble (`{mode}.md`).
     pub mode: Option<String>,
     /// Difficulty tier — selects the sub-agent's configured model.
-    pub difficulty: Option<String>,
+    pub difficulty: Option<TaskTier>,
 }
 
 /// Parse a task-tool call into its spawn request payload.
 pub fn task_request_from_call(call_id: &str, fn_arguments: &Value) -> TaskRequest {
-    let prompt = fn_arguments
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let arg = |key: &str| {
-        fn_arguments
-            .get(key)
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-    };
+    let arg = |key: &str| fn_arguments.get(key).and_then(Value::as_str);
     TaskRequest {
         call_id: call_id.to_string(),
-        title: arg("title"),
-        prompt,
-        mode: arg("mode"),
-        difficulty: arg("difficulty"),
+        title: arg("title").map(str::to_owned),
+        prompt: arg("prompt").unwrap_or_default().to_owned(),
+        mode: arg("mode").map(str::to_owned),
+        difficulty: arg("difficulty").and_then(TaskTier::from_name),
     }
 }
 
@@ -59,7 +50,7 @@ impl Tool for TaskTool {
     }
 
     fn instruction(&self) -> &str {
-        "Use the task tool to delegate self-contained subtasks to a sub-agent instead of doing everything yourself. The prompt must be complete and self-contained — the sub-agent does not see this conversation. The mode selects a behavior preamble for the sub-agent, the difficulty selects the configured subtask model. The call blocks until the sub-agent finishes and returns its final report as the tool result. Sub-agents can spawn further nested subtasks — each call blocks until that nested sub-agent finishes and returns its report."
+        "Use the task tool to delegate self-contained subtasks to a sub-agent instead of doing everything yourself. The prompt must be complete and self-contained — the sub-agent does not see this conversation. The mode selects a behavior preamble for the sub-agent, the difficulty (easy or hard) selects the configured subtask model. The call blocks until the sub-agent finishes and returns its final report as the tool result. Sub-agents can spawn further nested subtasks — each call blocks until that nested sub-agent finishes and returns its report."
     }
 
     fn schema(&self) -> Value {
@@ -81,8 +72,8 @@ impl Tool for TaskTool {
                 },
                 "difficulty": {
                     "type": "string",
-                    "enum": ["easy", "medium", "hard"],
-                    "description": "Estimated task difficulty used for resource and model selection."
+                    "enum": TaskTier::ALL.map(TaskTier::name),
+                    "description": "Task difficulty: easy for quick, well-scoped subtasks; hard for complex ones."
                 }
             },
             "required": ["prompt"]

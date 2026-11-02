@@ -10,7 +10,7 @@ use crate::views::model_config::ProviderEntry;
 use crate::views::styles::styled_pick_list;
 use crate::views::theme::color_muted;
 use crabot::i18n::Lang;
-use crabot::model::{Model, ModelConfig};
+use crabot::model::{Model, ModelConfig, TaskTier};
 use crabot::tools::ToolLimits;
 
 // ── Events ──────────────────────────────────────────────────────────
@@ -33,11 +33,11 @@ pub(crate) enum BuiltinToolsEvent {
     /// Edit one built-in tool limit field (raw text).
     EditToolLimit(ToolLimitField, String),
     /// Pick a provider for a task sub-agent difficulty tier.
-    TaskModelSelectProvider(&'static str, String),
+    TaskModelSelectProvider(TaskTier, String),
     /// Pick a model for a task sub-agent difficulty tier.
-    TaskModelSelectModel(&'static str, String),
+    TaskModelSelectModel(TaskTier, String),
     /// Toggle "inherit the parent session's model" for a tier.
-    TaskModelInherit(&'static str, bool),
+    TaskModelInherit(TaskTier, bool),
     /// Persist agent limits, tool limits, and task models.
     SaveBuiltinTools,
 }
@@ -246,8 +246,6 @@ where
 
 // ── Page ───────────────────────────────────────────────────────────
 
-const TIERS: [(&str, &str); 3] = [("easy", "Easy"), ("medium", "Medium"), ("hard", "Hard")];
-
 pub(super) fn builtin_tools_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let lang = state.language;
     let header = section_header(lang.tr("Builtin Tools"));
@@ -449,9 +447,9 @@ fn task_models_card<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> 
         })
         .collect();
 
-    let rows: Vec<Element<'a, SettingsEvent>> = TIERS
-        .iter()
-        .map(|&(tier, label)| tier_row(state, tier, label, providers.clone()))
+    let rows: Vec<Element<'a, SettingsEvent>> = TaskTier::ALL
+        .into_iter()
+        .map(|tier| tier_row(state, tier, providers.clone()))
         .collect();
 
     container(
@@ -474,8 +472,7 @@ fn task_models_card<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> 
 
 fn tier_row<'a>(
     state: &'a SettingsState,
-    tier: &'static str,
-    label: &'static str,
+    tier: TaskTier,
     providers: Vec<ProviderEntry>,
 ) -> Element<'a, SettingsEvent> {
     let cfg = state.working_task_models.get_config(tier);
@@ -531,7 +528,7 @@ fn tier_row<'a>(
     };
 
     row![
-        text(lang.tr(label)).size(13).width(60.0),
+        text(lang.tr(tier.label())).size(13).width(60.0),
         toggle,
         container(pickers).width(Length::Fill),
     ]

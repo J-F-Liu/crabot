@@ -15,7 +15,7 @@ use crate::app::{
     App, ConversationEvent, Message, SessionEndStatus, SessionTab, StopSubtaskConfirm,
 };
 use crate::llm::DialogPhase;
-use crate::model::{Cost, ModelConfig, TokenAmount};
+use crate::model::{Cost, ModelConfig, TaskTier, TokenAmount};
 use crate::tools::TASK_MODES;
 use crate::views::ASK_INPUT;
 use crate::views::scroll_to_end;
@@ -1000,11 +1000,13 @@ fn start_task_spawn(app: &mut App, number: usize, request: TaskRequest) -> Task<
         mode,
         difficulty,
     } = request;
+    // A missing or unknown tier (including legacy `medium`) falls back to `hard`.
+    let tier = difficulty.unwrap_or(TaskTier::Hard);
     tracing::info!(
         parent_tab = number,
         call_id = %call_id,
         mode = mode.as_deref().unwrap_or("default"),
-        difficulty = difficulty.as_deref().unwrap_or("medium"),
+        difficulty = tier.name(),
         "task tool: spawning sub-agent"
     );
     // Resolve the parent tab's context (cheap — no filesystem access).
@@ -1020,8 +1022,7 @@ fn start_task_spawn(app: &mut App, number: usize, request: TaskRequest) -> Task<
     };
 
     // Difficulty → configured subtask model (fallback: the parent's model).
-    let difficulty = difficulty.as_deref().unwrap_or("medium");
-    let configured = app.settings.task_models.get_config(difficulty);
+    let configured = app.settings.task_models.get_config(tier);
     let (selected_model, model) = if configured.is_empty() {
         // Empty config means "inherit the parent session's model".
         match parent_model {
