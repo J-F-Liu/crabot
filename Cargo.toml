@@ -9,6 +9,10 @@ repository = "https://github.com/J-F-Liu/crabot"
 [profile.release]
 opt-level = 3
 
+[features]
+# CPython 3.14 in Wasm for `python`/`python3` when the host has none: +45 MB.
+python = ["bashkit/cpython"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -106,9 +110,6 @@ linkify = "0.11.0"
 bashkit = { version = "=0.20.2", default-features = false, features = [
     "http_client",
     "realfs",
-    # Embedded Python is real CPython 3.14 in Wasm (since 0.19), replacing
-    # Monty (`python`), a subset.
-    "cpython",
     # 0.17: crypto backend is explicit now (ring = default, aws-lc-rs = FIPS).
     "ring",
     # 0.17: named-TZ support moved behind this feature; off ⇒ `date` errors on host TZ.

@@ -256,12 +256,19 @@ fn bashkit_if_control_flow() {
     assert!(result.contains("ok"), "unexpected: {result}");
 }
 
-// ── embedded python (host python, or the embedded CPython sandbox) ─
+// ── python (host interpreter, or the embedded sandbox) ───────
 
-/// `python` resolves to the host interpreter when one exists, else to the
-/// embedded CPython 3.14 sandbox (`tests/python.rs` hides the host).
+/// Host Python, or the embedded sandbox when the `python` feature is on.
+fn python_available() -> bool {
+    host_command_exists("python") || cfg!(feature = "python")
+}
+
+/// `python` runs the host interpreter, or the embedded sandbox.
 #[test]
 fn bashkit_python_builtin() {
+    if !python_available() {
+        return;
+    }
     let result = run_bash("python -c 'print(1 + 2)'", &crabot_workspace(), None).unwrap();
     assert!(result.contains("3"), "unexpected: {result}");
 }
@@ -276,17 +283,23 @@ fn bashkit_python3_version() {
         host_command_exists("python3"),
     ) {
         (_, true) => assert!(result.contains("Python "), "unexpected: {result}"),
-        // Embedded: real CPython, never Monty's banner.
-        (false, false) => assert!(result.contains("Python "), "unexpected: {result}"),
+        // No host interpreter: the embedded sandbox answers when compiled in.
+        (false, false) => assert_eq!(
+            result.contains("Python "),
+            cfg!(feature = "python"),
+            "unexpected: {result}"
+        ),
         (true, false) => assert!(!result.contains("Python "), "unexpected: {result}"),
     }
-    assert!(!result.contains("monty"), "unexpected: {result}");
 }
 
 /// Python file I/O reaches the workspace in both modes (host cwd vs the
 /// sandbox's VFS-bridged `open()`); `rb` keeps the assertion locale-independent.
 #[test]
 fn bashkit_python_vfs_open() {
+    if !python_available() {
+        return;
+    }
     let result = run_bash(
         "python -c \"print(open('README.md', 'rb').readline().strip())\"",
         &crabot_workspace(),
@@ -300,6 +313,9 @@ fn bashkit_python_vfs_open() {
 /// the host interpreter, the interpreter callback for the embedded sandbox.
 #[test]
 fn bashkit_python_streaming() {
+    if !python_available() {
+        return;
+    }
     let (result, chunks) = stream_and_collect(
         "python -c 'for i in range(3): print(i)'",
         &crabot_workspace(),

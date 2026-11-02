@@ -62,10 +62,12 @@ use crate::lock;
 /// Per-stream output cap (head-only backstop; crabot's own truncation is the visible limit).
 const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
 
-/// Names registered for embedded Python.
+/// Commands the embedded interpreter answers.
+#[cfg(feature = "python")]
 const PYTHON_NAMES: [&str; 2] = ["python", "python3"];
 
-/// Whether a working `python`/`python3` is on PATH (probed via `--version`)
+/// Whether the host has a working `python`/`python3`.
+#[cfg(feature = "python")]
 fn host_python_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
@@ -84,14 +86,22 @@ fn host_python_available() -> bool {
 pub(crate) fn builtin_names() -> &'static HashSet<String> {
     static NAMES: OnceLock<HashSet<String>> = OnceLock::new();
     NAMES.get_or_init(|| {
-        let mut names: HashSet<String> = Bash::new().builtin_names().into_iter().collect();
-        // `Bash::new()` skips builder-registered builtins; `build_bash`
-        // registers them via `.cpython()` — only when the host has none.
-        if !host_python_available() {
-            names.extend(PYTHON_NAMES.map(String::from));
-        }
-        names
+        // `Bash::new()` skips builder-registered builtins.
+        Bash::new()
+            .builtin_names()
+            .into_iter()
+            .chain(embedded_python())
+            .collect()
     })
+}
+
+/// Names the embedded interpreter answers when the host has no Python.
+fn embedded_python() -> Vec<String> {
+    #[cfg(feature = "python")]
+    if !host_python_available() {
+        return PYTHON_NAMES.map(String::from).to_vec();
+    }
+    Vec::new()
 }
 
 /// Names whose in-process stand-in cannot serve a real workspace, so the host
@@ -919,9 +929,9 @@ fn build_bash(
         builder = builder.env("MSYSTEM", msystem);
     }
 
-    // Embedded Python: real CPython 3.14 in a Wasm sandbox, registered only
-    // when the host has none; each call is a fresh instance over the VFS,
-    // capped at `CPythonLimits` and inheriting the script's own deadline.
+    // Real CPython 3.14 in a Wasm sandbox, only where the host has none: a fresh
+    // instance per call, capped by `CPythonLimits` and the script deadline.
+    #[cfg(feature = "python")]
     if !host_python_available() {
         builder =
             builder.cpython_with_limits(bashkit::CPythonLimits::default().max_duration(timeout));

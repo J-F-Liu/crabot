@@ -137,3 +137,10 @@ cargo install crabot --locked
 ```sh
 cargo install --git https://github.com/J-F-Liu/crabot
 ```
+
+`python`/`python3` use the host interpreter. To bundle CPython 3.14 (Wasm,
+~45 MB larger binary) for hosts without one:
+
+```sh
+cargo install --git https://github.com/J-F-Liu/crabot --features python
+```
