@@ -26,7 +26,7 @@ pub(crate) use styles::{
 
 // Re-export the pane constructors and helpers used by `App::view` / `App::update`.
 pub(crate) use center_pane::{
-    ASK_INPUT, SCROLL_STEP, SEARCH_INPUT, center_pane, measure_turn_offsets, scroll_by,
+    ASK_INPUT, SCROLL_STEP, SEARCH_INPUT, center_pane, measure_turn_offsets, pin_scroll, scroll_by,
     scroll_page_down, scroll_page_up, scroll_to, scroll_to_end, scroll_to_start,
 };
 pub(crate) use left_pane::left_pane;

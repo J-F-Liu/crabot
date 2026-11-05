@@ -213,16 +213,31 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             }
         }
         ConversationEvent::ToggleDialogExpand(index) => {
+            let tab = app.conversation.viewing();
+            if !tab.expanded_dialogs.contains(&index) {
+                // Pause following so stream chunks don't re-snap to the end while the dialog is open.
+                tab.session_state.pause_auto_scroll();
+            }
+            let tab_number = tab.number;
+            app.layout.focused = None;
+            // Pin the current offset before the layout changes, then toggle.
+            return views::pin_scroll()
+                .then(move |()| Task::done(ConversationEvent::ApplyDialogExpand(tab_number, index)))
+                .map(Message::Conversation);
+        }
+        ConversationEvent::ApplyDialogExpand(tab_number, index) => {
+            if app.conversation.viewing_tab_number() != tab_number {
+                return Task::none();
+            }
             let tab = app.conversation.viewing_mut();
-            let expanded = tab.expanded_dialogs.contains(&index);
-            tab.expanded_dialogs.set(index, !expanded);
-            if expanded {
+            let collapsing = tab.expanded_dialogs.contains(&index);
+            tab.expanded_dialogs.set(index, !collapsing);
+            if collapsing {
                 // Collapsing a dialog also collapses its tool turns, so
                 // re-expanding shows compact headers instead of full results.
                 collapse_tool_turns(tab, Some(index));
             }
             tab.search.invalidate_offsets();
-            app.layout.focused = None;
         }
         ConversationEvent::ToggleAllDialogsExpand => {
             let tab = app.conversation.viewing_mut();

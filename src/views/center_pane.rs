@@ -153,6 +153,44 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
     })
 }
 
+/// Pin the message viewport to its current visual offset as an absolute one.
+///
+/// Unlike the stock scrollable operations, this reports completion, so callers
+/// can sequence a layout change after the pin with [`Task::then`].
+pub(crate) fn pin_scroll() -> Task<()> {
+    struct PinScroll;
+
+    impl Operation<()> for PinScroll {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<()>)) {
+            operate(self);
+        }
+
+        fn scrollable(
+            &mut self,
+            id: Option<&widget::Id>,
+            _bounds: Rectangle,
+            _content_bounds: Rectangle,
+            translation: Vector,
+            state: &mut dyn Scrollable,
+        ) {
+            if id == Some(&MESSAGE_SCROLL) {
+                // `translation` is the current visual offset; store it as absolute.
+                state.scroll_to(scrollable::AbsoluteOffset {
+                    x: None,
+                    y: Some(translation.y),
+                });
+            }
+        }
+
+        fn finish(&self) -> Outcome<()> {
+            // Completion drives the caller's chain; a stock op would never yield.
+            Outcome::Some(())
+        }
+    }
+
+    task_widget(PinScroll)
+}
+
 /// Scroll the message view to an absolute y-offset; `None` scrolls to top.
 pub(crate) fn scroll_to(y: Option<f32>) -> Task<()> {
     match y {

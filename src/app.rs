@@ -645,7 +645,10 @@ pub(crate) enum ConversationEvent {
     ToggleAttachmentPreview(String, AttachmentKind),
     /// A decoded preview for (tab number, attachment path, request id).
     AttachmentPreviewLoaded(usize, String, u64, Result<PreviewContent, String>),
+    /// Pin the message viewport, then expand or collapse one dialog.
     ToggleDialogExpand(usize),
+    /// (tab number, dialog index) — the viewport is pinned; apply the toggle.
+    ApplyDialogExpand(usize, usize),
     ToggleAllDialogsExpand,
     SessionPickerFocused,
     NavigateSession(bool),
