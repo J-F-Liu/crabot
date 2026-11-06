@@ -618,7 +618,7 @@ fn save_capture(
         .unwrap_or_else(|| ImageBudget::from_limits(&tool_limits()));
     let prepared = prepare_for_request(&path, &display, &budget)?;
     let attachment = ImageAttachment::from_prepared(display, prepared);
-    let text = format!("[Screenshot] {}\nCaptured {target}.", attachment.summary());
+    let text = format!("{}\nCaptured {target}.", attachment.result_text());
     Ok((text, vec![attachment]))
 }
 

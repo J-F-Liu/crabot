@@ -43,6 +43,7 @@ pub(crate) use decoder::{ChunkDecoder, PlainTextDecoder, decode_bytes, decode_pl
 pub(crate) use tool::CAPTURE_GRACE;
 pub use tool::{
     CANCEL_REASON, COALESCE_BYTES, COALESCE_MS, ImageAttachment, OutputSink, Tool, ToolRef,
+    image_result_path,
 };
 
 // ── schema ──────────────────────────────────────────────────────────

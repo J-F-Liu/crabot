@@ -74,10 +74,7 @@ impl Tool for ReadTool {
 /// Probe the file once and produce both the result text and any attachment.
 fn run(args: &Value, workspace: &Path) -> (Result<String, String>, Vec<ImageAttachment>) {
     match read_image(args, workspace) {
-        Some(ReadImage::Attached(image)) => {
-            let text = format!("[Image] {}", image.summary());
-            (Ok(text), vec![image])
-        }
+        Some(ReadImage::Attached(image)) => (Ok(image.result_text()), vec![image]),
         // A refusal or a file that will not decode is never worth describing
         // as if the model had seen the picture.
         Some(ReadImage::Refused(reason)) | Some(ReadImage::Undecodable(reason)) => {

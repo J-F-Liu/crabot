@@ -34,6 +34,9 @@ pub type ToolRef = Arc<dyn Tool>;
 /// Sink for incremental tool output (e.g. bash stdout/stderr chunks).
 pub type OutputSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Prefix of an image tool result, e.g. `[Image] shot.png (image/png, 3.5 KB, 1920x1080)`.
+const IMAGE_RESULT_PREFIX: &str = "[Image] ";
+
 /// A local image a tool wants delivered to the model with its text result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageAttachment {
@@ -70,8 +73,8 @@ impl ImageAttachment {
         }
     }
 
-    /// Human-readable summary of the attachment for a tool result.
-    pub fn summary(&self) -> String {
+    /// Tool result naming the attached picture and its facts.
+    pub fn result_text(&self) -> String {
         let scaled = match (self.source_width, self.source_height) {
             (Some(width), Some(height)) => format!(
                 " (downscaled from {width}x{height} px; {})",
@@ -80,15 +83,28 @@ impl ImageAttachment {
             _ => String::new(),
         };
         format!(
-            "{} ({}, {}, {}x{}{})",
+            "{IMAGE_RESULT_PREFIX}{} ({}, {}, {}x{}{scaled})",
             self.path,
             self.media_type,
             human_bytes(self.bytes),
             self.width,
-            self.height,
-            scaled
+            self.height
         )
     }
+}
+
+/// Picture path named by an image tool result; `None` for any other result.
+pub fn image_result_path(result: &str) -> Option<&str> {
+    let header = result.lines().next()?;
+    // `[Screenshot]` tags results recorded before the unified `[Image]` marker.
+    let header = header
+        .strip_prefix(IMAGE_RESULT_PREFIX)
+        .or_else(|| header.strip_prefix("[Screenshot] "))?;
+    // The facts come last, so a path containing ` (image/` still parses.
+    let path = header
+        .rsplit_once(" (image/")
+        .map_or(header, |(path, _)| path);
+    (!path.is_empty()).then_some(path)
 }
 
 /// Coordinate advice mapping the attached image back onto the original file;

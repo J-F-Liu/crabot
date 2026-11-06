@@ -19,7 +19,6 @@ use iced::{
     },
 };
 use iced_runtime::task::widget as task_widget;
-use serde_json::Value;
 
 use crate::app::session_state::SessionEvent;
 use crate::app::{AttachmentPreview, ConversationState, PreviewContent, SessionTab};
@@ -517,10 +516,10 @@ fn tool_turn_block<'a>(
             ));
         }
 
-        // Successful image reads can be previewed inline.
-        if let Some(path) = read_image_path(name, args, result) {
+        // Any tool that attached a picture can preview it inline.
+        if let Some(path) = attached_image_path(result) {
             let preview = ctx.attachment_previews.get(path);
-            elements.push(read_image_toggle(path, preview.is_some(), ctx));
+            elements.push(image_toggle(path, preview.is_some(), ctx));
             if let Some(preview) = preview {
                 elements.push(attachment_preview_body(preview, ctx));
             }
@@ -530,17 +529,9 @@ fn tool_turn_block<'a>(
     wrap_bubble(column(elements).spacing(8).width(Fill), tool_bubble_style)
 }
 
-/// Path argument of a successful `read` image result.
-fn read_image_path<'a>(
-    name: &str,
-    args: &'a Value,
-    result: Option<&Result<String, String>>,
-) -> Option<&'a str> {
-    let text = result?.as_ref().ok()?;
-    if name != "read" || !text.starts_with("[Image] ") {
-        return None;
-    }
-    crabot::tools::arg_path(args)
+/// Picture path a successful tool result attached, if any.
+fn attached_image_path(result: Option<&Result<String, String>>) -> Option<&str> {
+    crabot::tools::image_result_path(result?.as_ref().ok()?)
 }
 
 /// Clickable row that toggles an inline preview.
@@ -567,8 +558,8 @@ fn preview_toggle<'a>(
     .into()
 }
 
-/// Clickable row that expands the picture a `read` call returned.
-fn read_image_toggle<'a>(
+/// Clickable row that expands the picture a tool call returned.
+fn image_toggle<'a>(
     path: &'a str,
     expanded: bool,
     ctx: &TurnView<'a>,
