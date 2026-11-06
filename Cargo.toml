@@ -136,6 +136,8 @@ axum = "0.8"
 which = "8.0.6"
 anstyle-parse = { version = "1.0.0", default-features = false }
 base64 = "0.23.1"
+# Screen capture for the `screenshot` tool; Linux builds need the PipeWire/XCB dev libs.
+xcap = "0.9.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -126,18 +126,9 @@ fn read_image(args: &Value, workspace: &Path) -> Option<ReadImage> {
         Ok(prepared) => prepared,
         Err(reason) => return Some(ReadImage::Undecodable(reason)),
     };
-    let (width, height) = (prepared.encoded.width, prepared.encoded.height);
-    let downscaled = (width, height) != (prepared.probe.width, prepared.probe.height);
-    let image = ImageAttachment {
-        path: display,
-        media_type: prepared.encoded.media_type,
-        width,
-        height,
-        bytes: prepared.probe.bytes,
-        source_width: downscaled.then_some(prepared.probe.width),
-        source_height: downscaled.then_some(prepared.probe.height),
-    };
-    Some(ReadImage::Attached(image))
+    Some(ReadImage::Attached(ImageAttachment::from_prepared(
+        display, prepared,
+    )))
 }
 
 /// Whether `path` should be read as a picture: its extension claims an image

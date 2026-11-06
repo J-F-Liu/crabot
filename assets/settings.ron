@@ -32,6 +32,7 @@
         "task": true,
         "renew": true,
         "fetch": true,
+        "screenshot": true,
         "crate_source": true,
         "web_search_exa": true,
         "web_fetch_exa": false,

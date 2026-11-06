@@ -10,6 +10,7 @@ pub mod find;
 pub mod process;
 pub mod read;
 pub mod renew;
+pub mod screenshot;
 pub mod search;
 pub mod task;
 pub mod todo;

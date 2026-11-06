@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use super::image::PreparedImage;
 use super::schema::make_strict_schema;
 
 /// Coalesce small chunks until this many bytes accumulate before flushing.
@@ -54,6 +55,21 @@ pub struct ImageAttachment {
 }
 
 impl ImageAttachment {
+    /// Attachment facts for the image a request will carry.
+    pub fn from_prepared(path: String, prepared: PreparedImage) -> Self {
+        let (width, height) = (prepared.encoded.width, prepared.encoded.height);
+        let downscaled = (width, height) != (prepared.probe.width, prepared.probe.height);
+        Self {
+            path,
+            media_type: prepared.encoded.media_type,
+            width,
+            height,
+            bytes: prepared.probe.bytes,
+            source_width: downscaled.then_some(prepared.probe.width),
+            source_height: downscaled.then_some(prepared.probe.height),
+        }
+    }
+
     /// Human-readable summary of the attachment for a tool result.
     pub fn summary(&self) -> String {
         let scaled = match (self.source_width, self.source_height) {

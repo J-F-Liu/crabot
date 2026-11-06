@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::builtin::{
-    ask, bash, edit, fetch, find, process, read, renew, search, task, todo, write,
+    ask, bash, edit, fetch, find, process, read, renew, screenshot, search, task, todo, write,
 };
 use super::tool::{Tool, ToolRef};
 use super::{custom, mcp};
@@ -25,7 +25,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Create a new registry pre-populated with the twelve built-in tools.
+    /// Create a new registry pre-populated with the thirteen built-in tools.
     pub fn new() -> Self {
         let todo_items: todo::TodoList = todo::create_todo_list(Vec::new());
         let builtin: Vec<ToolRef> = vec![
@@ -41,6 +41,7 @@ impl ToolRegistry {
             Arc::new(task::TaskTool),
             Arc::new(renew::RenewTool),
             Arc::new(fetch::FetchTool),
+            Arc::new(screenshot::ScreenshotTool),
         ];
         Self {
             builtin_names: builtin.iter().map(|t| t.name().to_string()).collect(),

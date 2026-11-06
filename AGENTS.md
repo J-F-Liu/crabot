@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Crabot is a pure-Rust native GUI coding agent built with [iced](https://iced.rs) (Elm architecture) and [genai](https://crates.io/crates/genai) for multi-provider LLM access. It ships with 12 built-in tools — the `bash` tool runs on an in-process [bashkit](https://crates.io/crates/bashkit) interpreter, so it works natively on Windows without a real bash — plus prompt attachments, user-defined custom tools, MCP server tools, and multi-tab sessions.
+Crabot is a pure-Rust native GUI coding agent built with [iced](https://iced.rs) (Elm architecture) and [genai](https://crates.io/crates/genai) for multi-provider LLM access. It ships with 13 built-in tools — the `bash` tool runs on an in-process [bashkit](https://crates.io/crates/bashkit) interpreter, so it works natively on Windows without a real bash — plus prompt attachments, user-defined custom tools, MCP server tools, and multi-tab sessions.
 
 Everything configurable is meant to be visible and toggleable in the UI: model, work mode, tools, and the individual components of the system prompt.
 
@@ -46,13 +46,13 @@ A single window with a resizable left pane (model config, system-prompt sections
 
 Tools implement a small trait with a name, description, JSON schema, and a blocking `execute` plus a streaming variant for live output. The registry groups them into built-in, custom, and per-MCP-server sets, and builds the declarations sent to the LLM; tools can be enabled or disabled per session.
 
-| Category      | Source                | Notes                                                            |
-| ------------- | --------------------- | ---------------------------------------------------------------- |
-| Built-in (12) | `src/tools/builtin/`  | File I/O, shell, process lifecycle, interaction, web, delegation |
-| Custom        | `~/.crabot/tools.ron` | User-defined CLI tools: templated command + typed parameters     |
-| MCP           | `~/.crabot/mcp.ron`   | Remote tools from stdio/HTTP servers, auto-discovered on startup |
+| Category      | Source                | Notes                                                                            |
+| ------------- | --------------------- | -------------------------------------------------------------------------------- |
+| Built-in (13) | `src/tools/builtin/`  | File I/O, shell, process lifecycle, interaction, web, screen capture, delegation |
+| Custom        | `~/.crabot/tools.ron` | User-defined CLI tools: templated command + typed parameters                     |
+| MCP           | `~/.crabot/mcp.ron`   | Remote tools from stdio/HTTP servers, auto-discovered on startup                 |
 
-Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and overlap checks; `read` attaches image files as pictures instead of returning bytes, and one shared image policy in `src/tools/image.rs` decides the budget, the delivered size, and the encoding for both the tool result and the request); `find`, `search` (gitignore-aware glob and regex search); `bash` (interpreter-backed shell with timeouts and cancellation; optional Wasm CPython for `python`/`python3` behind the `python` feature); `process` (long-running process lifecycle); `ask` (interactive question to the user); `todo` (shared task list); `task` (delegate a subtask to a background session tab); `renew` (hand off to a fresh session when context is nearly full); `fetch` (web page → Markdown). See the README for parameters.
+Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and overlap checks; `read` attaches image files as pictures instead of returning bytes, and one shared image policy in `src/tools/image.rs` decides the budget, the delivered size, and the encoding for both the tool result and the request); `find`, `search` (gitignore-aware glob and regex search); `bash` (interpreter-backed shell with timeouts and cancellation; optional Wasm CPython for `python`/`python3` behind the `python` feature); `process` (long-running process lifecycle); `ask` (interactive question to the user); `todo` (shared task list); `task` (delegate a subtask to a background session tab); `renew` (hand off to a fresh session when context is nearly full); `fetch` (web page → Markdown); `screenshot` (capture a monitor or window with `xcap`, saved under `.agent/screenshots/` and attached as a picture; omitting both targets lists monitors and windows). See the README for parameters.
 
 ## Conventions
 
