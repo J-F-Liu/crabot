@@ -123,6 +123,9 @@ impl UserAttachment {
     }
 }
 
+/// Placeholder body for a prompt that carries only attachments.
+pub const ATTACHMENT_ONLY_PROMPT: &str = "Attached files:";
+
 #[derive(Debug, Clone)]
 pub struct UserPrompt {
     pub mode: Option<WorkMode>,
@@ -147,6 +150,24 @@ impl UserPrompt {
     pub fn with_attachments(mut self, attachments: Vec<UserAttachment>) -> Self {
         self.attachments = attachments;
         self
+    }
+
+    /// Text the user typed, without the attachment-only placeholder.
+    pub fn draft_text(&self) -> &str {
+        if self.content == ATTACHMENT_ONLY_PROMPT {
+            ""
+        } else {
+            &self.content
+        }
+    }
+
+    /// Attachment file names, comma-separated.
+    pub fn attachment_names(&self) -> String {
+        self.attachments
+            .iter()
+            .map(UserAttachment::display_name)
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Build multi-part content parts for sending to the LLM. Attachments are

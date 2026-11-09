@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use crabot::chat::{Dialog, Turn, TurnBody, streaming_tool_ids, tool_items};
 use crabot::model::ModelConfig;
 use crabot::session::{SearchHit, SearchHitKind, Session};
-use crabot::user::AttachmentKind;
+use crabot::user::{AttachmentKind, UserPrompt};
 use genai::chat::ChatRole;
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task,
@@ -54,6 +54,9 @@ const PAGE_SCROLL_FRACTION: f32 = 0.9;
 
 /// Vertical pixels scrolled per arrow-key press on the message view.
 pub(crate) const SCROLL_STEP: f32 = 40.0;
+
+/// Tallest a header bar's label grows before it scrolls.
+const HEADER_MAX_HEIGHT: f32 = 200.0;
 
 /// Largest inline image preview bounds; the decode budget derives from these.
 pub(crate) const PREVIEW_MAX_WIDTH: f32 = 480.0;
@@ -824,11 +827,7 @@ pub(crate) fn center_pane<'a>(
     let status = conversation.status(lang);
     let streaming: DialogPhase = tab.session_state.phase;
     let selectable_msgs: &HashSet<usize> = &tab.selectable_msgs;
-    let pending_user_prompt: Option<&str> = tab
-        .session_state
-        .pending_prompt
-        .as_ref()
-        .map(|p| p.content.as_str());
+    let pending_user_prompt: Option<&UserPrompt> = tab.session_state.pending_prompt.as_ref();
     let ask_request: Option<&AskRequest> = tab.session_state.ask_request.as_ref();
     let ask_input: &str = &tab.session_state.ask_input;
     let ask_custom_input = tab.session_state.ask_custom_input;
@@ -967,7 +966,7 @@ pub(crate) fn center_pane<'a>(
         container(column![
             super::session_tabs::session_tabs(conversation, lang, right_pane_collapsed),
             session_header(tab.header_title(), conversation, lang),
-            pending_header(pending_user_prompt),
+            pending_header(pending_user_prompt, viewing_number, lang),
             if search_state.visible {
                 super::search_bar::view(search_query, search_results, search_state.current, lang)
                     .map(|event| {
@@ -1037,18 +1036,11 @@ fn session_header<'a>(
     } else {
         prompt
     };
-    let header = row![
-        header_container(selectable(title, "").size(14.0).style(sel_strong), 200.0),
+    header_bar(
+        selectable(title, "").size(14.0).style(sel_strong).into(),
         header_actions_menu(conversation, lang),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center);
-
-    container(header)
-        .width(Fill)
-        .padding([6, 14])
-        .style(session_header_style)
-        .into()
+        session_header_style,
+    )
 }
 
 /// The "…" trigger and its copy/resend/fork/compact/export popup menu.
@@ -1190,34 +1182,67 @@ fn parent_label(conversation: &ConversationState, parent: &str, lang: Lang) -> S
         .unwrap_or_else(|| lang.tr("session {}").replacen("{}", parent, 1))
 }
 
-/// Scrollable container that fills width and scrolls vertically past `max_h`.
-fn header_container<'a>(
-    content: impl Into<Element<'a, CenterPaneEvent>>,
-    max_h: f32,
+/// Scrollable header label with a trailing action, e.g. the session menu or the
+/// pending prompt's discard button.
+fn header_bar<'a>(
+    label: Element<'a, CenterPaneEvent>,
+    action: Element<'a, CenterPaneEvent>,
+    style: fn(&Theme) -> container::Style,
 ) -> Element<'a, CenterPaneEvent> {
-    container(
-        scrollable(content)
-            .direction(thin_vertical())
-            .width(Fill)
-            .height(Length::Shrink),
-    )
-    .width(Length::Fill)
-    .max_height(max_h)
-    .into()
+    let label = scrollable(label)
+        .direction(thin_vertical())
+        .width(Fill)
+        .height(Length::Shrink);
+    let bar = row![
+        container(label).width(Fill).max_height(HEADER_MAX_HEIGHT),
+        action,
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    container(bar)
+        .width(Fill)
+        .padding([6, 14])
+        .style(style)
+        .into()
 }
 
-/// Displays the pending prompt text with a muted, selectable style.
-fn pending_header<'a>(prompt: Option<&'a str>) -> Element<'a, CenterPaneEvent> {
+/// Pending prompt bar: muted, selectable text plus a button that hands the
+/// prompt back to the editor.
+fn pending_header<'a>(
+    prompt: Option<&'a UserPrompt>,
+    tab_number: usize,
+    lang: Lang,
+) -> Element<'a, CenterPaneEvent> {
     let Some(prompt) = prompt else {
         return row![].into();
     };
-    header_container(
-        container(selectable(prompt, "").size(13.0).style(sel_muted))
-            .width(Fill)
-            .padding([6, 14])
-            .style(bordered_bar_style),
-        200.0,
+    header_bar(
+        selectable(pending_prompt_text(prompt), "")
+            .size(13.0)
+            .style(sel_muted)
+            .into(),
+        icons::icon_action(
+            icons::CLOSE,
+            lang.tr("Discard pending prompt"),
+            CenterPaneEvent::Conversation(ConversationEvent::CancelPendingPrompt(tab_number)),
+        ),
+        bordered_bar_style,
     )
+}
+
+/// Pending bar text: the prompt body plus its attached file names.
+fn pending_prompt_text(prompt: &UserPrompt) -> String {
+    let body = prompt.draft_text();
+    let files = prompt.attachment_names();
+    if files.is_empty() {
+        return body.to_string();
+    }
+    let files = format!("📎 {files}");
+    if body.is_empty() {
+        files
+    } else {
+        format!("{body}\n{files}")
+    }
 }
 
 // ── status line ───────────────────────────────────────────────────

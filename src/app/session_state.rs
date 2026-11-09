@@ -52,8 +52,7 @@ pub(crate) struct SessionState {
     pub(crate) cancel_token: CancellationToken,
     /// Shared slot for a raw user prompt injected during streaming.
     pub(crate) injected_prompt: Arc<Mutex<Option<UserPrompt>>>,
-    /// Parked full `UserPrompt` (work mode, workspace tree) to be dispatched
-    /// later when this tab is no longer blocked by another tab's stream.
+    /// UI mirror of the injected prompt; drives the pending header and post-stream relaunch.
     pub(crate) pending_prompt: Option<UserPrompt>,
     /// Active ask-tool request shown in the tool turn.
     pub(crate) ask_request: Option<AskRequest>,
@@ -645,24 +644,29 @@ fn end_stream(
     search.invalidate_offsets();
 }
 
+/// Notice text for a prompt that never ran, listing its attachments.
+pub(super) fn unexecuted_prompt_notice(reason: &str, prompt: &UserPrompt) -> String {
+    let mut msg = reason.to_string();
+    let body = prompt.draft_text();
+    if !body.is_empty() {
+        msg.push_str(&format!("\n\n> {body}"));
+    }
+    let files = prompt.attachment_names();
+    if !files.is_empty() {
+        msg.push_str(&format!("\n>\n> Attachments: {files}"));
+    }
+    msg
+}
+
 /// Clear and report injected prompt after a stream ended without consuming it.
 fn clear_pending_with_notice(state: &mut SessionState, session: &mut Session) {
     if let Ok(mut pending) = state.injected_prompt.lock()
         && let Some(prompt) = pending.take()
     {
-        let mut msg = format!(
-            "⚠️ Stream ended — the following prompt was **not executed**:\n\n> {}",
-            prompt.content
+        let msg = unexecuted_prompt_notice(
+            "⚠️ Stream ended — the following prompt was **not executed**:",
+            &prompt,
         );
-        if !prompt.attachments.is_empty() {
-            let files = prompt
-                .attachments
-                .iter()
-                .map(|item| item.display_name())
-                .collect::<Vec<_>>()
-                .join(", ");
-            msg.push_str(&format!("\n>\n> Attachments: {files}"));
-        }
         session.push_turn(Turn::assistant(msg, None));
     }
     state.pending_prompt = None;

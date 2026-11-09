@@ -2,7 +2,7 @@ use iced::{Task, widget::text_editor};
 
 use std::path::{Path, PathBuf};
 
-use crabot::user::{AttachmentKind, UserAttachment};
+use crabot::user::{AttachmentKind, UserAttachment, UserPrompt};
 use crabot::workspace;
 
 pub(crate) const PREAMBLE: &str = "Preamble";
@@ -248,6 +248,25 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
 
 /// Files one prompt may carry; matches the request image allowance.
 const MAX_ATTACHMENTS_PER_PROMPT: usize = 20;
+
+/// Hand a discarded pending prompt back to the editor; `false` when it already
+/// holds a newer draft.
+pub(crate) fn restore_draft(app: &mut App, prompt: &UserPrompt) -> bool {
+    if !app.prompt.user_prompt.is_blank() {
+        return false;
+    }
+    app.prompt.user_prompt.replace_text(prompt.draft_text());
+    // `send_prompt` clears the tree toggle; restore it with the prompt.
+    app.prompt.files.enabled |= prompt.workspace_tree.is_some();
+    for item in &prompt.attachments {
+        if app.prompt.attachments.len() < MAX_ATTACHMENTS_PER_PROMPT
+            && !app.prompt.attachments.iter().any(|a| a.path == item.path)
+        {
+            app.prompt.attachments.push(item.clone());
+        }
+    }
+    true
+}
 
 /// Toggle one dropdown, collapsing the other so only one menu is open.
 fn toggle_dropdown(target: &mut bool, other: &mut bool) {

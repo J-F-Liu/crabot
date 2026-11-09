@@ -3,8 +3,8 @@ use iced::{Task, widget, window};
 use crabot::HashSetExt;
 use crabot::chat::{Turn, TurnBody};
 use crabot::model::ModelConfig;
-use crabot::session::{Session, fix_history};
-use crabot::user::{AttachmentKind, UserPrompt, WorkMode};
+use crabot::session::{RENEW_HINT_PROMPT, Session, fix_history};
+use crabot::user::{ATTACHMENT_ONLY_PROMPT, AttachmentKind, UserPrompt, WorkMode};
 use futures::{SinkExt, future::FutureExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -92,6 +92,9 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         }
         ConversationEvent::SessionEvent(number, event) => {
             return session_state::session_event(app, number, event);
+        }
+        ConversationEvent::CancelPendingPrompt(number) => {
+            return cancel_pending_prompt(app, number);
         }
         ConversationEvent::SearchEvent(event) => {
             return search_event(app, event);
@@ -846,9 +849,6 @@ fn search_event(app: &mut App, event: crate::views::SearchEvent) -> Task<Message
 
 // ── send / resend ──────────────────────────────────────────────────
 
-/// Placeholder prompt used when the user sends only attachments.
-const ATTACHMENT_ONLY_PROMPT: &str = "Attached files:";
-
 /// Refuse files that disappeared after selection, and images the selected
 /// model cannot consume, without clearing the prompt.
 fn attachment_send_guard(app: &App, model: &ModelConfig) -> Option<Task<Message>> {
@@ -1084,6 +1084,29 @@ pub(super) fn dispatch_pending(app: &mut App, tab_pos: usize) -> Task<Message> {
     };
     app.prompt.files.enabled = false;
     launch_dialog(app, tab_pos, &model, user_prompt, None)
+}
+
+/// Hand a discarded pending prompt back to the editor, or report it when the
+/// editor already holds a newer draft.
+fn cancel_pending_prompt(app: &mut App, number: usize) -> Task<Message> {
+    let Some(pos) = app.conversation.tab_pos(number) else {
+        return Task::none();
+    };
+    let Some(prompt) = app.conversation.take_pending_prompt(pos) else {
+        return Task::none();
+    };
+    // Model guidance, not a draft: discard the renew hint instead of restoring it.
+    if prompt.content == RENEW_HINT_PROMPT {
+        return Task::none();
+    }
+    if super::prompt::restore_draft(app, &prompt) {
+        return Task::none();
+    }
+    let notice = session_state::unexecuted_prompt_notice(
+        "⚠️ The pending prompt was discarded and **not executed**:",
+        &prompt,
+    );
+    session_state::session_event(app, number, SessionEvent::Notice(notice))
 }
 
 fn resend_session(app: &mut App) -> Task<Message> {

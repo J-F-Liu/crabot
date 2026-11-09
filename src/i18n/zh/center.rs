@@ -25,6 +25,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Fork session", "克隆会话"),
     ("Compact session", "压缩会话"),
     ("Export as HTML", "导出为 HTML"),
+    ("Discard pending prompt", "撤销待发送的提示"),
     ("Model: {model_id}", "模型：{model_id}"),
     ("Spawned from {}", "由 {} 派生"),
     ("session {}", "会话 {}"),

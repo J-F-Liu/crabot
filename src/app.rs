@@ -469,14 +469,12 @@ impl ConversationState {
         n
     }
 
-    /// Take and clear the pending prompt, returns `None` if there was no pending prompt.
+    /// Take the pending prompt and empty its stream mailbox; the mailbox copy is
+    /// returned when a late `UserPrompt` event already cleared the UI mirror.
     pub(crate) fn take_pending_prompt(&mut self, tab_pos: usize) -> Option<UserPrompt> {
         let state = &mut self.session_tabs[tab_pos].session_state;
-        let prompt = state.pending_prompt.take()?;
-        if let Ok(mut pending) = state.injected_prompt.lock() {
-            *pending = None;
-        }
-        Some(prompt)
+        let queued = state.injected_prompt.lock().ok().and_then(|mut p| p.take());
+        state.pending_prompt.take().or(queued)
     }
 
     /// Request all running tabs to stop streaming.
@@ -662,6 +660,8 @@ pub(crate) enum ConversationEvent {
     AskAction(session_state::AskAction),
     /// A session-streaming event tagged with the tab number that owns the stream.
     SessionEvent(usize, session_state::SessionEvent),
+    /// Discard a tab's pending prompt (UI copy and shared stream mailbox).
+    CancelPendingPrompt(usize),
     /// Switch the viewing tab to the one with the given number.
     SwitchTab(usize),
     /// Switch to the Nth tab (1-based position); 0 means the last tab.
