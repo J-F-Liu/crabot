@@ -64,5 +64,5 @@ pub static TABLE: &[(&str, &str)] = &[
     ("no tools", "无工具"),
     ("timed out", "超时"),
     // ── workspace picker pseudo-entry (system_prompt.rs) ──
-    ("📁 Select new...", "📁 选择新文件…"),
+    ("📁 Select new...", "📁 选择新文件夹…"),
 ];

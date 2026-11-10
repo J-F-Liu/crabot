@@ -32,7 +32,7 @@ use genai::chat::{ChatMessage, ChatRole};
 /// Minimum context-window size (tokens) for which the auto-injected renew hint is eligible.
 const MIN_CW_FOR_RENEW_HINT: u32 = 1_000_000;
 /// Seconds the builtin ask tool waits for user input before timing out.
-pub(crate) const ASK_TIMEOUT_SECS: u64 = 120;
+pub(crate) const ASK_TIMEOUT_SECS: u64 = 180;
 /// Seconds added to the ask deadline each time the user clicks "Extend".
 pub(crate) const ASK_EXTEND_SECS: u64 = 300;
 /// Tool result for a task dropped because its parent stopped waiting.
