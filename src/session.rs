@@ -224,7 +224,7 @@ impl Session {
         session
     }
 
-    /// Keep user prompts, answered asks with preambles, and final replies.
+    /// Keep user prompts, ask exchanges (answers and timeouts), and final replies.
     pub fn compact(&self) -> Self {
         let mut session = self.fresh_copy();
         let asks = ask_answers(&self.history);
@@ -256,17 +256,16 @@ impl Session {
                     answer = Some(msg.clone());
                 }
                 ChatRole::Assistant => {
-                    // Preserve text that introduced an answered ask.
+                    // Preserve the text and reasoning that introduced an ask exchange.
                     if msg
                         .content
                         .tool_calls()
                         .iter()
                         .any(|tc| tc.fn_name == "ask" && asks.contains_key(tc.call_id.as_str()))
-                        && let Some(text) = msg.content.joined_texts()
-                        && !text.trim().is_empty()
+                        && let Some(preamble) = ask_preamble(msg)
                     {
                         compacted.extend(answer.take());
-                        compacted.push(ChatMessage::assistant(text));
+                        compacted.push(preamble);
                     }
                 }
                 ChatRole::Tool => {
@@ -962,7 +961,7 @@ fn mode_from_user_message(msg: &ChatMessage) -> Option<WorkMode> {
         .map(WorkMode::from)
 }
 
-/// Successful, non-empty ask answers keyed by call id, with their questions.
+/// Completed, non-empty ask exchanges (answers and timeouts) with their questions.
 fn ask_answers(history: &[ChatMessage]) -> HashMap<&str, (&str, &str)> {
     let mut questions: HashMap<&str, &str> = HashMap::new();
     let mut answers = HashMap::new();
@@ -991,7 +990,23 @@ fn ask_answers(history: &[ChatMessage]) -> HashMap<&str, (&str, &str)> {
     answers
 }
 
-/// Render an answered `ask` call as a user prompt for compacted history.
+/// Keep a message's text and reasoning parts, dropping its tool calls.
+fn ask_preamble(msg: &ChatMessage) -> Option<ChatMessage> {
+    let parts: Vec<_> = msg
+        .content
+        .parts()
+        .iter()
+        .filter(|part| match part {
+            ContentPart::Text(text) => !text.trim().is_empty(),
+            ContentPart::ReasoningContent(reasoning) => !reasoning.trim().is_empty(),
+            _ => false,
+        })
+        .cloned()
+        .collect();
+    (!parts.is_empty()).then(|| ChatMessage::assistant(MessageContent::from_parts(parts)))
+}
+
+/// Render an ask exchange (answer or timeout) as a user prompt for compacted history.
 fn ask_user_message(question: &str, answer: &str, mode: Option<WorkMode>) -> ChatMessage {
     let prompt = UserPrompt::new(mode, format!("{question}\n\nAnswer: {answer}"), None);
     ChatMessage::user(MessageContent::from_parts(prompt.to_content_parts()))

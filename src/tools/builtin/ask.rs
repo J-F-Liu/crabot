@@ -22,10 +22,9 @@ pub fn ask_question(args: &Value) -> &str {
         .unwrap_or_default()
 }
 
-/// True when `content` is an ask failure or timeout notice rather than a user answer.
+/// True when `content` is an ask failure notice rather than a user answer or timeout.
 pub fn is_ask_failure(content: &str) -> bool {
     [
-        TIMEOUT_REASON,
         CANCELLED_BY_USER,
         EVENT_CHANNEL_CLOSED,
         RESPONSE_CHANNEL_CLOSED,

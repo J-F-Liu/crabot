@@ -50,11 +50,29 @@ fn user_prompt(mode: &str, text: &str) -> ChatMessage {
 
 /// An assistant message carrying one `ask` call.
 fn ask_call(call_id: &str, question: &str) -> ChatMessage {
-    tool_call(
+    ask_call_with(call_id, question, "", None)
+}
+
+/// An assistant message carrying one `ask` call plus its text preamble and reasoning.
+fn ask_call_with(
+    call_id: &str,
+    question: &str,
+    text: &str,
+    reasoning: Option<&str>,
+) -> ChatMessage {
+    let mut msg = tool_call(
         call_id,
         "ask",
         serde_json::json!({ "question": question, "options": [] }),
-    )
+    );
+    if let Some(reasoning) = reasoning {
+        msg.content
+            .prepend(ContentPart::ReasoningContent(reasoning.into()));
+    }
+    if !text.is_empty() {
+        msg.content.prepend(ContentPart::Text(text.into()));
+    }
+    msg
 }
 
 /// History roles in order.
@@ -70,6 +88,23 @@ fn tool_turns(session: &Session) -> usize {
         .flat_map(|d| &d.turns)
         .filter(|t| matches!(&t.body, TurnBody::Tool(_) | TurnBody::Temp(_)))
         .count()
+}
+
+/// Assert a compacted assistant message kept its text and reasoning.
+fn assert_preamble(msg: &ChatMessage, preamble: &str, reasoning: &str) {
+    assert_eq!(msg.content.joined_texts().as_deref(), Some(preamble));
+    assert_eq!(
+        msg.content.joined_reasoning_content().as_deref(),
+        Some(reasoning)
+    );
+}
+
+/// Assert a compacted user prompt contains every snippet.
+fn assert_prompt(msg: &ChatMessage, snippets: &[&str]) {
+    let text = msg.content.joined_texts().expect("ask prompt text");
+    for &snippet in snippets {
+        assert!(text.contains(snippet), "missing {snippet:?} in {text:?}");
+    }
 }
 
 #[test]
@@ -602,37 +637,67 @@ fn compact_skips_assistant_replies_with_tool_calls() {
 }
 
 #[test]
-fn compact_preserves_successful_ask_answers() {
+fn compact_preserves_ask_exchanges_with_preambles() {
+    use crabot::tools::ask::TIMEOUT_REASON;
     use crabot::user::WorkMode;
 
     let mut session = Session::new();
     session.history.push(user_prompt("code", "fix it"));
     // Auto-injected renew hints are not user prompts.
     session.history.push(user_prompt("code", RENEW_HINT_PROMPT));
-    session.history.push(ask_call("c1", "Which file?"));
+    session.history.push(ask_call_with(
+        "c1",
+        "Which file?",
+        "Let me check.",
+        Some("Path unclear."),
+    ));
     session.history.push(tool_result_with("c1", "a.rs"));
-    session.history.push(ask_call("c2", "Continue?"));
+    session.history.push(ask_call_with(
+        "c2",
+        "Continue?",
+        "Proceeding.",
+        Some("No answer needed."),
+    ));
+    session.history.push(tool_result_with("c2", TIMEOUT_REASON));
+    session.history.push(ask_call("c3", "Overwrite?"));
     session
         .history
-        .push(tool_result_with("c2", "Error: Session cancelled by user."));
+        .push(tool_result_with("c3", "Error: Session cancelled by user."));
     session.history.push(ChatMessage::assistant("fixed a.rs"));
 
     let compacted = session.compact();
 
-    // Only the successful ask becomes a user prompt; the failed one is dropped.
+    // Answer and timeout become prompts; the cancelled ask is dropped.
     assert_eq!(
         roles(&compacted),
-        vec![ChatRole::User, ChatRole::User, ChatRole::Assistant]
+        vec![
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant
+        ]
     );
-    let ask_prompt = compacted.history[1]
-        .content
-        .joined_texts()
-        .expect("ask prompt text");
-    assert!(ask_prompt.contains("Which file?"));
-    assert!(ask_prompt.contains("Answer: a.rs"));
-    assert_eq!(compacted.dialogs.len(), 2);
-    assert_eq!(compacted.dialogs[1].title, "Which file?");
-    assert_eq!(compacted.dialogs[1].mode, Some(WorkMode::from("code")));
+    assert_preamble(&compacted.history[1], "Let me check.", "Path unclear.");
+    assert_prompt(&compacted.history[2], &["Which file?", "Answer: a.rs"]);
+    assert_preamble(&compacted.history[3], "Proceeding.", "No answer needed.");
+    assert_prompt(&compacted.history[4], &["Continue?", TIMEOUT_REASON]);
+    assert_eq!(compacted.dialogs.len(), 3);
+    assert_eq!(
+        compacted
+            .dialogs
+            .iter()
+            .map(|d| d.title.as_str())
+            .collect::<Vec<_>>(),
+        ["fix it", "Which file?", "Continue?"]
+    );
+    assert!(
+        compacted
+            .dialogs
+            .iter()
+            .all(|d| d.mode == Some(WorkMode::from("code")))
+    );
     assert_eq!(tool_turns(&compacted), 0);
 }
 
