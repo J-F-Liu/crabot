@@ -10,9 +10,8 @@
 //! Wrapper builtins (`timeout`, `xargs`, `find -exec`, and the runners `env`,
 //! `nice`, `sudo`, `flock`, `busybox`) hide commands in their arguments;
 //! [`analyze_script`] extracts those names. `watch`/`parallel` stubs never run
-//! commands, so those scripts fall back too. Mirrors bashkit 0.20.1: a wrapper
-//! the interpreter starts answering itself must be extracted here (see
-//! `every_interpreter_wrapper_is_handled`).
+//! commands, so those scripts fall back too. The wrapper list mirrors the
+//! interpreter's: a wrapper it starts answering itself must be extracted here.
 //!
 //! [`HOST_PREFERRED`] hands host-tool builtins back to the host, and `which`/
 //! `type` skip the rootfs's per-builtin `/bin` stubs (see [`is_command_file`]).
@@ -343,16 +342,16 @@ fn detach_in_word(word: &Word) -> Option<Detach> {
     })
 }
 
-// ── Declaration operands bashkit 0.20 mis-splits ───────────────────
+// ── Declaration operands the interpreter mis-splits ────────────────
 
 /// Builtins whose `name=value` operand goes through `interpreter/declare.rs`.
 const DECLARATION_BUILTINS: [&str; 5] = ["export", "readonly", "declare", "typeset", "local"];
 
 /// Whether a declaration builtin gets a mixed-quote operand
-/// (`export PATH="/x":$PATH`) that bashkit 0.20 splits on `IFS`, truncating it
-/// where bash keeps it whole — such scripts take the real-`bash` route.
+/// (`export PATH="/x":$PATH`) that the interpreter splits on `IFS`, truncating
+/// it where bash keeps it whole — such scripts take the real-`bash` route.
 ///
-/// Drop this guard once bashkit keeps the operand whole (0.18 did).
+/// Drop this guard once the interpreter keeps the operand whole again.
 fn splits_declaration_operand(script: &str) -> bool {
     // Cheap prescan: a script naming no declaration builtin cannot assign one.
     if !DECLARATION_BUILTINS
