@@ -66,6 +66,9 @@ pub const NO_CHANGE_MESSAGE: &str = "No changes made: old_text and new_text are 
 pub const NO_CHANGE_ALL_EDITS_MESSAGE: &str =
     "No changes made: old_text and new_text are identical in all edits.";
 
+/// Appended to every failure so the model never assumes a partial edit landed.
+pub const NO_EDITS_APPLIED_MESSAGE: &str = "No edits applied.";
+
 /// Render 1-based edit numbers as `1`, `1, 3`, or `1, 3 and 5`.
 pub fn format_edit_numbers(indices: &[usize]) -> String {
     match indices {
@@ -139,6 +142,10 @@ impl Tool for EditTool {
 }
 
 pub fn execute(args: &Value, workspace: &Path) -> Result<String, String> {
+    apply(args, workspace).map_err(|e| format!("{e}\n{NO_EDITS_APPLIED_MESSAGE}"))
+}
+
+fn apply(args: &Value, workspace: &Path) -> Result<String, String> {
     let mut errors: Vec<String> = Vec::new();
 
     // ── Validate path argument ────────────────────────────────────
