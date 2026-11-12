@@ -22,7 +22,8 @@ use crate::views::scroll_to_end;
 use crate::views::search_bar::SearchState;
 use crabot::HashSetExt;
 use crabot::chat::{
-    TextContent, ToolCall, ToolResult, Turn, TurnBody, attachment_marker_items, replace_emoji,
+    TextContent, ToolCall, ToolResult, Turn, TurnBody, attachment_marker_items, image_marker_paths,
+    replace_emoji,
 };
 use crabot::lock;
 use crabot::session::{RENEW_HINT_PROMPT, Session, first_line_label};
@@ -406,8 +407,7 @@ pub(crate) fn update(
             if tr.name == "ask" {
                 state.ask_request = None;
             }
-            tr.track_modified_file(&mut session.modified_files);
-            tr.track_read_file(&mut session.accessed_files);
+            session.track_tool_result(&tr);
             if let Some(dialog) = session.dialogs.last_mut() {
                 dialog.push_tool_result(tr);
             }
@@ -471,6 +471,11 @@ pub(crate) fn update(
                 } else {
                     Task::none()
                 };
+            }
+            // A real user message starts a new round. Image markers are plumbing,
+            // so they don't count — this mirrors `rebuild_dialogs`' round counting.
+            if msg.role == ChatRole::User && image_marker_paths(&msg).is_none() {
+                session.begin_round();
             }
             // Only non-empty assistant messages are emitted, so record as-is.
             backfill_assistant_turn(state, session, &msg);

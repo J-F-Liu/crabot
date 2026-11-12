@@ -91,14 +91,15 @@ pub struct Session {
     pub cost: f64,
     /// Currency for the accumulated cost (ISO 4217 code, e.g. "USD", "CNY").
     pub currency: Currency,
-    /// Files modified during this session (write / edit tools).
-    /// Derived from history on load; not serialised directly.
+    /// Files modified by `write` / `edit`, in first-touch order (rebuilt from history).
     #[serde(skip)]
-    pub modified_files: Vec<String>,
-    /// Files read during this session (read tool).
-    /// Derived from history on load; not serialised directly.
+    pub modified: TrackedFiles,
+    /// Files read by the `read` tool (rebuilt from history).
     #[serde(skip)]
-    pub accessed_files: Vec<String>,
+    pub accessed: TrackedFiles,
+    /// Current round id — bumped per user message, rebuilt from history on load.
+    #[serde(skip)]
+    round: u32,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -106,6 +107,41 @@ pub struct Session {
 impl Default for Session {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Paths touched by tools, in first-touch order, with the last round each was
+/// touched. Derived from history on load; never serialised directly.
+#[derive(Debug, Clone, Default)]
+pub struct TrackedFiles {
+    pub files: Vec<String>,
+    rounds: HashMap<String, u32>,
+}
+
+impl TrackedFiles {
+    /// Record files touched by a completed tool call.
+    fn track_result(modified: &mut Self, accessed: &mut Self, round: u32, tr: &ToolResult) {
+        if let Some(path) = tr.get_modified_file() {
+            modified.stamp(round, path);
+        }
+        if let Some(path) = tr.get_read_file() {
+            accessed.stamp(round, path);
+        }
+    }
+
+    fn stamp(&mut self, round: u32, path: &str) {
+        if let Some(last) = self.rounds.get_mut(path) {
+            *last = round;
+            return;
+        }
+        let key = path.to_string();
+        self.files.push(key.clone());
+        self.rounds.insert(key, round);
+    }
+
+    /// True if `path` was touched in `round`.
+    fn this_round(&self, round: u32, path: &str) -> bool {
+        self.rounds.get(path).is_some_and(|r| *r == round)
     }
 }
 
@@ -180,8 +216,9 @@ impl Session {
             tokens: TokenAmount::default(),
             cost: 0.0,
             currency: Currency::new(),
-            modified_files: Vec::new(),
-            accessed_files: Vec::new(),
+            modified: TrackedFiles::default(),
+            accessed: TrackedFiles::default(),
+            round: 0,
             created_at: time,
             updated_at: String::new(),
         }
@@ -291,6 +328,28 @@ impl Session {
             let _ = session.save_with_tally();
         }
         session
+    }
+
+    // ── Round tracking ───────────────────────────────────────────────
+
+    /// Start a new round — called for every user message recorded in history.
+    pub fn begin_round(&mut self) {
+        self.round += 1;
+    }
+
+    /// Record files touched by a completed tool call.
+    pub fn track_tool_result(&mut self, tr: &ToolResult) {
+        TrackedFiles::track_result(&mut self.modified, &mut self.accessed, self.round, tr);
+    }
+
+    /// True if `path` was modified in the current round.
+    pub fn modified_this_round(&self, path: &str) -> bool {
+        self.modified.this_round(self.round, path)
+    }
+
+    /// True if `path` was read in the current round.
+    pub fn accessed_this_round(&self, path: &str) -> bool {
+        self.accessed.this_round(self.round, path)
     }
 
     // ── Dialog / turn helpers ────────────────────────────────────────
@@ -533,8 +592,9 @@ impl Session {
             }
         }
 
-        let mut accessed: Vec<String> = Vec::new();
-        let mut modified: Vec<String> = Vec::new();
+        let mut accessed = TrackedFiles::default();
+        let mut modified = TrackedFiles::default();
+        let mut round = 0u32;
         let mut dialogs: Vec<Dialog> = Vec::new();
         let mut notice_index = 0usize;
 
@@ -570,6 +630,7 @@ impl Session {
                     let title = Self::derive_title(text);
                     let turn = Turn::user(text);
                     dialogs.push(Dialog::new(title, vec![turn], mode));
+                    round += 1;
                 }
                 ChatRole::Assistant => {
                     let text = msg.content.joined_texts().unwrap_or_default();
@@ -598,8 +659,7 @@ impl Session {
                             streaming: false,
                         };
                         // Track files touched by write / edit / read tools.
-                        tr.track_modified_file(&mut modified);
-                        tr.track_read_file(&mut accessed);
+                        TrackedFiles::track_result(&mut modified, &mut accessed, round, &tr);
                         trs.push(tr);
                     }
                     if !trs.is_empty() {
@@ -626,8 +686,9 @@ impl Session {
             push_or_new(&mut dialogs, Turn::assistant(notice.text.clone(), None));
         }
 
-        self.modified_files = modified;
-        self.accessed_files = accessed;
+        self.modified = modified;
+        self.accessed = accessed;
+        self.round = round;
         self.dialogs = dialogs;
     }
 

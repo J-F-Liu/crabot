@@ -346,25 +346,6 @@ impl ToolResult {
             None
         }
     }
-
-    /// Track the file modified by this call (write / edit) in `tracked`.
-    pub fn track_modified_file(&self, tracked: &mut Vec<String>) {
-        push_unique(tracked, self.get_modified_file());
-    }
-
-    /// Track the file read by this call in `tracked`.
-    pub fn track_read_file(&self, tracked: &mut Vec<String>) {
-        push_unique(tracked, self.get_read_file());
-    }
-}
-
-/// Append `path` to `tracked` unless already present.
-fn push_unique(tracked: &mut Vec<String>, path: Option<&str>) {
-    if let Some(path) = path
-        && !tracked.iter().any(|p| p == path)
-    {
-        tracked.push(path.to_string());
-    }
 }
 
 // ── Error envelope ───────────────────────────────────────────────────

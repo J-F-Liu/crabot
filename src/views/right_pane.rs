@@ -125,21 +125,31 @@ fn collapse_toggle(
     icons::chevron_action(expanded, lang, RightPaneEvent::ToggleSection(section))
 }
 
+/// Row font — bold marks a file touched in the current round.
+fn path_font(bold: bool) -> Font {
+    if bold { BOLD } else { Font::DEFAULT }
+}
+
 /// Selectable row for a single file path.
-fn file_row<'a>(path: &'a str) -> Element<'a, RightPaneEvent> {
-    container(SelectableText::new(path).size(13).style(sel_primary))
-        .padding([1, 0])
-        .into()
+fn file_row<'a>(path: &'a str, bold: bool) -> Element<'a, RightPaneEvent> {
+    container(
+        SelectableText::new(path)
+            .size(13)
+            .font(path_font(bold))
+            .style(sel_primary),
+    )
+    .padding([1, 0])
+    .into()
 }
 
 /// Clickable path that opens the snapshot ↔ current diff in VS Code.
-fn diff_row<'a>(path: &'a str, tip: &'static str) -> Element<'a, RightPaneEvent> {
+fn diff_row<'a>(path: &'a str, tip: &'static str, bold: bool) -> Element<'a, RightPaneEvent> {
     tooltip(
-        button(text(path).size(13))
+        button(text(path).size(13).font(path_font(bold)))
             .on_press(RightPaneEvent::OpenDiff(path.to_string()))
             .style(link_button)
             .width(Fill)
-            .padding([1, 4]),
+            .padding(padding::vertical(1).right(4)),
         text(tip).size(11).color(Color::WHITE),
         tooltip::Position::Bottom,
     )
@@ -410,7 +420,7 @@ pub(crate) fn right_pane<'a>(
     }
 
     // ── accessed files ──
-    if !session.accessed_files.is_empty() {
+    if !session.accessed.files.is_empty() {
         let expanded = sections.accessed_files;
         items.push(rule::horizontal(1).into());
         items.push(collapsible_header(
@@ -420,13 +430,18 @@ pub(crate) fn right_pane<'a>(
             lang,
         ));
         if expanded {
-            let files: Vec<_> = session.accessed_files.iter().map(|p| file_row(p)).collect();
+            let files: Vec<_> = session
+                .accessed
+                .files
+                .iter()
+                .map(|p| file_row(p, session.accessed_this_round(p)))
+                .collect();
             items.push(column(files).spacing(2).into());
         }
     }
 
     // ── modified files ──
-    if !session.modified_files.is_empty() {
+    if !session.modified.files.is_empty() {
         let expanded = sections.modified_files;
         items.push(rule::horizontal(1).into());
         // Revert All is available only when snapshots exist and the session is
@@ -444,15 +459,17 @@ pub(crate) fn right_pane<'a>(
         if expanded || show_revert_all {
             let tip = lang.tr("Diff snapshot vs. current file in VS Code");
             let files: Vec<_> = session
-                .modified_files
+                .modified
+                .files
                 .iter()
                 .map(|p| {
+                    let bold = session.modified_this_round(p);
                     // No pre-image means neither a diff nor a Revert button.
                     let snapshotted = tab.snapshot_files.contains(p);
                     let path_row = if snapshotted {
-                        diff_row(p, tip)
+                        diff_row(p, tip, bold)
                     } else {
-                        file_row(p)
+                        file_row(p, bold)
                     };
                     if snapshotted && !tab.running() {
                         row![
