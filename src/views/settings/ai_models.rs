@@ -7,15 +7,15 @@ use super::{
 };
 use crate::views::styles::styled_pick_list;
 use crate::views::theme::{
-    CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_surface,
-    color_text_strong,
+    color_accent, color_border, color_card, color_danger_text, color_muted, color_selection,
+    color_surface, color_text_strong,
 };
 use crabot::i18n::Lang;
 use crabot::model::{Cost, Model, currency_symbol};
 use crabot::model_database::ModelDatabase;
 use genai::adapter::AdapterKind;
 use iced::{
-    Alignment, Border, Color, Element, Length, mouse,
+    Alignment, Border, Element, Length, mouse,
     widget::{
         PickList, Row, button, checkbox, column, container, mouse_area, row, scrollable, text,
         text_input,
@@ -623,7 +623,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
         column![
             text(lang.tr("Select a provider to edit, or create a new one."))
                 .size(13)
-                .color(Color::from_rgb8(0x66, 0x66, 0x66)),
+                .color(color_muted()),
             iced::widget::Space::new().height(Length::Fill),
             button(text(lang.tr("New")))
                 .style(crate::views::styles::primary_button)
@@ -644,7 +644,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
         button(text(lang.tr("Delete")))
             .style(|theme: &iced::Theme, status| {
                 let mut s = crate::views::styles::secondary_button(theme, status);
-                s.text_color = Color::from_rgb8(0xE5, 0x4D, 0x4D);
+                s.text_color = color_danger_text();
                 s
             })
             .on_press(SettingsEvent::Models(ModelsEvent::DeleteProvider(
@@ -679,7 +679,10 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
 
 /// Inline validation message for the provider form's JSON fields.
 fn form_error_row<'a>(message: &'a str, lang: Lang) -> Element<'a, SettingsEvent> {
-    text(lang.tr(message)).size(12).color(CRABOT_DANGER).into()
+    text(lang.tr(message))
+        .size(12)
+        .color(color_danger_text())
+        .into()
 }
 
 /// Labels are shown as draggable capsules on a single (scrollable) row.
@@ -749,7 +752,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
     } else {
         chips.push(
             mouse_area(
-                container(text("+").size(13).color(CRABOT_PRIMARY))
+                container(text("+").size(13).color(color_accent()))
                     .padding([5, 12])
                     .style(add_chip_style),
             )
@@ -785,7 +788,7 @@ fn chip_style(dragged: bool) -> impl Fn(&iced::Theme) -> container::Style {
     move |_: &iced::Theme| container::Style {
         background: Some(color_surface().into()),
         border: Border::default().rounded(999).width(1).color(if dragged {
-            CRABOT_PRIMARY
+            color_accent()
         } else {
             color_border()
         }),
@@ -800,7 +803,7 @@ fn add_chip_style(_: &iced::Theme) -> container::Style {
         border: Border::default()
             .rounded(999)
             .width(1)
-            .color(CRABOT_PRIMARY),
+            .color(color_accent()),
         ..container::Style::default()
     }
 }
@@ -812,11 +815,11 @@ fn chip_input_style(_theme: &iced::Theme, _status: text_input::Status) -> text_i
         border: Border::default()
             .rounded(999)
             .width(1)
-            .color(CRABOT_PRIMARY),
+            .color(color_accent()),
         icon: color_muted(),
         placeholder: color_muted(),
         value: color_text_strong(),
-        selection: CRABOT_PRIMARY.scale_alpha(0.3),
+        selection: color_selection(),
     }
 }
 
@@ -900,7 +903,7 @@ fn manual_add_editor<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent>
 
     let mut col = column![input, actions].spacing(4).width(Length::Fill);
     if let Some(err) = &state.model_add_error {
-        col = col.push(text(err).size(11).color(CRABOT_DANGER));
+        col = col.push(text(err).size(11).color(color_danger_text()));
     }
     col.into()
 }
@@ -948,7 +951,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
             .spacing(8);
             let mut content = column![actions].spacing(4);
             if let Some(err) = &state.models_fetch_error {
-                content = content.push(text(err).size(11).color(CRABOT_DANGER));
+                content = content.push(text(err).size(11).color(color_danger_text()));
             }
             content.into()
         }
@@ -984,13 +987,11 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                         move |_: &iced::Theme| {
                             if is_selected {
                                 container::Style {
-                                    background: Some(
-                                        Color::from_rgb8(0x3B, 0x82, 0xF6).scale_alpha(0.12).into(),
-                                    ),
+                                    background: Some(color_accent().scale_alpha(0.12).into()),
                                     border: Border::default()
                                         .rounded(4)
                                         .width(1)
-                                        .color(Color::from_rgb8(0x3B, 0x82, 0xF6).scale_alpha(0.3)),
+                                        .color(color_accent().scale_alpha(0.3)),
                                     ..container::Style::default()
                                 }
                             } else {

@@ -3,13 +3,13 @@
 use std::sync::LazyLock;
 
 use iced::{
-    Alignment, Color, Element, Length, padding,
+    Alignment, Element, Length, padding,
     widget::{Space, button, column, image, row, scrollable, text, toggler},
 };
 
 use super::{BOLD, SettingsEvent, SettingsState};
 use crate::views::styles;
-use crate::views::theme::{CRABOT_PRIMARY, color_muted, color_text_strong};
+use crate::views::theme::{color_accent, color_muted, color_success, color_text_strong};
 
 /// Image handle for the embedded logo, loaded once from the compiled-in assets.
 fn logo_handle() -> image::Handle {
@@ -68,7 +68,7 @@ pub(crate) fn about_page<'a>(state: &'a super::SettingsState) -> Element<'a, Set
         .height(80)
         .content_fit(iced::ContentFit::Contain);
 
-    let name = text(APP_NAME).size(24).font(BOLD).color(CRABOT_PRIMARY);
+    let name = text(APP_NAME).size(24).font(BOLD).color(color_accent());
 
     let version = text(format!("{} {VERSION}", lang.tr("Version")))
         .size(16)
@@ -98,7 +98,7 @@ pub(crate) fn about_page<'a>(state: &'a super::SettingsState) -> Element<'a, Set
                 .replace("{version}", version),
         )
         .size(13)
-        .color(Color::from_rgb(0.2, 0.7, 0.3)),
+        .color(color_success()),
         UpdateCheck::Idle => text(""),
     };
 
@@ -147,7 +147,7 @@ fn link_button_style(_theme: &iced::Theme, status: button::Status) -> button::St
     let hovered = matches!(status, button::Status::Hovered);
     button::Style {
         text_color: if hovered {
-            CRABOT_PRIMARY
+            color_accent()
         } else {
             color_muted()
         },

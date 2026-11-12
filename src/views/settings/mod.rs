@@ -1,7 +1,8 @@
 use super::icons;
 use super::theme::{
-    CRABOT_DANGER, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, color_border, color_card, color_dialog_bg,
-    color_muted, color_surface, color_text_strong,
+    CRABOT_DIALOG_RADIUS, color_accent, color_border, color_card, color_danger_text,
+    color_dialog_bg, color_muted, color_on_accent, color_recessed, color_surface,
+    color_text_strong,
 };
 use crate::widgets::textarea::TextArea;
 use crabot::model::{ModelConfig, ModelList, Provider, TaskModels};
@@ -21,7 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use tokio_util::sync::CancellationToken;
 
 use crabot::i18n::Lang;
-use crabot::settings::Appearance;
+use crabot::settings::{Appearance, ColorStyle};
 
 pub mod about;
 pub mod ai_models;
@@ -73,6 +74,8 @@ pub(crate) enum SettingsEvent {
     SetLanguage(Lang),
     /// Switch the color appearance (applied immediately, persisted to settings).
     SetAppearance(Appearance),
+    /// Switch the color style (applied immediately, persisted).
+    SetColorStyle(ColorStyle),
     /// Change the chat font scale, clamped to 0.5–2.0 (applied immediately).
     SetFontScale(f32),
     /// Choose the renderer backend (`ICED_BACKEND` value); takes effect after a restart.
@@ -106,6 +109,8 @@ pub(crate) struct SettingsState {
     pub(crate) language: crabot::i18n::Lang,
     /// Color appearance of the dialog; mirrors `app.settings.appearance` while open.
     pub(crate) appearance: Appearance,
+    /// Color style; mirrors `app.settings.color_style` while open.
+    pub(crate) color_style: ColorStyle,
     /// Chat font scale of the dialog; mirrors `app.settings.font_scale` while open.
     pub(crate) font_scale: f32,
     /// Renderer backend of the dialog; mirrors `app.settings.iced_backend` while open.
@@ -233,6 +238,7 @@ impl Default for SettingsState {
             selected_tab: SettingsTab::UserInterface,
             language: crabot::i18n::Lang::default(),
             appearance: Appearance::default(),
+            color_style: ColorStyle::default(),
             font_scale: 1.0,
             iced_backend: String::from("auto"),
             selected_provider_id: String::new(),
@@ -547,6 +553,9 @@ impl SettingsState {
             SettingsEvent::SetAppearance(appearance) => {
                 self.appearance = appearance;
             }
+            SettingsEvent::SetColorStyle(style) => {
+                self.color_style = style;
+            }
             SettingsEvent::SetFontScale(v) => {
                 self.font_scale = crabot::settings::snap_font_scale(v);
             }
@@ -754,14 +763,14 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
             text(lang.tr("Settings"))
                 .size(18)
                 .font(BOLD)
-                .color(CRABOT_PRIMARY),
+                .color(color_accent()),
             iced::widget::Space::new().width(Length::Fill),
             button(
                 svg(svg::Handle::from_memory(icons::CLOSE))
                     .width(16)
                     .height(16)
-                    .style(|theme: &iced::Theme, _status| svg::Style {
-                        color: Some(theme.palette().text),
+                    .style(|_theme: &iced::Theme, _status| svg::Style {
+                        color: Some(color_text_strong()),
                     }),
             )
             .padding([4, 8])
@@ -799,7 +808,10 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
         .height(Length::Fill)
         .style(|_: &iced::Theme| container::Style {
             background: Some(color_surface().into()),
-            border: Border::default().rounded(CRABOT_DIALOG_RADIUS),
+            border: Border::default()
+                .rounded(CRABOT_DIALOG_RADIUS)
+                .width(1)
+                .color(color_border()),
             ..container::Style::default()
         });
 
@@ -848,14 +860,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
 
 pub(super) fn form_card_style(_theme: &iced::Theme) -> container::Style {
     container::Style {
-        background: Some(
-            if crate::views::theme::is_dark() {
-                color_card()
-            } else {
-                Color::from_rgb8(0xF4, 0xF4, 0xF4)
-            }
-            .into(),
-        ),
+        background: Some(color_recessed().into()),
         border: Border::default().rounded(8).width(1).color(color_border()),
         ..container::Style::default()
     }
@@ -864,7 +869,7 @@ pub(super) fn form_card_style(_theme: &iced::Theme) -> container::Style {
 pub(super) fn section_rule() -> Element<'static, SettingsEvent> {
     rule::horizontal(1)
         .style(|_: &iced::Theme| rule::Style {
-            color: CRABOT_PRIMARY,
+            color: color_accent(),
             fill_mode: rule::FillMode::Full,
             radius: 0.0.into(),
             snap: false,
@@ -979,7 +984,7 @@ pub(super) fn sub_card_style(_theme: &iced::Theme) -> container::Style {
 pub(super) fn delete_button_style(_theme: &iced::Theme, status: button::Status) -> button::Style {
     button::Style {
         text_color: match status {
-            button::Status::Hovered | button::Status::Pressed => CRABOT_DANGER,
+            button::Status::Hovered | button::Status::Pressed => color_danger_text(),
             _ => color_muted(),
         },
         ..button::Style::default()
@@ -988,7 +993,7 @@ pub(super) fn delete_button_style(_theme: &iced::Theme, status: button::Status) 
 
 /// Bold primary-colored section heading.
 pub(super) fn section_header(title: &'static str) -> Element<'static, SettingsEvent> {
-    text(title).size(13).font(BOLD).color(CRABOT_PRIMARY).into()
+    text(title).size(13).font(BOLD).color(color_accent()).into()
 }
 
 /// Muted bold section title inside a settings card.
@@ -1120,8 +1125,8 @@ fn sidebar_tab_style(active: bool) -> impl Fn(&iced::Theme, button::Status) -> b
     move |_: &iced::Theme, _status: button::Status| {
         if active {
             button::Style {
-                background: Some(CRABOT_PRIMARY.into()),
-                text_color: Color::WHITE,
+                background: Some(color_accent().into()),
+                text_color: color_on_accent(),
                 border: Border::default().rounded(6),
                 ..button::Style::default()
             }

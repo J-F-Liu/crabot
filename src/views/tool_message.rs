@@ -10,10 +10,11 @@ use iced_selection::text::Style as SelectionStyle;
 
 use super::ASK_INPUT;
 use super::styles::{primary_button, secondary_button};
-use super::styles::{sel_default, sel_primary, sel_secondary};
+use super::styles::{sel_default, sel_muted, sel_primary};
 use super::theme::{
-    CRABOT_DANGER, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT, color_diff_bg_add, color_diff_bg_del,
-    color_muted, color_text, color_tool_content_bg, color_tool_content_border,
+    color_danger_text, color_diff_bg_add, color_diff_bg_del, color_info, color_muted,
+    color_search_highlight, color_success, color_text_strong, color_tool_accent,
+    color_tool_content_bg, color_tool_content_border,
 };
 use super::tool_view::{self, ArgRow, EditRow, TodoRow, TodoState};
 use crate::app::session_state::ASK_EXTEND_SECS;
@@ -139,7 +140,7 @@ pub(crate) fn ask_view<'a>(
     let header = row![
         text(lang.tr("🤖 LLM asks:"))
             .size(13.0)
-            .color(CRABOT_TOOL_ACCENT),
+            .color(color_tool_accent()),
         Space::new().width(Fill),
         countdown
     ];
@@ -205,7 +206,11 @@ pub(crate) fn ask_result_view<'a>(
         selectable(question, "").style(sel_default).into();
 
     let answer_label = lang.tr(if is_ok { "Answer" } else { "Error" });
-    let answer_color = if is_ok { CRABOT_SUCCESS } else { CRABOT_DANGER };
+    let answer_color = if is_ok {
+        color_success()
+    } else {
+        color_danger_text()
+    };
 
     let mut answer_col = column![];
 
@@ -267,9 +272,6 @@ pub(crate) fn ask_result_view<'a>(
     ask_tool_container(column![question_text, answer_col].spacing(8))
 }
 
-/// Color used for search keyword highlighting within text.
-const SEARCH_HIGHLIGHT_BG: Color = Color::from_rgba(1.0, 0.92, 0.0, 0.35);
-
 /// `Span`s of `content`, case-insensitive `query` matches highlighted.
 ///
 /// A `&str`/`&String` is borrowed, an owned `String` moves in: the only copy
@@ -318,7 +320,7 @@ fn split_spans<'a>(text: &'a str, ranges: &[Range<usize>]) -> Vec<Span<'a, (), i
         if range.start > last_end {
             spans.push(span(&text[last_end..range.start]));
         }
-        spans.push(span(&text[range.start..range.end]).background(SEARCH_HIGHLIGHT_BG));
+        spans.push(span(&text[range.start..range.end]).background(color_search_highlight()));
         last_end = range.end;
     }
 
@@ -431,7 +433,7 @@ fn arg_row<'a, M: Clone + 'static>(
     row![
         text(format!("{}:", key))
             .size(12.0 * font_scale)
-            .color(CRABOT_TOOL_ACCENT)
+            .color(color_tool_accent())
             .font(bold_font()),
         Space::new().width(8),
         mono_selectable(value, search_query, font_scale, sel_default),
@@ -479,16 +481,16 @@ fn edits_table<M: Clone + 'static>(
                     idx,
                     diff_row(
                         "−",
-                        CRABOT_DANGER,
+                        color_danger_text(),
                         old_text,
-                        sel_secondary,
+                        sel_muted,
                         color_diff_bg_del(),
                         font_scale,
                         search_query,
                     ),
                     diff_row(
                         "+",
-                        CRABOT_SUCCESS,
+                        color_success(),
                         new_text,
                         sel_primary,
                         color_diff_bg_add(),
@@ -500,9 +502,9 @@ fn edits_table<M: Clone + 'static>(
                     idx,
                     diff_row(
                         "⚠",
-                        CRABOT_DANGER,
+                        color_danger_text(),
                         raw,
-                        sel_secondary,
+                        sel_muted,
                         color_diff_bg_del(),
                         font_scale,
                         search_query,
@@ -519,8 +521,6 @@ fn edits_table<M: Clone + 'static>(
 }
 
 /// Status colours for todo items.
-const TODO_STATUS_PENDING: Color = Color::from_rgb8(0x99, 0x99, 0x99);
-const TODO_STATUS_IN_PROGRESS: Color = Color::from_rgb8(0x29, 0x76, 0xFF);
 const TODO_STATUS_WIDTH: f32 = 96.0;
 
 fn todo_row<'a, M: Clone + 'static>(
@@ -560,10 +560,10 @@ fn todo_item_row<M: Clone + 'static>(
     lang: Lang,
 ) -> Element<'static, M> {
     let color = match row.state {
-        TodoState::Pending => TODO_STATUS_PENDING,
-        TodoState::InProgress => TODO_STATUS_IN_PROGRESS,
-        TodoState::Completed => CRABOT_SUCCESS,
-        TodoState::Invalid => CRABOT_DANGER,
+        TodoState::Pending => color_muted(),
+        TodoState::InProgress => color_info(),
+        TodoState::Completed => color_success(),
+        TodoState::Invalid => color_danger_text(),
     };
     let status = lang.tr(row.state.label_key());
     todo_row(row.content, status, color, font_scale, search_query)
@@ -660,7 +660,7 @@ fn offset_limit_row<M: Clone + 'static>(
         combined,
         search_query,
         font_scale,
-        sel_secondary,
+        sel_muted,
     ))
     .padding([4, 8])
     .style(tool_content_box)
@@ -689,7 +689,7 @@ pub(super) fn streaming_result_text<'a, M: Clone + 'static>(
     let mut body = column![
         text(lang.tr("Running…"))
             .size(11.0 * font_scale)
-            .color(CRABOT_TOOL_ACCENT)
+            .color(color_tool_accent())
             .font(bold_font())
     ]
     .spacing(4)
@@ -728,9 +728,9 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
         .unwrap_or_else(|e| e.as_str());
     let is_ok = result.is_ok();
     let accent = if is_ok {
-        CRABOT_TOOL_ACCENT
+        color_tool_accent()
     } else {
-        CRABOT_DANGER
+        color_danger_text()
     };
     let fill = if is_ok {
         color_tool_content_bg()
@@ -746,8 +746,8 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
     let body: Element<'a, M> = selectable(display, search_query)
         .size(13.0 * font_scale)
         .font(mono_font())
-        .style(move |theme: &Theme| SelectionStyle {
-            color: Some(color_text(theme)),
+        .style(move |_theme: &Theme| SelectionStyle {
+            color: Some(color_text_strong()),
             selection: accent,
         })
         .into();

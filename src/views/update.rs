@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use iced::{
-    Alignment, Border, Color, Element, Length, Theme,
+    Alignment, Border, Element, Length, Theme,
     widget::{Space, button, container, row, text},
 };
 use semver::Version;
@@ -281,7 +281,7 @@ pub(crate) fn update_banner(
                     .replace("{CURRENT_VERSION}", CURRENT_VERSION),
             )
             .size(13)
-            .color(Color::WHITE),
+            .color(super::theme::color_on_accent()),
             Space::new().width(Length::Fill),
             banner_button(
                 lang.tr("View Release Notes"),
@@ -306,23 +306,27 @@ fn banner_button(
     size: f32,
     on_press: OverlayEvent,
 ) -> button::Button<'static, OverlayEvent> {
-    button(text(label).size(size).color(Color::WHITE))
-        .style(update_banner_link_style)
-        .on_press(on_press)
+    button(
+        text(label)
+            .size(size)
+            .color(super::theme::color_on_accent()),
+    )
+    .style(update_banner_link_style)
+    .on_press(on_press)
 }
 
 fn banner_button_disabled(label: String, size: f32) -> button::Button<'static, OverlayEvent> {
     button(
         text(label)
             .size(size)
-            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.4)),
+            .color(super::theme::color_on_accent().scale_alpha(0.4)),
     )
     .style(update_banner_disabled_style)
 }
 
 fn update_banner_style(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(super::theme::CRABOT_PRIMARY.into()),
+        background: Some(super::theme::color_accent().into()),
         ..container::Style::default()
     }
 }
@@ -334,8 +338,8 @@ fn update_banner_link_style(_theme: &Theme, status: button::Status) -> button::S
         _ => 0.15,
     };
     button::Style {
-        background: Some(Color::from_rgba(1.0, 1.0, 1.0, alpha).into()),
-        text_color: Color::WHITE,
+        background: Some(super::theme::color_on_accent().scale_alpha(alpha).into()),
+        text_color: super::theme::color_on_accent(),
         border: Border::default().rounded(4),
         ..button::Style::default()
     }
@@ -343,8 +347,8 @@ fn update_banner_link_style(_theme: &Theme, status: button::Status) -> button::S
 
 fn update_banner_disabled_style(_theme: &Theme, _status: button::Status) -> button::Style {
     button::Style {
-        background: Some(Color::from_rgba(1.0, 1.0, 1.0, 0.08).into()),
-        text_color: Color::from_rgba(1.0, 1.0, 1.0, 0.4),
+        background: Some(super::theme::color_on_accent().scale_alpha(0.08).into()),
+        text_color: super::theme::color_on_accent().scale_alpha(0.4),
         border: Border::default().rounded(4),
         ..button::Style::default()
     }

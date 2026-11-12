@@ -2,13 +2,14 @@ use iced::widget::scrollable::{AbsoluteOffset, Direction, Scrollbar};
 use iced::widget::{Id, operation};
 use iced::{
     Alignment, Color, Element, Font, Length, Padding, Task, font, mouse,
-    widget::{Space, button, container, mouse_area, row, scrollable, svg, text, tooltip},
+    widget::{Space, button, container, mouse_area, row, scrollable, svg, text},
 };
 
 use super::icons::{
     CHEVRON_LEFT, CHEVRON_RIGHT, CLOSE, PANEL_RIGHT_CLOSE, PANEL_RIGHT_OPEN, icon_action,
+    with_tooltip,
 };
-use super::styles::{bordered_bar_style, session_tab_style, tab_close_button_style, tooltip_style};
+use super::styles::{bordered_bar_style, session_tab_style, tab_close_button_style};
 use super::theme;
 use crate::app::{ConversationState, SessionEndStatus, SessionTab, conversation::TabBarDirection};
 use crate::{CenterPaneEvent, ConversationEvent};
@@ -103,9 +104,9 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool, lang: Lang) -> Element<'a, 
     // Status dot: ○ while streaming (raised, orange while awaiting a task), ● when ended.
     let status = if running {
         let color = if tab.waiting_for_task() {
-            theme::CRABOT_ORANGE
+            theme::color_orange()
         } else {
-            theme::CRABOT_PRIMARY
+            theme::color_accent()
         };
         Some(("○", color, 2.0))
     } else {
@@ -136,15 +137,7 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool, lang: Lang) -> Element<'a, 
     } else {
         &tab.session.title
     };
-    content = content.push(
-        tooltip(
-            label,
-            text(tip).size(11).color(Color::WHITE),
-            tooltip::Position::Bottom,
-        )
-        .gap(4)
-        .style(tooltip_style),
-    );
+    content = content.push(with_tooltip(label.into(), tip));
 
     // Close button — disabled while this tab is running; the glyph also stays muted on hover.
     let close = button(tinted_icon(CLOSE, CLOSE_SIZE, !running))
@@ -215,9 +208,8 @@ fn arrow_button<'a>(
         .width(22.0)
         .height(Length::Fixed(TAB_HEIGHT))
         .align_y(Alignment::Center)
-        .style(move |theme: &iced::Theme| container::Style {
-            background: (held || hovered)
-                .then(|| theme.extended_palette().secondary.weak.color.into()),
+        .style(move |_theme: &iced::Theme| container::Style {
+            background: (held || hovered).then(|| theme::color_hover().into()),
             ..container::Style::default()
         })
         .into()
@@ -239,8 +231,8 @@ fn tinted_icon<'a>(data: &'static [u8], size: f32, interactive: bool) -> svg::Sv
 /// Map a session-end status to a dot color for the tab indicator.
 fn end_status_color(status: SessionEndStatus) -> Color {
     match status {
-        SessionEndStatus::Done => theme::CRABOT_SUCCESS,
-        SessionEndStatus::Error => theme::CRABOT_DANGER,
-        SessionEndStatus::Cancelled => theme::CRABOT_YELLOW,
+        SessionEndStatus::Done => theme::color_success(),
+        SessionEndStatus::Error => theme::color_danger_text(),
+        SessionEndStatus::Cancelled => theme::color_warning(),
     }
 }

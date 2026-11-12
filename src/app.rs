@@ -21,9 +21,7 @@ use prompt::{FilepathEntry, TOOLS};
 
 use crate::views::{
     DividerState, PaneSection, PaneSections, center_pane, divider, left_pane, right_pane,
-    session_list::SessionEntry,
-    theme::{self, CRABOT_MODAL_SCRIM},
-    tool_list::ToolListState,
+    session_list::SessionEntry, theme, tool_list::ToolListState,
 };
 use crate::widgets::textarea::{self, TextArea};
 
@@ -865,6 +863,7 @@ impl App {
         let tools_enabled = saved.tools_enabled;
         let dark = saved.appearance.is_dark();
         let acp_server_enabled = saved.acp_server_enabled;
+        theme::set_color_style(saved.color_style);
         theme::set_dark_mode(dark);
 
         let initial_selected_model = saved.selected_model.clone();
@@ -924,7 +923,7 @@ impl App {
                 left_divider: DividerState::default(),
                 right_divider: DividerState::default(),
                 right_pane_restore_width,
-                theme: theme::theme_for(dark),
+                theme: theme::theme_for_current(),
                 shift_held: false,
                 ctrl_held: false,
                 scroll_viewport_height: 0.0,
@@ -1126,7 +1125,13 @@ impl App {
     /// Switch the live theme; the persisted appearance preference is unchanged.
     pub(crate) fn set_dark(&mut self, dark: bool) {
         theme::set_dark_mode(dark);
-        self.layout.theme = theme::theme_for(dark);
+        self.layout.theme = theme::theme_for_current();
+    }
+
+    /// Switch the color style and rebuild the active theme.
+    pub(crate) fn set_color_style(&mut self, style: crabot::settings::ColorStyle) {
+        theme::set_color_style(style);
+        self.layout.theme = theme::theme_for_current();
     }
 
     /// Apply a persisted appearance preference (`System` asks the OS now).
@@ -1208,6 +1213,9 @@ impl App {
         if merged.appearance != ours.appearance {
             self.apply_appearance(merged.appearance);
         }
+        if merged.color_style != ours.color_style {
+            self.set_color_style(merged.color_style);
+        }
     }
 
     fn get_current_model(&self) -> Option<&ModelConfig> {
@@ -1255,7 +1263,7 @@ impl App {
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(|_: &Theme| container::Style {
-                    background: Some(CRABOT_MODAL_SCRIM.into()),
+                    background: Some(theme::color_scrim().into()),
                     ..container::Style::default()
                 });
             let dialog = crate::views::settings_dialog(&self.settings_dialog)

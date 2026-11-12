@@ -8,8 +8,7 @@ use iced::{
 use crate::tools::{Tool, ToolRegistry};
 use crate::views::styles::sel_default;
 use crate::views::theme::{
-    CRABOT_DANGER, CRABOT_PRIMARY, color_border, color_card, color_muted, color_text_strong,
-    is_dark,
+    color_accent, color_border, color_danger_text, color_muted, color_success, color_text_strong,
 };
 use crate::views::tool_message::selectable;
 use crate::views::{primary_button, secondary_button, secondary_dropdown_style};
@@ -403,12 +402,17 @@ fn render_param_field<'a>(
                 item_rows.push(
                     row![
                         input,
-                        button(text("×").size(13).color(CRABOT_DANGER).font(super::BOLD),)
-                            .style(secondary_button)
-                            .padding([2, 6])
-                            .on_press(SettingsEvent::Playground(
-                                PlaygroundEvent::RemovePlaygroundArrayItem(del_name.clone(), i,),
-                            )),
+                        button(
+                            text("×")
+                                .size(13)
+                                .color(color_danger_text())
+                                .font(super::BOLD),
+                        )
+                        .style(secondary_button)
+                        .padding([2, 6])
+                        .on_press(SettingsEvent::Playground(
+                            PlaygroundEvent::RemovePlaygroundArrayItem(del_name.clone(), i,),
+                        )),
                     ]
                     .spacing(4)
                     .align_y(Alignment::Center)
@@ -464,17 +468,15 @@ fn result_text(output: String) -> Element<'static, SettingsEvent> {
     .into()
 }
 
-/// Box with a colored border and a theme-aware background.
+/// Box with a colored border and a matching translucent background.
 fn result_box<'a>(
     content: impl Into<Element<'a, SettingsEvent>>,
-    border: Color,
-    dark: Color,
-    light: Color,
+    color: Color,
 ) -> Element<'a, SettingsEvent> {
     container(content)
         .style(move |_: &iced::Theme| container::Style {
-            background: Some(if is_dark() { dark } else { light }.into()),
-            border: Border::default().rounded(6).width(1).color(border),
+            background: Some(color.scale_alpha(0.12).into()),
+            border: Border::default().rounded(6).width(1).color(color),
             ..container::Style::default()
         })
         .padding(8)
@@ -485,18 +487,8 @@ fn result_box<'a>(
 fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     let lang = state.language;
     match &state.playground_result {
-        Some(Ok(output)) => result_box(
-            result_text(pretty_json_or_raw(output)),
-            Color::from_rgb8(0x4C, 0xAF, 0x50),
-            Color::from_rgb8(0x1B, 0x2E, 0x24),
-            Color::from_rgb8(0xF0, 0xFF, 0xF0),
-        ),
-        Some(Err(err)) => result_box(
-            result_text(err.clone()),
-            CRABOT_DANGER,
-            Color::from_rgb8(0x33, 0x20, 0x20),
-            Color::from_rgb8(0xFF, 0xF0, 0xF0),
-        ),
+        Some(Ok(output)) => result_box(result_text(pretty_json_or_raw(output)), color_success()),
+        Some(Err(err)) => result_box(result_text(err.clone()), color_danger_text()),
         None => result_box(
             text(if state.playground_running {
                 lang.tr("Executing…")
@@ -506,8 +498,6 @@ fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEve
             .size(13)
             .color(color_muted()),
             color_border(),
-            color_card(),
-            color_card(),
         ),
     }
 }
@@ -705,7 +695,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         text(lang.tr("Tool Playground"))
             .size(16)
             .font(super::BOLD)
-            .color(CRABOT_PRIMARY),
+            .color(color_accent()),
         text(lang.tr("Select a tool, fill in parameters, and execute it directly."))
             .size(12)
             .color(color_muted()),

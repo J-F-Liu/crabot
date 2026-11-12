@@ -96,4 +96,5 @@
     use_system_proxy_for_tools: true,
     last_update_version: None,
     appearance: System,
+    color_style: Graphite,
 )

@@ -12,7 +12,7 @@ use crabot::i18n::Lang;
 
 use super::session_tabs::localize_tab_label;
 use super::styles::{danger_button, primary_button, secondary_button};
-use super::theme::{CRABOT_DIALOG_RADIUS, CRABOT_MODAL_SCRIM, CRABOT_PRIMARY, color_dialog_bg};
+use super::theme::{CRABOT_DIALOG_RADIUS, color_accent, color_dialog_bg, color_scrim};
 
 const TITLE: Font = Font {
     weight: font::Weight::Bold,
@@ -31,7 +31,7 @@ fn modal<'a>(
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_: &Theme| container::Style {
-                background: Some(CRABOT_MODAL_SCRIM.into()),
+                background: Some(color_scrim().into()),
                 ..container::Style::default()
             }),
     )
@@ -39,10 +39,10 @@ fn modal<'a>(
 
     let card = container(
         column![
-            container(text(title).size(18).font(TITLE).color(CRABOT_PRIMARY))
+            container(text(title).size(18).font(TITLE).color(color_accent()))
                 .padding(iced::Padding::new(0.0).bottom(8.0)),
             rule::horizontal(1).style(|_: &Theme| rule::Style {
-                color: CRABOT_PRIMARY,
+                color: color_accent(),
                 fill_mode: rule::FillMode::Full,
                 radius: 0.0.into(),
                 snap: false,

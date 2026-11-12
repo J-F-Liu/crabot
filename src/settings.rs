@@ -53,6 +53,33 @@ impl Appearance {
     }
 }
 
+/// Color style applied while dark mode is active.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum ColorStyle {
+    /// Cool graphite neutrals with a brightened brand teal.
+    #[default]
+    Graphite,
+    /// Blue-slate surfaces with a sky-cyan accent.
+    Ocean,
+    /// Warm charcoal surfaces with an amber accent.
+    Ember,
+}
+
+impl ColorStyle {
+    /// All styles, in display order.
+    pub const ALL: [ColorStyle; 3] = [ColorStyle::Graphite, ColorStyle::Ocean, ColorStyle::Ember];
+
+    /// English name of this style, also its translation key.
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorStyle::Graphite => "Graphite Teal",
+            ColorStyle::Ocean => "Deep Ocean",
+            ColorStyle::Ember => "Warm Ember",
+        }
+    }
+}
+
 /// Whether the OS prefers dark; platforms that cannot be queried report light.
 fn system_is_dark() -> bool {
     #[cfg(windows)]
@@ -148,6 +175,8 @@ pub struct Settings {
     pub last_update_version: Option<String>,
     /// Color appearance: follow system, light, or dark.
     pub appearance: Appearance,
+    /// Color style applied while dark mode is active.
+    pub color_style: ColorStyle,
     /// UI language.
     pub language: Lang,
     /// Renderer backend (`ICED_BACKEND` value); `auto`/empty = wgpu → tiny-skia.
@@ -193,6 +222,7 @@ impl Default for Settings {
             use_system_proxy_for_tools: true,
             last_update_version: None,
             appearance: Appearance::default(),
+            color_style: ColorStyle::default(),
             language: Lang::default(),
             iced_backend: String::from("auto"),
             acp_server_enabled: false,
@@ -307,6 +337,7 @@ fn merge_settings(baseline: &Settings, ours: &Settings, disk: &Settings) -> Sett
         use_system_proxy_for_tools,
         last_update_version,
         appearance,
+        color_style,
         language,
         iced_backend,
         // Read only when the ACP listener next starts; never auto-restarted.

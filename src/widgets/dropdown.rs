@@ -26,6 +26,8 @@ use iced::{
 
 use std::borrow::Borrow;
 
+use crate::views::theme;
+
 // ── style types ────────────────────────────────────────────────────
 
 /// The visual state of a [`DropDown`] trigger.
@@ -52,10 +54,10 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
-            text_color: crate::views::theme::color_text_strong(),
-            placeholder_color: crate::views::theme::color_muted(),
-            handle_color: crate::views::theme::color_muted(),
-            background: Background::Color(crate::views::theme::color_card()),
+            text_color: theme::color_text_strong(),
+            placeholder_color: theme::color_muted(),
+            handle_color: theme::color_muted(),
+            background: Background::Color(theme::color_card()),
             border: Border::default().rounded(6),
         }
     }
@@ -75,14 +77,14 @@ pub struct MenuStyle {
 impl Default for MenuStyle {
     fn default() -> Self {
         Self {
-            background: Background::Color(crate::views::theme::color_surface()),
+            background: Background::Color(theme::color_surface()),
             border: Border::default()
                 .rounded(6)
                 .width(1)
-                .color(crate::views::theme::color_border()),
-            text_color: crate::views::theme::color_text_strong(),
-            selected_text_color: Color::WHITE,
-            selected_background: Background::Color(Color::from_rgb(0.1, 0.6, 0.55)),
+                .color(theme::color_border()),
+            text_color: theme::color_text_strong(),
+            selected_text_color: theme::color_on_accent(),
+            selected_background: Background::Color(theme::color_accent()),
             shadow: Shadow::default(),
         }
     }
@@ -1161,7 +1163,7 @@ where
                     border: border::rounded(SB_WIDTH / 2.0),
                     ..renderer::Quad::default()
                 },
-                Background::Color(Color::from_rgba(0.0, 0.0, 0.0, track_alpha)),
+                Background::Color(theme::color_text_strong().scale_alpha(track_alpha)),
             );
             // Thumb
             renderer.fill_quad(
@@ -1170,7 +1172,7 @@ where
                     border: border::rounded(SB_WIDTH / 2.0),
                     ..renderer::Quad::default()
                 },
-                Background::Color(Color::from_rgba(0.0, 0.0, 0.0, thumb_alpha)),
+                Background::Color(theme::color_text_strong().scale_alpha(thumb_alpha)),
             );
         }
     }

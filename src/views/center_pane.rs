@@ -33,12 +33,12 @@ use super::session_tabs::localize_tab_label;
 use super::styles::{
     assistant_bubble_style, attachment_chip_style, bordered_bar_style, icon_button_style,
     menu_container_style, menu_item_style, pane_center, reasoning_box_style, role_badge_style,
-    sel_default, sel_muted, sel_secondary, sel_strong, session_header_style, tool_bubble_style,
-    user_bubble_style,
+    sel_default, sel_muted, session_header_style, tool_bubble_style, user_bubble_style,
 };
 use super::theme::{
-    CRABOT_DANGER, CRABOT_DIALOG_RADIUS, CRABOT_PRIMARY, CRABOT_SUCCESS, CRABOT_TOOL_ACCENT,
-    color_dialog_bg, color_muted, color_surface, color_text, thin_vertical,
+    CRABOT_DIALOG_RADIUS, color_accent, color_code_bg, color_code_border, color_code_text,
+    color_danger_text, color_dialog_bg, color_muted, color_success, color_surface,
+    color_text_strong, color_tool_accent, thin_vertical,
 };
 use super::tool_message::{
     arg_rows, ask_result_view, bold_font, highlighted_text, result_text, selectable,
@@ -226,9 +226,9 @@ fn dialog_container_style(_theme: &Theme) -> container::Style {
 /// Style for a turn that matches the search query (not the current match).
 fn search_match_style(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.08).into()),
+        background: Some(color_accent().scale_alpha(0.08).into()),
         border: Border {
-            color: Color::from_rgba(0.1, 0.6, 0.55, 0.3),
+            color: color_accent().scale_alpha(0.3),
             width: 1.0,
             radius: 4.0.into(),
         },
@@ -239,9 +239,9 @@ fn search_match_style(_theme: &Theme) -> container::Style {
 /// Style for the currently-focused search match.
 fn search_current_style(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.15).into()),
+        background: Some(color_accent().scale_alpha(0.15).into()),
         border: Border {
-            color: CRABOT_PRIMARY,
+            color: color_accent(),
             width: 2.0,
             radius: 4.0.into(),
         },
@@ -283,12 +283,12 @@ fn work_mode_badge<'a>(
     ))
     .padding([2, 8])
     .style(|_theme: &Theme| container::Style {
-        background: Some(Color::from_rgba(0.1, 0.6, 0.55, 0.12).into()),
+        background: Some(color_accent().scale_alpha(0.12).into()),
         border: Border {
             radius: 8.0.into(),
             ..Default::default()
         },
-        text_color: Some(CRABOT_PRIMARY),
+        text_color: Some(color_accent()),
         ..container::Style::default()
     })
     .into()
@@ -421,8 +421,8 @@ fn tool_turn_block<'a>(
         let completed = result.is_some() && !streaming;
 
         let (status_icon, status_color) = match (result, streaming) {
-            (Some(Ok(_)), false) => ("✓", CRABOT_SUCCESS),
-            (Some(Err(_)), false) => ("✗", CRABOT_DANGER),
+            (Some(Ok(_)), false) => ("✓", color_success()),
+            (Some(Err(_)), false) => ("✗", color_danger_text()),
             _ => ("⏳", color_muted()),
         };
 
@@ -479,7 +479,7 @@ fn tool_turn_block<'a>(
                 status_text,
                 text(indicator)
                     .size(10.0 * ctx.font_scale)
-                    .color(CRABOT_TOOL_ACCENT),
+                    .color(color_tool_accent()),
                 Space::new().width(Length::Fill),
                 ts_text,
             ]
@@ -574,7 +574,7 @@ fn image_toggle<'a>(
         "🖼️",
         text(label)
             .size(12.0 * ctx.font_scale)
-            .color(CRABOT_TOOL_ACCENT)
+            .color(color_tool_accent())
             .into(),
         expanded,
         ctx,
@@ -586,6 +586,54 @@ fn image_toggle<'a>(
 /// (no headings, lists, code blocks, etc.).
 fn is_plain_text(md: &markdown::Content) -> bool {
     md.items().len() == 1 && matches!(md.items().first(), Some(markdown::Item::Paragraph(_)))
+}
+
+/// Markdown viewer that paints fenced code blocks in the active palette.
+struct CrabotViewer;
+
+impl<'a> markdown::Viewer<'a, CenterPaneEvent, Theme, iced::Renderer> for CrabotViewer {
+    fn on_link_click(url: markdown::Uri) -> CenterPaneEvent {
+        CenterPaneEvent::LinkClicked(url)
+    }
+
+    fn code_block(
+        &self,
+        settings: markdown::Settings,
+        _language: Option<&'a str>,
+        _code: &'a str,
+        lines: &'a [markdown::Text],
+    ) -> Element<'a, CenterPaneEvent, Theme, iced::Renderer> {
+        container(
+            scrollable(
+                container(column(lines.iter().map(|line| {
+                    iced::widget::rich_text(line.spans(settings.style))
+                        .on_link_click(CenterPaneEvent::LinkClicked)
+                        .font(settings.style.code_block_font)
+                        .size(settings.code_size)
+                        .into()
+                })))
+                .padding(settings.code_size),
+            )
+            .direction(Direction::Horizontal(
+                Scrollbar::default()
+                    .width(settings.code_size / 2)
+                    .scroller_width(settings.code_size / 2),
+            )),
+        )
+        .width(Length::Fill)
+        .padding(settings.code_size / 4)
+        .style(|_theme: &Theme| container::Style {
+            background: Some(color_code_bg().into()),
+            border: Border {
+                color: color_code_border(),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            text_color: Some(color_code_text()),
+            ..container::Style::default()
+        })
+        .into()
+    }
 }
 
 /// Render markdown as double-click-to-select text with transparent inline-code styling.
@@ -603,13 +651,13 @@ fn markdown_element<'a>(
         border: Border::default(),
     };
     md_style.inline_code_padding = 0.into();
-    md_style.inline_code_color = color_text(ctx.theme);
+    md_style.inline_code_color = color_text_strong();
     md_style.code_block_font = Font::MONOSPACE;
     let md_settings = markdown::Settings {
         code_size: code_size.into(),
         ..markdown::Settings::with_text_size(text_size, md_style)
     };
-    mouse_area(markdown::view(md.items(), md_settings).map(CenterPaneEvent::LinkClicked))
+    mouse_area(markdown::view_with(md.items(), md_settings, &CrabotViewer))
         .on_double_click(CenterPaneEvent::Conversation(
             ConversationEvent::ToggleSelectableMode(Some(i)),
         ))
@@ -646,7 +694,7 @@ fn text_turn_block<'a>(
             badge,
             text(indicator)
                 .size(10.0 * ctx.font_scale)
-                .color(CRABOT_PRIMARY),
+                .color(color_accent()),
             Space::new().width(Length::Fill),
             ts_text,
         ]
@@ -678,7 +726,7 @@ fn text_turn_block<'a>(
             } else {
                 selectable(reasoning, ctx.search_query)
                     .size(13.0 * ctx.font_scale)
-                    .style(sel_secondary)
+                    .style(sel_muted)
                     .into()
             };
             content_col = content_col.push(
@@ -783,7 +831,7 @@ fn attachment_preview_body<'a>(
                 .replacen("{reason}", reason, 1),
         )
         .size(12.0 * ctx.font_scale)
-        .color(CRABOT_DANGER)
+        .color(color_danger_text())
         .into(),
         AttachmentPreview::Ready(PreviewContent::Image(handle)) => {
             container(image(handle.clone()).border_radius(6.0))
@@ -886,7 +934,7 @@ pub(crate) fn center_pane<'a>(
             let mut row_elements: Vec<Element<'_, CenterPaneEvent>> = vec![
                 text(indicator)
                     .size(10.0 * font_scale)
-                    .color(CRABOT_PRIMARY)
+                    .color(color_accent())
                     .into(),
             ];
             if let Some(mode) = &dialog.mode {
@@ -1037,7 +1085,7 @@ fn session_header<'a>(
         prompt
     };
     header_bar(
-        selectable(title, "").size(14.0).style(sel_strong).into(),
+        selectable(title, "").size(14.0).style(sel_default).into(),
         header_actions_menu(conversation, lang),
         session_header_style,
     )

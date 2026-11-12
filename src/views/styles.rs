@@ -78,7 +78,7 @@ pub(crate) struct DividerState {
 
 pub(crate) fn divider<M: Clone + 'static>(state: &DividerState) -> Element<'static, M> {
     let color = if state.dragging {
-        CRABOT_PRIMARY
+        color_accent()
     } else if state.hovered {
         color_muted()
     } else {
@@ -96,11 +96,17 @@ pub(crate) fn divider<M: Clone + 'static>(state: &DividerState) -> Element<'stat
 
 // ── button styles ───────────────────────────────────────────────
 
-/// Colored button style — white text on `base`, with hover/pressed variants.
-fn colored(status: button::Status, base: Color, hover: Color, pressed: Color) -> button::Style {
+/// Colored button style — `on` text on `base`, with hover/pressed variants.
+fn colored(
+    status: button::Status,
+    base: Color,
+    hover: Color,
+    pressed: Color,
+    on: Color,
+) -> button::Style {
     let style = button::Style {
         background: Some(base.into()),
-        text_color: Color::WHITE,
+        text_color: on,
         border: iced::Border::default().rounded(6),
         ..button::Style::default()
     };
@@ -124,9 +130,10 @@ fn colored(status: button::Status, base: Color, hover: Color, pressed: Color) ->
 pub(crate) fn primary_button(_theme: &Theme, status: button::Status) -> button::Style {
     colored(
         status,
-        CRABOT_PRIMARY,
-        CRABOT_PRIMARY_HOVER,
-        CRABOT_PRIMARY_PRESSED,
+        color_accent(),
+        color_accent_hover(),
+        color_accent_pressed(),
+        color_on_accent(),
     )
 }
 
@@ -159,8 +166,8 @@ pub(crate) fn secondary_button(_theme: &Theme, status: button::Status) -> button
 }
 
 /// Borderless text button — file paths that open an external diff.
-pub(crate) fn link_button(theme: &Theme, status: button::Status) -> button::Style {
-    flat_button(status, color_primary(theme))
+pub(crate) fn link_button(_theme: &Theme, status: button::Status) -> button::Style {
+    flat_button(status, color_accent())
 }
 
 /// Borderless button: transparent at rest, highlighted on hover/press.
@@ -191,9 +198,10 @@ fn flat_button(status: button::Status, text_color: Color) -> button::Style {
 pub(crate) fn danger_button(_theme: &Theme, status: button::Status) -> button::Style {
     colored(
         status,
-        CRABOT_DANGER,
-        CRABOT_DANGER_HOVER,
-        CRABOT_DANGER_PRESSED,
+        color_danger(),
+        color_danger_hover(),
+        color_danger_pressed(),
+        color_on_danger(),
     )
 }
 
@@ -201,11 +209,7 @@ pub(crate) fn primary_toggler(_theme: &Theme, status: toggler::Status) -> toggle
     let base = toggler::Style {
         background: color_surface().into(),
         background_border_width: 1.0,
-        background_border_color: if is_dark() {
-            Color::from_rgb8(0x45, 0x4C, 0x59)
-        } else {
-            Color::from_rgb8(0xC0, 0xC0, 0xC0)
-        },
+        background_border_color: color_border_strong(),
         foreground: Color::WHITE.into(),
         foreground_border_width: 0.0,
         foreground_border_color: Color::TRANSPARENT,
@@ -219,21 +223,19 @@ pub(crate) fn primary_toggler(_theme: &Theme, status: toggler::Status) -> toggle
         | toggler::Status::Disabled { is_toggled } => {
             let mut style = base;
             if is_toggled {
-                style.background = CRABOT_PRIMARY.into();
-                style.background_border_color = CRABOT_PRIMARY;
+                style.background = color_accent().into();
+                style.background_border_color = color_accent();
             }
             if matches!(status, toggler::Status::Hovered { .. }) {
                 style.background = if is_toggled {
-                    CRABOT_PRIMARY_HOVER.into()
+                    color_accent_hover().into()
                 } else {
                     color_hover().into()
                 };
                 style.background_border_color = if is_toggled {
-                    CRABOT_PRIMARY_HOVER
-                } else if is_dark() {
-                    Color::from_rgb8(0x50, 0x58, 0x66)
+                    color_accent_hover()
                 } else {
-                    Color::from_rgb8(0xA8, 0xA8, 0xA8)
+                    color_border_strong()
                 };
             }
             style
@@ -244,32 +246,28 @@ pub(crate) fn primary_toggler(_theme: &Theme, status: toggler::Status) -> toggle
 pub(crate) fn primary_checkbox(_theme: &Theme, status: checkbox::Status) -> checkbox::Style {
     let base = checkbox::Style {
         background: color_card().into(),
-        icon_color: Color::WHITE,
+        icon_color: color_on_accent(),
         border: iced::Border::default()
             .rounded(4)
             .width(1)
-            .color(if is_dark() {
-                Color::from_rgb8(0x4A, 0x51, 0x5E)
-            } else {
-                Color::from_rgb8(0xB0, 0xB0, 0xB0)
-            }),
+            .color(color_border_strong()),
         text_color: Some(color_text_strong()),
     };
     match status {
         checkbox::Status::Disabled { is_checked } => {
             let mut style = base;
             if is_checked {
-                style.background = Color::from_rgb8(0xA0, 0xA0, 0xA0).into();
+                style.background = color_muted().into();
                 style.border = iced::Border::default()
                     .rounded(4)
                     .width(1)
-                    .color(Color::from_rgb8(0xA0, 0xA0, 0xA0));
-                style.icon_color = Color::from_rgb8(0xE0, 0xE0, 0xE0);
+                    .color(color_muted());
+                style.icon_color = color_card();
             } else {
                 style.border = iced::Border::default()
                     .rounded(4)
                     .width(1)
-                    .color(Color::from_rgb8(0xD0, 0xD0, 0xD0));
+                    .color(color_border());
             }
             style.text_color = Some(color_muted());
             style
@@ -277,19 +275,19 @@ pub(crate) fn primary_checkbox(_theme: &Theme, status: checkbox::Status) -> chec
         checkbox::Status::Active { is_checked } | checkbox::Status::Hovered { is_checked } => {
             let mut style = base;
             if is_checked {
-                style.background = CRABOT_PRIMARY.into();
+                style.background = color_accent().into();
                 style.border = iced::Border::default()
                     .rounded(4)
                     .width(1)
-                    .color(CRABOT_PRIMARY);
-                style.icon_color = Color::WHITE;
+                    .color(color_accent());
+                style.icon_color = color_on_accent();
             }
             if matches!(status, checkbox::Status::Hovered { .. }) && is_checked {
-                style.background = CRABOT_PRIMARY_HOVER.into();
+                style.background = color_accent_hover().into();
                 style.border = iced::Border::default()
                     .rounded(4)
                     .width(1)
-                    .color(CRABOT_PRIMARY_HOVER);
+                    .color(color_accent_hover());
             }
             style
         }
@@ -365,12 +363,11 @@ pub(crate) fn tab_close_button_style(_theme: &Theme, status: button::Status) -> 
 }
 
 /// Subtle icon-button style — transparent background, dim text.
-pub(crate) fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    let p = theme.extended_palette();
+pub(crate) fn icon_button_style(_theme: &Theme, status: button::Status) -> button::Style {
     let mut style = button::Style::default();
     match status {
         button::Status::Hovered | button::Status::Pressed => {
-            style.background = Some(p.secondary.weak.color.into());
+            style.background = Some(color_hover().into());
         }
         _ => {}
     }
@@ -431,21 +428,10 @@ pub(crate) fn tool_bubble_style(_theme: &Theme) -> container::Style {
 
 /// Subtle inset container for reasoning text inside assistant bubbles.
 pub(crate) fn reasoning_box_style(_theme: &Theme) -> container::Style {
-    let (bg, border) = if is_dark() {
-        (
-            Color::from_rgba(1.0, 1.0, 1.0, 0.05),
-            Color::from_rgba(1.0, 1.0, 1.0, 0.09),
-        )
-    } else {
-        (
-            Color::from_rgba(0.0, 0.0, 0.0, 0.035),
-            Color::from_rgba(0.0, 0.0, 0.0, 0.06),
-        )
-    };
     container::Style {
-        background: Some(bg.into()),
+        background: Some(color_reasoning_bg().into()),
         border: Border {
-            color: border,
+            color: color_reasoning_border(),
             width: 1.0,
             radius: 6.0.into(),
         },
@@ -455,14 +441,13 @@ pub(crate) fn reasoning_box_style(_theme: &Theme) -> container::Style {
 
 /// Small role badge (User / Assistant / Tool).
 pub(crate) fn role_badge_style(role: &str) -> impl Fn(&Theme) -> container::Style + '_ {
-    let (fg, bg) = match role {
-        "User" => (Color::from_rgb8(0x4A, 0x90, 0xD9), Color::TRANSPARENT),
-        "Assistant" => (Color::from_rgb8(0x1A, 0x9A, 0x8C), Color::TRANSPARENT),
-        "Tool" => (Color::from_rgb8(0xD0, 0x8F, 0x33), Color::TRANSPARENT),
-        _ => (color_surface(), Color::TRANSPARENT),
+    let fg = match role {
+        "User" => color_role_user(),
+        "Assistant" => color_role_assistant(),
+        "Tool" => color_role_tool(),
+        _ => color_muted(),
     };
     move |_theme: &Theme| container::Style {
-        background: Some(bg.into()),
         text_color: Some(fg),
         ..container::Style::default()
     }
@@ -492,8 +477,8 @@ pub(crate) fn pick_list_menu_style(_theme: &Theme) -> iced::widget::overlay::men
             .width(1)
             .color(color_border()),
         text_color: color_text_strong(),
-        selected_text_color: Color::WHITE,
-        selected_background: CRABOT_PRIMARY.into(),
+        selected_text_color: color_on_accent(),
+        selected_background: color_accent().into(),
         shadow: Shadow::default(),
     }
 }
@@ -625,13 +610,15 @@ where
 /// Floating tooltip box — dark rounded background with a subtle shadow.
 pub(crate) fn tooltip_style(_theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Color::from_rgba(0.2, 0.2, 0.2, 0.95).into()),
+        background: Some(color_tooltip_bg().into()),
         border: Border {
+            color: color_border(),
+            width: 1.0,
             radius: 6.0.into(),
-            ..Border::default()
         },
+        text_color: Some(color_tooltip_text()),
         shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
             offset: Vector::new(0.0, 2.0),
             blur_radius: 8.0,
         },
@@ -641,39 +628,21 @@ pub(crate) fn tooltip_style(_theme: &Theme) -> container::Style {
 
 // ── selectable text styles ────────────────────────────────────────
 
-pub(crate) fn sel_default(theme: &Theme) -> SelectionStyle {
+fn selection_style(color: Color) -> SelectionStyle {
     SelectionStyle {
-        color: Some(color_text(theme)),
-        selection: color_primary(theme),
+        color: Some(color),
+        selection: color_selection(),
     }
 }
 
-pub(crate) fn sel_primary(theme: &Theme) -> SelectionStyle {
-    SelectionStyle {
-        color: Some(color_primary(theme)),
-        selection: color_primary(theme),
-    }
+pub(crate) fn sel_default(_theme: &Theme) -> SelectionStyle {
+    selection_style(color_text_strong())
 }
 
-pub(crate) fn sel_secondary(theme: &Theme) -> SelectionStyle {
-    SelectionStyle {
-        color: Some(color_secondary(theme)),
-        selection: color_secondary(theme),
-    }
+pub(crate) fn sel_primary(_theme: &Theme) -> SelectionStyle {
+    selection_style(color_accent())
 }
 
-/// Dimmed text with the primary selection colour.
-pub(crate) fn sel_muted(theme: &Theme) -> SelectionStyle {
-    SelectionStyle {
-        color: Some(color_muted()),
-        selection: color_primary(theme),
-    }
-}
-
-/// Emphasised text with the primary selection colour.
-pub(crate) fn sel_strong(theme: &Theme) -> SelectionStyle {
-    SelectionStyle {
-        color: Some(color_text_strong()),
-        selection: color_primary(theme),
-    }
+pub(crate) fn sel_muted(_theme: &Theme) -> SelectionStyle {
+    selection_style(color_muted())
 }

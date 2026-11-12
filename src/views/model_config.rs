@@ -1,12 +1,15 @@
 use super::icons;
 use super::styles::styled_pick_list;
-use super::theme::{color_border, color_surface};
+use super::theme::{
+    color_accent, color_accent_hover, color_border, color_on_accent, color_surface,
+    color_text_strong,
+};
 use crabot::model::{Model, ModelConfig, ModelList};
 use iced::{
-    Alignment, Background, Border, Color, Element, Fill, Length,
+    Alignment, Background, Border, Element, Fill, Length,
     border::Radius,
     mouse,
-    widget::{button, column, container, mouse_area, row, svg, text, toggler, tooltip},
+    widget::{button, column, container, mouse_area, row, svg, text, toggler},
 };
 use iced_aw::{
     style::{status::Status, tab_bar::Style as TabBarStyle},
@@ -58,7 +61,7 @@ pub(crate) fn model_config_view<'a>(
             .tab_width(Length::Shrink)
             .text_size(13.0)
             .padding([0, 8])
-            .style(|theme: &iced::Theme, status| TabBarStyle {
+            .style(|_theme: &iced::Theme, status| TabBarStyle {
                 tab_border_radius: Radius {
                     top_left: 6.0,
                     top_right: 6.0,
@@ -66,16 +69,14 @@ pub(crate) fn model_config_view<'a>(
                     bottom_left: 0.0,
                 },
                 tab_label_background: match status {
-                    Status::Active => Background::Color(theme.palette().primary),
-                    Status::Hovered => {
-                        Background::Color(theme.extended_palette().primary.weak.color)
-                    }
+                    Status::Active => Background::Color(color_accent()),
+                    Status::Hovered => Background::Color(color_accent_hover()),
                     _ => Background::Color(color_surface()),
                 },
                 tab_label_border_color: color_border(),
                 text_color: match status {
-                    Status::Active => Color::WHITE,
-                    _ => theme.palette().text,
+                    Status::Active => color_on_accent(),
+                    _ => color_text_strong(),
                 },
                 ..Default::default()
             });
@@ -90,21 +91,18 @@ pub(crate) fn model_config_view<'a>(
     let gear_icon = svg(svg::Handle::from_memory(icons::SETTINGS))
         .width(16)
         .height(16)
-        .style(|theme: &iced::Theme, _status| svg::Style {
-            color: Some(theme.palette().text),
+        .style(|_theme: &iced::Theme, _status| svg::Style {
+            color: Some(color_text_strong()),
         });
 
-    let gear_button: Element<_> = tooltip(
+    let gear_button = icons::with_tooltip(
         button(gear_icon)
             .padding([2, 6])
             .style(crate::views::styles::secondary_button)
-            .on_press(Event::OpenSettings),
-        text(lang.tr("Open Settings")).size(11).color(Color::WHITE),
-        tooltip::Position::Bottom,
-    )
-    .gap(4)
-    .style(crate::views::styles::tooltip_style)
-    .into();
+            .on_press(Event::OpenSettings)
+            .into(),
+        lang.tr("Open Settings"),
+    );
 
     let header_row: Element<_> = row![container(tab_bar).width(Fill), gear_button,]
         .align_y(Alignment::Center)

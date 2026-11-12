@@ -1,10 +1,9 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::time::Duration;
 
 use iced::{
-    Alignment, Color, Element, Fill, Font, Length, alignment, font, padding,
-    widget::{Space, button, column, container, row, rule, scrollable, text, toggler, tooltip},
+    Alignment, Element, Fill, Font, Length, alignment, font, padding,
+    widget::{Space, button, column, container, row, rule, scrollable, text, toggler},
 };
 use iced_selection::Text as SelectableText;
 
@@ -12,9 +11,10 @@ use super::icons;
 use super::session_tabs::localize_tab_label;
 use super::styles::{
     link_button, pane_side, primary_button, primary_toggler, secondary_button, sel_primary,
-    tooltip_style,
 };
-use super::theme::{CRABOT_DANGER, color_muted, thin_horizontal, thin_vertical};
+use super::theme::{
+    color_danger_text, color_info, color_muted, color_success, thin_horizontal, thin_vertical,
+};
 use crate::RightPaneEvent;
 use crate::acp::AcpState;
 use crate::app::{QueuedTask, SessionTab};
@@ -144,19 +144,15 @@ fn file_row<'a>(path: &'a str, bold: bool) -> Element<'a, RightPaneEvent> {
 
 /// Clickable path that opens the snapshot ↔ current diff in VS Code.
 fn diff_row<'a>(path: &'a str, tip: &'static str, bold: bool) -> Element<'a, RightPaneEvent> {
-    tooltip(
+    icons::with_tooltip(
         button(text(path).size(13).font(path_font(bold)))
             .on_press(RightPaneEvent::OpenDiff(path.to_string()))
             .style(link_button)
             .width(Fill)
-            .padding(padding::vertical(1).right(4)),
-        text(tip).size(11).color(Color::WHITE),
-        tooltip::Position::Bottom,
+            .padding(padding::vertical(1).right(4))
+            .into(),
+        tip,
     )
-    .gap(4)
-    .delay(Duration::from_millis(400))
-    .style(tooltip_style)
-    .into()
 }
 
 /// Build the todo-list section, returning `None` when the list is empty.
@@ -169,9 +165,9 @@ fn todo_section(todo_items: &[TodoItem], lang: Lang) -> Option<Element<'static, 
         .map(|item| {
             let indent = item.depth as u16 * 16;
             let (icon, color) = match item.status {
-                TodoStatus::Pending => ("⏳", Color::from_rgb(0.7, 0.7, 0.7)),
-                TodoStatus::InProgress => ("🔄", Color::from_rgb(0.3, 0.6, 1.0)),
-                TodoStatus::Completed => ("✅", Color::from_rgb(0.4, 0.7, 0.4)),
+                TodoStatus::Pending => ("⏳", color_muted()),
+                TodoStatus::InProgress => ("🔄", color_info()),
+                TodoStatus::Completed => ("✅", color_success()),
             };
             container(text(format!("{icon} {}", item.text)).size(14).color(color))
                 .padding(padding::left(indent as f32))
@@ -488,7 +484,7 @@ pub(crate) fn right_pane<'a>(
         if let Some(err) = &tab.modified_files_error {
             items.push(
                 container(with_trailing(
-                    text(err.as_str()).size(12).color(CRABOT_DANGER),
+                    text(err.as_str()).size(12).color(color_danger_text()),
                     revert_button("\u{00d7}", RightPaneEvent::DismissRevertError),
                 ))
                 .padding(padding::top(2))
@@ -535,21 +531,12 @@ pub(crate) fn right_pane<'a>(
     if acp.enabled {
         let (status, color) = if acp.stdio {
             // Host-spawned transport — no HTTP address to show.
-            (
-                lang.tr("stdio (host-spawned)").to_string(),
-                Color::from_rgb(0.5, 0.6, 0.8),
-            )
+            (lang.tr("stdio (host-spawned)").to_string(), color_info())
         } else {
             match (&acp.error, acp.running) {
-                (Some(error), _) => (error.clone(), CRABOT_DANGER),
-                (None, true) => (
-                    format!("http://{}", acp.addr),
-                    Color::from_rgb(0.4, 0.7, 0.4),
-                ),
-                (None, false) => (
-                    lang.tr("Starting…").to_string(),
-                    Color::from_rgb(0.6, 0.6, 0.6),
-                ),
+                (Some(error), _) => (error.clone(), color_danger_text()),
+                (None, true) => (format!("http://{}", acp.addr), color_success()),
+                (None, false) => (lang.tr("Starting…").to_string(), color_muted()),
             }
         };
         header = header.push(

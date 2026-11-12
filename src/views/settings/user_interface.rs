@@ -10,7 +10,7 @@ use crate::views::styles::secondary_dropdown_style;
 use crate::views::theme::color_muted;
 use crate::widgets::dropdown::DropDown;
 use crabot::i18n::Lang;
-use crabot::settings::{Appearance, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP};
+use crabot::settings::{Appearance, ColorStyle, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP};
 
 /// Renders the User Interface page.
 pub(super) fn user_interface_page<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
@@ -19,6 +19,7 @@ pub(super) fn user_interface_page<'a>(state: &'a SettingsState) -> Element<'a, S
         section_header(lang.tr("User Interface")),
         language_card(state),
         appearance_card(state),
+        color_style_card(state),
         font_scale_card(state),
         renderer_backend_card(state),
     ]
@@ -81,27 +82,58 @@ fn language_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
     )
 }
 
-/// Color-appearance picker card; "Follow system" tracks the OS.
-fn appearance_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
-    let lang = state.language;
-    let options: Vec<Choice<'static, Appearance>> = Appearance::ALL
-        .into_iter()
-        .map(|value| Choice {
-            label: lang.tr(value.label()),
-            value,
-        })
-        .collect();
-    let selected = options
+fn choice_card<T>(
+    lang: Lang,
+    title: &'static str,
+    hint_text: &'static str,
+    values: &[T],
+    selected: T,
+    label: fn(T) -> &'static str,
+    event: fn(T) -> SettingsEvent,
+) -> Element<'static, SettingsEvent>
+where
+    T: Copy + PartialEq + 'static,
+{
+    let options = values
         .iter()
         .copied()
-        .find(|o| o.value == state.appearance);
+        .map(|value| Choice {
+            label: lang.tr(label(value)),
+            value,
+        })
+        .collect::<Vec<_>>();
+    let selected = options.iter().copied().find(|o| o.value == selected);
     card(
-        lang.tr("Appearance"),
+        lang.tr(title),
         column![
-            picker(options, selected, |o| SettingsEvent::SetAppearance(o.value)),
-            hint(lang.tr("Follow system tracks the OS light/dark preference.")),
+            picker(options, selected, move |o| event(o.value)),
+            hint(lang.tr(hint_text)),
         ]
         .spacing(6),
+    )
+}
+
+fn appearance_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
+    choice_card(
+        state.language,
+        "Appearance",
+        "Follow system tracks the OS light/dark preference.",
+        &Appearance::ALL,
+        state.appearance,
+        Appearance::label,
+        SettingsEvent::SetAppearance,
+    )
+}
+
+fn color_style_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
+    choice_card(
+        state.language,
+        "Dark theme style",
+        "Applies while dark mode is active.",
+        &ColorStyle::ALL,
+        state.color_style,
+        ColorStyle::label,
+        SettingsEvent::SetColorStyle,
     )
 }
 

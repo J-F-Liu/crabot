@@ -3,7 +3,10 @@ use iced::{
     widget::{button, checkbox, column, container, row, scrollable, text, text::Wrapping},
 };
 
-use crate::views::theme::{color_border, color_muted, color_surface};
+use crate::views::theme::{
+    color_accent, color_accent_hover, color_border, color_muted, color_on_accent, color_surface,
+    color_text_strong,
+};
 use iced_aw::{
     style::{status::Status, tab_bar::Style as TabBarStyle},
     widget::tab_bar::{TabBar, TabLabel},
@@ -48,18 +51,16 @@ pub(crate) fn user_prompt_view<'a>(
         .width(Length::Shrink)
         .text_size(13.0)
         .padding([0, 8])
-        .style(|theme: &iced::Theme, status| TabBarStyle {
+        .style(|_theme: &iced::Theme, status| TabBarStyle {
             tab_label_background: match status {
-                Status::Active => iced::Background::Color(theme.palette().primary),
-                Status::Hovered => {
-                    iced::Background::Color(theme.extended_palette().primary.weak.color)
-                }
+                Status::Active => iced::Background::Color(color_accent()),
+                Status::Hovered => iced::Background::Color(color_accent_hover()),
                 _ => iced::Background::Color(color_surface()),
             },
             tab_label_border_color: color_border(),
             text_color: match status {
-                Status::Active => iced::Color::WHITE,
-                _ => theme.palette().text,
+                Status::Active => color_on_accent(),
+                _ => color_text_strong(),
             },
             ..Default::default()
         })

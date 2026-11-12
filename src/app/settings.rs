@@ -40,6 +40,7 @@ pub(crate) fn open_settings(app: &mut App) -> Task<Message> {
     app.settings_dialog.auto_check_updates = app.settings.auto_check_updates;
     app.settings_dialog.language = app.settings.language;
     app.settings_dialog.appearance = app.settings.appearance;
+    app.settings_dialog.color_style = app.settings.color_style;
     app.settings_dialog.font_scale = app.settings.font_scale;
     app.settings_dialog.iced_backend = app.settings.iced_backend.clone();
     app.settings_dialog.update_check = app
@@ -77,6 +78,11 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             app.settings_dialog.update(event);
             app.settings.appearance = appearance;
             app.apply_appearance(appearance);
+        }
+        SettingsEvent::SetColorStyle(style) => {
+            app.settings_dialog.update(event);
+            app.settings.color_style = style;
+            app.set_color_style(style);
         }
         SettingsEvent::SetIcedBackend(_) => {
             app.settings_dialog.update(event);

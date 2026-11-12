@@ -10,7 +10,7 @@ use crabot::session::Session;
 use pulldown_cmark::{Event, Tag, html};
 use serde_json::Value;
 
-use super::theme::is_dark;
+use super::theme;
 use super::tool_view::{self, ArgRow, EditRow, TodoRow, TodoState};
 
 /// Write a formatted string into `out`, ignoring the infallible `fmt::Error`.
@@ -93,11 +93,65 @@ pub(crate) fn render_session_html(
     }
     w!(body, "</div>");
 
-    let theme = if is_dark() { "dark" } else { "light" };
+    let style_css = theme_css();
     format!(
-        "<!DOCTYPE html>\n<html lang=\"en\" data-theme=\"{theme}\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\n<title>{}</title>\n<style>{STYLE}</style>\n</head>\n<body>\n<main class=\"session\">{body}</main>\n</body>\n</html>\n",
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\n<title>{}</title>\n<style>{STYLE}{style_css}</style>\n</head>\n<body>\n<main class=\"session\">{body}</main>\n</body>\n</html>\n",
         escape_html(title),
     )
+}
+
+/// CSS variables for the active palette.
+fn theme_css() -> String {
+    let variables = [
+        ("--bg", theme::color_bg()),
+        ("--card", theme::color_card()),
+        ("--header-bg", theme::color_header_bg()),
+        ("--surface", theme::color_surface()),
+        ("--text", theme::color_text_strong()),
+        ("--muted", theme::color_muted()),
+        ("--border", theme::color_border()),
+        ("--primary", theme::color_accent()),
+        ("--mode-badge-bg", theme::color_accent().scale_alpha(0.12)),
+        ("--success", theme::color_success()),
+        ("--danger", theme::color_danger_text()),
+        (
+            "--error-box-border",
+            theme::color_danger_text().scale_alpha(0.4),
+        ),
+        ("--tool-accent", theme::color_tool_accent()),
+        ("--user-bg", theme::color_user_bg()),
+        ("--assistant-bg", theme::color_assistant_bg()),
+        ("--tool-bg", theme::color_tool_bg()),
+        ("--tool-content-bg", theme::color_tool_content_bg()),
+        ("--tool-content-border", theme::color_tool_content_border()),
+        ("--diff-del-bg", theme::color_diff_bg_del()),
+        ("--diff-add-bg", theme::color_diff_bg_add()),
+        ("--reasoning-bg", theme::color_reasoning_bg()),
+        ("--reasoning-border", theme::color_reasoning_border()),
+        ("--user-badge", theme::color_role_user()),
+        ("--tool-badge", theme::color_role_tool()),
+        ("--info", theme::color_info()),
+        ("--code-bg", theme::color_code_bg()),
+        ("--code-border", theme::color_code_border()),
+        ("--code-text", theme::color_code_text()),
+    ];
+    let mut css = String::from(":root{");
+    for (name, color) in variables {
+        w!(css, "{name}:{};", css_color(color));
+    }
+    css.push('}');
+    css
+}
+
+fn css_color(color: iced::Color) -> String {
+    let r = (color.r * 255.0).round() as u8;
+    let g = (color.g * 255.0).round() as u8;
+    let b = (color.b * 255.0).round() as u8;
+    if color.a >= 1.0 {
+        format!("#{r:02X}{g:02X}{b:02X}")
+    } else {
+        format!("rgba({r},{g},{b},{})", color.a)
+    }
 }
 
 /// Derive a filesystem-safe default file name from the session title.
@@ -652,49 +706,6 @@ fn escape_html(text: &str) -> String {
 // ── styles ────────────────────────────────────────────────────────
 
 const STYLE: &str = r#"
-:root {
-  --bg: #F0F0F0;
-  --card: #FFFFFF;
-  --header-bg: #F5F5F5;
-  --surface: #E8E8E8;
-  --text: #333333;
-  --muted: #666666;
-  --border: #E0E0E0;
-  --primary: #1A9A8C;
-  --success: #2EB67F;
-  --danger: #E54D4D;
-  --tool-accent: #D9A558;
-  --user-bg: #EFF5FD;
-  --assistant-bg: #F3F7F6;
-  --tool-bg: #FBFBF8;
-  --tool-content-bg: #FFF8F2;
-  --tool-content-border: #F4F0EC;
-  --diff-del-bg: #FFF0F0;
-  --diff-add-bg: #F0FAF4;
-  --reasoning-bg: rgba(0, 0, 0, 0.035);
-  --reasoning-border: rgba(0, 0, 0, 0.06);
-  --user-badge: #4A90D9;
-  --tool-badge: #D08F33;
-}
-[data-theme="dark"] {
-  --bg: #14161A;
-  --card: #232730;
-  --header-bg: #24282F;
-  --surface: #2A2F38;
-  --text: #E2E5EA;
-  --muted: #9BA1AB;
-  --border: #343945;
-  --user-bg: #1E2938;
-  --assistant-bg: #21252C;
-  --tool-bg: #282520;
-  --tool-content-bg: #2B2721;
-  --tool-content-border: #3D382E;
-  --diff-del-bg: #3D2025;
-  --diff-add-bg: #1E2D25;
-  --reasoning-bg: rgba(255, 255, 255, 0.05);
-  --reasoning-border: rgba(255, 255, 255, 0.09);
-}
-
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -737,7 +748,7 @@ body {
   white-space: nowrap;
 }
 .mode-badge {
-  background: rgba(26, 154, 140, 0.12);
+  background: var(--mode-badge-bg);
   color: var(--primary);
   font-size: 11px;
   font-weight: 600;
@@ -782,8 +793,9 @@ body {
 .markdown > :last-child { margin-bottom: 0; }
 .markdown p { margin: 0 0 8px; }
 .markdown pre {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--code-text);
+  border: 1px solid var(--code-border);
   border-radius: 6px;
   padding: 8px 10px;
   overflow-x: auto;
@@ -856,15 +868,15 @@ details.tool-item:not([open]) + .tool-preview { display: flex; }
   word-break: break-word;
 }
 .todo-status { width: 96px; flex: none; font-size: 12px; font-weight: 700; }
-.todo-pending { color: #999999; }
-.todo-in-progress { color: #2976FF; }
+.todo-pending { color: var(--muted); }
+.todo-in-progress { color: var(--info); }
 .todo-completed { color: var(--success); }
 .todo-invalid { color: var(--danger); }
 .todo-divider { height: 1px; background: var(--tool-content-border); }
 
 .result-box { border: 1px solid var(--tool-content-border); border-radius: 6px; padding: 8px 10px; }
 .result-box.ok { background: var(--tool-content-bg); }
-.result-box.err { background: var(--diff-del-bg); border-color: rgba(229, 77, 77, 0.4); }
+.result-box.err { background: var(--diff-del-bg); border-color: var(--error-box-border); }
 .result-label { font-size: 11px; font-weight: 700; }
 .result-box.ok .result-label { color: var(--tool-accent); }
 .result-box.err .result-label { color: var(--danger); }
