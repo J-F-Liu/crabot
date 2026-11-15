@@ -1,3 +1,30 @@
+# Crabot v1.2.0
+
+- **Built-in `screenshot` tool** — list monitors and windows or capture a chosen one with `xcap`; the shot is saved under `.agent/screenshots/` and attached to the conversation as a picture.
+- **Inline picture previews** — any picture a tool attaches (screenshots included) shows a click-to-expand preview in the chat.
+- **Dark-theme color styles** — pick Graphite Teal, Deep Ocean, or Warm Ember; each style consistently recolors the entire UI.
+- **Current-round file highlighting** — files modified or read in the current round stand out at a glance in the right pane.
+- **Skill installer skill** — a built-in skill that simplifies installing, converting, and reviewing third-party agent skills.
+- **Compacting keeps `ask` exchanges** — the preamble and reasoning that led to an `ask` question are preserved when a session is compacted.
+- **Smaller default binary** — the embedded Wasm CPython behind the `bash` tool is now opt-in via the `python` cargo feature; default builds use the host interpreter and ship a binary ~45 MB smaller.
+- **Discard a pending prompt** — the pending-prompt bar gains a discard button, so a prompt parked behind a running reply can be taken back into the editor.
+- **Other fixes** — the `ask` tool waits 3 minutes for user input; `crate_source` resolves crates written with underscores or hyphens; a failed `edit` now states that nothing was applied; the Chinese "Select new folder" label is corrected; genai and bashkit are updated.
+
+**Full Changelog**: [`v1.1.0...v1.2.0`](https://github.com/J-F-Liu/crabot/compare/v1.1.0...v1.2.0)
+
+# Crabot v1.1.0
+
+- **Task queue** — `task` sub-agents beyond the configurable concurrency limit wait FIFO in a new right-pane **Task Queue** section and start as slots free up; a queued request whose parent stops waiting is failed back to it instead of hanging its stream.
+- **Stopping a task asks first** — stopping a task tab asks whether to return "User cancelled this task" to its waiting parent; declining keeps the call pending so the task can be resumed.
+- **Real failure reasons in the status bar** — a failed LLM request shows its actual cause instead of a generic "request failed", both during retries and after terminal errors.
+- **Streaming external commands** — host commands run as streaming bashkit commands, so piped stdin, shell redirects, and live output work for `git`, `cargo`, and other bridged tools.
+- **Per-MCP-server tool management** — the left pane gains bulk select/deselect, collapsible tool grids, and a clickable 1–3 column layout cycle; tool selections and connections stay stable across server reconfiguration.
+- **Per-provider request extras** — provider entries can carry extra HTTP headers and an `extra_body` JSON object (with a no-auth option), merged into every request; the advanced fields collapse behind a "More/Less" toggle.
+- **Background-session signals** — a tab blocked waiting for a `task` sub-agent shows an orange status dot, and taskbar flashing on failure continues until the window is focused.
+- **Other improvements** — the window title shows the active workspace's folder name; clicking a modified file opens its diff in VS Code; the Tool Playground shows allowed enum values; the token-usage panel drops the redundant reasoning row; Send no longer clears the textarea history; the Date field refreshes at each local midnight; consecutive duplicate log records collapse with a suppressed count.
+
+**Full Changelog**: [`v1.0.0...v1.1.0`](https://github.com/J-F-Liu/crabot/compare/v1.0.0...v1.1.0)
+
 # Crabot v1.0.0
 
 - **Prompt attachments** — attach text and image files to a prompt; text is inserted into the request, images are sent as image parts, and the chat shows every attachment with a clickable inline preview.
