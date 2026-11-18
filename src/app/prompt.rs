@@ -204,31 +204,32 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
             });
         }
         PromptEvent::AttachmentsValidated(accepted, mut rejected) => {
-            let lang = app.settings.language;
-            for item in accepted {
-                if app.prompt.attachments.iter().any(|a| a.path == item.path) {
-                    continue;
-                }
-                if app.prompt.attachments.len() >= MAX_ATTACHMENTS_PER_PROMPT {
-                    let note = lang
-                        .tr("Attachment limit reached ({} per prompt).")
-                        .replacen("{}", &MAX_ATTACHMENTS_PER_PROMPT.to_string(), 1);
-                    rejected.push(format!("{}: {note}", item.display_name()));
-                    continue;
-                }
-                app.prompt.attachments.push(item);
-            }
+            rejected.extend(add_attachments(app, accepted));
             if !rejected.is_empty() {
+                let lang = app.settings.language;
                 let body = format!(
                     "{}\n\n{}",
                     lang.tr("Some files were not attached:"),
                     rejected.join("\n")
                 );
-                return crate::app::conversation::show_message_dialog(
-                    rfd::MessageLevel::Warning,
-                    lang.tr("Attachment not added"),
-                    &body,
-                );
+                return show_attachment_warning(app, &body);
+            }
+        }
+        PromptEvent::PasteClipboard => return crate::app::paste::paste(app),
+        PromptEvent::ClipboardText(text) => {
+            if let Some(text) = text
+                && !text.is_empty()
+            {
+                crate::app::paste::insert_text(app, text);
+            }
+        }
+        PromptEvent::ClipboardImage(result) => {
+            let rejected = match result {
+                Ok(attachment) => add_attachments(app, vec![attachment]),
+                Err(reason) => vec![reason],
+            };
+            if !rejected.is_empty() {
+                return show_attachment_warning(app, &rejected.join("\n"));
             }
         }
         PromptEvent::RemoveAttachment(index) => {
@@ -248,6 +249,35 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
 
 /// Files one prompt may carry; matches the request image allowance.
 const MAX_ATTACHMENTS_PER_PROMPT: usize = 20;
+
+/// Add accepted files, skipping duplicates and noting ones over the limit.
+fn add_attachments(app: &mut App, accepted: Vec<UserAttachment>) -> Vec<String> {
+    let lang = app.settings.language;
+    let mut rejected = Vec::new();
+    for item in accepted {
+        if app.prompt.attachments.iter().any(|a| a.path == item.path) {
+            continue;
+        }
+        if app.prompt.attachments.len() >= MAX_ATTACHMENTS_PER_PROMPT {
+            let note = lang
+                .tr("Attachment limit reached ({} per prompt).")
+                .replacen("{}", &MAX_ATTACHMENTS_PER_PROMPT.to_string(), 1);
+            rejected.push(format!("{}: {note}", item.display_name()));
+            continue;
+        }
+        app.prompt.attachments.push(item);
+    }
+    rejected
+}
+
+/// Warn that an attachment was not added, with the caller-built reason list.
+fn show_attachment_warning(app: &App, details: &str) -> Task<Message> {
+    crate::app::conversation::show_message_dialog(
+        rfd::MessageLevel::Warning,
+        app.settings.language.tr("Attachment not added"),
+        details,
+    )
+}
 
 /// Hand a discarded pending prompt back to the editor; `false` when it already
 /// holds a newer draft.

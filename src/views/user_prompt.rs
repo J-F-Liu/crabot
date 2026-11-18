@@ -137,7 +137,10 @@ pub(crate) fn user_prompt_view<'a>(
         .align_y(Alignment::Center),
         files_field_view(files, workspace_set, lang),
         user_prompt
-            .view(|msg| PromptEvent::EditTextArea(FocusedTarget::UserPrompt, msg))
+            .view_with_paste(
+                |msg| PromptEvent::EditTextArea(FocusedTarget::UserPrompt, msg),
+                PromptEvent::PasteClipboard,
+            )
             .height(120),
     ];
     if !attachments.is_empty() {

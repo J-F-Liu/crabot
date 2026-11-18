@@ -70,7 +70,7 @@ pub(crate) use paths::{
 pub use image::{
     EncodedImage, IMAGE_EXTENSIONS, ImageBudget, PreparedImage, PreviewImage, RouteImages,
     decode_for_preview, encode_for_request, media_type_for_extension, prepare_for_request, probe,
-    route_images, set_route_images, sniff_file, target_dimensions,
+    route_images, set_route_images, sniff_file, target_dimensions, unique_image_path,
 };
 
 // ── normalize ───────────────────────────────────────────────────────

@@ -129,13 +129,40 @@ impl TextArea {
         }
     }
 
-    /// Renders the text area as a [`text_editor`] widget, wrapping actions
-    /// in [`Message::Edit`] via the `on_action` callback.
-    pub fn view<'a, AppMessage: Clone>(
+    /// Renders the editor, mapping actions through `on_action`.
+    pub fn view<'a, AppMessage: Clone + 'a>(
         &'a self,
         on_action: impl Fn(Message) -> AppMessage + 'a,
     ) -> TextEditor<'a, PlainText, AppMessage> {
-        text_editor(&self.content).on_action(move |action| on_action(Message::Edit(action)))
+        self.view_impl(on_action, None)
+    }
+
+    /// Like [`view`](Self::view), but Ctrl/Cmd+V emits `on_paste`.
+    pub fn view_with_paste<'a, AppMessage: Clone + 'a>(
+        &'a self,
+        on_action: impl Fn(Message) -> AppMessage + 'a,
+        on_paste: AppMessage,
+    ) -> TextEditor<'a, PlainText, AppMessage> {
+        self.view_impl(on_action, Some(on_paste))
+    }
+
+    fn view_impl<'a, AppMessage: Clone + 'a>(
+        &'a self,
+        on_action: impl Fn(Message) -> AppMessage + 'a,
+        on_paste: Option<AppMessage>,
+    ) -> TextEditor<'a, PlainText, AppMessage> {
+        let editor = text_editor(&self.content);
+        let editor = match on_paste {
+            Some(message) => editor.key_binding(move |press| {
+                if paste_key(&press) {
+                    Some(text_editor::Binding::Custom(message.clone()))
+                } else {
+                    text_editor::Binding::from_key_press(press)
+                }
+            }),
+            None => editor,
+        };
+        editor.on_action(move |action| on_action(Message::Edit(action)))
     }
 
     /// Returns the text content.
@@ -249,6 +276,14 @@ impl TextArea {
         self.content = text_editor::Content::with_text(&snapshot.text);
         self.content.move_to(snapshot.cursor);
     }
+}
+
+/// Whether `press` is Ctrl/Cmd+V in a focused editor.
+fn paste_key(press: &text_editor::KeyPress) -> bool {
+    matches!(press.status, text_editor::Status::Focused { .. })
+        && press.modifiers.command()
+        && !press.modifiers.alt()
+        && press.key.to_latin(press.physical_key) == Some('v')
 }
 
 impl Default for TextArea {

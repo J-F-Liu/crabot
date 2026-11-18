@@ -104,10 +104,7 @@ async fn inject_user_prompt(
         on_event(SessionEvent::Cancelled).await;
         return Some(false);
     }
-    if !record_attachments(chat_req, &prompt.attachments, on_event).await {
-        return Some(false);
-    }
-    Some(true)
+    Some(record_attachments(chat_req, &prompt.attachments, on_event).await)
 }
 
 /// Record the attachment marker for a prompt's files, if it has any.

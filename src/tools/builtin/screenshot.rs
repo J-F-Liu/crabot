@@ -1,7 +1,6 @@
 //! Screenshot tool: capture a monitor or window with XCap.
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -12,7 +11,7 @@ use xcap::{Monitor, Window};
 
 use crate::tools::{
     CANCEL_REASON, ImageAttachment, ImageBudget, Tool, current_tab_number, make_workspace_relative,
-    prepare_for_request, route_images, tool_limits,
+    prepare_for_request, route_images, tool_limits, unique_image_path,
 };
 
 /// Workspace-relative folder holding captured screenshots.
@@ -606,7 +605,7 @@ fn save_capture(
     let dir = workspace.join(SCREENSHOT_DIR);
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("Failed to create {}: {error}", dir.display()))?;
-    let path = unique_path(&dir, &label);
+    let path = unique_image_path(&dir, &label);
     image
         .save(&path)
         .map_err(|error| format!("Failed to save screenshot to {}: {error}", path.display()))?;
@@ -620,19 +619,6 @@ fn save_capture(
     let attachment = ImageAttachment::from_prepared(display, prepared);
     let text = format!("{}\nCaptured {target}.", attachment.result_text());
     Ok((text, vec![attachment]))
-}
-
-/// A timestamped, process-unique PNG path under `dir`.
-fn unique_path(dir: &Path, label: &str) -> PathBuf {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    loop {
-        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("{stamp}-{sequence:04}-{label}.png"));
-        if !path.exists() {
-            return path;
-        }
-    }
 }
 
 /// A filename-safe, length-bounded version of a window title or app name.

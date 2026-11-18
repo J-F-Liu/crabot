@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Cursor, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
 
 use image::codecs::jpeg::JpegEncoder;
@@ -168,6 +169,19 @@ const MAX_TRACKED_ROUTES: usize = 64;
 /// The image formats the attachment picker offers; kept in sync with
 /// [`EXTENSION_TYPES`].
 pub const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+
+/// A timestamped, process-unique PNG path under `dir`.
+pub fn unique_image_path(dir: &Path, label: &str) -> PathBuf {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    loop {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("{stamp}-{sequence:04}-{label}.png"));
+        if !path.exists() {
+            return path;
+        }
+    }
+}
 
 /// The image formats `read` attaches, by file extension.
 const EXTENSION_TYPES: [(&str, &str); 6] = [

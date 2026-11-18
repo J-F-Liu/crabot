@@ -58,7 +58,7 @@ Grep-style tool output is normalized before it enters the conversation: a run of
 
 ## Prompt Attachments
 
-The prompt editor's **Attachment ▾** menu adds text or image files to the next prompt (up to 20 files). Text files are inserted into the request up to the `read` limit and truncated with a marker; images go through the same downscaling and re-encoding pipeline as the `read` tool, and the selected model must accept image input. The chat lists every attachment with a clickable preview, while history keeps only the file path, so attachments are read again when a session is reloaded.
+The prompt editor's **Attachment ▾** menu adds text or image files to the next prompt (up to 20 files). Pasting an image from the clipboard (`Ctrl/Cmd+V`) attaches it directly, saving the picture under `.agent/attachments/`. Text files are inserted into the request up to the `read` limit and truncated with a marker; images go through the same downscaling and re-encoding pipeline as the `read` tool, and the selected model must accept image input. The chat lists every attachment with a clickable preview, while history keeps only the file path, so attachments are read again when a session is reloaded.
 
 ## Context Window & Sessions
 

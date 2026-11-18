@@ -138,6 +138,16 @@ anstyle-parse = { version = "1.0.0", default-features = false }
 base64 = "0.23.1"
 # Screen capture for the `screenshot` tool; Linux builds need the PipeWire/XCB dev libs.
 xcap = "0.9.8"
+# Clipboard image reading for prompt paste.
+arboard = { version = "3.7.0", default-features = false, features = ["image-data"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Read clipboard images on pure Wayland too; arboard falls back to X11 when the
+# compositor does not expose the data-control protocol.
+arboard = { version = "3.7.0", default-features = false, features = [
+    "image-data",
+    "wayland-data-control",
+] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -30,6 +30,7 @@ pub(crate) mod conversation;
 pub(crate) mod diff;
 mod layout;
 mod overlay;
+pub(crate) mod paste;
 pub(crate) mod prompt;
 pub(crate) mod prompt_options;
 pub(crate) mod session_state;
@@ -599,6 +600,12 @@ pub(crate) enum PromptEvent {
     AttachmentDialogResult(AttachmentKind, Option<Vec<PathBuf>>),
     /// Returned by the attachment validator: accepted files and rejection reasons.
     AttachmentsValidated(Vec<UserAttachment>, Vec<String>),
+    /// Ctrl/Cmd+V in the prompt editor; images are checked first.
+    PasteClipboard,
+    /// Clipboard text from iced when the native clipboard fails.
+    ClipboardText(Option<String>),
+    /// A saved clipboard image or why it could not be attached.
+    ClipboardImage(Result<UserAttachment, String>),
     /// Remove the selected attachment at the given index.
     RemoveAttachment(usize),
     SendPrompt,
