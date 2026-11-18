@@ -17,9 +17,8 @@ use crate::app::{
 use crate::llm::DialogPhase;
 use crate::model::{Cost, ModelConfig, TaskTier, TokenAmount};
 use crate::tools::TASK_MODES;
-use crate::views::ASK_INPUT;
-use crate::views::scroll_to_end;
 use crate::views::search_bar::SearchState;
+use crate::views::{reveal_ask, scroll_to_end};
 use crabot::HashSetExt;
 use crabot::chat::{
     TextContent, ToolCall, ToolResult, Turn, TurnBody, attachment_marker_items, image_marker_paths,
@@ -362,13 +361,13 @@ pub(crate) fn update(
             snapshot_files.extend(files);
         }
         SessionEvent::AskRequest(request) => {
-            let no_options = request.options.is_empty();
             state.ask_request = Some(request);
             state.ask_input.clear();
             state.ask_custom_input = false;
             state.ask_seconds_left = ASK_TIMEOUT_SECS;
-            if no_options && viewing {
-                return iced::widget::operation::focus(ASK_INPUT.clone());
+            if viewing {
+                state.set_auto_scroll(true);
+                return reveal_ask();
             }
         }
         SessionEvent::AskCountdown(seconds_left) => {

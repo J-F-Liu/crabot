@@ -73,6 +73,11 @@ pub(crate) fn scroll_to_end() -> Task<()> {
     ))
 }
 
+/// Follow the conversation to the ask controls and focus the answer input.
+pub(crate) fn reveal_ask() -> Task<()> {
+    scroll_to_end().chain(widget::operation::focus(ASK_INPUT.clone()))
+}
+
 /// Snap the message scroll to the start unconditionally.
 pub(crate) fn scroll_to_start() -> Task<()> {
     task_widget(scrollable_op::snap_to(

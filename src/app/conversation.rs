@@ -26,7 +26,7 @@ use crate::views::center_pane::{PREVIEW_MAX_HEIGHT, PREVIEW_MAX_WIDTH};
 use crate::views::export;
 use crate::views::session_list::{SessionEntry, insert_listed_entry};
 use crate::views::session_tabs::TAB_SCROLL_STEP;
-use crate::views::{self, ASK_INPUT, SCROLL_STEP, scroll_to_end};
+use crate::views::{self, ASK_INPUT, SCROLL_STEP, reveal_ask, scroll_to_end};
 
 /// Direction of tab-bar for scroll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,8 +517,7 @@ pub(super) fn switch_tab(app: &mut App, number: usize) -> Task<Message> {
 
     let restore_task = restore_viewing_tab(app, pos);
 
-    let focus_task = pending_ask_focus_task(app, pos);
-    restore_task.chain(focus_task)
+    restore_task.chain(reveal_pending_ask(app, pos))
 }
 
 /// Whether the tab at `pos` has a pending ask request awaiting an answer.
@@ -529,11 +528,10 @@ fn has_pending_ask(app: &App, pos: usize) -> bool {
         .is_some()
 }
 
-/// A task focusing the ask input when the tab has a pending ask request,
-/// so the user can answer it immediately; [`Task::none`] otherwise.
-fn pending_ask_focus_task(app: &App, pos: usize) -> Task<Message> {
+/// Scroll to and focus the ask controls of a tab with a pending question.
+fn reveal_pending_ask(app: &App, pos: usize) -> Task<Message> {
     if has_pending_ask(app, pos) {
-        widget::operation::focus(ASK_INPUT.clone())
+        reveal_ask().discard()
     } else {
         Task::none()
     }
