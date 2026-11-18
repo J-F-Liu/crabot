@@ -6,7 +6,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::builtin::{
-    ask, bash, edit, fetch, find, process, read, renew, screenshot, search, task, todo, write,
+    ask, bash, crate_source, edit, fetch, find, process, read, renew, screenshot, search, task,
+    todo, write,
 };
 use super::tool::{Tool, ToolRef};
 use super::{custom, mcp};
@@ -25,7 +26,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Create a new registry pre-populated with the thirteen built-in tools.
+    /// Create a new registry pre-populated with the fourteen built-in tools.
     pub fn new() -> Self {
         let todo_items: todo::TodoList = todo::create_todo_list(Vec::new());
         let builtin: Vec<ToolRef> = vec![
@@ -42,6 +43,7 @@ impl ToolRegistry {
             Arc::new(renew::RenewTool),
             Arc::new(fetch::FetchTool),
             Arc::new(screenshot::ScreenshotTool),
+            Arc::new(crate_source::CrateSourceTool),
         ];
         Self {
             builtin_names: builtin.iter().map(|t| t.name().to_string()).collect(),
@@ -54,13 +56,19 @@ impl ToolRegistry {
         }
     }
 
-    /// Replace the custom tools in the registry.
-    pub fn register_custom(&mut self, tool_list: custom::ToolList) {
-        self.custom_names = tool_list
-            .custom_tools
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
+    /// Replace the custom tools, dropping names already owned by a built-in.
+    pub fn register_custom(&mut self, mut tool_list: custom::ToolList) {
+        tool_list.custom_tools.retain(|tool| {
+            let shadowed = self.builtin_names.contains(&tool.name);
+            if shadowed {
+                tracing::warn!(
+                    tool = %tool.name,
+                    "ignoring custom tool that shadows a built-in tool"
+                );
+            }
+            !shadowed
+        });
+        self.custom_names = tool_list.names();
         self.custom = tool_list.custom_tools;
     }
 

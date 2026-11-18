@@ -4,6 +4,7 @@
 
 pub mod ask;
 pub mod bash;
+pub mod crate_source;
 pub mod edit;
 pub mod fetch;
 pub mod find;

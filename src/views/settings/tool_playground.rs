@@ -90,7 +90,7 @@ impl PartialEq for SelectorEntry {
     }
 }
 
-/// Build a flat list of [`SelectorEntry`] from the sorted tool list,
+/// Build a flat list of [`SelectorEntry`] from the registry-ordered tool list,
 /// inserting group headers whenever the group changes.
 fn build_selector_entries(tools: &[ToolInfo], lang: Lang) -> Vec<SelectorEntry> {
     let mut entries: Vec<SelectorEntry> = Vec::new();
@@ -706,7 +706,8 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
     .into()
 }
 
-/// Build [`ToolInfo`] snapshots from the live tool registry for the playground.
+/// Build [`ToolInfo`] snapshots from the live tool registry for the playground,
+/// in the same order as the left pane's tool lists.
 pub(crate) fn build_playground_tools(registry: &ToolRegistry) -> Vec<ToolInfo> {
     let mut list = Vec::new();
 
@@ -744,18 +745,6 @@ pub(crate) fn build_playground_tools(registry: &ToolRegistry) -> Vec<ToolInfo> {
             });
         }
     }
-
-    // Sort: builtin first, then custom, then MCP; alphabetically within each.
-    list.sort_by(|a, b| {
-        let group_order = |g: &str| match g {
-            "Builtin" => 0,
-            "Custom" => 1,
-            _ => 2,
-        };
-        group_order(&a.group)
-            .cmp(&group_order(&b.group))
-            .then_with(|| a.name.cmp(&b.name))
-    });
 
     list
 }

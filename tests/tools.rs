@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::TempDir;
+use common::{TempDir, crabot_workspace, run_tool};
 #[cfg(windows)]
 use crabot::tools::tmp_host_dir;
 use crabot::tools::{
@@ -1058,4 +1058,125 @@ fn transparent_sources_encode_as_webp() {
     };
     let encoded = crabot::tools::encode_for_request(&path, &budget).unwrap();
     assert_eq!(encoded.media_type, "image/webp");
+}
+
+// ── crate_source ────────────────────────────────────────────
+
+fn run_crate_source(spec: &str) -> String {
+    run_tool(
+        Arc::new(crabot::tools::crate_source::CrateSourceTool),
+        json!({ "crate": spec }),
+        &crabot_workspace(),
+        CancellationToken::new(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn crate_source_resolves_a_locked_dependency() {
+    let workspace = crabot_workspace();
+    let result = run_crate_source("serde");
+
+    assert!(
+        result.trim().starts_with('/'),
+        "expected a Unix-style path: {result}"
+    );
+    let path = resolve_path(result.trim(), &workspace).unwrap();
+    assert!(path.is_dir(), "not a directory: {}", path.display());
+    assert!(path.join("Cargo.toml").is_file());
+}
+
+#[test]
+fn crate_source_resolves_the_workspace_crate() {
+    let workspace = crabot_workspace();
+    let expected = resolve_path(&workspace.to_string_lossy(), &workspace).unwrap();
+
+    assert_eq!(
+        resolve_path(run_crate_source("crabot").trim(), &workspace).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn crate_source_resolves_path_dependencies_outside_the_workspace() {
+    let tmp = TempDir::new("crate_source_path").unwrap();
+    let root = tmp.mkdir("root").unwrap();
+    tmp.write(
+        "root/Cargo.toml",
+        b"[workspace]\nmembers = [\"app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    tmp.write(
+        "root/app/Cargo.toml",
+        br#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+helper = { path = "../../helper" }
+crabot_test_missing = "0.1"
+"#,
+    )
+    .unwrap();
+    tmp.write("root/app/src/main.rs", b"fn main() {}\n")
+        .unwrap();
+    tmp.write(
+        "helper/Cargo.toml",
+        b"[package]\nname = \"helper\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    tmp.write("helper/src/lib.rs", b"pub fn hi() {}\n").unwrap();
+    // The registry dependency cannot be downloaded offline, so resolving the
+    // full graph fails; the path dependency must be found via `--no-deps`.
+    tmp.write(
+        "root/Cargo.lock",
+        br#"version = 4
+
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "crabot_test_missing",
+ "helper",
+]
+
+[[package]]
+name = "crabot_test_missing"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[package]]
+name = "helper"
+version = "0.1.0"
+"#,
+    )
+    .unwrap();
+
+    let result = run_tool(
+        Arc::new(crabot::tools::crate_source::CrateSourceTool),
+        json!({ "crate": "helper" }),
+        &root,
+        CancellationToken::new(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_path(result.trim(), &root).unwrap(),
+        dunce::canonicalize(tmp.join("helper")).unwrap()
+    );
+}
+
+#[test]
+fn crate_source_rejects_unknown_crates() {
+    let error = run_tool(
+        Arc::new(crabot::tools::crate_source::CrateSourceTool),
+        json!({ "crate": "definitely_not_a_real_crate" }),
+        &crabot_workspace(),
+        CancellationToken::new(),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("not in Cargo.lock"), "{error}");
 }

@@ -30,7 +30,8 @@ mod uname; // host's own `uname`, replacing bashkit's virtual Linux
 pub mod builtin;
 /// Re-export the tools at the legacy `crate::tools::<tool>` paths.
 pub use builtin::{
-    ask, bash, edit, fetch, find, process, read, renew, screenshot, search, task, todo, write,
+    ask, bash, crate_source, edit, fetch, find, process, read, renew, screenshot, search, task,
+    todo, write,
 };
 
 pub use renew::move_renews_to_end;
