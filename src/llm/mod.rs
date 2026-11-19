@@ -13,7 +13,7 @@ use genai::chat::{
     ToolCall, ToolResponse,
 };
 
-use crate::app::session_state::SessionEvent;
+use crate::app::session_state::{RetrySignal, SessionEvent};
 use crate::tools::{self, ToolRef};
 use crabot::chat::{ToolCall as ChatToolCall, attachment_marker_message, image_marker_message};
 use crabot::lock;
@@ -58,6 +58,8 @@ pub struct SendConfig {
     pub user_agent: String,
     /// In-progress tool execution stops when this token is cancelled.
     pub cancel_token: CancellationToken,
+    /// UI → stream signal to skip the remaining auto-retry countdown.
+    pub retry_signal: Arc<RetrySignal>,
     /// Max agent-loop iterations (tool-calling rounds) before giving up.
     pub max_iterations: usize,
     /// Seconds of stream silence before giving up (0 = off).
@@ -142,6 +144,7 @@ pub async fn send_stream(
         mut task_receiver,
         user_agent,
         cancel_token,
+        retry_signal,
         max_iterations,
         stream_stall_timeout_secs,
         image_cache,
@@ -237,6 +240,7 @@ pub async fn send_stream(
         session_id: &session_id,
         chat_options: &chat_options,
         cancel_token: &cancel_token,
+        retry_signal: &retry_signal,
     };
 
     for _ in 0..max_iterations {
@@ -366,16 +370,8 @@ pub async fn send_stream(
                 }
             };
 
-            if !pause_before_retry(
-                attempt,
-                retry_delay,
-                &model.model_id,
-                &reason,
-                status,
-                on_event,
-                &cancel_token,
-            )
-            .await
+            if !pause_before_retry(attempt, retry_delay, &reason, status, on_event, &stream_ctx)
+                .await
             {
                 on_event(SessionEvent::Cancelled).await;
                 return;

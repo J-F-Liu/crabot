@@ -1273,6 +1273,7 @@ pub(crate) fn start_dialog(
         task_receiver: task_rx,
         user_agent: crabot::app_title().to_string(),
         cancel_token: cancel_token.clone(),
+        retry_signal: tab.session_state.retry_signal.clone(),
         max_iterations: app.settings.max_iterations,
         stream_stall_timeout_secs: app.settings.stream_stall_timeout,
         image_cache: tab.session_state.image_cache.clone(),

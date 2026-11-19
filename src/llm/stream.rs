@@ -14,7 +14,7 @@ use genai::chat::{
 };
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 
-use crate::app::session_state::{RetryInfo, SessionEvent};
+use crate::app::session_state::{RetryInfo, RetrySignal, SessionEvent};
 use crabot::chat::assistant_msg_is_empty;
 use crabot::model::ModelInfo;
 
@@ -342,6 +342,8 @@ pub(super) struct StreamCtx<'a> {
     pub(super) session_id: &'a str,
     pub(super) chat_options: &'a ChatOptions,
     pub(super) cancel_token: &'a CancellationToken,
+    /// UI trigger that skips the auto-retry countdown.
+    pub(super) retry_signal: &'a RetrySignal,
 }
 
 /// A successfully established LLM stream plus its first event (if any).
@@ -590,21 +592,22 @@ pub(super) async fn stream_attempt(
 
 // ── Retry pause ────────────────────────────────────────────────────
 
-/// Count down `delay` one second at a time so Stop stays responsive.
+/// Count down `delay` one second at a time so Stop and Retry stay responsive.
 pub(super) async fn pause_before_retry(
     attempt: u32,
     delay: Duration,
-    model_id: &str,
     reason: &str,
     status: Cow<'static, str>,
     on_event: &mut (dyn FnMut(SessionEvent) -> BoxFuture<'static, bool> + Send),
-    cancel_token: &CancellationToken,
+    ctx: &StreamCtx<'_>,
 ) -> bool {
+    // Drop a click that landed after an earlier countdown had already ended.
+    ctx.retry_signal.take();
     // The countdown UI works in whole seconds.
     let delay_secs = delay.as_millis().div_ceil(1000).clamp(1, u32::MAX as u128) as u32;
     tracing::warn!(
         attempt,
-        model = %model_id,
+        model = %ctx.model.model_id,
         error = %reason,
         "transient LLM failure, retrying in {delay_secs}s"
     );
@@ -621,7 +624,11 @@ pub(super) async fn pause_before_retry(
         }
         tokio::select! {
             biased;
-            _ = cancel_token.cancelled() => return false,
+            _ = ctx.cancel_token.cancelled() => return false,
+            _ = ctx.retry_signal.wait() => {
+                tracing::info!(attempt, seconds_left, "retry countdown skipped by user");
+                break;
+            }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
         }
     }

@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -82,6 +83,8 @@ pub(crate) struct SessionState {
     pub(crate) renew_hint_cooldown: Cell<u32>,
     /// Auto-retry countdown after a transient LLM failure (429/5xx/connection).
     pub(crate) retry: Option<RetryInfo>,
+    /// UI → stream trigger that skips the auto-retry countdown.
+    pub(crate) retry_signal: Arc<RetrySignal>,
     /// Failure label shown until the next request starts.
     pub(crate) last_error: Option<Cow<'static, str>>,
     /// Encoded images attached to this session's requests, shared with the
@@ -112,6 +115,7 @@ impl SessionState {
             scroll_throttle: Cell::new(Instant::now()),
             renew_hint_cooldown: Cell::new(0),
             retry: None,
+            retry_signal: Arc::new(RetrySignal::default()),
             last_error: None,
             image_cache: Arc::new(tokio::sync::Mutex::new(crate::llm::ImageCache::default())),
         }
@@ -200,6 +204,33 @@ pub(crate) struct RetryInfo {
     pub(crate) status: Cow<'static, str>,
 }
 
+/// UI → stream trigger that skips the auto-retry countdown.
+#[derive(Debug, Default)]
+pub(crate) struct RetrySignal {
+    triggered: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl RetrySignal {
+    /// Skip the remaining countdown and retry immediately.
+    pub(crate) fn trigger(&self) {
+        self.triggered.store(true, Ordering::Release);
+        self.notify.notify_one();
+    }
+
+    /// Consume a pending trigger.
+    pub(crate) fn take(&self) -> bool {
+        self.triggered.swap(false, Ordering::AcqRel)
+    }
+
+    /// Wait until a trigger is pending.
+    pub(crate) async fn wait(&self) {
+        while !self.take() {
+            self.notify.notified().await;
+        }
+    }
+}
+
 /// Request displayed by the builtin ask tool.
 #[derive(Debug, Clone)]
 pub(crate) struct AskRequest {
@@ -281,6 +312,8 @@ pub(crate) enum SessionEvent {
     TokenUsage(Option<genai::chat::Usage>),
     /// Auto-retry countdown after a transient failure (429/5xx/connection).
     RetryCountdown(RetryInfo),
+    /// Skip the remaining auto-retry countdown and retry immediately.
+    RetryNow,
     /// Non-fatal warning appended to the conversation (not persisted to history).
     Notice(String),
     Done,
@@ -330,7 +363,7 @@ pub(crate) fn update(
     } = tab;
     let state: &mut SessionState = session_state;
 
-    // Any non-countdown event resumes/ends streaming — clear the retry countdown.
+    // Any non-countdown event ends the retry wait — clear the countdown.
     if !matches!(&event, SessionEvent::RetryCountdown(_)) {
         state.retry = None;
     }
@@ -338,6 +371,12 @@ pub(crate) fn update(
     match event {
         SessionEvent::RetryCountdown(retry) => {
             state.retry = Some(retry);
+            return Task::none();
+        }
+        SessionEvent::RetryNow => {
+            // Reflect the immediate reconnect before the stream's PhaseChange lands.
+            state.phase = DialogPhase::LlmLoading;
+            state.retry_signal.trigger();
             return Task::none();
         }
         SessionEvent::ToolCalls(tcs) => {

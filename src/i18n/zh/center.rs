@@ -32,6 +32,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Created: {}", "创建时间：{}"),
     // ── status line (center_pane.rs) ──
     ("⏹ Stop", "⏹ 停止"),
+    ("🔄 Retry", "🔄 重试"),
     ("Session {} running…", "会话 {} 运行中…"),
     ("Sessions {} running…", "会话 {} 运行中…"),
     ("⏳ Loading LLM…", "⏳ 正在加载 LLM…"),

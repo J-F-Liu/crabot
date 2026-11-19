@@ -879,6 +879,7 @@ pub(crate) fn center_pane<'a>(
     let expanded_dialogs: &HashSet<usize> = &tab.expanded_dialogs;
     let status = conversation.status(lang);
     let streaming: DialogPhase = tab.session_state.phase;
+    let retrying = tab.session_state.retry.is_some();
     let selectable_msgs: &HashSet<usize> = &tab.selectable_msgs;
     let pending_user_prompt: Option<&UserPrompt> = tab.session_state.pending_prompt.as_ref();
     let ask_request: Option<&AskRequest> = tab.session_state.ask_request.as_ref();
@@ -1058,6 +1059,7 @@ pub(crate) fn center_pane<'a>(
             status_line(
                 status,
                 streaming,
+                retrying,
                 &running_tabs,
                 viewing_number,
                 font_scale,
@@ -1312,9 +1314,12 @@ fn usage_summary(tab: &SessionTab, model: Option<&ModelConfig>) -> String {
     parts.join(" · ")
 }
 
+/// Status bar row: phase text, stop/retry actions, and background sessions.
+#[allow(clippy::too_many_arguments)] // callers forward narrow state slices as-is
 fn status_line(
     status_text: Cow<'static, str>,
     phase: DialogPhase,
+    retrying: bool,
     running_tabs: &[usize],
     viewing_number: usize,
     font_scale: f32,
@@ -1329,15 +1334,21 @@ fn status_line(
             .size(12.0 * font_scale)
             .color(color_muted()),
     );
-    if phase != DialogPhase::Idle {
-        row = row.push(
-            button(text(lang.tr("⏹ Stop")).size(11.0 * font_scale))
-                .on_press(CenterPaneEvent::Conversation(
-                    ConversationEvent::SessionEvent(viewing_number, SessionEvent::Stop),
-                ))
-                .padding([4, 10])
-                .style(icon_button_style),
-        );
+    // Streaming actions: stop while busy, retry while a countdown is pending.
+    for (show, label, event) in [
+        (phase != DialogPhase::Idle, "⏹ Stop", SessionEvent::Stop),
+        (retrying, "🔄 Retry", SessionEvent::RetryNow),
+    ] {
+        if show {
+            row = row.push(
+                button(text(lang.tr(label)).size(11.0 * font_scale))
+                    .on_press(CenterPaneEvent::Conversation(
+                        ConversationEvent::SessionEvent(viewing_number, event),
+                    ))
+                    .padding([4, 10])
+                    .style(icon_button_style),
+            );
+        }
     }
 
     // Background running sessions indicator with per-tab stop buttons.
