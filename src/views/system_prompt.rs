@@ -306,11 +306,12 @@ pub(crate) fn date_field_view<'a>(
         checkbox(checked)
             .label(lang.tr(name))
             .style(crate::views::primary_checkbox)
-            .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v)),
+            .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
+            .width(Fill),
         text_input("YYYY-MM-DD", &field.1)
             .on_input(move |s| PromptEvent::EditTextField(name, s))
             .width(Length::Fixed(110.0))
-            .padding(4)
+            .padding([2, 6])
             .align_x(iced::alignment::Horizontal::Center),
     ]
     .spacing(4)

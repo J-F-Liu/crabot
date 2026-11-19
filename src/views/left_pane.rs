@@ -88,12 +88,17 @@ pub(crate) fn left_pane<'a>(
                     tools_field_view(&prompt.tools, lang).map(LeftPaneEvent::Prompt),
                     workspace_field_view(&prompt.workspace, workspace_options, lang)
                         .map(LeftPaneEvent::Prompt),
+                    // Nest the optional row so its absence adds no extra gap.
                     if agents_md_exists {
-                        agents_md_field_view(&prompt.agents_md).map(LeftPaneEvent::Prompt)
+                        column![
+                            agents_md_field_view(&prompt.agents_md).map(LeftPaneEvent::Prompt),
+                            date_field_view(&prompt.date, lang).map(LeftPaneEvent::Prompt),
+                        ]
+                        .spacing(8)
+                        .into()
                     } else {
-                        column![].into()
+                        date_field_view(&prompt.date, lang).map(LeftPaneEvent::Prompt)
                     },
-                    date_field_view(&prompt.date, lang).map(LeftPaneEvent::Prompt),
                     session_view(
                         session_options,
                         current_session_id,
