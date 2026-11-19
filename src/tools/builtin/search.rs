@@ -29,8 +29,8 @@ use grep_searcher::sinks::Lossy;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
 
 use crate::tools::{
-    Tool, arg_str, make_workspace_relative, required_str, resolve_path, tool_limits,
-    truncate_output,
+    Tool, WHOLE_CARGO_REGISTRY_MESSAGE, arg_str, cargo_home, is_whole_cargo_registry,
+    make_workspace_relative, required_str, resolve_path, tool_limits, truncate_output,
 };
 
 pub struct SearchTool;
@@ -137,6 +137,10 @@ pub(super) fn execute_search(
         .transpose()
         .map_err(|e| format!("Failed to resolve path: {e}"))?
         .unwrap_or_else(|| workspace.to_path_buf());
+
+    if search_path.is_dir() && is_whole_cargo_registry(&search_path, &cargo_home(workspace)) {
+        return Err(WHOLE_CARGO_REGISTRY_MESSAGE.into());
+    }
 
     let matcher = RegexMatcher::new(pattern).map_err(|e| format!("Invalid regex: {e}"))?;
     let mut searcher = SearcherBuilder::new()

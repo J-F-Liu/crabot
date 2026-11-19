@@ -4,8 +4,8 @@
 //! — no real bash process, so the same path works natively on Windows. Scripts
 //! the interpreter cannot faithfully handle (parse errors, dynamic command
 //! names, `eval`/`exec`/`source`, path-based or glob-shaped names, a declaration
-//! operand bashkit mis-splits) make [`analyze_script`] return `Err`, falling
-//! back to real `bash -c`.
+//! operand bashkit mis-splits) make [`analyze_script`] return
+//! [`ScriptIssue::Fallback`], falling back to real `bash -c`.
 //!
 //! Wrapper builtins (`timeout`, `xargs`, `find -exec`, and the runners `env`,
 //! `nice`, `sudo`, `flock`, `busybox`) hide commands in their arguments;
@@ -55,7 +55,10 @@ use bashkit::{
     async_trait, vfs_join,
 };
 
-use super::{CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, timeout_message};
+use super::{
+    CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, WHOLE_CARGO_REGISTRY_MESSAGE, cargo_home,
+    is_whole_cargo_registry, resolve_path, timeout_message,
+};
 use crate::lock;
 
 /// Per-stream output cap (head-only backstop; crabot's own truncation is the visible limit).
@@ -136,19 +139,34 @@ pub(crate) struct ScriptPlan {
     analysis: ScriptAnalysis,
 }
 
+/// Why a script cannot run through the in-process interpreter.
+pub(crate) enum ScriptIssue {
+    /// Use the host `bash -c` fallback.
+    Fallback,
+    /// Refuse the script with this agent-facing message.
+    Refused(&'static str),
+}
+
+impl From<()> for ScriptIssue {
+    fn from((): ()) -> Self {
+        Self::Fallback
+    }
+}
+
 /// Statically analyze a script for the in-process interpreter.
 ///
-/// Returns `Err(())` when the script cannot run faithfully in-process (parse
-/// error, dynamic/path-based/glob-shaped command names, opaque builtins,
-/// wrapper arguments that hide a command). Otherwise returns the names to
-/// bridge (empty when only builtins are used) and the argument table.
-pub(crate) fn analyze_script(script: &str) -> Result<ScriptPlan, ()> {
-    let analysis = analyze_with_limits(script, 100, 100_000).map_err(|_| ())?;
+/// `ScriptIssue::Fallback` means the script needs the host `bash -c` path;
+/// `ScriptIssue::Refused` means it must not run.
+pub(crate) fn analyze_script(script: &str, workspace: &Path) -> Result<ScriptPlan, ScriptIssue> {
+    let analysis = analyze_with_limits(script, 100, 100_000).map_err(|_| ScriptIssue::Fallback)?;
+    if let Some(message) = whole_cargo_registry_search(&analysis, workspace) {
+        return Err(ScriptIssue::Refused(message));
+    }
     if analysis.is_opaque() {
-        return Err(());
+        return Err(ScriptIssue::Fallback);
     }
     if splits_declaration_operand(script) {
-        return Err(());
+        return Err(ScriptIssue::Fallback);
     }
     let mut names = Vec::new();
     for command in &analysis.commands {
@@ -157,23 +175,17 @@ pub(crate) fn analyze_script(script: &str) -> Result<ScriptPlan, ()> {
         };
         // Unsupported: opaque payload, path-based (`./s.sh`), glob-shaped (`$TOOL`).
         if is_unbridgeable(name) {
-            return Err(());
+            return Err(ScriptIssue::Fallback);
         }
         // Wrappers hide a command in their arguments — extract it for bridging,
         // or fall back when it cannot run faithfully in-process.
         match name {
             "find" => collect_find_commands(command, &mut names)?,
-            "timeout" => collect_timeout_command(command, &mut names)?,
-            "xargs" => collect_xargs_command(command, &mut names)?,
-            // Runners the interpreter answers itself run the command they wrap
-            // through this interpreter — the wrapped name must be bridged.
-            "env" => collect_env_command(command, &mut names)?,
-            "nice" => collect_nice_command(command, &mut names)?,
-            "sudo" => collect_sudo_command(command, &mut names)?,
-            "flock" => collect_flock_command(command, &mut names)?,
-            "busybox" => collect_busybox_command(command, &mut names)?,
-            "watch" => return Err(()), // its stub never runs the wrapped command
-            "parallel" => return Err(()), // its stub only reports a dry-run plan
+            "env" | "nice" | "sudo" | "flock" | "busybox" | "timeout" | "xargs" => {
+                collect_wrapped_command(command, &mut names)?
+            }
+            "watch" => return Err(ScriptIssue::Fallback), // never runs its command
+            "parallel" => return Err(ScriptIssue::Fallback), // dry-run stub only
             _ => {}
         }
         push_external(name, &mut names);
@@ -227,6 +239,290 @@ pub(crate) fn detach_request(script: &str) -> Option<Detach> {
     }
     let parsed = Parser::new(script).parse().ok()?;
     detach_in_commands(&parsed.commands)
+}
+
+// ── Cargo registry search guard ─────────────────────────────────────
+
+/// GNU grep long options that consume the next word or an `=value`.
+const GREP_VALUE_LONG: &[&str] = &[
+    "after-context",
+    "before-context",
+    "binary-files",
+    "context",
+    "devices",
+    "directories",
+    "exclude",
+    "exclude-dir",
+    "exclude-from",
+    "file",
+    "group-separator",
+    "include",
+    "label",
+    "max-count",
+    "regexp",
+];
+
+/// Short grep options whose value may be attached or separate.
+const GREP_VALUE_SHORT: &[char] = &['A', 'B', 'C', 'D', 'X', 'd', 'e', 'f', 'm'];
+
+/// ripgrep's value-taking long options.
+const RG_VALUE_LONG: &[&str] = &[
+    "after-context",
+    "before-context",
+    "color",
+    "colors",
+    "context",
+    "context-separator",
+    "dfa-size-limit",
+    "encoding",
+    "engine",
+    "field-context-separator",
+    "field-match-separator",
+    "file",
+    "glob",
+    "hostname-bin",
+    "iglob",
+    "ignore-file",
+    "max-columns",
+    "max-count",
+    "max-depth",
+    "max-filesize",
+    "path-separator",
+    "pre",
+    "pre-glob",
+    "regexp",
+    "regex-size-limit",
+    "replace",
+    "sort",
+    "sortr",
+    "threads",
+    "type",
+    "type-add",
+    "type-clear",
+    "type-not",
+];
+
+/// ripgrep's value-taking short options.
+const RG_VALUE_SHORT: &[char] = &[
+    'A', 'B', 'C', 'E', 'M', 'T', 'e', 'f', 'g', 'j', 'm', 'r', 't',
+];
+
+/// Search tools whose file operands the registry guard checks.
+const SEARCH_TOOLS: &[&str] = &["grep", "egrep", "fgrep", "rg"];
+
+/// Refuse a script that greps a whole cargo registry root.
+fn whole_cargo_registry_search(
+    analysis: &ScriptAnalysis,
+    workspace: &Path,
+) -> Option<&'static str> {
+    let cargo_home = cargo_home(workspace);
+    analysis
+        .commands
+        .iter()
+        .any(|command| command_searches_registry(command, workspace, &cargo_home))
+        .then_some(WHOLE_CARGO_REGISTRY_MESSAGE)
+}
+
+/// True when the command runs a search tool — directly or hidden in a wrapper
+/// (`env grep …`, `timeout rg …`, `find REGISTRY -exec grep …`) — over a whole
+/// registry directory.
+fn command_searches_registry(
+    command: &AnalyzedCommand,
+    workspace: &Path,
+    cargo_home: &Path,
+) -> bool {
+    let mut argvs = Vec::new();
+    collect_search_tool_argvs(command, 0, &mut argvs);
+    if argvs
+        .iter()
+        .any(|argv| argv_searches_registry(argv, workspace, cargo_home))
+    {
+        return true;
+    }
+    // `find REGISTRY -exec grep …` — the registry path is find's own operand.
+    command.name.as_deref() == Some("find")
+        && !argvs.is_empty()
+        && walk_find(&command.args)
+            .roots
+            .into_iter()
+            .any(|root| is_registry_operand(root, workspace, cargo_home))
+}
+
+/// Argvs (command word first) of every search tool a command may execute.
+fn collect_search_tool_argvs(
+    command: &AnalyzedCommand,
+    depth: usize,
+    out: &mut Vec<Vec<Option<String>>>,
+) {
+    if depth > 8 {
+        return; // wrapper nesting is never this deep; bail out
+    }
+    let Some(name) = command.name.as_deref() else {
+        return;
+    };
+    if SEARCH_TOOLS.contains(&name) {
+        let mut argv = Vec::with_capacity(command.args.len() + 1);
+        argv.push(command.name.clone());
+        argv.extend(command.args.iter().cloned());
+        out.push(argv);
+        return;
+    }
+    if name == "find" {
+        for template in walk_find(&command.args).templates {
+            collect_search_tool_argvs(&inner_command(command, &template), depth + 1, out);
+        }
+        return;
+    }
+    if let Some(args) = command.literal_args()
+        && let Wrapped::Command(start) = wrapper_command(name, &args)
+    {
+        let inner = inner_command(command, &command.args[start..]);
+        collect_search_tool_argvs(&inner, depth + 1, out);
+    }
+}
+
+/// A synthetic command view over `argv`, whose first entry is the command word.
+fn inner_command(command: &AnalyzedCommand, argv: &[Option<String>]) -> AnalyzedCommand {
+    AnalyzedCommand {
+        name: argv.first().cloned().flatten(),
+        args: argv.get(1..).unwrap_or_default().to_vec(),
+        context: command.context,
+        assignments: Vec::new(),
+    }
+}
+
+/// Whether a search-tool argv (command word first) takes a registry directory
+/// as one of its file operands.
+fn argv_searches_registry(argv: &[Option<String>], workspace: &Path, cargo_home: &Path) -> bool {
+    let Some(name) = argv.first().and_then(|arg| arg.as_deref()) else {
+        return false;
+    };
+    let (long, short) = match name {
+        "grep" | "egrep" | "fgrep" => (GREP_VALUE_LONG, GREP_VALUE_SHORT),
+        "rg" => (RG_VALUE_LONG, RG_VALUE_SHORT),
+        _ => return false,
+    };
+    search_file_operands(&argv[1..], long, short)
+        .into_iter()
+        .any(|arg| is_registry_operand(arg, workspace, cargo_home))
+}
+
+/// A walk over a find command's args: `-exec` templates, literal search
+/// roots, and whether every predicate is one bashkit understands.
+struct FindWalk<'a> {
+    templates: Vec<Vec<Option<String>>>,
+    roots: Vec<&'a str>,
+    known: bool,
+}
+
+/// Walk a find expression, mirroring `collect_find_commands`' predicate table.
+fn walk_find(args: &[Option<String>]) -> FindWalk<'_> {
+    let mut walk = FindWalk {
+        templates: Vec::new(),
+        roots: Vec::new(),
+        known: true,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let Some(arg) = args[i].as_deref() else {
+            i += 1; // dynamic word — nothing checkable
+            continue;
+        };
+        match arg {
+            "-exec" | "-execdir" => {
+                let mut template = Vec::new();
+                i += 1;
+                while i < args.len() && !matches!(args[i].as_deref(), Some(";" | "\\;" | "+")) {
+                    template.push(args[i].clone());
+                    i += 1;
+                }
+                if !template.is_empty() {
+                    walk.templates.push(template);
+                }
+                i += 1; // terminator (or end — find reports the error first)
+            }
+            "-name" | "-path" | "-type" | "-maxdepth" | "-mindepth" | "-printf" => i += 2,
+            "-print" | "-print0" | "-not" | "!" => i += 1,
+            _ if arg.len() > 1 && arg.starts_with('-') => {
+                walk.known = false; // unknown predicate — bashkit fails first
+                i += 1;
+            }
+            _ => {
+                walk.roots.push(arg);
+                i += 1;
+            }
+        }
+    }
+    walk
+}
+
+/// Literal file operands, skipping options, their values, and the pattern.
+fn search_file_operands<'a>(
+    args: &'a [Option<String>],
+    long_values: &[&str],
+    short_values: &[char],
+) -> Vec<&'a str> {
+    let mut operands: Vec<Option<&str>> = Vec::new();
+    let mut pattern_from_option = false;
+    let mut paths_only = false;
+    let mut skip_next = false;
+    let mut end_options = false;
+
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        let Some(arg) = arg.as_deref() else {
+            operands.push(None);
+            continue;
+        };
+        if !end_options && arg == "--" {
+            end_options = true;
+            continue;
+        }
+        if !end_options && arg.starts_with("--") {
+            let (name, value) = arg[2..]
+                .split_once('=')
+                .map_or((&arg[2..], None), |(name, value)| (name, Some(value)));
+            if long_values.contains(&name) {
+                pattern_from_option |= matches!(name, "regexp" | "file");
+                skip_next = value.is_none();
+            }
+            paths_only |= name == "files";
+            continue;
+        }
+        if !end_options && arg.len() > 1 && arg.starts_with('-') {
+            let mut chars = arg[1..].chars().peekable();
+            while let Some(c) = chars.next() {
+                if c.is_ascii_digit() {
+                    break; // `-NUM` context
+                }
+                if short_values.contains(&c) {
+                    pattern_from_option |= matches!(c, 'e' | 'f');
+                    if chars.peek().is_none() {
+                        skip_next = true;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        operands.push(Some(arg));
+    }
+
+    let skip_pattern = usize::from(!pattern_from_option && !paths_only);
+    operands.into_iter().skip(skip_pattern).flatten().collect()
+}
+
+/// Whether an argument resolves to a whole cargo registry directory.
+fn is_registry_operand(arg: &str, workspace: &Path, cargo_home: &Path) -> bool {
+    let path = match arg.strip_prefix("~/").or_else(|| arg.strip_prefix("~\\")) {
+        Some(rest) => home_host_path().map_or_else(|| PathBuf::from(arg), |home| home.join(rest)),
+        None => PathBuf::from(arg),
+    };
+    resolve_path(&path.to_string_lossy(), workspace)
+        .is_ok_and(|path| path.is_dir() && is_whole_cargo_registry(&path, cargo_home))
 }
 
 /// First detach request among `commands`, in source order.
@@ -447,18 +743,80 @@ fn push_wrapped_arg(arg: Option<&str>, names: &mut Vec<String>) -> Result<(), ()
     Ok(())
 }
 
-/// `env [-i] [-u NAME] [-C DIR] [NAME=VALUE]... [COMMAND [ARG]...]` — register
-/// the COMMAND; assignment-only invocations keep the interpreter's `env`.
-fn collect_env_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
-    let args = command.literal_args().ok_or(())?;
-    if matches!(args.first().copied(), Some("--help" | "--version")) {
-        return Ok(()); // help prints; nothing runs
+/// What a wrapper builtin runs: the command at an args index, nothing, or
+/// something only real bash can run (`Wrapped::Unknown`).
+enum Wrapped {
+    Command(usize),
+    Nothing,
+    Unknown,
+}
+
+/// The command a wrapper builtin runs, by name; `Unknown` for anything else.
+/// The parsers below mirror the bridged builtins' own argument handling.
+fn wrapper_command(name: &str, args: &[&str]) -> Wrapped {
+    match name {
+        // `timeout [OPTION] DURATION COMMAND [ARG]...`
+        "timeout" => match skip_options(args, &TIMEOUT_OPTS) {
+            Ok(i) => wrapped_at(args, i + 1),
+            Err(()) => Wrapped::Unknown,
+        },
+        // `xargs [OPTION]... [COMMAND [ARG]...]`
+        "xargs" => match skip_options(args, &XARGS_OPTS) {
+            Ok(i) => wrapped_at(args, i),
+            Err(()) => Wrapped::Unknown,
+        },
+        // `env [-i] [-u NAME] [NAME=VALUE]... [COMMAND [ARG]...]`
+        "env" => {
+            if matches!(args.first().copied(), Some("--help" | "--version")) {
+                return Wrapped::Nothing; // help prints; nothing runs
+            }
+            match skip_options(args, &ENV_OPTS) {
+                Err(()) => Wrapped::Unknown,
+                // Assignment-only operands configure the child; the first
+                // other one is the COMMAND.
+                Ok(i) => match args[i..].iter().position(|arg| !is_env_assignment(arg)) {
+                    Some(p) => Wrapped::Command(i + p),
+                    None => Wrapped::Nothing,
+                },
+            }
+        }
+        "nice" => nice_command(args),
+        "sudo" => sudo_command(args),
+        "flock" => flock_command(args),
+        // `busybox APPLET [ARG]...` — the applet runs as a builtin of that name.
+        "busybox" => match args.first().copied() {
+            None | Some("--list" | "--list-full" | "-l" | "--help" | "--version") => {
+                Wrapped::Nothing
+            }
+            Some(_) => Wrapped::Command(0),
+        },
+        _ => Wrapped::Unknown,
     }
-    let i = skip_options(&args, &ENV_OPTS)?;
-    // `NAME=VALUE` operands configure the child; the first other one runs.
-    match args[i..].iter().find(|arg| !is_env_assignment(arg)) {
-        Some(command) => push_wrapped_arg(Some(command), names),
-        None => Ok(()),
+}
+
+/// `Command(i)` when a command word sits at `i`, else `Nothing`.
+fn wrapped_at(args: &[&str], i: usize) -> Wrapped {
+    match args.get(i) {
+        Some(cmd) if !cmd.is_empty() => Wrapped::Command(i),
+        _ => Wrapped::Nothing,
+    }
+}
+
+/// Register the command a wrapper builtin hides in its arguments; fall back
+/// when that command cannot run faithfully in-process.
+fn collect_wrapped_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
+    let args = command.literal_args().ok_or(())?;
+    match wrapper_command(command.name.as_deref().ok_or(())?, &args) {
+        Wrapped::Command(i) => {
+            // busybox dispatches on the applet basename (`busybox /bin/grep`).
+            let mut cmd = args.get(i).copied();
+            if command.name.as_deref() == Some("busybox") {
+                cmd = cmd.map(|c| c.rsplit('/').next().unwrap_or(c));
+            }
+            push_wrapped_arg(cmd, names)
+        }
+        Wrapped::Nothing => Ok(()),
+        Wrapped::Unknown => Err(()),
     }
 }
 
@@ -468,30 +826,27 @@ fn is_env_assignment(arg: &str) -> bool {
         .is_some_and(|(name, _)| !name.is_empty())
 }
 
-/// `nice [-n N] [--adjustment=N] [COMMAND [ARG]...]` — register the COMMAND.
-fn collect_nice_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
-    let args = command.literal_args().ok_or(())?;
-    // A leading `--help`/`--version` is answered by the interpreter itself.
+/// `nice [-n N] [--adjustment=N] [COMMAND [ARG]...]` — what it runs.
+fn nice_command(args: &[&str]) -> Wrapped {
     if matches!(args.first().copied(), Some("--help" | "--version")) {
-        return Ok(());
+        return Wrapped::Nothing; // help prints; nothing runs
     }
     let mut i = 0;
     while let Some(arg) = args.get(i) {
         if *arg == "--" {
-            i += 1;
-            break;
+            return wrapped_at(args, i + 1);
         }
         if matches!(*arg, "-n" | "--adjustment") {
             i += 2; // flag and its value
         } else if is_nice_adjustment(arg) {
             i += 1; // `-n5`, `--adjustment=5`, `-5`
         } else if arg.starts_with('-') && arg.len() > 1 {
-            return Err(()); // unknown option — bashkit would run it as the command
+            return Wrapped::Unknown; // unknown option — bashkit would run it as the command
         } else {
-            break; // COMMAND
+            return wrapped_at(args, i); // COMMAND
         }
     }
-    push_wrapped_arg(args.get(i).copied(), names)
+    Wrapped::Nothing // no command — nice just sets the priority
 }
 
 /// A `nice` adjustment: `-n5`, `--adjustment=5`, or bare `-5`.
@@ -504,10 +859,9 @@ fn is_nice_adjustment(arg: &str) -> bool {
         || arg.strip_prefix('-').is_some_and(digits)
 }
 
-/// `sudo [-OPTIONS] [VAR=VALUE]... COMMAND [ARG]...` — register the COMMAND.
+/// `sudo [-OPTIONS] [VAR=VALUE]... COMMAND [ARG]...` — what it runs.
 /// `-s`/`-i` hand it to a shell instead, and only real bash can run that.
-fn collect_sudo_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
-    let args = command.literal_args().ok_or(())?;
+fn sudo_command(args: &[&str]) -> Wrapped {
     let mut i = 0;
     while let Some(arg) = args.get(i) {
         match *arg {
@@ -520,20 +874,20 @@ fn collect_sudo_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> R
             | "-h" | "--host" | "-r" | "--role" | "-t" | "--type" | "-U" | "--other-user"
             | "-D" | "--chdir" | "-T" | "--command-timeout" => i += 2,
             // A login/interactive shell — fall back rather than script it here.
-            "-s" | "--shell" | "-i" | "--login" => return Err(()),
-            // The policy alone: nothing runs.
-            "-l" | "--list" => return Ok(()),
+            "-s" | "--shell" | "-i" | "--login" => return Wrapped::Unknown,
+            // The policy or timestamp maintenance alone: nothing runs.
+            "-l" | "--list" => return Wrapped::Nothing,
             "-v" | "--validate" | "-k" | "--reset-timestamp" | "-K" | "--remove-timestamp"
                 if args.len() == i + 1 =>
             {
-                return Ok(());
+                return Wrapped::Nothing;
             }
             a if a.starts_with("--") && a.len() > 2 => i += 1,
             a if a.starts_with('-') && a.len() > 1 => {
                 // Clustered short flags (`-nE`); a value flag at the end of
                 // the cluster takes the next operand (`-nu root`).
                 if a[1..].contains(['s', 'i']) {
-                    return Err(());
+                    return Wrapped::Unknown;
                 }
                 let last = a.as_bytes()[a.len() - 1];
                 i += if b"ugCphrtUDT".contains(&last) { 2 } else { 1 };
@@ -544,7 +898,7 @@ fn collect_sudo_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> R
     // Leading `VAR=VALUE` operands go to the command's environment, not to it.
     let rest = args.get(i..).unwrap_or_default();
     let start = rest.iter().take_while(|arg| is_var_assignment(arg)).count();
-    push_wrapped_arg(rest.get(start).copied(), names)
+    wrapped_at(args, i + start)
 }
 
 /// `NAME=VALUE` as `sudo` reads one: a shell identifier before the `=`.
@@ -558,12 +912,11 @@ fn is_var_assignment(arg: &str) -> bool {
     })
 }
 
-/// `flock [OPTIONS] FILE|FD [COMMAND [ARG]...]` — register the COMMAND;
-/// `-c`/`--command` hands a shell string to real bash instead.
-fn collect_flock_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
-    let args = command.literal_args().ok_or(())?;
+/// `flock [OPTIONS] FILE|FD [COMMAND]` — what it runs; `-c`/`--command`
+/// hands a shell string to real bash instead.
+fn flock_command(args: &[&str]) -> Wrapped {
     if matches!(args.first().copied(), Some("--help" | "--version")) {
-        return Ok(()); // help prints; nothing runs
+        return Wrapped::Nothing; // help prints; nothing runs
     }
     let mut i = 0;
     while let Some(arg) = args.get(i) {
@@ -581,24 +934,13 @@ fn collect_flock_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> 
             {
                 i += 1
             }
-            a if a.starts_with('-') && a.len() > 1 && a != "-c" => return Err(()),
+            a if a.starts_with('-') && a.len() > 1 && a != "-c" => return Wrapped::Unknown,
             _ => break, // FILE|FD
         }
     }
     match args.get(i + 1).copied() {
-        Some("-c" | "--command") => Err(()),
-        command => push_wrapped_arg(command, names),
-    }
-}
-
-/// `busybox APPLET [ARG]...` — register the applet, which the interpreter
-/// answers as a builtin of that name.
-fn collect_busybox_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
-    let args = command.literal_args().ok_or(())?;
-    match args.first().copied() {
-        // Applet listings and help print; nothing runs.
-        None | Some("--list" | "--list-full" | "-l" | "--help" | "--version") => Ok(()),
-        Some(applet) => push_wrapped_arg(Some(applet.rsplit('/').next().unwrap_or(applet)), names),
+        Some("-c" | "--command") => Wrapped::Unknown, // a shell string
+        _ => wrapped_at(args, i + 1),
     }
 }
 
@@ -672,50 +1014,20 @@ fn skip_options(args: &[&str], opts: &WrapperOpts) -> Result<usize, ()> {
     Ok(i)
 }
 
-/// `timeout [OPTION] DURATION COMMAND [ARG]...` — register the wrapped
-/// COMMAND (a missing one is bashkit's error to report).
-fn collect_timeout_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
-    let args = command.literal_args().ok_or(())?;
-    let i = skip_options(&args, &TIMEOUT_OPTS)?;
-    push_wrapped_arg(args.get(i + 1).copied(), names)
-}
-
-/// `xargs [OPTION]... [COMMAND [ARG]...]` — register the wrapped COMMAND
-/// (bashkit defaults to the `echo` builtin when absent).
-fn collect_xargs_command(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
-    let args = command.literal_args().ok_or(())?;
-    let i = skip_options(&args, &XARGS_OPTS)?;
-    push_wrapped_arg(args.get(i).copied(), names)
-}
-
 /// `find [PATH]... [EXPRESSION]` — register the command of every
 /// `-exec`/`-execdir` template (first template arg, up to `;`/`\;`/`+`).
 /// Unknown predicates make bashkit fail before dispatching → fall back.
 fn collect_find_commands(command: &AnalyzedCommand, names: &mut Vec<String>) -> Result<(), ()> {
-    let args = command.literal_args().ok_or(())?;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i];
-        match arg {
-            "-name" | "-path" | "-type" | "-maxdepth" | "-mindepth" | "-printf" => i += 2,
-            "-print" | "-print0" | "-not" | "!" => i += 1,
-            "-exec" | "-execdir" => {
-                let mut cmd = None;
-                i += 1;
-                while i < args.len() && !matches!(args[i], ";" | "\\;" | "+") {
-                    cmd.get_or_insert(args[i]);
-                    i += 1;
-                }
-                if let Some(cmd) = cmd {
-                    push_wrapped_arg(Some(cmd), names)?;
-                }
-                i += 1; // past the terminator
-            }
-            _ if arg.len() > 1 && arg.starts_with('-') => {
-                return Err(()); // unknown predicate (`-delete`, `-ok`, …)
-            }
-            _ => i += 1, // search path
-        }
+    if command.literal_args().is_none() {
+        return Err(()); // dynamic args — fall back
+    }
+    let walk = walk_find(&command.args);
+    if !walk.known {
+        return Err(()); // unknown predicate (`-delete`, `-ok`, …)
+    }
+    for template in &walk.templates {
+        let cmd = template.first().and_then(|arg| arg.as_deref());
+        push_wrapped_arg(cmd, names)?;
     }
     Ok(())
 }

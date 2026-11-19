@@ -106,9 +106,10 @@ fn run(
     );
     // Prefer bashkit's in-process interpreter; fall back to `bash -c` for
     // scripts it cannot faithfully execute.
-    match bash_kit::analyze_script(command) {
+    match bash_kit::analyze_script(command, workspace) {
         Ok(plan) => bash_kit::execute(command, workspace, timeout, cancel, plan, sink),
-        Err(()) => {
+        Err(bash_kit::ScriptIssue::Refused(message)) => Err(message.into()),
+        Err(bash_kit::ScriptIssue::Fallback) => {
             tracing::info!("bashkit falling back to host bash: {}", command);
             execute_real_bash(command, workspace, timeout, cancel, sink)
         }

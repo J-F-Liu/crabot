@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use common::{TempDir, await_tool, crabot_workspace, run_tool, test_runtime};
 use tokio_util::sync::CancellationToken;
 
-use crabot::tools::{ToolRegistry, tmp_host_dir};
+use crabot::tools::{ToolRegistry, convert_path_to_unix_style, tmp_host_dir};
 
 // ── helpers ─────────────────────────────────────────────────
 
@@ -1750,4 +1750,110 @@ fn progress_erase_restyle_reprint() {
     )
     .unwrap();
     assert_eq!(result, "100%\n");
+}
+
+// ── cargo registry guard ────────────────────────────────────
+
+#[test]
+fn bash_refuses_grep_over_the_whole_cargo_registry() {
+    let tmp = TempDir::new("registry_grep").unwrap();
+    let root = tmp.mkdir(".cargo/registry/src/rsproxy.cn-test").unwrap();
+    let command = format!("grep -r needle '{}'", convert_path_to_unix_style(&root));
+
+    let error = run_bash(&command, &tmp.path, None).unwrap_err();
+    assert_eq!(error, "Never search whole cargo registry");
+}
+
+#[test]
+fn bash_refuses_rg_files_over_the_whole_cargo_registry() {
+    let tmp = TempDir::new("registry_rg_files").unwrap();
+    let root = tmp.mkdir(".cargo/registry/src/rsproxy.cn-test").unwrap();
+    let command = format!("rg --files '{}'", convert_path_to_unix_style(&root));
+
+    let error = run_bash(&command, &tmp.path, None).unwrap_err();
+    assert_eq!(error, "Never search whole cargo registry");
+}
+
+#[test]
+fn bash_allows_grep_in_a_crate_directory_under_the_registry() {
+    let tmp = TempDir::new("registry_grep_crate").unwrap();
+    let dir = tmp.join(".cargo/registry/src/rsproxy.cn-test/serde-1.0.0");
+    tmp.write(
+        ".cargo/registry/src/rsproxy.cn-test/serde-1.0.0/lib.rs",
+        b"needle\n",
+    )
+    .unwrap();
+    let dir = convert_path_to_unix_style(&dir);
+
+    for command in [
+        format!("grep -r needle '{dir}'"),
+        format!("env grep -r needle '{dir}'"),
+        format!("find '{dir}' -type f -exec grep needle {{}} +"),
+    ] {
+        let result = run_bash(&command, &tmp.path, None).unwrap();
+        assert!(result.contains("needle"), "{command}\n{result}");
+    }
+}
+
+#[test]
+fn bash_refuses_wrapped_grep_over_the_whole_cargo_registry() {
+    let tmp = TempDir::new("registry_grep_wrapped").unwrap();
+    let root = tmp.mkdir(".cargo/registry/src/rsproxy.cn-test").unwrap();
+    let registry = convert_path_to_unix_style(&root);
+    let commands = [
+        format!("env grep -r needle '{registry}'"),
+        format!("nice grep -r needle '{registry}'"),
+        format!("sudo grep -r needle '{registry}'"),
+        format!("flock /tmp/crabot-guard.lk grep -r needle '{registry}'"),
+        format!("busybox grep -r needle '{registry}'"),
+        format!("timeout 10 grep -r needle '{registry}'"),
+        format!("env timeout 10 grep -r needle '{registry}'"),
+        format!("xargs grep -r needle '{registry}'"),
+    ];
+
+    for command in commands {
+        let error = run_bash(&command, &tmp.path, None).unwrap_err();
+        assert_eq!(error, "Never search whole cargo registry", "{command}");
+    }
+}
+
+#[test]
+fn bash_refuses_find_exec_grep_over_the_whole_cargo_registry() {
+    let tmp = TempDir::new("registry_find_exec").unwrap();
+    let root = tmp.mkdir(".cargo/registry/src/rsproxy.cn-test").unwrap();
+    let registry = convert_path_to_unix_style(&root);
+    let commands = [
+        format!("find '{registry}' -type f -exec grep needle {{}} +"),
+        format!("find '{registry}' -type f -execdir grep needle {{}} ;"),
+    ];
+
+    for command in commands {
+        let error = run_bash(&command, &tmp.path, None).unwrap_err();
+        assert_eq!(error, "Never search whole cargo registry", "{command}");
+    }
+}
+
+#[test]
+fn bash_allows_registry_path_in_grep_pattern_and_option_values() {
+    let tmp = TempDir::new("registry_grep_args").unwrap();
+    let root = tmp.mkdir(".cargo/registry/src/rsproxy.cn-test").unwrap();
+    let registry = convert_path_to_unix_style(&root);
+    let haystack = format!("{registry}\nneedle\n");
+    let file = tmp.write("haystack.txt", haystack.as_bytes()).unwrap();
+    let file = convert_path_to_unix_style(&file);
+
+    let result = run_bash(&format!("grep -e '{registry}' '{file}'"), &tmp.path, None).unwrap();
+    assert!(result.contains(&registry), "{result}");
+
+    let result = run_bash(&format!("grep '{registry}' '{file}'"), &tmp.path, None).unwrap();
+    assert!(result.contains(&registry), "{result}");
+
+    let workspace = convert_path_to_unix_style(&tmp.path);
+    let result = run_bash(
+        &format!("grep -r needle '{workspace}' --exclude-dir '{registry}'"),
+        &tmp.path,
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("needle"), "{result}");
 }

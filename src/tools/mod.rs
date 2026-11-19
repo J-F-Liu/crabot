@@ -14,6 +14,7 @@ pub mod mcp;
 
 // ── Submodules ─────────────────────────────────────────────────────
 mod capture;
+mod cargo_registry;
 mod context;
 mod exec;
 pub mod image;
@@ -52,6 +53,11 @@ pub use schema::{decode_stringified_args, make_strict_schema};
 
 // ── registry ────────────────────────────────────────────────────────
 pub use registry::{ToolRegistry, build_tools, unknown_tool_message};
+
+// ── cargo registry ──────────────────────────────────────────────────
+pub(crate) use cargo_registry::{
+    WHOLE_CARGO_REGISTRY_MESSAGE, cargo_home, is_whole_cargo_registry,
+};
 
 // ── paths ───────────────────────────────────────────────────────────
 pub use paths::{

@@ -10,8 +10,8 @@ use common::{TempDir, crabot_workspace, run_tool};
 use crabot::tools::tmp_host_dir;
 use crabot::tools::{
     COALESCE_MS, ChunkForwarder, ImageAttachment, ImageBudget, OutStream, OutputSink, RouteImages,
-    StreamingCap, Tool, ToolLimits, decode_stringified_args, init_tool_limits, resolve_path,
-    resolve_path_partial, streaming_truncation_marker,
+    StreamingCap, Tool, ToolLimits, convert_path_to_unix_style, decode_stringified_args,
+    init_tool_limits, resolve_path, resolve_path_partial, streaming_truncation_marker,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -1179,4 +1179,42 @@ fn crate_source_rejects_unknown_crates() {
     .unwrap_err();
 
     assert!(error.contains("not in Cargo.lock"), "{error}");
+}
+
+// ── cargo registry guard ────────────────────────────────────
+
+fn run_search(pattern: &str, path: &Path, workspace: &Path) -> Result<String, String> {
+    run_tool(
+        Arc::new(crabot::tools::search::SearchTool),
+        json!({ "pattern": pattern, "path": convert_path_to_unix_style(path) }),
+        workspace,
+        CancellationToken::new(),
+    )
+}
+
+#[test]
+fn search_refuses_the_whole_cargo_registry() {
+    let tmp = TempDir::new("registry_search").unwrap();
+    let root = tmp.mkdir(".cargo/registry/src/rsproxy.cn-test").unwrap();
+    let registry = tmp.join(".cargo/registry");
+    let src = registry.join("src");
+
+    for path in [&registry, &src, &root] {
+        let error = run_search("needle", path, &tmp.path).unwrap_err();
+        assert_eq!(error, "Never search whole cargo registry");
+    }
+}
+
+#[test]
+fn search_allows_a_crate_directory_under_the_registry() {
+    let tmp = TempDir::new("registry_search_crate").unwrap();
+    let dir = tmp.join(".cargo/registry/src/rsproxy.cn-test/serde-1.0.0");
+    tmp.write(
+        ".cargo/registry/src/rsproxy.cn-test/serde-1.0.0/lib.rs",
+        b"needle\n",
+    )
+    .unwrap();
+
+    let result = run_search("needle", &dir, &tmp.path).unwrap();
+    assert!(result.contains("needle"), "{result}");
 }

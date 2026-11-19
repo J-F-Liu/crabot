@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::tools::{
-    CANCEL_REASON, Tool, convert_path_to_unix_style, detach_child, required_str, sanitize_child_env,
+    CANCEL_REASON, Tool, cargo_home, convert_path_to_unix_style, detach_child, required_str,
+    sanitize_child_env,
 };
 
 /// Find the local source directory of a dependency in the cargo cache.
@@ -25,7 +26,7 @@ impl Tool for CrateSourceTool {
     }
 
     fn instruction(&self) -> &str {
-        "Look up a Rust crate's locked source directory. Before inspecting a dependency's source code, use crate_source to find its local path; run `cargo fetch` if the source is missing. Don't grep Rust source files across the whole .cargo/registry."
+        "Look up a Rust crate's locked source directory. Before inspecting a dependency's source code, use crate_source to find its local path; run `cargo fetch` if the source is missing."
     }
 
     fn schema(&self) -> Value {
@@ -438,17 +439,4 @@ fn toml_string(line: &str, key: &str) -> Option<String> {
                 .and_then(|value| value.strip_suffix('\''))
         })?;
     Some(value.to_string())
-}
-
-fn cargo_home(workspace: &Path) -> PathBuf {
-    let home = std::env::var_os("CARGO_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home::home_dir().map(|home| home.join(".cargo")))
-        .unwrap_or_else(|| PathBuf::from(".cargo"));
-    if home.is_absolute() {
-        home
-    } else {
-        workspace.join(home)
-    }
 }
