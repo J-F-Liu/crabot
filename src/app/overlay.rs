@@ -110,6 +110,13 @@ pub(crate) fn update(app: &mut App, event: OverlayEvent) -> Task<Message> {
                 return crate::app::snapshot::revert_all(app);
             }
         }
+        OverlayEvent::DeleteDialogConfirm(confirmed) => {
+            if let Some(confirm) = app.overlay.delete_dialog.take()
+                && confirmed
+            {
+                return crate::app::conversation::delete_dialog(app, confirm.tab, confirm.index);
+            }
+        }
         OverlayEvent::StopSubtaskConfirm(report_to_parent) => {
             if let Some(confirm) = app.overlay.stop_subtask.take()
                 && report_to_parent

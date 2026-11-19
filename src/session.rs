@@ -145,6 +145,246 @@ impl TrackedFiles {
     }
 }
 
+/// Reconstructed dialogs plus the history/notice records each one owns.
+struct DialogBuild {
+    dialogs: Vec<Dialog>,
+    modified: TrackedFiles,
+    accessed: TrackedFiles,
+    round: u32,
+    /// Ask dialogs and the last history index of their exchange.
+    ask_exchanges: HashMap<usize, usize>,
+    /// Owner dialog index per history message; `None` for system records.
+    history_owners: Vec<Option<usize>>,
+    /// Owner dialog index per notice.
+    notice_owners: Vec<Option<usize>>,
+}
+
+/// Ask dialog waiting for a turn after its tool response.
+struct PendingAsk {
+    start: usize,
+    title: String,
+    mode: Option<WorkMode>,
+    tool_turn: Turn,
+}
+
+/// Incremental dialog reconstruction that tracks which records each dialog owns.
+struct DialogBuilder<'a> {
+    history: &'a [ChatMessage],
+    notices: &'a [NoticeTurn],
+    dialogs: Vec<Dialog>,
+    modified: TrackedFiles,
+    accessed: TrackedFiles,
+    round: u32,
+    results: HashMap<String, String>,
+    ask_exchanges: HashMap<usize, usize>,
+    history_owners: Vec<Option<usize>>,
+    notice_owners: Vec<Option<usize>>,
+    notice_index: usize,
+    pending_ask: Option<PendingAsk>,
+}
+
+impl<'a> DialogBuilder<'a> {
+    /// Rebuild dialogs from `history`, recording the records each one owns.
+    fn build(history: &'a [ChatMessage], notices: &'a [NoticeTurn]) -> DialogBuild {
+        let results = history
+            .iter()
+            .filter(|msg| msg.role == ChatRole::Tool)
+            .flat_map(|msg| msg.content.tool_responses())
+            .map(|tr| (tr.call_id.clone(), tr.content.clone()))
+            .collect();
+        let mut builder = Self {
+            history,
+            notices,
+            dialogs: Vec::new(),
+            modified: TrackedFiles::default(),
+            accessed: TrackedFiles::default(),
+            round: 0,
+            results,
+            ask_exchanges: HashMap::new(),
+            history_owners: vec![None; history.len()],
+            notice_owners: vec![None; notices.len()],
+            notice_index: 0,
+            pending_ask: None,
+        };
+        for index in 0..history.len() {
+            builder.push_notices(index);
+            builder.process(index);
+        }
+        // Tail notices have no following message to anchor to.
+        builder.push_notices(usize::MAX);
+        builder.close_pending();
+        builder.finish()
+    }
+
+    /// Append `turn` to the last dialog, creating one when none exists.
+    fn push(&mut self, turn: Turn) -> usize {
+        match self.dialogs.last_mut() {
+            Some(dialog) => {
+                dialog.turns.push(turn);
+                self.dialogs.len() - 1
+            }
+            None => {
+                self.dialogs
+                    .push(Dialog::new(String::new(), vec![turn], None));
+                0
+            }
+        }
+    }
+
+    /// Emit notices anchored at or before `upto`, before the following message.
+    fn push_notices(&mut self, upto: usize) {
+        while self
+            .notices
+            .get(self.notice_index)
+            .is_some_and(|notice| notice.at <= upto)
+        {
+            self.open_pending(upto);
+            let text = self.notices[self.notice_index].text.clone();
+            let owner = self.push(Turn::assistant(text, None));
+            self.notice_owners[self.notice_index] = Some(owner);
+            self.notice_index += 1;
+        }
+    }
+
+    /// Open the pending ask dialog before a turn that follows its response.
+    fn open_pending(&mut self, upto: usize) {
+        let Some(ask) = self.pending_ask.take() else {
+            return;
+        };
+        let index = self.dialogs.len();
+        self.dialogs
+            .push(Dialog::new(ask.title, vec![ask.tool_turn], ask.mode));
+        let end = upto.min(self.history.len());
+        let cutoff = (ask.start + 1..end)
+            .rfind(|&i| self.history[i].role == ChatRole::Tool)
+            .unwrap_or(ask.start);
+        self.ask_exchanges.insert(index, cutoff);
+        for i in ask.start..end {
+            if self.history[i].role != ChatRole::System {
+                self.history_owners[i] = Some(index);
+            }
+        }
+    }
+
+    /// Merge a pending ask into the previous dialog when no turn follows.
+    fn close_pending(&mut self) {
+        let Some(ask) = self.pending_ask.take() else {
+            return;
+        };
+        let Some(index) = self.dialogs.len().checked_sub(1) else {
+            return;
+        };
+        self.dialogs[index].turns.push(ask.tool_turn);
+        self.history_owners[ask.start] = Some(index);
+    }
+
+    fn process(&mut self, index: usize) {
+        match self.history[index].role {
+            ChatRole::System => {}
+            ChatRole::User => self.user(index),
+            ChatRole::Assistant => self.assistant(index),
+            ChatRole::Tool => self.history_owners[index] = self.dialogs.len().checked_sub(1),
+        }
+    }
+
+    fn user(&mut self, index: usize) {
+        if image_marker_paths(&self.history[index]).is_some() {
+            // Image markers ride along in history but are not user turns.
+            self.history_owners[index] = self.dialogs.len().checked_sub(1);
+            return;
+        }
+        if let Some(items) = attachment_marker_items(&self.history[index]) {
+            // Attachment markers become their own display block.
+            self.open_pending(index);
+            let owner = self.push(Turn::attachment(items));
+            self.history_owners[index] = Some(owner);
+            return;
+        }
+        let mode = mode_from_user_message(&self.history[index]);
+        let text = self.history[index]
+            .content
+            .parts()
+            .last()
+            .and_then(|part| part.as_text())
+            .unwrap_or_default()
+            .to_string();
+        self.close_pending();
+        let title = Session::derive_title(&text);
+        self.dialogs
+            .push(Dialog::new(title, vec![Turn::user(text)], mode));
+        self.history_owners[index] = Some(self.dialogs.len() - 1);
+        self.round += 1;
+    }
+
+    fn assistant(&mut self, index: usize) {
+        let (text, reasoning) = {
+            let msg = &self.history[index];
+            (
+                msg.content.joined_texts().unwrap_or_default(),
+                msg.content.first_reasoning_content().map(str::to_string),
+            )
+        };
+        let mut owner = None;
+        if !text.is_empty() || reasoning.is_some() {
+            self.open_pending(index);
+            owner = Some(self.push(Turn::assistant(text, reasoning)));
+        }
+
+        let mut trs = Vec::new();
+        for tc in self.history[index].content.tool_calls() {
+            let content = self.results.remove(&tc.call_id).unwrap_or_default();
+            // Strip the "Error: " envelope to match live-stream display.
+            let result = if is_enveloped_error(&content) {
+                Err(strip_error_envelope(&content).to_string())
+            } else {
+                Ok(content)
+            };
+            let tr = ToolResult {
+                name: tc.fn_name.clone(),
+                call_id: Some(tc.call_id.clone()),
+                args: tc.fn_arguments.clone(),
+                result,
+                timestamp: String::new(),
+                streaming: false,
+            };
+            TrackedFiles::track_result(&mut self.modified, &mut self.accessed, self.round, &tr);
+            trs.push(tr);
+        }
+        if !trs.is_empty() {
+            if let Some(title) = trs
+                .iter()
+                .find_map(|tr| ask_dialog_title(&tr.name, &tr.args))
+            {
+                // A new ask starts its own dialog; text above may have opened one.
+                self.close_pending();
+                let mode = self.dialogs.last().and_then(|dialog| dialog.mode);
+                self.pending_ask = Some(PendingAsk {
+                    start: index,
+                    title,
+                    mode,
+                    tool_turn: Turn::from_tool_results(trs),
+                });
+            } else {
+                self.open_pending(index);
+                owner = Some(self.push(Turn::from_tool_results(trs)));
+            }
+        }
+        self.history_owners[index] = owner;
+    }
+
+    fn finish(self) -> DialogBuild {
+        DialogBuild {
+            dialogs: self.dialogs,
+            modified: self.modified,
+            accessed: self.accessed,
+            round: self.round,
+            ask_exchanges: self.ask_exchanges,
+            history_owners: self.history_owners,
+            notice_owners: self.notice_owners,
+        }
+    }
+}
+
 /// Global session-ID generator state — Unix seconds (UTC epoch).
 static LAST_ID_TIME: Mutex<i64> = Mutex::new(0);
 
@@ -582,114 +822,69 @@ impl Session {
     /// Reconstruct `dialogs` from raw `history` (called after load, since
     /// `dialogs` is `#[serde(skip)]`).
     pub fn rebuild_dialogs(&mut self) {
-        // Index tool responses by call_id to pair with their tool calls.
-        let mut results: HashMap<String, String> = HashMap::new();
-        for msg in &self.history {
-            if msg.role == ChatRole::Tool {
-                for tr in msg.content.tool_responses() {
-                    results.insert(tr.call_id.clone(), tr.content.clone());
-                }
-            }
+        let built = DialogBuilder::build(&self.history, &self.notices);
+        self.modified = built.modified;
+        self.accessed = built.accessed;
+        self.round = built.round;
+        self.dialogs = built.dialogs;
+    }
+
+    /// Delete a dialog and its turns; ask dialogs keep the ask call/response.
+    pub fn delete_dialog(&mut self, index: usize) -> bool {
+        if index >= self.dialogs.len() {
+            return false;
+        }
+        let built = DialogBuilder::build(&self.history, &self.notices);
+        let owns_history = built.history_owners.contains(&Some(index));
+        if !owns_history && !built.notice_owners.contains(&Some(index)) {
+            // UI-only dialog (e.g. a launch that failed before recording history).
+            self.dialogs.remove(index);
+            return true;
         }
 
-        let mut accessed = TrackedFiles::default();
-        let mut modified = TrackedFiles::default();
-        let mut round = 0u32;
-        let mut dialogs: Vec<Dialog> = Vec::new();
-        let mut notice_index = 0usize;
-
-        /// Append `turn` to the last dialog, or start a new one if none exists.
-        fn push_or_new(dialogs: &mut Vec<Dialog>, turn: Turn) {
-            match dialogs.last_mut() {
-                Some(d) => d.turns.push(turn),
-                None => dialogs.push(Dialog::new(String::new(), vec![turn], None)),
+        // An ask dialog keeps its exchange and drops only later owned records.
+        let cutoff = built.ask_exchanges.get(&index).copied();
+        let mut removed = Vec::new();
+        let mut kept = Vec::with_capacity(self.history.len());
+        for (history_index, (msg, owner)) in std::mem::take(&mut self.history)
+            .into_iter()
+            .zip(built.history_owners)
+            .enumerate()
+        {
+            if owner == Some(index) && cutoff.is_none_or(|cutoff| history_index > cutoff) {
+                removed.push(history_index);
+            } else {
+                kept.push(msg);
             }
         }
-
-        for (index, msg) in self.history.iter().enumerate() {
-            // A notice emitted after `index` messages precedes this message's turn.
-            while let Some(notice) = self.notices.get(notice_index).filter(|n| n.at <= index) {
-                push_or_new(&mut dialogs, Turn::assistant(notice.text.clone(), None));
-                notice_index += 1;
-            }
-            match msg.role {
-                ChatRole::System => {}
-                ChatRole::User => {
-                    // Image markers ride along in history but are not user turns.
-                    if image_marker_paths(msg).is_some() {
-                        continue;
-                    }
-                    // Attachment markers become their own display block.
-                    if let Some(items) = attachment_marker_items(msg) {
-                        push_or_new(&mut dialogs, Turn::attachment(items));
-                        continue;
-                    }
-                    let parts = msg.content.parts();
-                    let mode = mode_from_user_message(msg);
-                    let text = parts.last().and_then(|p| p.as_text()).unwrap_or_default();
-                    let title = Self::derive_title(text);
-                    let turn = Turn::user(text);
-                    dialogs.push(Dialog::new(title, vec![turn], mode));
-                    round += 1;
+        self.history = kept;
+        self.notices = std::mem::take(&mut self.notices)
+            .into_iter()
+            .zip(built.notice_owners)
+            .filter_map(|(mut notice, owner)| {
+                if owner == Some(index) {
+                    return None;
                 }
-                ChatRole::Assistant => {
-                    let text = msg.content.joined_texts().unwrap_or_default();
-                    let reasoning = msg.content.first_reasoning_content().map(|s| s.to_string());
+                // Shift the anchor past the records removed before it.
+                notice.at = notice
+                    .at
+                    .saturating_sub(removed.partition_point(|&index| index < notice.at));
+                Some(notice)
+            })
+            .collect();
 
-                    if !text.is_empty() || reasoning.is_some() {
-                        push_or_new(&mut dialogs, Turn::assistant(text, reasoning));
-                    }
-
-                    // Group all tool calls from this assistant message into one Turn.
-                    let mut trs: Vec<ToolResult> = Vec::new();
-                    for tc in msg.content.tool_calls() {
-                        let content = results.remove(&tc.call_id).unwrap_or_default();
-                        // Strip the "Error: " envelope to match live-stream display.
-                        let result = if is_enveloped_error(&content) {
-                            Err(strip_error_envelope(&content).to_string())
-                        } else {
-                            Ok(content)
-                        };
-                        let tr = ToolResult {
-                            name: tc.fn_name.clone(),
-                            call_id: Some(tc.call_id.clone()),
-                            args: tc.fn_arguments.clone(),
-                            result,
-                            timestamp: String::new(),
-                            streaming: false,
-                        };
-                        // Track files touched by write / edit / read tools.
-                        TrackedFiles::track_result(&mut modified, &mut accessed, round, &tr);
-                        trs.push(tr);
-                    }
-                    if !trs.is_empty() {
-                        // An `ask` call opens its own dialog, like a user prompt.
-                        if let Some(title) = trs
-                            .iter()
-                            .find_map(|tr| ask_dialog_title(&tr.name, &tr.args))
-                        {
-                            let mode = dialogs.last().and_then(|d| d.mode);
-                            dialogs.push(Dialog::new(title, Vec::new(), mode));
-                        }
-                        let turn = Turn::from_tool_results(trs);
-                        push_or_new(&mut dialogs, turn);
-                    }
-                }
-                ChatRole::Tool => {
-                    // Tool responses already paired with calls above; skip.
-                }
-            }
+        self.rebuild_dialogs();
+        if self.save_path().is_some() {
+            let _ = self.rewrite();
         }
+        true
+    }
 
-        // Notices emitted at the tail have no following message to anchor to.
-        for notice in &self.notices[notice_index..] {
-            push_or_new(&mut dialogs, Turn::assistant(notice.text.clone(), None));
-        }
-
-        self.modified = modified;
-        self.accessed = accessed;
-        self.round = round;
-        self.dialogs = dialogs;
+    /// Whether the dialog is an ask exchange.
+    pub fn dialog_is_ask(&self, index: usize) -> bool {
+        DialogBuilder::build(&self.history, &self.notices)
+            .ask_exchanges
+            .contains_key(&index)
     }
 
     /// Return the items of the last successful `todo` tool call.
@@ -744,7 +939,7 @@ impl Session {
     /// No `Tally` — use [`Session::save_with_tally`] on terminal stream events.
     pub fn save(&mut self) -> Result<(), String> {
         // All callers discard the result, so failures are logged here once.
-        self.save_inner(false).inspect_err(|e| {
+        self.persist(false, false).inspect_err(|e| {
             tracing::warn!(session = %self.id, "failed to save session: {e}");
         })
     }
@@ -752,53 +947,52 @@ impl Session {
     /// Like [`Session::save`], plus a [`SessionRecord::Tally`] line so counters
     /// persist on terminal stream events even without new history.
     pub fn save_with_tally(&mut self) -> Result<(), String> {
-        self.save_inner(true).inspect_err(|e| {
+        self.persist(false, true).inspect_err(|e| {
             tracing::warn!(session = %self.id, "failed to save session: {e}");
         })
     }
 
-    fn save_inner(&mut self, with_tally: bool) -> Result<(), String> {
-        let path = self.save_path().ok_or("No workspace set")?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create session dir: {e}"))?;
-        }
+    /// Rewrite the whole session file; normal saves only append new records.
+    fn rewrite(&mut self) -> Result<(), String> {
+        self.persist(true, true).inspect_err(|e| {
+            tracing::warn!(session = %self.id, "failed to rewrite session: {e}");
+        })
+    }
 
+    /// Append new records, or rewrite the whole file when `rewrite` is set.
+    fn persist(&mut self, rewrite: bool, with_tally: bool) -> Result<(), String> {
+        let path = self.prepared_save_path()?;
         let is_new = !path.exists();
-        let start = if is_new {
+        let start = if rewrite || is_new {
             0
         } else {
             self.persisted.min(self.history.len())
         };
-        let new_messages = self.history.len() > start;
+        let new_messages = self.history.len() - start;
 
-        // Build a Meta line when writing a new file or when the meta snapshot
-        // has changed since the last write.
-        let meta_json = serde_json::to_string(&self.meta_record())
-            .map_err(|e| format!("Failed to serialize meta: {e}"))?;
-        let write_meta = is_new || self.saved_meta.as_deref() != Some(&meta_json);
-
-        let mut buf = String::new();
-        if write_meta {
-            buf.push_str(&meta_json);
-            buf.push('\n');
-        }
-        Self::push_messages(&mut buf, &self.history, start)?;
-        Self::push_notices(
-            &mut buf,
-            &self.notices,
-            self.persisted_notices.min(self.notices.len()),
+        let meta_json = self.meta_json()?;
+        let write_meta = rewrite || is_new || self.saved_meta.as_deref() != Some(&meta_json);
+        let notices_from = if rewrite {
+            0
+        } else {
+            self.persisted_notices.min(self.notices.len())
+        };
+        let buf = self.serialize_records(
+            start,
+            notices_from,
+            write_meta.then_some(meta_json.as_str()),
+            with_tally,
         )?;
-        // Tally only on terminal stream events — avoids a redundant line per save.
-        if with_tally {
-            self.push_tally(&mut buf)?;
-        }
 
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| format!("Failed to open session file: {e}"))?;
+        let mut file = if rewrite {
+            std::fs::File::create(&path)
+        } else {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+        }
+        .map_err(|e| format!("Failed to open session file: {e}"))?;
         file.write_all(buf.as_bytes())
             .map_err(|e| format!("Failed to write session: {e}"))?;
 
@@ -806,20 +1000,60 @@ impl Session {
         self.persisted_notices = self.notices.len();
         self.saved_meta = Some(meta_json);
 
-        // Remove a stale legacy `.json` sibling — the jsonl now holds everything.
-        if is_new {
-            let legacy = path.with_extension("json");
-            if legacy.exists() {
-                let _ = std::fs::remove_file(&legacy);
-            }
+        if rewrite || is_new {
+            Self::remove_legacy_json(&path);
         }
         tracing::debug!(
             session = %self.id,
             path = %path.display(),
-            new_messages = if new_messages { self.history.len() - start } else { 0 },
-            "session saved"
+            new_messages,
+            rewritten = rewrite,
+            "session persisted"
         );
         Ok(())
+    }
+
+    /// Session file path, creating its parent directory when needed.
+    fn prepared_save_path(&self) -> Result<PathBuf, String> {
+        let path = self.save_path().ok_or("No workspace set")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create session dir: {e}"))?;
+        }
+        Ok(path)
+    }
+
+    fn meta_json(&self) -> Result<String, String> {
+        serde_json::to_string(&self.meta_record())
+            .map_err(|e| format!("Failed to serialize meta: {e}"))
+    }
+
+    /// Serialize the optional Meta line plus records from the given offsets.
+    fn serialize_records(
+        &self,
+        messages_from: usize,
+        notices_from: usize,
+        meta: Option<&str>,
+        with_tally: bool,
+    ) -> Result<String, String> {
+        let mut buf = String::new();
+        if let Some(meta) = meta {
+            buf.push_str(meta);
+            buf.push('\n');
+        }
+        Self::push_messages(&mut buf, &self.history, messages_from)?;
+        Self::push_notices(&mut buf, &self.notices, notices_from)?;
+        if with_tally {
+            self.push_tally(&mut buf)?;
+        }
+        Ok(buf)
+    }
+
+    fn remove_legacy_json(path: &Path) {
+        let legacy = path.with_extension("json");
+        if legacy.exists() {
+            let _ = std::fs::remove_file(&legacy);
+        }
     }
 
     /// Load a session from disk, preferring the `.jsonl` sibling of a legacy

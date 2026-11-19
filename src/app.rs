@@ -372,6 +372,8 @@ pub(crate) struct ConversationState {
     pub(crate) tab_bar_held_direction: Option<conversation::TabBarDirection>,
     /// Which arrow is currently hovered, for visual feedback.
     pub(crate) tab_bar_hovered_direction: Option<conversation::TabBarDirection>,
+    /// Dialog header currently under the cursor; shows its delete action.
+    pub(crate) hovered_dialog: Option<usize>,
     /// True while the session-header actions popup menu is expanded.
     pub(crate) header_menu_open: bool,
 }
@@ -391,6 +393,7 @@ impl ConversationState {
             tab_bar_scroll: TabBarScrollState::default(),
             tab_bar_held_direction: None,
             tab_bar_hovered_direction: None,
+            hovered_dialog: None,
             header_menu_open: false,
         }
     }
@@ -498,6 +501,18 @@ pub(crate) struct StopSubtaskConfirm {
     pub(crate) parent_label: String,
 }
 
+/// Pending confirmation for deleting a dialog (or an ask dialog's later turns).
+pub(crate) struct DeleteDialogConfirm {
+    /// Owning tab number captured when the modal opened.
+    pub(crate) tab: usize,
+    /// Dialog index within the session.
+    pub(crate) index: usize,
+    /// Localized dialog title shown in the confirmation body.
+    pub(crate) title: String,
+    /// Ask dialogs keep their call/response and delete only later turns.
+    pub(crate) ask: bool,
+}
+
 /// Overlays: empty-workspace confirmation, restart button, update banner.
 pub(crate) struct OverlayState {
     pub(crate) show_workspace_dialog: bool,
@@ -506,6 +521,8 @@ pub(crate) struct OverlayState {
     pub(crate) show_revert_all_confirm: bool,
     /// Owning tab number captured when the dialog opened (Ctrl+1..9 still works under the modal).
     pub(crate) revert_all_tab: usize,
+    /// Pending dialog deletion confirmation.
+    pub(crate) delete_dialog: Option<DeleteDialogConfirm>,
     /// Pending sub-agent stop confirmation.
     pub(crate) stop_subtask: Option<StopSubtaskConfirm>,
     pub(crate) update_available: Option<String>,
@@ -653,6 +670,12 @@ pub(crate) enum ConversationEvent {
     /// (tab number, dialog index) — the viewport is pinned; apply the toggle.
     ApplyDialogExpand(usize, usize),
     ToggleAllDialogsExpand,
+    /// Cursor entered a dialog header.
+    DialogHoverEnter(usize),
+    /// Cursor left a dialog header.
+    DialogHoverExit(usize),
+    /// Open the delete confirmation for a dialog.
+    RequestDeleteDialog(usize),
     SessionPickerFocused,
     NavigateSession(bool),
     DefocusSessionPicker,
@@ -723,6 +746,8 @@ pub(crate) enum OverlayEvent {
     EmptyWorkspaceConfirm(Option<PathBuf>),
     /// User answered the Revert-All confirmation dialog.
     RevertAllConfirm(bool),
+    /// User answered the dialog deletion confirmation.
+    DeleteDialogConfirm(bool),
     /// User answered the sub-agent stop confirmation.
     StopSubtaskConfirm(bool),
 }
@@ -952,6 +977,7 @@ impl App {
                 default_workspace_path: setup::default_workspace_path(),
                 show_revert_all_confirm: false,
                 revert_all_tab: 0,
+                delete_dialog: None,
                 stop_subtask: None,
                 update_available,
                 download_state: crate::views::update::UpdateDownloadState::Idle,
@@ -1299,6 +1325,13 @@ impl App {
             iced::widget::stack![
                 main,
                 crate::views::revert_all_modal(self.settings.language).map(Message::Overlay)
+            ]
+            .into()
+        } else if let Some(confirm) = &self.overlay.delete_dialog {
+            iced::widget::stack![
+                main,
+                crate::views::delete_dialog_modal(confirm, self.settings.language)
+                    .map(Message::Overlay)
             ]
             .into()
         } else if let Some(confirm) = &self.overlay.stop_subtask {

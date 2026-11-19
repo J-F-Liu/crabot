@@ -125,6 +125,7 @@ impl App {
         if current != pos {
             let live = self.capture_options();
             self.conversation.session_tabs[current].pane = live;
+            self.conversation.hovered_dialog = None;
         }
         self.conversation.viewing = pos;
         self.apply_prompt_options()

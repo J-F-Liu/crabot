@@ -17,8 +17,8 @@ use crate::app::session_state::{
 use crate::app::session_tab::SessionTab;
 use crate::app::snapshot;
 use crate::app::{
-    App, AttachmentPreview, ConversationEvent, FocusedTarget, Message, PreviewContent,
-    PromptOptions, TabBarScrollState,
+    App, AttachmentPreview, ConversationEvent, DeleteDialogConfirm, FocusedTarget, Message,
+    PreviewContent, PromptOptions, TabBarScrollState,
 };
 use crate::llm::DialogPhase;
 use crate::tools::process;
@@ -253,6 +253,31 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             }
             tab.search.invalidate_offsets();
             app.layout.focused = None;
+        }
+        ConversationEvent::DialogHoverEnter(index) => {
+            app.conversation.hovered_dialog = Some(index);
+        }
+        ConversationEvent::DialogHoverExit(index) => {
+            if app.conversation.hovered_dialog == Some(index) {
+                app.conversation.hovered_dialog = None;
+            }
+        }
+        ConversationEvent::RequestDeleteDialog(index) => {
+            let lang = app.settings.language;
+            let tab = app.conversation.viewing();
+            if tab.running() || index >= tab.session.dialogs.len() {
+                return Task::none();
+            }
+            let dialog = &tab.session.dialogs[index];
+            let title = views::dialog_header_title(dialog, index, lang);
+            let ask = tab.session.dialog_is_ask(index);
+            app.overlay.delete_dialog = Some(DeleteDialogConfirm {
+                tab: tab.number,
+                index,
+                title,
+                ask,
+            });
+            app.conversation.hovered_dialog = None;
         }
         ConversationEvent::SessionPickerFocused => {
             app.layout.focused = Some(FocusedTarget::SessionPicker);
@@ -1150,6 +1175,49 @@ fn derive_session(app: &mut App, derive: fn(&Session) -> Session, verb: &str) ->
     tracing::debug!(source = %source_id, "session {verb}");
     let options = session_options(app, app.new_tab_options(), &session);
     open_session_tab(app, session, options)
+}
+
+/// Delete a dialog and the history turns it owns, then repair tab UI state.
+pub(crate) fn delete_dialog(app: &mut App, tab_number: usize, index: usize) -> Task<Message> {
+    let Some(pos) = app.conversation.tab_pos(tab_number) else {
+        return Task::none();
+    };
+    let tab = &mut app.conversation.session_tabs[pos];
+    if tab.running() {
+        return Task::none();
+    }
+    let before = tab.session.dialogs.len();
+    let deleted_last = index + 1 == before;
+    if !tab.session.delete_dialog(index) {
+        return Task::none();
+    }
+
+    // A preamble split can keep the count unchanged; remap only when it dropped by one.
+    if tab.session.dialogs.len() + 1 == before {
+        tab.expanded_dialogs = std::mem::take(&mut tab.expanded_dialogs)
+            .into_iter()
+            .filter(|&dialog| dialog != index)
+            .map(|dialog| if dialog > index { dialog - 1 } else { dialog })
+            .collect();
+    } else {
+        tab.expanded_dialogs.clear();
+    }
+    // Flat turn indices shifted — cached expansion and selection are stale.
+    tab.expanded_turns.clear();
+    tab.selectable_msgs.clear();
+    tab.search.invalidate_offsets();
+    let _ = tab.search.submit(&tab.session);
+    // A loaded session has no dialog title from this run; leave its header alone.
+    if deleted_last && !tab.dialog_title.is_empty() {
+        tab.dialog_title = tab
+            .session
+            .dialogs
+            .last()
+            .map(|dialog| dialog.title.clone())
+            .unwrap_or_default();
+    }
+    app.conversation.hovered_dialog = None;
+    Task::none()
 }
 
 // ── Stream orchestration ──────────────────────────────────────────

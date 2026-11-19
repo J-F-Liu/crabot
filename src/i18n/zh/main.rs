@@ -21,6 +21,15 @@ pub static TABLE: &[(&str, &str)] = &[
     ),
     ("Revert All", "全部还原"),
     ("Cancel", "取消"),
+    ("Delete Dialog", "删除对话"),
+    (
+        "Delete \"{}\" and all its turns? This cannot be undone.",
+        "删除“{}”及其所有轮次？此操作无法撤销。",
+    ),
+    (
+        "Delete turns after the ask response in \"{}\"? The ask call and response are kept. This cannot be undone.",
+        "删除“{}”中 ask 响应之后的轮次？ask 调用和响应会保留。此操作无法撤销。",
+    ),
     ("Stop Subtask", "停止子任务"),
     ("Return \"{}\" to {}?", "是否返回“{}”结果给 {}？"),
     (

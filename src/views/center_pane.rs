@@ -214,6 +214,30 @@ pub(crate) fn scroll_to(y: Option<f32>) -> Task<()> {
 
 // ── dialog styles ─────────────────────────────────────────────────
 
+/// Dialog header title with a localized `Dialog N` fallback.
+pub(crate) fn dialog_header_title(dialog: &Dialog, index: usize, lang: Lang) -> String {
+    if dialog.title.is_empty() {
+        lang.tr("Dialog {}")
+            .replacen("{}", &(index + 1).to_string(), 1)
+    } else {
+        dialog.display_title(index)
+    }
+}
+
+/// Hover-revealed delete action; its width is reserved when hidden.
+fn dialog_delete_action(index: usize, visible: bool) -> Element<'static, CenterPaneEvent> {
+    if !visible {
+        return Space::new().width(14).height(14).into();
+    }
+    button(icons::svg_icon(icons::TRASH))
+        .on_press(CenterPaneEvent::Conversation(
+            ConversationEvent::RequestDeleteDialog(index),
+        ))
+        .padding(0)
+        .style(icon_button_style)
+        .into()
+}
+
 fn dialog_container_style(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(color_dialog_bg().into()),
@@ -920,6 +944,8 @@ pub(crate) fn center_pane<'a>(
     };
     // Flatten dialogs into turns with a running flat index per dialog.
     let mut flat_idx: usize = 0;
+    let hovered_dialog = conversation.hovered_dialog;
+    let can_delete_dialogs = !tab.running();
     let dialog_blocks: Vec<Element<'_, CenterPaneEvent>> = dialogs
         .iter()
         .enumerate()
@@ -927,13 +953,7 @@ pub(crate) fn center_pane<'a>(
             let dialog_start = flat_idx; // First flat turn index of this dialog.
             let collapsed = !expanded_dialogs.contains(&di);
             let indicator = if collapsed { "⊞" } else { "⊟" };
-            let title = if dialog.title.is_empty() {
-                // "Dialog N" is a fixed header fallback — localize at render.
-                lang.tr("Dialog {}")
-                    .replacen("{}", &(di + 1).to_string(), 1)
-            } else {
-                dialog.display_title(di)
-            };
+            let title = dialog_header_title(dialog, di, lang);
             let turn_count = dialog.turns.len();
 
             // ── clickable header ──────────────────────────────────
@@ -957,11 +977,25 @@ pub(crate) fn center_pane<'a>(
                 .spacing(8)
                 .align_y(Alignment::Center);
 
+            let delete_slot =
+                dialog_delete_action(di, can_delete_dialogs && hovered_dialog == Some(di));
+
             let header_style =
                 search_hit_style(search_state, SearchHitKind::DialogHeader, dialog_start);
+            // The delete button sits outside the expand area so it only opens the modal.
+            let expand_area = mouse_area(
+                row![title_row, turn_count_badge(turn_count, font_scale, lang)]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .width(Fill),
+            )
+            .on_press(CenterPaneEvent::Conversation(
+                ConversationEvent::ToggleDialogExpand(di),
+            ))
+            .interaction(mouse::Interaction::Pointer);
             let header = mouse_area(
                 container(
-                    row![title_row, turn_count_badge(turn_count, font_scale, lang)]
+                    row![expand_area, delete_slot]
                         .spacing(10)
                         .align_y(Alignment::Center)
                         .width(Fill),
@@ -970,8 +1004,11 @@ pub(crate) fn center_pane<'a>(
                 .padding([8, 12])
                 .style(header_style),
             )
-            .on_press(CenterPaneEvent::Conversation(
-                ConversationEvent::ToggleDialogExpand(di),
+            .on_enter(CenterPaneEvent::Conversation(
+                ConversationEvent::DialogHoverEnter(di),
+            ))
+            .on_exit(CenterPaneEvent::Conversation(
+                ConversationEvent::DialogHoverExit(di),
             ))
             .interaction(mouse::Interaction::Pointer);
 

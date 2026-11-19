@@ -90,6 +90,12 @@ fn tool_turns(session: &Session) -> usize {
         .count()
 }
 
+/// Reload a saved session from disk.
+fn reload(session: &Session) -> Session {
+    let path = session.save_path().expect("save path");
+    Session::load(&path).expect("reload")
+}
+
 /// Assert a compacted assistant message kept its text and reasoning.
 fn assert_preamble(msg: &ChatMessage, preamble: &str, reasoning: &str) {
     assert_eq!(msg.content.joined_texts().as_deref(), Some(preamble));
@@ -183,6 +189,292 @@ fn ask_opens_dialog_like_user_prompt() {
     assert_eq!(index, Some(2));
     assert_eq!(session.dialogs[2].title, "Continue?");
     assert_eq!(session.dialogs[2].mode, Some(WorkMode::from("code")));
+}
+
+#[test]
+fn delete_dialog_removes_owned_history_and_rewrites_file() {
+    let (_tmp, ws) = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws;
+    session.title = "Delete test".into();
+    session.history.push(ChatMessage::system("audit"));
+    session.history.push(ChatMessage::user("first"));
+    session.history.push(ChatMessage::assistant("first reply"));
+    session.history.push(ChatMessage::user("second"));
+    session.history.push(tool_call(
+        "c1",
+        "read",
+        serde_json::json!({ "path": "a.rs" }),
+    ));
+    session.history.push(tool_result_with("c1", "contents"));
+    session.history.push(ChatMessage::assistant("second reply"));
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 2);
+    session.save().expect("save");
+
+    assert!(session.delete_dialog(0));
+
+    // The first prompt and reply are gone; the system audit and second dialog stay.
+    assert_eq!(session.dialogs.len(), 1);
+    assert_eq!(session.dialogs[0].title, "second");
+    assert_eq!(
+        roles(&session),
+        vec![
+            ChatRole::System,
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::Tool,
+            ChatRole::Assistant,
+        ]
+    );
+    assert_eq!(
+        session.history[1].content.joined_texts().as_deref(),
+        Some("second")
+    );
+
+    // The jsonl rewrite must replace the file rather than append duplicates.
+    let loaded = reload(&session);
+    assert_eq!(loaded.history.len(), 5);
+    assert_eq!(loaded.dialogs.len(), 1);
+    assert_eq!(loaded.dialogs[0].title, "second");
+}
+
+#[test]
+fn delete_ask_dialog_keeps_ask_exchange() {
+    let mut session = Session::new();
+    session.history.push(user_prompt("code", "fix it"));
+    session.history.push(tool_call(
+        "c1",
+        "read",
+        serde_json::json!({ "path": "a.rs" }),
+    ));
+    session.history.push(tool_result("c1"));
+    session.history.push(ChatMessage::assistant("which file?"));
+    session.history.push(ask_call("c2", "Which file?"));
+    session.history.push(tool_result_with("c2", "a.rs"));
+    session.history.push(ChatMessage::assistant("fixed"));
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 2);
+    assert!(session.dialog_is_ask(1));
+
+    assert!(session.delete_dialog(1));
+
+    // The turn after the ask response is deleted; the ask exchange is kept.
+    assert_eq!(session.history.len(), 6);
+    assert_eq!(session.dialogs.len(), 1);
+    assert_eq!(session.dialogs[0].turns.len(), 4); // prompt, read, text, ask tool
+    assert!(matches!(
+        &session.dialogs[0].turns[3].body,
+        TurnBody::Tool(tools) if tools.iter().any(|tool| tool.name == "ask")
+    ));
+    assert!(session.history.iter().any(|msg| {
+        msg.content
+            .tool_calls()
+            .iter()
+            .any(|call| call.fn_name == "ask")
+    }));
+    assert!(session.history.iter().any(|msg| {
+        msg.content
+            .tool_responses()
+            .iter()
+            .any(|response| response.call_id == "c2")
+    }));
+    assert!(
+        !session
+            .history
+            .iter()
+            .any(|msg| msg.content.joined_texts().as_deref() == Some("fixed"))
+    );
+
+    // With no turns after the ask response, rebuilding has no ask dialog.
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 1);
+}
+
+#[test]
+fn delete_ask_dialog_keeps_text_preamble() {
+    let (_tmp, ws) = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws;
+    session.history.push(user_prompt("code", "fix it"));
+    session.history.push(tool_call(
+        "c1",
+        "read",
+        serde_json::json!({ "path": "a.rs" }),
+    ));
+    session.history.push(tool_result("c1"));
+    session
+        .history
+        .push(ask_call_with("c2", "Which file?", "which file?", None));
+    session.history.push(tool_result_with("c2", "a.rs"));
+    session.history.push(tool_call(
+        "c3",
+        "read",
+        serde_json::json!({ "path": "b.rs" }),
+    ));
+    session.history.push(tool_result("c3"));
+    session.history.push(ChatMessage::assistant("fixed"));
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 2);
+    session.save().expect("save");
+
+    assert!(session.delete_dialog(1));
+
+    assert_eq!(session.history.len(), 5);
+    assert_eq!(session.dialogs.len(), 1);
+    assert_eq!(session.dialogs[0].turns.len(), 4); // prompt, read, text, ask tool
+    assert!(matches!(
+        &session.dialogs[0].turns[2].body,
+        TurnBody::Text(text) if text.content == "which file?"
+    ));
+    assert!(matches!(
+        &session.dialogs[0].turns[3].body,
+        TurnBody::Tool(tools) if tools.iter().any(|tool| tool.name == "ask")
+    ));
+    let ask_message = session
+        .history
+        .iter()
+        .find(|msg| {
+            msg.role == ChatRole::Assistant
+                && msg
+                    .content
+                    .tool_calls()
+                    .iter()
+                    .any(|call| call.call_id == "c2")
+        })
+        .expect("ask message");
+    assert_eq!(
+        ask_message.content.joined_texts().as_deref(),
+        Some("which file?")
+    );
+    assert!(session.history.iter().any(|msg| {
+        msg.content
+            .tool_responses()
+            .iter()
+            .any(|response| response.call_id == "c2")
+    }));
+
+    // Rebuild and reload both keep the ask dialog absent.
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 1);
+    let loaded = reload(&session);
+    assert_eq!(loaded.history.len(), 5);
+    assert_eq!(loaded.dialogs.len(), 1);
+    assert_eq!(loaded.dialogs[0].turns.len(), 4);
+}
+
+#[test]
+fn deleted_ask_dialog_does_not_reappear_after_other_deletions() {
+    let (_tmp, ws) = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws;
+    session.history.push(ChatMessage::user("first"));
+    session.history.push(ask_call("c1", "Continue?"));
+    session.history.push(tool_result_with("c1", "yes"));
+    session.history.push(ChatMessage::assistant("first done"));
+    session.history.push(ChatMessage::user("second"));
+    session.history.push(ChatMessage::assistant("second done"));
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 3); // first, ask, second
+    session.save().expect("save");
+
+    assert!(session.delete_dialog(1));
+    assert_eq!(session.dialogs.len(), 2);
+    assert_eq!(session.history.len(), 5);
+
+    // Deleting the following user dialog must still target its own history.
+    assert!(session.delete_dialog(1));
+    assert_eq!(session.history.len(), 3);
+    assert_eq!(session.dialogs.len(), 1);
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 1);
+
+    // Reloading does not resurrect the ask dialog.
+    let loaded = reload(&session);
+    assert_eq!(loaded.history.len(), 3);
+    assert_eq!(loaded.dialogs.len(), 1);
+}
+
+#[test]
+fn ask_without_followup_turns_has_no_dialog() {
+    let mut session = Session::new();
+    session.history.push(ChatMessage::user("first"));
+    session.history.push(ask_call("c1", "Continue?"));
+    session.history.push(tool_result_with("c1", "yes"));
+    session.rebuild_dialogs();
+
+    assert_eq!(session.dialogs.len(), 1);
+    assert_eq!(session.dialogs[0].turns.len(), 2); // prompt, ask tool
+    assert!(matches!(
+        &session.dialogs[0].turns[1].body,
+        TurnBody::Tool(tools) if tools.iter().any(|tool| tool.name == "ask")
+    ));
+
+    // A following ask is a dialog boundary, not a turn in the first ask.
+    session.history.push(ask_call("c2", "Again?"));
+    session.history.push(tool_result_with("c2", "no"));
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 1);
+    assert_eq!(session.dialogs[0].turns.len(), 3); // prompt + two ask tools
+
+    // A turn after the second ask response opens its dialog.
+    session.history.push(ChatMessage::assistant("done"));
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 2);
+}
+
+#[test]
+fn delete_user_dialog_with_merged_ask_turn_removes_all_turns() {
+    let mut session = Session::new();
+    session.history.push(ChatMessage::user("first"));
+    session.history.push(ask_call("c1", "Continue?"));
+    session.history.push(tool_result_with("c1", "yes"));
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 1);
+    assert!(!session.dialog_is_ask(0));
+
+    assert!(session.delete_dialog(0));
+    assert!(session.history.is_empty());
+    assert!(session.dialogs.is_empty());
+}
+
+#[test]
+fn delete_ui_only_dialog_without_history() {
+    let mut session = Session::new();
+    session.add_dialog("empty".into(), None);
+
+    assert!(session.delete_dialog(0));
+    assert!(session.dialogs.is_empty());
+    assert!(!session.delete_dialog(0));
+}
+
+#[test]
+fn delete_dialog_drops_owned_notices_and_shifts_anchors() {
+    let (_tmp, ws) = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws;
+    session.history.push(ChatMessage::user("first"));
+    session.history.push(ChatMessage::assistant("one"));
+    session.push_notice("first warning".into());
+    session.history.push(ChatMessage::user("second"));
+    session.history.push(ChatMessage::assistant("two"));
+    session.push_notice("second warning".into());
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 2);
+
+    assert!(session.delete_dialog(0));
+
+    assert_eq!(session.history.len(), 2);
+    assert_eq!(session.dialogs.len(), 1);
+    assert_eq!(session.notices.len(), 1);
+    assert_eq!(session.notices[0].text, "second warning");
+    assert_eq!(session.notices[0].at, 2);
+
+    let loaded = reload(&session);
+    assert_eq!(loaded.history.len(), 2);
+    assert_eq!(loaded.notices.len(), 1);
+    assert_eq!(loaded.notices[0].text, "second warning");
+    assert_eq!(loaded.notices[0].at, 2);
 }
 
 #[test]

@@ -6,9 +6,10 @@ use iced::{
 };
 
 use crate::OverlayEvent;
-use crate::app::StopSubtaskConfirm;
 use crate::app::session_state::USER_CANCELLED_TASK;
+use crate::app::{DeleteDialogConfirm, StopSubtaskConfirm};
 use crabot::i18n::Lang;
+use crabot::session::first_line_label;
 
 use super::session_tabs::localize_tab_label;
 use super::styles::{danger_button, primary_button, secondary_button};
@@ -18,6 +19,9 @@ const TITLE: Font = Font {
     weight: font::Weight::Bold,
     ..Font::DEFAULT
 };
+
+/// Max title characters quoted in the dialog-delete confirmation.
+const DELETE_TITLE_CHARS: usize = 40;
 
 /// Shared modal scaffold: scrim backdrop (click to dismiss) + centered card.
 fn modal<'a>(
@@ -98,17 +102,58 @@ pub fn revert_all_modal(lang: Lang) -> Element<'static, OverlayEvent> {
              Modified files are restored to their original content and files \
              created by the session are deleted. This cannot be undone."))
         .size(14),
-        row![
-            button(text(lang.tr("Revert All")))
-                .style(danger_button)
-                .on_press(OverlayEvent::RevertAllConfirm(true)),
-            button(text(lang.tr("Cancel")))
-                .style(secondary_button)
-                .on_press(OverlayEvent::RevertAllConfirm(false)),
-        ]
-        .spacing(20)
-        .padding(10),
+        danger_cancel_buttons(
+            OverlayEvent::RevertAllConfirm(true),
+            OverlayEvent::RevertAllConfirm(false),
+            "Revert All",
+            lang,
+        ),
     )
+}
+
+/// Confirmation dialog for removing a dialog and its turns.
+pub fn delete_dialog_modal(
+    confirm: &DeleteDialogConfirm,
+    lang: Lang,
+) -> Element<'static, OverlayEvent> {
+    let title = first_line_label(&confirm.title, DELETE_TITLE_CHARS);
+    let prompt = if confirm.ask {
+        "Delete turns after the ask response in \"{}\"? The ask call and response are kept. This cannot be undone."
+    } else {
+        "Delete \"{}\" and all its turns? This cannot be undone."
+    };
+    let question = lang.tr(prompt).replace("{}", &title);
+    modal(
+        OverlayEvent::DeleteDialogConfirm(false),
+        lang.tr("Delete Dialog"),
+        text(question).size(14),
+        danger_cancel_buttons(
+            OverlayEvent::DeleteDialogConfirm(true),
+            OverlayEvent::DeleteDialogConfirm(false),
+            "Delete",
+            lang,
+        ),
+    )
+}
+
+/// Destructive confirm plus cancel buttons.
+fn danger_cancel_buttons(
+    confirm: OverlayEvent,
+    cancel: OverlayEvent,
+    label: &'static str,
+    lang: Lang,
+) -> Element<'static, OverlayEvent> {
+    row![
+        button(text(lang.tr(label)))
+            .style(danger_button)
+            .on_press(confirm),
+        button(text(lang.tr("Cancel")))
+            .style(secondary_button)
+            .on_press(cancel),
+    ]
+    .spacing(20)
+    .padding(10)
+    .into()
 }
 
 /// Ask whether a stopped sub-agent reports its cancellation to the parent.

@@ -26,12 +26,14 @@ pub(crate) use styles::{
 
 // Re-export the pane constructors and helpers used by `App::view` / `App::update`.
 pub(crate) use center_pane::{
-    ASK_INPUT, SCROLL_STEP, SEARCH_INPUT, center_pane, measure_turn_offsets, pin_scroll,
-    reveal_ask, scroll_by, scroll_page_down, scroll_page_up, scroll_to, scroll_to_end,
+    ASK_INPUT, SCROLL_STEP, SEARCH_INPUT, center_pane, dialog_header_title, measure_turn_offsets,
+    pin_scroll, reveal_ask, scroll_by, scroll_page_down, scroll_page_up, scroll_to, scroll_to_end,
     scroll_to_start,
 };
 pub(crate) use left_pane::left_pane;
-pub(crate) use modal::{revert_all_modal, stop_subtask_modal, workspace_modal};
+pub(crate) use modal::{
+    delete_dialog_modal, revert_all_modal, stop_subtask_modal, workspace_modal,
+};
 pub(crate) use right_pane::{PaneSection, PaneSections, right_pane};
 pub(crate) use search_bar::SearchEvent;
 pub(crate) use settings::{
