@@ -6,7 +6,7 @@ use iced::{
 };
 
 use super::icons::{
-    CHEVRON_LEFT, CHEVRON_RIGHT, CLOSE, PANEL_RIGHT_CLOSE, PANEL_RIGHT_OPEN, icon_action,
+    CHEVRON_LEFT, CHEVRON_RIGHT, CLOSE, PANEL_RIGHT_CLOSE, PANEL_RIGHT_OPEN, PLUS, icon_action,
     with_tooltip,
 };
 use super::styles::{bordered_bar_style, session_tab_style, tab_close_button_style};
@@ -46,10 +46,16 @@ pub(crate) fn session_tabs(
     right_pane_collapsed: bool,
 ) -> Element<'_, CenterPaneEvent> {
     let viewing_number = conversation.viewing_tab_number();
-    let tabs = conversation
+    let mut tabs: Vec<Element<'_, CenterPaneEvent>> = conversation
         .session_tabs
         .iter()
-        .map(|tab| tab_button(tab, tab.number == viewing_number, lang));
+        .map(|tab| tab_button(tab, tab.number == viewing_number, lang))
+        .collect();
+    tabs.push(icon_action(
+        PLUS,
+        lang.tr("New session"),
+        CenterPaneEvent::Conversation(ConversationEvent::NewSession),
+    ));
 
     let bar = scrollable(row(tabs).spacing(4).align_y(Alignment::Center))
         .direction(Direction::Horizontal(
