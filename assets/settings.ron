@@ -16,6 +16,7 @@
     recent_workspaces: [],
     font_scale: 1.0,
     mcp_servers: {
+        "deepseek-web-tools": false,
         "exa": true,
         "codebase": false,
     },

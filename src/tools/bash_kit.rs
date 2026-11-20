@@ -1893,14 +1893,7 @@ async fn is_command_file(vfs: &Path, mounts: &[RealMount], fs: &Arc<dyn FileSyst
 /// Whether `name` is a plain command name — no path separator, so `$PATH` is the
 /// only place it resolves; `which_in` resolves every other shape as a path.
 fn is_bare_name(name: &str) -> bool {
-    if name.contains('/') {
-        return false;
-    }
-    #[cfg(windows)]
-    if name.contains('\\') {
-        return false;
-    }
-    true
+    !name.contains('/') && (!cfg!(windows) || !name.contains('\\'))
 }
 
 /// Whether two VFS spellings name the same file: the mount table can reach one
