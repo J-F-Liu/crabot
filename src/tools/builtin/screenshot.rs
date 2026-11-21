@@ -1,7 +1,7 @@
 //! Screenshot tool: capture a monitor or window with XCap.
 
 use std::path::Path;
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
@@ -10,8 +10,9 @@ use tokio_util::sync::CancellationToken;
 use xcap::{Monitor, Window};
 
 use crate::tools::{
-    CANCEL_REASON, ImageAttachment, ImageBudget, Tool, current_tab_number, make_workspace_relative,
-    prepare_for_request, route_images, tool_limits, unique_image_path,
+    CANCEL_REASON, ImageAttachment, ImageBudget, Tool, WindowFacts, current_tab_number,
+    make_workspace_relative, prepare_for_request, route_images, spawn_worker, tool_limits,
+    unique_image_path, window_facts,
 };
 
 /// Workspace-relative folder holding captured screenshots.
@@ -110,17 +111,6 @@ struct MonitorFacts {
     primary: bool,
 }
 
-/// A window's facts, used to select and describe it without the XCap handle.
-struct WindowFacts {
-    id: u32,
-    title: String,
-    app: String,
-    width: u32,
-    height: u32,
-    position: Option<(i32, i32)>,
-    minimized: bool,
-}
-
 /// One captured picture plus its description and filename label.
 struct Capture {
     image: RgbaImage,
@@ -175,13 +165,9 @@ fn await_worker<T: Send + 'static>(
     if cancel.is_cancelled() {
         return Err(CANCEL_REASON.into());
     }
-    let (sender, receiver) = mpsc::channel();
-    let _worker = std::thread::Builder::new()
-        .name("screenshot".into())
-        .spawn(move || {
-            let _ = sender.send(task());
-        })
-        .map_err(|error| format!("{what} failed: could not start the worker: {error}"))?;
+    let receiver = spawn_worker(what, move |sender| {
+        let _ = sender.send(task());
+    })?;
 
     let deadline = Instant::now() + WORKER_TIMEOUT;
     loop {
@@ -245,19 +231,6 @@ fn monitor_facts(monitor: &Monitor) -> MonitorFacts {
         position,
         scale: monitor.scale_factor().ok(),
         primary: monitor.is_primary().unwrap_or(false),
-    }
-}
-
-fn window_facts(window: &Window) -> WindowFacts {
-    let position = window.x().ok().zip(window.y().ok());
-    WindowFacts {
-        id: window.id().unwrap_or_default(),
-        title: window.title().unwrap_or_default(),
-        app: window.app_name().unwrap_or_default(),
-        width: window.width().unwrap_or_default(),
-        height: window.height().unwrap_or_default(),
-        position,
-        minimized: window.is_minimized().unwrap_or(false),
     }
 }
 
@@ -373,7 +346,7 @@ fn window_line(facts: &WindowFacts) -> String {
     );
     line.push_str(&position_text(facts.position));
     line.push_str(&format!(", {}x{}", facts.width, facts.height));
-    if facts.minimized {
+    if facts.is_minimized() {
         line.push_str(", minimized");
     }
     line
@@ -557,7 +530,7 @@ fn choose_window(facts: &[WindowFacts], matches: Vec<usize>, query: &str) -> Res
     let visible: Vec<usize> = matches
         .iter()
         .copied()
-        .filter(|&index| !facts[index].minimized)
+        .filter(|&index| !facts[index].is_minimized())
         .collect();
     if let [only] = visible.as_slice() {
         return Ok(*only);
@@ -579,7 +552,7 @@ fn choose_window(facts: &[WindowFacts], matches: Vec<usize>, query: &str) -> Res
 
 fn ensure_window_visible(facts: &[WindowFacts], index: usize) -> Result<usize, String> {
     let window = &facts[index];
-    if window.minimized {
+    if window.is_minimized() {
         return Err(format!(
             "Window \"{}\" (id {}) is minimized; restore it before capturing.",
             window_title(window),

@@ -46,8 +46,19 @@ fn start_with(ws: &TempDir, args: Value) -> u32 {
     pid(&run(ws, args).unwrap())
 }
 
-/// Start `command` in `ws`, returning its pid.
+/// A command that stays alive for ~5s on every platform.
 #[cfg(unix)]
+const SLEEP_CMD: &str = "sleep 5";
+#[cfg(windows)]
+const SLEEP_CMD: &str = "ping -n 6 127.0.0.1";
+
+/// A long-lived windowless command for the `wait_window` timeout test.
+#[cfg(unix)]
+const WAIT_WINDOW_CMD: &str = "sleep 30";
+#[cfg(windows)]
+const WAIT_WINDOW_CMD: &str = "ping -n 60 127.0.0.1";
+
+/// Start `command` in `ws`, returning its pid.
 fn start(ws: &TempDir, command: &str) -> u32 {
     start_with(ws, json!({"action": "start", "command": command}))
 }
@@ -63,7 +74,6 @@ fn logs(ws: &TempDir, pid: u32) -> String {
 }
 
 /// Stop `pid` with `signal` (`""` = the tool's default), discarding the result.
-#[cfg(unix)]
 fn stop(ws: &TempDir, pid: u32, signal: &str) {
     let mut args = json!({"action": "stop", "pid": pid});
     if !signal.is_empty() {
@@ -151,7 +161,15 @@ fn schema_requires_action_with_full_enum() {
     assert_eq!(
         actions,
         vec![
-            "start", "list", "status", "logs", "input", "wait", "stop", "restart"
+            "start",
+            "list",
+            "status",
+            "logs",
+            "input",
+            "wait",
+            "wait_window",
+            "stop",
+            "restart"
         ]
     );
 
@@ -320,6 +338,159 @@ fn logs_strip_ansi_sequences() {
     assert!(!logs.contains('\u{1b}'), "logs kept an escape: {logs:?}");
 }
 
+// ── wait_window ───────────────────────────────────────────────────
+
+/// Skip a window test on headless machines where enumeration is unavailable.
+fn skip_without_window_scan(test: &str) -> bool {
+    if xcap::Window::all().is_ok() {
+        return false;
+    }
+    eprintln!("skipping {test}: no window enumeration");
+    true
+}
+
+#[test]
+fn wait_window_rejects_unknown_pid() {
+    let tmp = TempDir::new("wait_window_pid").unwrap();
+    let err = run(
+        &tmp,
+        json!({"action": "wait_window", "pid": 9_999_999, "timeout": 1000}),
+    )
+    .unwrap_err();
+    assert!(err.contains("Unknown pid"), "error: {err}");
+}
+
+/// A windowless process that exits errors with its code after the post-exit grace.
+#[cfg(unix)]
+#[test]
+fn wait_window_errors_when_process_exits_first() {
+    if skip_without_window_scan("wait_window_errors_when_process_exits_first") {
+        return;
+    }
+    let tmp = TempDir::new("wait_window_exit").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 0.2\"");
+    wait_exit(&tmp, id); // ensure the exit is recorded before we ask
+
+    let err = run(
+        &tmp,
+        json!({"action": "wait_window", "pid": id, "timeout": 15_000}),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("exited with code 0 before opening a window"),
+        "error: {err}"
+    );
+}
+
+/// An exited launcher does not end the wait while its child remains alive.
+#[cfg(target_os = "linux")]
+#[test]
+fn wait_window_waits_for_live_descendants_after_wrapper_exits() {
+    if skip_without_window_scan("wait_window_waits_for_live_descendants_after_wrapper_exits") {
+        return;
+    }
+    let tmp = TempDir::new("wait_window_descendant").unwrap();
+    let id = start(&tmp, "/bin/sh -c \"sleep 10 &\"");
+    wait_exit(&tmp, id);
+
+    let result = run(
+        &tmp,
+        json!({"action": "wait_window", "pid": id, "timeout": 3000}),
+    );
+    stop(&tmp, id, "kill");
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("opened no window after 3000ms"),
+        "error: {error}"
+    );
+}
+
+/// A still-running windowless process times out with an error.
+#[test]
+fn wait_window_times_out_for_windowless_process() {
+    if skip_without_window_scan("wait_window_times_out_for_windowless_process") {
+        return;
+    }
+    let tmp = TempDir::new("wait_window_timeout").unwrap();
+    let id = start(&tmp, WAIT_WINDOW_CMD);
+    let result = run(
+        &tmp,
+        json!({"action": "wait_window", "pid": id, "timeout": 500}),
+    );
+    stop(&tmp, id, "kill");
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("opened no window after 500ms"),
+        "error: {error}"
+    );
+}
+
+/// Open a real window and confirm `wait_window` reports it.
+#[cfg(windows)]
+#[test]
+fn wait_window_detects_gui_window() {
+    if skip_without_window_scan("wait_window_detects_gui_window") {
+        return;
+    }
+    let tmp = TempDir::new("wait_window_gui").unwrap();
+    let id = start_with(&tmp, json!({"action": "start", "command": "notepad.exe"}));
+    let result = run(
+        &tmp,
+        json!({"action": "wait_window", "pid": id, "timeout": 20_000}),
+    )
+    .unwrap();
+    assert!(result.contains("opened window"), "result: {result}");
+    assert!(
+        result.to_lowercase().contains("notepad"),
+        "result: {result}"
+    );
+    let _ = run(&tmp, json!({"action": "stop", "pid": id}));
+}
+
+/// Owner pid named in a wrapper-spawned window result.
+#[cfg(windows)]
+fn window_owner(result: &str) -> u32 {
+    result
+        .split("child ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|pid| pid.parse().ok())
+        .expect("wrapper result should name the window owner")
+}
+
+/// Kill a process the tool does not manage (a GUI spawned by a launcher).
+#[cfg(windows)]
+fn kill_pid(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// A launcher wrapper exits as soon as its GUI appears; the window still counts
+/// during the post-exit grace.
+#[cfg(windows)]
+#[test]
+fn wait_window_detects_wrapper_spawned_gui() {
+    if skip_without_window_scan("wait_window_detects_wrapper_spawned_gui") {
+        return;
+    }
+    let tmp = TempDir::new("wait_window_wrap").unwrap();
+    let id = start_with(
+        &tmp,
+        json!({"action": "start", "command": "cmd /c start \"\" notepad.exe"}),
+    );
+    let result = run(
+        &tmp,
+        json!({"action": "wait_window", "pid": id, "timeout": 20_000, "title": "notepad"}),
+    )
+    .unwrap();
+    assert!(result.contains("opened window"), "result: {result}");
+    // The wrapper already exited, leaving the GUI untracked; close it by pid.
+    kill_pid(window_owner(&result));
+}
+
 // ── host command resolution ───────────────────────────────────────
 
 /// A command behind a shell shim starts like a shell would run it: Windows
@@ -363,12 +534,6 @@ fn start_resolves_path_shim() {
 }
 
 // ── registry change events ────────────────────────────────────────
-
-/// A command that stays alive for ~5s on every platform.
-#[cfg(unix)]
-const SLEEP_CMD: &str = "sleep 5";
-#[cfg(windows)]
-const SLEEP_CMD: &str = "ping -n 6 127.0.0.1";
 
 #[tokio::test]
 async fn events_fire_on_start_and_exit() {

@@ -4,7 +4,7 @@
 //! direct exec, host env minus secrets plus `env` overrides) and keeps the
 //! children in an app-global registry keyed by their OS pid.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -26,10 +26,12 @@ use std::os::windows::io::{AsRawHandle, RawHandle};
 use crate::lock;
 use crate::tools::{
     CANCEL_REASON, ChunkDecoder, OutputSink, PlainTextDecoder, ProcessSignal, StdinWriteError,
-    Tool, arg_str, arg_u64, convert_path_list_to_native, detach_child, exit_code_of,
-    host_path_lists, is_path_env_key, required_str, resolve_command, resolve_path,
-    sanitize_child_env, signal_process_tree, tool_limits, write_stdin_bounded,
+    Tool, WindowFacts, arg_str, arg_u64, convert_path_list_to_native, detach_child, exit_code_of,
+    host_path_lists, is_path_env_key, process_tree_pids, required_str, resolve_command,
+    resolve_path, sanitize_child_env, signal_process_tree, spawn_worker, tool_limits, window_facts,
+    write_stdin_bounded,
 };
+use xcap::Window;
 
 /// Cap on retained exited process entries; the oldest are dropped on `start`.
 const MAX_RETAINED_EXITED: usize = 64;
@@ -54,6 +56,15 @@ const INPUT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default and maximum number of log lines returned by `logs`.
 const DEFAULT_LINES: u64 = 100;
 const MAX_LINES: u64 = 2000;
+/// Interval between window scans; enumeration costs tens of milliseconds.
+const WINDOW_SCAN_INTERVAL: Duration = Duration::from_millis(200);
+/// Interval between descendant-tree refreshes (GUI children can appear late).
+const TREE_REFRESH: Duration = Duration::from_secs(1);
+/// Cancel/deadline granularity of the `wait_window` caller loop.
+const WAIT_WINDOW_POLL: Duration = Duration::from_millis(100);
+/// How long after exit `wait_window` accepts a launcher wrapper's window before
+/// requiring a live descendant to keep waiting.
+const EXIT_WINDOW_GRACE: Duration = Duration::from_secs(2);
 
 // ── Global process registry ────────────────────────────────────────
 
@@ -83,7 +94,7 @@ impl Tool for ProcessTool {
     }
 
     fn instruction(&self) -> &str {
-        "Use the process tool to start, monitor, interact with, and stop long-running processes such as servers, watchers, and REPLs. `start` returns the operating system `pid`; pass it to every later operation. Prefer this over the `bash` tool for anything that does not exit on its own, and remember to stop processes you no longer need."
+        "Use the process tool to start, monitor, interact with, and stop long-running processes such as servers, watchers, and REPLs. `start` returns the operating system `pid`; pass it to every later operation. Prefer this over the `bash` tool for anything that does not exit on its own, and remember to stop processes you no longer need. `wait_window` blocks until the process or a child opens a visible window, useful before screenshotting a GUI; it fails if the timeout expires or the process exits first."
     }
 
     fn schema(&self) -> Value {
@@ -99,6 +110,7 @@ impl Tool for ProcessTool {
                         "logs",
                         "input",
                         "wait",
+                        "wait_window",
                         "stop",
                         "restart"
                     ],
@@ -125,7 +137,11 @@ impl Tool for ProcessTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Maximum time to wait in milliseconds. Used by the wait action and by logs with follow."
+                    "description": "Maximum time to wait in milliseconds for wait, wait_window, and logs with follow; 0 or omitted waits until the process exits, the window appears, or the call is cancelled."
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Case-insensitive window title substring for wait_window; omit to accept any titled window owned by the process."
                 },
                 "input": {
                     "type": "string",
@@ -191,6 +207,7 @@ fn run(
         "logs" => logs(args, cancel, sink),
         "input" => input(args, cancel),
         "wait" => wait_action(args, cancel, sink),
+        "wait_window" => wait_window(args, cancel),
         "stop" => stop(args),
         "restart" => restart(args, workspace),
         other => Err(format!("Unknown action '{other}'")),
@@ -464,6 +481,134 @@ fn wait_action(
             "Process {} still running after {}ms",
             e.pid, timeout_ms
         )),
+    }
+}
+
+/// Facts for the first visible, titled window owned by `tree` and matching the
+/// lowercased `title_filter`.
+fn find_main_window(
+    tree: &HashSet<u32>,
+    title_filter: Option<&str>,
+) -> Result<Option<WindowFacts>, String> {
+    let windows = Window::all().map_err(|error| format!("Failed to enumerate windows: {error}"))?;
+    Ok(windows.into_iter().find_map(|window| {
+        // Skip unrelated windows before reading their full facts.
+        if !window.pid().is_ok_and(|pid| tree.contains(&pid)) {
+            return None;
+        }
+        let facts = window_facts(&window);
+        // Reject untitled windows and unknown minimized state.
+        if facts.title.is_empty() || facts.minimized != Some(false) {
+            return None;
+        }
+        if title_filter.is_some_and(|filter| !facts.title.to_lowercase().contains(filter)) {
+            return None;
+        }
+        Some(facts)
+    }))
+}
+
+/// Result text naming the tracked process and, for a wrapper-spawned GUI, the
+/// window's owner pid.
+fn window_message(root: u32, window: &WindowFacts) -> String {
+    let owner = if window.pid == root {
+        String::new()
+    } else {
+        format!(" child {}", window.pid)
+    };
+    format!(
+        "Process {root}{owner} opened window \"{}\" (id {}, {}x{})",
+        window.title, window.id, window.width, window.height
+    )
+}
+
+struct WindowScan {
+    window: Option<WindowFacts>,
+    has_live_descendants: bool,
+}
+
+/// Scan on a worker thread so a wedged enumeration cannot block cancel/deadline checks.
+fn scan_windows(
+    pid: u32,
+    title_filter: Option<&str>,
+    tx: mpsc::Sender<Result<WindowScan, String>>,
+) {
+    let mut tree = process_tree_pids(pid);
+    let mut refreshed = Instant::now();
+    loop {
+        let found = find_main_window(&tree, title_filter).map(|window| WindowScan {
+            window,
+            has_live_descendants: tree.len() > 1,
+        });
+        // A hit or an error is final; a dropped receiver also ends the scan.
+        let keep_scanning = matches!(&found, Ok(scan) if scan.window.is_none());
+        if tx.send(found).is_err() || !keep_scanning {
+            return;
+        }
+        if refreshed.elapsed() >= TREE_REFRESH {
+            tree = process_tree_pids(pid);
+            refreshed = Instant::now();
+        }
+        std::thread::sleep(WINDOW_SCAN_INTERVAL);
+    }
+}
+
+/// `wait_window`: block until the managed process (or a descendant) opens a
+/// visible window; a timeout or early exit is an error.
+fn wait_window(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
+    let e = entry_for(args)?;
+    let timeout_ms = arg_u64(args, "timeout").unwrap_or(0);
+    let title_filter = arg_str(args, "title")
+        .map(str::trim)
+        .filter(|title| !title.is_empty());
+    let deadline = timeout_deadline(timeout_ms);
+
+    let pid = e.pid;
+    let filter = title_filter.map(str::to_lowercase);
+    // Poll cancel/deadline here so a wedged enumeration cannot hide them.
+    let rx = spawn_worker("Window watcher", move |tx| {
+        scan_windows(pid, filter.as_deref(), tx)
+    })?;
+
+    // Launcher wrappers often exit as soon as their GUI appears, so keep
+    // accepting hits briefly after exit.
+    let mut exited_at = None;
+    let mut has_live_descendants = false;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(CANCEL_REASON.into());
+        }
+        match rx.recv_timeout(WAIT_WINDOW_POLL) {
+            Ok(Ok(scan)) => {
+                has_live_descendants = scan.has_live_descendants;
+                if let Some(window) = scan.window {
+                    return Ok(window_message(e.pid, &window));
+                }
+            }
+            Ok(Err(err)) => return Err(err),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("The window watcher stopped unexpectedly".into());
+            }
+        }
+        if let Some(code) = e.exit_code_opt() {
+            let since_exit = *exited_at.get_or_insert_with(Instant::now);
+            if since_exit.elapsed() >= EXIT_WINDOW_GRACE && !has_live_descendants {
+                return Err(format!(
+                    "Process {} ({}) exited with code {code} before opening a window",
+                    e.pid, e.command
+                ));
+            }
+        }
+        if deadline.is_some_and(|end| Instant::now() >= end) {
+            let filter = title_filter
+                .map(|title| format!(" matching title \"{title}\""))
+                .unwrap_or_default();
+            return Err(format!(
+                "Process {} ({}) opened no window{filter} after {timeout_ms}ms",
+                e.pid, e.command
+            ));
+        }
     }
 }
 
@@ -858,6 +1003,11 @@ enum WaitOutcome {
     Timeout,
 }
 
+/// Deadline `timeout_ms` from now; `None` when `timeout_ms` is 0 (no timeout).
+fn timeout_deadline(timeout_ms: u64) -> Option<Instant> {
+    (timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(timeout_ms))
+}
+
 /// Poll until the process exits (status recorded and readers drained) or
 /// `timeout_ms` elapses, streaming new chunks to `sink` when `follow`.
 fn wait_for_exit(
@@ -867,7 +1017,7 @@ fn wait_for_exit(
     cancel: &CancellationToken,
     sink: Option<&OutputSink>,
 ) -> Result<WaitOutcome, String> {
-    let deadline = (timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(timeout_ms));
+    let deadline = timeout_deadline(timeout_ms);
     let mut last_seq = e.logs.last_seq();
     loop {
         if cancel.is_cancelled() {

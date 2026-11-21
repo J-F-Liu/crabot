@@ -26,6 +26,8 @@ mod registry;
 mod schema;
 mod tool;
 mod uname; // host's own `uname`, replacing bashkit's virtual Linux
+mod window;
+mod worker;
 
 /// One file per tool; `super::` inside them resolves via this module's re-exports.
 pub mod builtin;
@@ -99,10 +101,16 @@ pub(crate) use exec::peek_pipe_available;
 pub(crate) use exec::{
     ProcessSignal, StdinWriteError, combine_output, create_pipe_pair, detach_child, exit_code_of,
     format_command_output, host_path_lists, is_path_env_key, is_secret_env_key, kill_process_tree,
-    pipe_to_stdio, resolve_command, sanitize_child_env, set_raw_fd_nonblocking,
+    pipe_to_stdio, process_tree_pids, resolve_command, sanitize_child_env, set_raw_fd_nonblocking,
     signal_process_tree, write_stdin_bounded,
 };
 
 // ── capture ─────────────────────────────────────────────────────────
 pub use capture::{ChunkForwarder, OutStream};
 pub(crate) use capture::{WaitError, timeout_message, try_lock_for, wait_with_timeout};
+
+// ── window ──────────────────────────────────────────────────────────
+pub(crate) use window::{WindowFacts, window_facts};
+
+// ── worker ──────────────────────────────────────────────────────────
+pub(crate) use worker::spawn_worker;

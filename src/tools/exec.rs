@@ -2,6 +2,7 @@
 //! process-tree signaling, env sanitization, and exit/output formatting.
 
 use interprocess::unnamed_pipe;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -117,6 +118,122 @@ pub(crate) fn signal_process_tree(pid: u32, signal: ProcessSignal) {
 /// Forcibly kill a process and its entire descendant tree.
 pub(crate) fn kill_process_tree(pid: u32) {
     signal_process_tree(pid, ProcessSignal::Kill);
+}
+
+/// One live process's parent and, on Linux, process-group ids.
+struct LiveProcess {
+    pid: u32,
+    ppid: u32,
+    pgrp: Option<u32>,
+}
+
+/// Collect `pid` and its descendants, following ppid links and, on Linux, the
+/// managed process group so wrapper-spawned GUIs survive reparenting.
+pub(crate) fn process_tree_pids(pid: u32) -> HashSet<u32> {
+    tree_from_processes(pid, live_processes())
+}
+
+/// Expand `pid` into its process group plus all ppid descendants; split out for tests.
+fn tree_from_processes(pid: u32, processes: Vec<LiveProcess>) -> HashSet<u32> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut tree = HashSet::from([pid]);
+    for process in processes {
+        children.entry(process.ppid).or_default().push(process.pid);
+        if process.pgrp == Some(pid) {
+            tree.insert(process.pid);
+        }
+    }
+    let mut stack: Vec<u32> = tree.iter().copied().collect();
+    while let Some(current) = stack.pop() {
+        for &child in children.get(&current).into_iter().flatten() {
+            if tree.insert(child) {
+                stack.push(child);
+            }
+        }
+    }
+    tree
+}
+
+/// Live process facts; systems without `/proc` can match only `pid` itself.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn live_processes() -> Vec<LiveProcess> {
+    Vec::new()
+}
+
+/// Live processes from `/proc/<pid>/stat`.
+#[cfg(target_os = "linux")]
+fn live_processes() -> Vec<LiveProcess> {
+    let mut processes = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return processes;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if let Ok(stat) = std::fs::read_to_string(entry.path().join("stat"))
+            && let Some(process) = parse_stat(pid, &stat)
+        {
+            processes.push(process);
+        }
+    }
+    processes
+}
+
+/// Parse one `/proc/<pid>/stat` line; `comm` may contain spaces and parentheses, so fields follow the last ')'.
+#[cfg(any(target_os = "linux", test))]
+fn parse_stat(pid: u32, stat: &str) -> Option<LiveProcess> {
+    let mut fields = stat
+        .rfind(')')
+        .map(|close| stat[close + 1..].split_whitespace().skip(1))?;
+    let ppid = fields.next()?.parse().ok()?;
+    let pgrp = fields.next()?.parse().ok()?;
+    Some(LiveProcess {
+        pid,
+        ppid,
+        pgrp: Some(pgrp),
+    })
+}
+
+/// Live processes via a ToolHelp snapshot.
+#[cfg(windows)]
+fn live_processes() -> Vec<LiveProcess> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let mut processes = Vec::new();
+    // SAFETY: the snapshot is closed on every path and `dwSize` is initialized.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return processes;
+        }
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                processes.push(LiveProcess {
+                    pid: entry.th32ProcessID,
+                    ppid: entry.th32ParentProcessID,
+                    pgrp: None,
+                });
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+    processes
 }
 
 /// Start the child as a process-group leader (Unix) so its whole tree can be
