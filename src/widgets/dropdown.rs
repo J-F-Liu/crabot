@@ -1,12 +1,5 @@
-//! A dropdown picker widget with a configurable popup menu width.
-//!
-//! Unlike iced's built-in `PickList` which constrains the dropdown menu to the
-//! widget's own width, this widget allows the popup to be wider for displaying
-//! longer option labels (e.g. session titles).
-//!
-//! The popup menu supports mouse-wheel scrolling, a draggable scrollbar,
-//! click-to-page on the scrollbar track, and keyboard navigation
-//! (Home/End/Enter/Escape/PageUp/PageDown).
+//! Dropdown picker whose popup can be wider than its trigger, with scrolling
+//! and keyboard navigation.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
@@ -14,17 +7,18 @@ use iced::advanced::renderer;
 use iced::advanced::text::paragraph;
 use iced::advanced::text::{self, Text};
 use iced::advanced::widget::tree::{self, Tree};
-use iced::advanced::{Clipboard, Shell, Widget};
+use iced::advanced::{Shell, Widget};
 use iced::alignment;
 use iced::border;
 use iced::keyboard;
 use iced::mouse;
 use iced::{
-    Background, Border, Color, Element, Event, Length, Padding, Pixels, Point, Rectangle, Shadow,
+    Background, Border, Color, Event, Font, Length, Padding, Pixels, Point, Rectangle, Shadow,
     Size, Vector,
 };
 
 use std::borrow::Borrow;
+use std::marker::PhantomData;
 
 use crate::views::theme;
 
@@ -188,22 +182,17 @@ where
     width: Length,
     /// Width of the dropdown popup menu (f32 = fixed pixels).
     menu_width: f32,
-    padding: Padding,
     text_size: Option<Pixels>,
-    text_line_height: text::LineHeight,
-    font: Option<Renderer::Font>,
     /// Trigger style function; receives the trigger [`Status`].
     style: StyleFn<'a, Theme>,
-    menu_style: Box<dyn Fn(&Theme) -> MenuStyle + 'a>,
-    menu_height: Length,
     on_open: Option<Message>,
-    on_close: Option<Message>,
     /// Optional predicate: returns `true` if the item at this index is a non-selectable header.
     item_is_header: Option<Box<dyn Fn(usize) -> bool + 'a>>,
     /// Font used for header items (usually a bold variant).
-    header_font: Option<Renderer::Font>,
+    header_font: Option<Font>,
     /// Left-padding for non-header items, in logical pixels.
     item_indent: f32,
+    _renderer: PhantomData<Renderer>,
 }
 
 /// Trigger style function; receives the trigger [`Status`].
@@ -243,11 +232,8 @@ impl<P: text::Paragraph> State<P> {
     }
 }
 
-/// Standard button padding used for the trigger (matches iced's button::DEFAULT_PADDING
-/// plus extra right space for the dropdown arrow).
+/// Trigger padding matching iced's button padding, plus room for the arrow.
 fn trigger_padding() -> Padding {
-    // Matches `iced_widget::button::DEFAULT_PADDING` (top:5, bottom:5, right:10, left:10),
-    // with extra right padding for the "▾" arrow.
     Padding {
         top: 5.0,
         bottom: 5.0,
@@ -275,18 +261,13 @@ where
             placeholder: None,
             width: Length::Shrink,
             menu_width: 250.0,
-            padding: trigger_padding(),
             text_size: None,
-            text_line_height: text::LineHeight::default(),
-            font: None,
             style: Box::new(|_, _| Style::default()),
-            menu_style: Box::new(|_| MenuStyle::default()),
-            menu_height: Length::Shrink,
             on_open: None,
-            on_close: None,
             item_is_header: None,
             header_font: None,
             item_indent: 0.0,
+            _renderer: PhantomData,
         }
     }
 
@@ -308,27 +289,9 @@ where
         self
     }
 
-    /// Sets the padding of the trigger button.
-    pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
-        self.padding = padding.into();
-        self
-    }
-
     /// Sets the text size.
     pub fn text_size(mut self, size: impl Into<Pixels>) -> Self {
         self.text_size = Some(size.into());
-        self
-    }
-
-    /// Sets the text line height.
-    pub fn text_line_height(mut self, line_height: impl Into<text::LineHeight>) -> Self {
-        self.text_line_height = line_height.into();
-        self
-    }
-
-    /// Sets the font.
-    pub fn font(mut self, font: impl Into<Renderer::Font>) -> Self {
-        self.font = Some(font.into());
         self
     }
 
@@ -338,27 +301,9 @@ where
         self
     }
 
-    /// Sets the style of the dropdown menu.
-    pub fn menu_style(mut self, style: impl Fn(&Theme) -> MenuStyle + 'a) -> Self {
-        self.menu_style = Box::new(style);
-        self
-    }
-
-    /// Sets the max height of the dropdown menu.
-    pub fn menu_height(mut self, height: impl Into<Length>) -> Self {
-        self.menu_height = height.into();
-        self
-    }
-
     /// Sets the message that will be produced when the [`DropDown`] is opened.
     pub fn on_open(mut self, message: Message) -> Self {
         self.on_open = Some(message);
-        self
-    }
-
-    /// Sets the message that will be produced when the [`DropDown`] is closed.
-    pub fn on_close(mut self, message: Message) -> Self {
-        self.on_close = Some(message);
         self
     }
 
@@ -369,7 +314,7 @@ where
     }
 
     /// Set the font used for header items (typically a bold variant).
-    pub fn header_font(mut self, font: impl Into<Renderer::Font>) -> Self {
+    pub fn header_font(mut self, font: impl Into<Font>) -> Self {
         self.header_font = Some(font.into());
         self
     }
@@ -383,12 +328,22 @@ where
 
 // ── Widget impl ────────────────────────────────────────────────────
 
+impl<'a, T, L, V, Message, Theme, Renderer> iced::advanced::widget::Meta
+    for DropDown<'a, T, L, V, Message, Theme, Renderer>
+where
+    T: ToString + PartialEq + Clone,
+    L: Borrow<[T]> + 'a,
+    V: Borrow<T> + 'a,
+    Renderer: text::Renderer + 'a,
+{
+}
+
 impl<'a, T, L, V, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for DropDown<'a, T, L, V, Message, Theme, Renderer>
 where
     T: ToString + PartialEq + Clone + 'a,
-    L: Borrow<[T]>,
-    V: Borrow<T>,
+    L: Borrow<[T]> + 'a,
+    V: Borrow<T> + 'a,
     Message: Clone + 'a,
     Theme: 'a,
     Renderer: text::Renderer + 'a,
@@ -408,16 +363,13 @@ where
         }
     }
 
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) {
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
-        let font = self.font.unwrap_or_else(|| renderer.default_font());
-        let text_size = self.text_size.unwrap_or_else(|| renderer.default_size());
+        let font = renderer.font();
+        let text_size = self.text_size.unwrap_or_else(|| renderer.text_size());
+        let line_height = text::LineHeight::default();
+        let padding = trigger_padding();
 
         // Build the trigger label text. Always show the selected option
         // (or placeholder). The trigger does NOT mirror the hovered item
@@ -431,12 +383,14 @@ where
             content: &label_text,
             bounds: Size::new(f32::INFINITY, f32::INFINITY),
             size: text_size,
-            line_height: self.text_line_height,
+            line_height,
             font,
             align_x: text::Alignment::Default,
             align_y: alignment::Vertical::Center,
             shaping: text::Shaping::default(),
             wrapping: text::Wrapping::default(),
+            ellipsis: text::Ellipsis::default(),
+            hint_factor: None,
         });
 
         // Build option paragraphs for the dropdown.
@@ -449,12 +403,14 @@ where
                 content: &option.to_string(),
                 bounds: Size::new(f32::INFINITY, f32::INFINITY),
                 size: text_size,
-                line_height: self.text_line_height,
+                line_height,
                 font,
                 align_x: text::Alignment::Default,
                 align_y: alignment::Vertical::Center,
                 shaping: text::Shaping::default(),
                 wrapping: text::Wrapping::None,
+                ellipsis: text::Ellipsis::default(),
+                hint_factor: None,
             });
         }
 
@@ -468,28 +424,27 @@ where
             // Match pick_list layout: intrinsic height omits vertical padding;
             // .shrink()/.expand() adds it back.
             let intrinsic = Size::new(
-                labels_width + self.padding.left + self.padding.right,
-                f32::from(self.text_line_height.to_absolute(text_size)),
+                labels_width + padding.left + padding.right,
+                f32::from(line_height.to_absolute(text_size)),
             );
 
             limits
                 .width(self.width)
-                .shrink(self.padding)
+                .shrink(padding)
                 .resolve(self.width, Length::Shrink, intrinsic)
-                .expand(self.padding)
+                .expand(padding)
         };
 
-        layout::Node::new(size)
+        tree.size = size;
     }
 
     fn update(
         &mut self,
         tree: &mut Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
@@ -501,9 +456,6 @@ where
                 if state.is_open {
                     state.is_open = false;
                     state.is_dragging_scrollbar = false;
-                    if let Some(on_close) = &self.on_close {
-                        shell.publish(on_close.clone());
-                    }
                 } else {
                     state.is_open = true;
                     state.hovered_option = self
@@ -521,9 +473,6 @@ where
                 // Click outside both the trigger and the overlay -> close.
                 state.is_open = false;
                 state.is_dragging_scrollbar = false;
-                if let Some(on_close) = &self.on_close {
-                    shell.publish(on_close.clone());
-                }
                 shell.capture_event();
             }
         }
@@ -535,12 +484,14 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         _style: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State<Renderer::Paragraph>>();
         let bounds = layout.bounds();
+        let padding = trigger_padding();
+        let line_height = text::LineHeight::default();
         let status = if state.is_open {
             Status::Opened
         } else if cursor.is_over(bounds) {
@@ -570,13 +521,13 @@ where
         };
 
         let text_clip = Rectangle {
-            x: bounds.x + self.padding.left,
+            x: bounds.x + padding.left,
             y: bounds.y,
-            width: bounds.width - self.padding.left - self.padding.right,
+            width: bounds.width - padding.left - padding.right,
             height: bounds.height,
         };
         let anchor = Point::new(
-            bounds.x + self.padding.left,
+            bounds.x + padding.left,
             bounds.y + (bounds.height - state.label.min_bounds().height) / 2.0,
         );
         renderer.with_layer(text_clip, |renderer| {
@@ -585,8 +536,8 @@ where
 
         // Dropdown arrow indicator (▼) — use the same icon font and
         // rendering style as iced's built-in PickList widget.
-        let arrow_size = self.text_size.unwrap_or_else(|| renderer.default_size());
-        let arrow_line_height = self.text_line_height;
+        let arrow_size = self.text_size.unwrap_or_else(|| renderer.text_size());
+        let arrow_line_height = line_height;
         renderer.fill_text(
             Text {
                 content: Renderer::ARROW_DOWN_ICON.to_string(),
@@ -598,6 +549,8 @@ where
                 align_y: alignment::Vertical::Center,
                 shaping: text::Shaping::Basic,
                 wrapping: text::Wrapping::default(),
+                ellipsis: text::Ellipsis::default(),
+                hint_factor: None,
             },
             Point::new(bounds.x + bounds.width - 10.0, bounds.center_y()),
             style.handle_color,
@@ -608,54 +561,87 @@ where
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         renderer: &Renderer,
         _viewport: &Rectangle,
         translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        window: Size,
+    ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
         let state = tree.state.downcast_mut::<State<Renderer::Paragraph>>();
 
         if state.is_open {
             let bounds = layout.bounds();
             let position = layout.position() + translation;
 
-            let font = self.font.unwrap_or_else(|| renderer.default_font());
-            let text_size = self.text_size.unwrap_or_else(|| renderer.default_size());
+            let font = renderer.font();
+            let text_size = self.text_size.unwrap_or_else(|| renderer.text_size());
+            let padding = trigger_padding();
+            let line_height = text::LineHeight::default();
 
             let on_select = &self.on_select;
 
-            Some(overlay::Element::new(Box::new(Overlay {
-                position,
-                target_height: bounds.height,
-                menu_width: self.menu_width.max(bounds.width),
-                padding: self.padding,
+            let option_height = f32::from(line_height.to_absolute(text_size)) + padding.y();
+            let total_height = option_height * self.options.borrow().len() as f32;
+
+            let space_below = window.height - (position.y + bounds.height);
+            let space_above = position.y;
+            let max_available = space_below.max(space_above);
+
+            let menu_width = self.menu_width.max(bounds.width);
+            let menu_height = total_height.min(max_available);
+
+            let max_scroll = (total_height - menu_height).max(0.0);
+            // Clamp stale scroll offset (e.g. options were removed since last frame).
+            state.scroll_offset = state.scroll_offset.min(max_scroll);
+
+            // Scroll the hovered option into view on open (or when requested).
+            if state.needs_scroll_to_hovered {
+                state.needs_scroll_to_hovered = false;
+                if let Some(idx) = state.hovered_option {
+                    scroll_to_option(
+                        &mut state.scroll_offset,
+                        idx,
+                        option_height,
+                        menu_height,
+                        max_scroll,
+                    );
+                }
+            }
+
+            const GAP: f32 = 2.0;
+            let menu_position = if space_below > space_above {
+                position + Vector::new(0.0, bounds.height + GAP)
+            } else {
+                position - Vector::new(0.0, menu_height + GAP)
+            };
+
+            let menu_layout =
+                Layout::new(Size::new(menu_width, menu_height)).move_to(menu_position);
+
+            vec![overlay::Element::new(Box::new(Overlay::<T, Message> {
+                layout: menu_layout,
                 text_size,
-                text_line_height: self.text_line_height,
                 font,
-                menu_height: self.menu_height,
-                menu_style_fn: &self.menu_style,
                 options: self.options.borrow(),
                 hovered_option: &mut state.hovered_option,
                 on_select: Box::new(on_select),
-                on_close: self.on_close.as_ref(),
                 is_open: &mut state.is_open,
                 scroll_offset: &mut state.scroll_offset,
                 is_dragging_scrollbar: &mut state.is_dragging_scrollbar,
                 scrollbar_drag_offset: &mut state.scrollbar_drag_offset,
-                needs_scroll_to_hovered: &mut state.needs_scroll_to_hovered,
                 is_header: self.item_is_header.as_deref(),
                 header_font: self.header_font,
                 item_indent: self.item_indent,
-            })))
+            }))]
         } else {
-            None
+            Vec::new()
         }
     }
 
     fn mouse_interaction(
         &self,
         _tree: &Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
@@ -670,23 +656,13 @@ where
 
 // ── Overlay ────────────────────────────────────────────────────────
 
-struct Overlay<'a, T, Message, Theme, Renderer>
-where
-    Renderer: text::Renderer + 'a,
-{
-    position: Point,
-    target_height: f32,
-    menu_width: f32,
-    padding: Padding,
+struct Overlay<'a, T, Message> {
+    layout: Layout,
     text_size: Pixels,
-    text_line_height: text::LineHeight,
-    font: Renderer::Font,
-    menu_height: Length,
-    menu_style_fn: &'a dyn Fn(&Theme) -> MenuStyle,
+    font: Font,
     options: &'a [T],
     hovered_option: &'a mut Option<usize>,
     on_select: Box<dyn Fn(T) -> Message + 'a>,
-    on_close: Option<&'a Message>,
     is_open: &'a mut bool,
     /// Persistent scroll offset, stored in widget `State`.
     scroll_offset: &'a mut f32,
@@ -694,23 +670,18 @@ where
     is_dragging_scrollbar: &'a mut bool,
     /// Cursor-to-thumb-top offset captured at drag start.
     scrollbar_drag_offset: &'a mut f32,
-    /// Triggers scroll-to-hovered on the next layout pass.
-    needs_scroll_to_hovered: &'a mut bool,
     /// Optional predicate: `true` if the item at this index is a header.
     is_header: Option<&'a dyn Fn(usize) -> bool>,
     /// Font for header items (typically a bold variant).
-    header_font: Option<Renderer::Font>,
+    header_font: Option<Font>,
     /// Left-indent for non-header items, in logical pixels.
     item_indent: f32,
 }
 
-impl<'a, T, Message, Theme, Renderer> Overlay<'a, T, Message, Theme, Renderer>
-where
-    Renderer: text::Renderer + 'a,
-{
+impl<'a, T, Message> Overlay<'a, T, Message> {
     /// Height of a single option row (text line height + vertical padding).
     fn option_height(&self) -> f32 {
-        f32::from(self.text_line_height.to_absolute(self.text_size)) + self.padding.y()
+        f32::from(text::LineHeight::default().to_absolute(self.text_size)) + trigger_padding().y()
     }
 
     /// Total content height of all options.
@@ -745,66 +716,21 @@ where
 }
 
 impl<'a, T, Message, Theme, Renderer> overlay::Overlay<Message, Theme, Renderer>
-    for Overlay<'a, T, Message, Theme, Renderer>
+    for Overlay<'a, T, Message>
 where
     T: ToString + Clone + 'a,
     Message: Clone + 'a,
     Theme: 'a,
     Renderer: text::Renderer + 'a,
 {
-    fn layout(&mut self, _renderer: &Renderer, bounds: Size) -> layout::Node {
-        let option_height = self.option_height();
-        let total_height = option_height * self.options.len() as f32;
-
-        let space_below = bounds.height - (self.position.y + self.target_height);
-        let space_above = self.position.y;
-        let max_available = space_below.max(space_above);
-
-        let menu_height = match self.menu_height {
-            Length::Shrink => total_height.min(max_available),
-            Length::Fixed(h) => h.min(total_height).min(max_available),
-            Length::Fill | Length::FillPortion(_) => bounds.height.min(total_height),
-        };
-
-        let max_scroll = (total_height - menu_height).max(0.0);
-        // Clamp stale scroll offset (e.g. options were removed since last frame).
-        *self.scroll_offset = self.scroll_offset.min(max_scroll);
-
-        // Scroll the hovered option into view on open (or when requested).
-        if *self.needs_scroll_to_hovered {
-            *self.needs_scroll_to_hovered = false;
-            if let Some(idx) = *self.hovered_option {
-                scroll_to_option(
-                    self.scroll_offset,
-                    idx,
-                    option_height,
-                    menu_height,
-                    max_scroll,
-                );
-            }
-        }
-
-        let node = layout::Node::new(Size::new(self.menu_width, menu_height));
-
-        const GAP: f32 = 2.0;
-
-        if space_below > space_above {
-            node.move_to(self.position + Vector::new(0.0, self.target_height + GAP))
-        } else {
-            node.move_to(self.position - Vector::new(0.0, menu_height + GAP))
-        }
-    }
-
     fn update(
         &mut self,
         event: &Event,
-        layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
-        let bounds = layout.bounds();
+        let bounds = self.layout.bounds();
         let option_height = self.option_height();
         let total_height = self.total_height();
         let max_scroll = (total_height - bounds.height).max(0.0);
@@ -845,9 +771,6 @@ where
                         *self.is_open = false;
                         *self.is_dragging_scrollbar = false;
                         shell.publish((self.on_select)(option.clone()));
-                        if let Some(on_close) = self.on_close {
-                            shell.publish(on_close.clone());
-                        }
                         shell.capture_event();
                     }
                 }
@@ -1006,9 +929,6 @@ where
                                 *self.is_open = false;
                                 *self.is_dragging_scrollbar = false;
                                 shell.publish((self.on_select)(option.clone()));
-                                if let Some(on_close) = self.on_close {
-                                    shell.publish(on_close.clone());
-                                }
                                 shell.request_redraw();
                                 shell.capture_event();
                             }
@@ -1017,9 +937,6 @@ where
                     keyboard::Key::Named(Named::Escape) => {
                         *self.is_open = false;
                         *self.is_dragging_scrollbar = false;
-                        if let Some(on_close) = self.on_close {
-                            shell.publish(on_close.clone());
-                        }
                         shell.request_redraw();
                         shell.capture_event();
                     }
@@ -1034,156 +951,156 @@ where
     fn draw(
         &self,
         renderer: &mut Renderer,
-        theme: &Theme,
+        _theme: &Theme,
         _style: &renderer::Style,
-        layout: Layout<'_>,
         cursor: mouse::Cursor,
     ) {
-        let bounds = layout.bounds();
-        let style = (self.menu_style_fn)(theme);
+        let bounds = self.layout.bounds();
+        let style = MenuStyle::default();
+        let padding = trigger_padding();
+        let line_height = text::LineHeight::default();
 
-        // Menu background
-        renderer.fill_quad(
-            renderer::Quad {
-                bounds,
-                border: style.border,
-                shadow: style.shadow,
-                ..renderer::Quad::default()
-            },
-            style.background,
-        );
+        // Overlays draw after the base tree; a layer keeps the menu above any
+        // clipping layers created by the base widgets and inside its bounds.
+        renderer.with_layer(bounds, |renderer| {
+            // Menu background
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds,
+                    border: style.border,
+                    shadow: style.shadow,
+                    ..renderer::Quad::default()
+                },
+                style.background,
+            );
 
-        let option_height = self.option_height();
-        let total_height = self.total_height();
+            let option_height = self.option_height();
+            let total_height = self.total_height();
 
-        let scroll_offset = *self.scroll_offset;
+            let scroll_offset = *self.scroll_offset;
 
-        // Only draw visible items (skip items scrolled off-screen).
-        let first_visible = (scroll_offset / option_height).floor() as usize;
-        let last_visible = ((scroll_offset + bounds.height) / option_height).ceil() as usize;
-        let last_visible = last_visible.min(self.options.len());
+            // Only draw visible items (skip items scrolled off-screen).
+            let first_visible = (scroll_offset / option_height).floor() as usize;
+            let last_visible = ((scroll_offset + bounds.height) / option_height).ceil() as usize;
+            let last_visible = last_visible.min(self.options.len());
 
-        // Clip area for option text, excluding the scrollbar strip.
-        let text_clip = Rectangle {
-            x: bounds.x,
-            y: bounds.y,
-            width: bounds.width - SB_RESERVED,
-            height: bounds.height,
-        };
-
-        let cursor_over_menu = cursor.is_over(bounds);
-        let cursor_pos = cursor.position();
-
-        for i in first_visible..last_visible {
-            let option = &self.options[i];
-            let opt_y = bounds.y + option_height * i as f32 - scroll_offset;
-            let opt_bounds = Rectangle {
+            // Clip area for option text, excluding the scrollbar strip.
+            let text_clip = Rectangle {
                 x: bounds.x,
-                y: opt_y,
-                width: bounds.width,
-                height: option_height,
+                y: bounds.y,
+                width: bounds.width - SB_RESERVED,
+                height: bounds.height,
             };
 
-            let is_header_item = self.is_header.is_some_and(|f| f(i));
-            let is_hovered = !is_header_item && *self.hovered_option == Some(i);
+            let cursor_over_menu = cursor.is_over(bounds);
+            let cursor_pos = cursor.position();
 
-            if is_hovered {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: Rectangle {
-                            x: opt_bounds.x + style.border.width,
-                            width: opt_bounds.width - style.border.width * 2.0,
-                            ..opt_bounds
+            for i in first_visible..last_visible {
+                let option = &self.options[i];
+                let opt_y = bounds.y + option_height * i as f32 - scroll_offset;
+                let opt_bounds = Rectangle {
+                    x: bounds.x,
+                    y: opt_y,
+                    width: bounds.width,
+                    height: option_height,
+                };
+
+                let is_header_item = self.is_header.is_some_and(|f| f(i));
+                let is_hovered = !is_header_item && *self.hovered_option == Some(i);
+
+                if is_hovered {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle {
+                                x: opt_bounds.x + style.border.width,
+                                width: opt_bounds.width - style.border.width * 2.0,
+                                ..opt_bounds
+                            },
+                            border: border::rounded(style.border.radius),
+                            ..renderer::Quad::default()
                         },
-                        border: border::rounded(style.border.radius),
-                        ..renderer::Quad::default()
+                        style.selected_background,
+                    );
+                }
+
+                let text_color = if is_hovered {
+                    style.selected_text_color
+                } else {
+                    style.text_color
+                };
+
+                let render_font = if is_header_item {
+                    self.header_font.unwrap_or(self.font)
+                } else {
+                    self.font
+                };
+
+                let indent_x = if is_header_item {
+                    0.0
+                } else {
+                    self.item_indent
+                };
+
+                renderer.fill_text(
+                    Text {
+                        content: option.to_string(),
+                        // Very wide bounds prevent wrapping; `text_clip` trims the line.
+                        bounds: Size::new(f32::MAX / 2.0, opt_bounds.height),
+                        size: self.text_size,
+                        line_height,
+                        font: render_font,
+                        align_x: text::Alignment::Default,
+                        align_y: alignment::Vertical::Center,
+                        shaping: text::Shaping::default(),
+                        wrapping: text::Wrapping::None,
+                        ellipsis: text::Ellipsis::default(),
+                        hint_factor: None,
                     },
-                    style.selected_background,
+                    Point::new(
+                        opt_bounds.x + padding.left + indent_x,
+                        opt_bounds.y + opt_bounds.height * 0.5,
+                    ),
+                    text_color,
+                    text_clip,
                 );
             }
 
-            let text_color = if is_hovered {
-                style.selected_text_color
-            } else {
-                style.text_color
-            };
+            // ── scrollbar ───────────────────────────────────────────
+            if let Some(sbg) = scrollbar_geometry(bounds, total_height, scroll_offset) {
+                // Determine thumb visual state: highlighted when hovered or dragged.
+                let is_thumb_hovered = cursor_over_menu
+                    && cursor_pos
+                        .map(|p| sbg.thumb.contains(Point::new(p.x, p.y)))
+                        .unwrap_or(false);
+                let is_thumb_active = *self.is_dragging_scrollbar || is_thumb_hovered;
 
-            let render_font = if is_header_item {
-                self.header_font.unwrap_or(self.font)
-            } else {
-                self.font
-            };
+                let track_alpha = if is_thumb_active { 0.12 } else { 0.06 };
+                let thumb_alpha = if is_thumb_active { 0.35 } else { 0.2 };
 
-            let indent_x = if is_header_item {
-                0.0
-            } else {
-                self.item_indent
-            };
-
-            renderer.fill_text(
-                Text {
-                    content: option.to_string(),
-                    // Use a very large width so the text never wraps (the
-                    // fill_text pipeline ignores `wrapping`; clipping is
-                    // handled by the clip_bounds below).
-                    bounds: Size::new(f32::MAX / 2.0, opt_bounds.height),
-                    size: self.text_size,
-                    line_height: self.text_line_height,
-                    font: render_font,
-                    align_x: text::Alignment::Default,
-                    align_y: alignment::Vertical::Center,
-                    shaping: text::Shaping::default(),
-                    wrapping: text::Wrapping::None,
-                },
-                Point::new(
-                    opt_bounds.x + self.padding.left + indent_x,
-                    opt_bounds.y + opt_bounds.height * 0.5,
-                ),
-                text_color,
-                text_clip,
-            );
-        }
-
-        // ── scrollbar ───────────────────────────────────────────
-        if let Some(sbg) = scrollbar_geometry(bounds, total_height, scroll_offset) {
-            // Determine thumb visual state: highlighted when hovered or dragged.
-            let is_thumb_hovered = cursor_over_menu
-                && cursor_pos
-                    .map(|p| sbg.thumb.contains(Point::new(p.x, p.y)))
-                    .unwrap_or(false);
-            let is_thumb_active = *self.is_dragging_scrollbar || is_thumb_hovered;
-
-            let track_alpha = if is_thumb_active { 0.12 } else { 0.06 };
-            let thumb_alpha = if is_thumb_active { 0.35 } else { 0.2 };
-
-            // Track
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: sbg.track,
-                    border: border::rounded(SB_WIDTH / 2.0),
-                    ..renderer::Quad::default()
-                },
-                Background::Color(theme::color_text_strong().scale_alpha(track_alpha)),
-            );
-            // Thumb
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: sbg.thumb,
-                    border: border::rounded(SB_WIDTH / 2.0),
-                    ..renderer::Quad::default()
-                },
-                Background::Color(theme::color_text_strong().scale_alpha(thumb_alpha)),
-            );
-        }
+                // Track
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: sbg.track,
+                        border: border::rounded(SB_WIDTH / 2.0),
+                        ..renderer::Quad::default()
+                    },
+                    Background::Color(theme::color_text_strong().scale_alpha(track_alpha)),
+                );
+                // Thumb
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds: sbg.thumb,
+                        border: border::rounded(SB_WIDTH / 2.0),
+                        ..renderer::Quad::default()
+                    },
+                    Background::Color(theme::color_text_strong().scale_alpha(thumb_alpha)),
+                );
+            }
+        });
     }
 
-    fn mouse_interaction(
-        &self,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        _renderer: &Renderer,
-    ) -> mouse::Interaction {
-        let bounds = layout.bounds();
+    fn mouse_interaction(&self, cursor: mouse::Cursor, _renderer: &Renderer) -> mouse::Interaction {
+        let bounds = self.layout.bounds();
 
         if *self.is_dragging_scrollbar {
             return mouse::Interaction::Grabbing;
@@ -1209,22 +1126,5 @@ where
         } else {
             mouse::Interaction::default()
         }
-    }
-}
-
-// ── Element conversion ─────────────────────────────────────────────
-
-impl<'a, T, L, V, Message, Theme, Renderer> From<DropDown<'a, T, L, V, Message, Theme, Renderer>>
-    for Element<'a, Message, Theme, Renderer>
-where
-    T: ToString + PartialEq + Clone + 'a,
-    L: Borrow<[T]> + 'a,
-    V: Borrow<T> + 'a,
-    Message: Clone + 'a,
-    Theme: 'a,
-    Renderer: text::Renderer + 'a,
-{
-    fn from(dropdown: DropDown<'a, T, L, V, Message, Theme, Renderer>) -> Self {
-        Element::new(dropdown)
     }
 }

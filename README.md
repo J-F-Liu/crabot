@@ -82,20 +82,21 @@ To keep context lean, a few habits help:
 | `Ctrl+0`–`Ctrl+9`     | Switch to the Nth tab (`Ctrl+0` switches to the last tab)                              |
 | `Ctrl+F`              | Toggle the search bar                                                                  |
 | `Ctrl+E`              | Expand or collapse all dialogs                                                         |
+| `Ctrl+C`              | Copy the selected text                                                                 |
 | `Ctrl+Z` / `Ctrl+Y`   | Undo / redo in the prompt editor                                                       |
 | `Ctrl+=` / `Ctrl+-`   | Zoom the font in / out                                                                 |
 | `↑` / `↓`             | Scroll the message view; navigate the session list while the session picker is focused |
 | `Home` / `End`        | Scroll the message view to the top / bottom                                            |
 | `PageUp` / `PageDown` | Scroll the message view up / down by one page                                          |
 | `Space`               | Scroll the message view down by one page                                               |
-| `Esc`                 | Close the settings dialog or search bar, or exit selectable-text mode                  |
+| `Esc`                 | Close the settings dialog or search bar                                                |
 
 ### Mouse
 
-| Gesture                | Action                                                                                                                                                   |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Double-click a message | Toggle the message between rendered Markdown and plain selectable text (double-click again to switch back; `Esc` exits selectable mode for all messages) |
-| `Ctrl+Click` a link    | Open the link in your default browser                                                                                                                    |
+| Gesture                | Action                                                          |
+| ---------------------- | --------------------------------------------------------------- |
+| Drag across a message  | Select rendered Markdown or plain text (`Ctrl+C` copies it)     |
+| `Ctrl+Click` a link    | Open the link in your default browser                           |
 
 ### Prompt & inputs
 

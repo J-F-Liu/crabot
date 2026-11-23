@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use iced::{
-    Alignment, Element, Length, padding,
+    Alignment, Element, Length, Widget as _, padding,
     widget::{Space, button, checkbox, column, container, mouse_area, row, text, text::Wrapping},
 };
 
@@ -115,7 +115,7 @@ fn section_header<'a>(
         .align_y(Alignment::Center),
     )
     .on_press(ToolListEvent::ExpandSection(title))
-    .into()
+    .boxed()
 }
 
 /// A labelled section of tool checkboxes (e.g. "Builtin Tools", "Custom Tools").
@@ -128,16 +128,16 @@ pub(crate) fn tools_section<'a>(
     lang: crabot::i18n::Lang,
 ) -> Element<'a, ToolListEvent> {
     if names.is_empty() {
-        return column![].into();
+        return Space::new().width(0).height(0).boxed();
     }
 
     let header = section_header(title, expanded, lang);
     if expanded {
         column![header, tools_view(selected, names)]
             .spacing(4)
-            .into()
+            .boxed()
     } else {
-        column![header].into()
+        column![header].boxed()
     }
 }
 
@@ -160,7 +160,7 @@ fn checkbox_grid<'a>(cols: Vec<Element<'a, ToolListEvent>>) -> Element<'a, ToolL
     container(row(cols).spacing(12))
         .padding(padding::left(8))
         .width(Length::Fill)
-        .into()
+        .boxed()
 }
 
 pub(crate) fn tools_view<'a>(
@@ -188,7 +188,7 @@ pub(crate) fn mcp_tools_section<'a>(
 ) -> Element<'a, ToolListEvent> {
     let header = section_header(MCP_TOOLS, state.mcp_expanded, lang);
     if !state.mcp_expanded || (groups.is_empty() && errors.is_empty() && pending.is_empty()) {
-        return column![header].into();
+        return column![header].boxed();
     }
     let group_view = |server: &'a str, tools: Option<&'a [McpTool]>| {
         let status = ServerStatus {
@@ -215,7 +215,7 @@ pub(crate) fn mcp_tools_section<'a>(
         .collect();
     column![header, column(rows).spacing(4).padding(padding::left(4))]
         .spacing(4)
-        .into()
+        .boxed()
 }
 
 /// One MCP server's discovery status, annotated onto its checkbox label.
@@ -251,7 +251,7 @@ fn mcp_server_group_view<'a>(
         .align_y(Alignment::Center)
         .width(Length::Fill);
     let Some(tools) = tools.filter(|tools| !tools.is_empty()) else {
-        return header.into();
+        return header.boxed();
     };
     let expanded = state.mcp_server_expanded(server);
     let columns = state.mcp_columns_for(server);
@@ -266,13 +266,13 @@ fn mcp_server_group_view<'a>(
             lang,
         ))
         .push(icons::chevron_action(expanded, lang, toggle));
-    let header: Element<'a, ToolListEvent> = header.into();
+    let header: Element<'a, ToolListEvent> = header.boxed();
     if !expanded {
         return header;
     }
     column![header, mcp_tools_view(selected, tools, enabled, columns)]
         .spacing(4)
-        .into()
+        .boxed()
 }
 
 /// Small secondary action button; `on_press` is `None` when disabled.
@@ -284,7 +284,7 @@ fn action_button(
         .padding([2, 8])
         .style(crate::views::secondary_button)
         .on_press_maybe(on_press)
-        .into()
+        .boxed()
 }
 
 /// Bulk-select and grid-width buttons for one server's tools.
@@ -319,7 +319,7 @@ fn mcp_tool_buttons(
     ]
     .spacing(8)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 /// Server checkbox toggling an MCP server on/off.
@@ -331,7 +331,7 @@ fn server_checkbox(
     checkbox(enabled)
         .label(label)
         .style(crate::views::primary_checkbox)
-        .text_wrapping(Wrapping::Word)
+        .wrapping(Wrapping::Word)
         .on_toggle(move |v| ToolListEvent::ToggleMcpServer(server.to_string(), v))
 }
 
@@ -371,7 +371,7 @@ fn checkbox_grid_by<'a, T: Copy>(
             .map(|col| {
                 column(col.into_iter().map(&mut cell).collect::<Vec<_>>())
                     .spacing(4)
-                    .into()
+                    .boxed()
             })
             .collect(),
     )
@@ -388,9 +388,9 @@ fn checkbox_cell<'a>(
     let mut cb = checkbox(checked)
         .label(label)
         .style(crate::views::primary_checkbox)
-        .text_wrapping(Wrapping::None);
+        .wrapping(Wrapping::None);
     if enabled {
         cb = cb.on_toggle(move |v| ToolListEvent::ToggleAgentTool(name.to_string(), v));
     }
-    Element::from(cb)
+    cb.boxed()
 }

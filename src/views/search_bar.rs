@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use iced::Task;
 use iced::widget::Id;
 use iced::widget::{button, container, row, text, text_input};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Element, Length, Widget as _};
 
 use super::styles::{bordered_bar_style, icon_button_style};
 use super::theme::color_muted;
@@ -264,7 +264,7 @@ pub(crate) fn view<'a>(
     let label = if query.is_empty() {
         String::new()
     } else if total == 0 {
-        "0/0".into()
+        "0/0".to_string()
     } else {
         format!("{}/{}", current + 1, total)
     };
@@ -312,5 +312,5 @@ pub(crate) fn view<'a>(
     .width(Length::Fill)
     .padding([6, 10])
     .style(bordered_bar_style)
-    .into()
+    .boxed()
 }

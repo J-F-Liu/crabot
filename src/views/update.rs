@@ -1,12 +1,11 @@
-//! Version-check banner shown at the top of the window when a newer Crabot
-//! release is available on GitHub.
+//! Version-check banner for newer GitHub releases.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use iced::{
-    Alignment, Border, Element, Length, Theme,
+    Alignment, Border, Element, Length, Theme, Widget as _,
     widget::{Space, button, container, row, text},
 };
 use semver::Version;
@@ -252,12 +251,12 @@ pub(crate) fn update_banner(
         UpdateDownloadState::Idle => banner_button(
             lang.tr("Install New Version"),
             13.0,
-            OverlayEvent::InstallUpdate,
+            Some(OverlayEvent::InstallUpdate),
         ),
         UpdateDownloadState::Failed => banner_button(
             lang.tr("Download Failed"),
             13.0,
-            OverlayEvent::InstallUpdate,
+            Some(OverlayEvent::InstallUpdate),
         ),
         UpdateDownloadState::InProgress { downloaded, total } => {
             let prefix = lang.tr("⏳ Downloading…");
@@ -265,12 +264,12 @@ pub(crate) fn update_banner(
                 Some(pct) => format!("{prefix} {pct}%"),
                 None => format!("{prefix} {:.1} MB", *downloaded as f64 / 1_048_576.0),
             };
-            banner_button_disabled(label, 13.0)
+            banner_button(label, 13.0, None)
         }
         UpdateDownloadState::ReadyToRestart(_) => banner_button(
             lang.tr("Restart to Update"),
             13.0,
-            OverlayEvent::RestartFromUpdate,
+            Some(OverlayEvent::RestartFromUpdate),
         ),
     };
     container(
@@ -286,42 +285,39 @@ pub(crate) fn update_banner(
             banner_button(
                 lang.tr("View Release Notes"),
                 13.0,
-                OverlayEvent::OpenReleaseNotes
+                Some(OverlayEvent::OpenReleaseNotes),
             ),
             Space::new().width(8),
             action,
             Space::new().width(8),
-            banner_button("✕", 14.0, OverlayEvent::DismissUpdateBanner),
+            banner_button("✕", 14.0, Some(OverlayEvent::DismissUpdateBanner)),
         ]
         .align_y(Alignment::Center)
         .padding([4, 12]),
     )
     .width(Length::Fill)
     .style(update_banner_style)
-    .into()
+    .boxed()
 }
 
 fn banner_button(
-    label: &'static str,
+    label: impl Into<String>,
     size: f32,
-    on_press: OverlayEvent,
-) -> button::Button<'static, OverlayEvent> {
-    button(
-        text(label)
-            .size(size)
-            .color(super::theme::color_on_accent()),
-    )
-    .style(update_banner_link_style)
-    .on_press(on_press)
-}
-
-fn banner_button_disabled(label: String, size: f32) -> button::Button<'static, OverlayEvent> {
-    button(
-        text(label)
-            .size(size)
-            .color(super::theme::color_on_accent().scale_alpha(0.4)),
-    )
-    .style(update_banner_disabled_style)
+    on_press: Option<OverlayEvent>,
+) -> Element<'static, OverlayEvent> {
+    let color = if on_press.is_some() {
+        super::theme::color_on_accent()
+    } else {
+        super::theme::color_on_accent().scale_alpha(0.4)
+    };
+    let button = button(text(label.into()).size(size).color(color));
+    match on_press {
+        Some(event) => button
+            .style(update_banner_link_style)
+            .on_press(event)
+            .boxed(),
+        None => button.style(update_banner_disabled_style).boxed(),
+    }
 }
 
 fn update_banner_style(_theme: &Theme) -> container::Style {

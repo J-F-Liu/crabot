@@ -8,7 +8,6 @@ use iced::time;
 use iced::window;
 use iced::{Event, Point, Subscription};
 
-use crate::widgets::textarea;
 use crabot::settings::FONT_SCALE_STEP;
 use crabot::tools::process;
 
@@ -57,7 +56,9 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
                 .then_some(Message::Layout(LayoutEvent::CursorMoved(position)))
         }
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-            Some(Message::Layout(LayoutEvent::LeftPressed))
+            Some(Message::Layout(LayoutEvent::LeftPressed {
+                ignored: status == event::Status::Ignored,
+            }))
         }
         Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
             Some(Message::Layout(LayoutEvent::LeftReleased))
@@ -74,8 +75,7 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
         Event::Window(window::Event::Unfocused) => {
             Some(Message::Layout(LayoutEvent::WindowFocusChanged(false)))
         }
-        // Always handle Escape regardless of capture status so that
-        // selectable-text mode can be exited in a single keypress.
+        // Handle Escape even when captured so overlays close in one keypress.
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(keyboard::key::Named::Escape),
             ..
@@ -119,12 +119,6 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
             if modifiers.command() =>
         {
             match key.as_ref() {
-                keyboard::Key::Character("z") => Some(Message::Layout(LayoutEvent::UndoRedo(
-                    textarea::Message::Undo,
-                ))),
-                keyboard::Key::Character("y") => Some(Message::Layout(LayoutEvent::UndoRedo(
-                    textarea::Message::Redo,
-                ))),
                 keyboard::Key::Character("f") => Some(Message::Conversation(
                     ConversationEvent::SearchEvent(crate::views::SearchEvent::ToggleSearch),
                 )),

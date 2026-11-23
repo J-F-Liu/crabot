@@ -2,10 +2,9 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use iced::{
-    Alignment, Element, Fill, Font, Length, alignment, font, padding,
+    Alignment, Element, Fill, Font, Length, Widget, alignment, font, padding,
     widget::{Space, button, column, container, row, rule, scrollable, text, toggler},
 };
-use iced_selection::Text as SelectableText;
 
 use super::icons;
 use super::session_tabs::localize_tab_label;
@@ -73,16 +72,12 @@ const BOLD: Font = Font {
 
 /// `label` with a right-aligned trailing widget (used for token rows and Revert buttons).
 fn with_trailing<'a>(
-    label: impl Into<Element<'a, RightPaneEvent>>,
-    trailing: impl Into<Element<'a, RightPaneEvent>>,
+    label: impl Widget<RightPaneEvent, iced::Theme, iced::Renderer> + 'a,
+    trailing: impl Widget<RightPaneEvent, iced::Theme, iced::Renderer> + 'a,
 ) -> Element<'a, RightPaneEvent> {
-    row![
-        label.into(),
-        Space::new().width(Length::Fill),
-        trailing.into()
-    ]
-    .align_y(Alignment::Center)
-    .into()
+    row![label, Space::new().width(Length::Fill), trailing]
+        .align_y(Alignment::Center)
+        .boxed()
 }
 
 /// Label-value row with the value right-aligned via a fill spacer.
@@ -91,7 +86,7 @@ fn token_row<'a>(label: &'a str, value: String) -> Element<'a, RightPaneEvent> {
 }
 
 fn section_header(title: Cow<'static, str>) -> Element<'static, RightPaneEvent> {
-    text(title).size(14).font(BOLD).into()
+    text(title).size(14).font(BOLD).boxed()
 }
 
 /// Small text button used for the Revert / Revert All actions.
@@ -100,7 +95,7 @@ fn revert_button(label: &'static str, event: RightPaneEvent) -> Element<'static,
         .on_press(event)
         .style(secondary_button)
         .padding([2, 8])
-        .into()
+        .boxed()
 }
 
 /// Section header with a trailing expand/collapse chevron.
@@ -133,13 +128,14 @@ fn path_font(bold: bool) -> Font {
 /// Selectable row for a single file path.
 fn file_row<'a>(path: &'a str, bold: bool) -> Element<'a, RightPaneEvent> {
     container(
-        SelectableText::new(path)
+        text(path)
             .size(13)
             .font(path_font(bold))
-            .style(sel_primary),
+            .style(sel_primary)
+            .selectable(true),
     )
     .padding([1, 0])
-    .into()
+    .boxed()
 }
 
 /// Clickable path that opens the snapshot ↔ current diff in VS Code.
@@ -150,7 +146,7 @@ fn diff_row<'a>(path: &'a str, tip: &'static str, bold: bool) -> Element<'a, Rig
             .style(link_button)
             .width(Fill)
             .padding(padding::vertical(1).right(4))
-            .into(),
+            .boxed(),
         tip,
     )
 }
@@ -171,7 +167,7 @@ fn todo_section(todo_items: &[TodoItem], lang: Lang) -> Option<Element<'static, 
             };
             container(text(format!("{icon} {}", item.text)).size(14).color(color))
                 .padding(padding::left(indent as f32))
-                .into()
+                .boxed()
         })
         .collect();
     Some(
@@ -181,7 +177,7 @@ fn todo_section(todo_items: &[TodoItem], lang: Lang) -> Option<Element<'static, 
             column(rows).spacing(3),
         ]
         .spacing(8)
-        .into(),
+        .boxed(),
     )
 }
 
@@ -191,7 +187,7 @@ fn row_list<'a>(rows: Vec<Element<'a, RightPaneEvent>>) -> Element<'a, RightPane
         .direction(thin_horizontal())
         .width(Length::Fill)
         .spacing(2)
-        .into()
+        .boxed()
 }
 
 /// Running-processes rows: one per process tagged with its owning session.
@@ -213,7 +209,7 @@ fn process_section(
                     .font(MONO),
             )
             .padding([1, 0])
-            .into()
+            .boxed()
         })
         .collect();
     row_list(rows)
@@ -242,7 +238,7 @@ fn task_queue_section<'a>(
                 .align_y(Alignment::Center),
             )
             .padding([1, 0])
-            .into()
+            .boxed()
         })
         .collect();
     row_list(rows)
@@ -273,7 +269,7 @@ pub(crate) fn right_pane<'a>(
     let mut items: Vec<Element<'_, RightPaneEvent>> = Vec::new();
 
     // ── context window ──
-    items.push(rule::horizontal(1).into());
+    items.push(rule::horizontal(1).boxed());
     let cw = context_window.filter(|&cw| cw > 0);
     let expanded = sections.context_window;
     // Collapsed shows only the fill ratio; expanded shows the raw size.
@@ -311,7 +307,7 @@ pub(crate) fn right_pane<'a>(
     }
 
     // ── cumulative token usage and cost ──
-    items.push(rule::horizontal(1).into());
+    items.push(rule::horizontal(1).boxed());
     let expanded = sections.token_usage;
     items.push(collapsible_header(
         if expanded {
@@ -350,7 +346,7 @@ pub(crate) fn right_pane<'a>(
             lang.tr("Session cost:"),
             session.formatted_cost(),
         ));
-        items.push(rule::horizontal(1).into());
+        items.push(rule::horizontal(1).boxed());
         items.push(token_row(
             lang.tr("Num Requests:"),
             session.requests.to_string(),
@@ -371,7 +367,7 @@ pub(crate) fn right_pane<'a>(
     // ── running processes ──
     if !processes.is_empty() {
         let expanded = sections.processes;
-        items.push(rule::horizontal(1).into());
+        items.push(rule::horizontal(1).boxed());
         items.push(collapsible_header(
             if expanded {
                 Cow::Borrowed(lang.tr("Running Processes"))
@@ -403,7 +399,7 @@ pub(crate) fn right_pane<'a>(
                     .replace("{}", &task_queue.len().to_string()),
             )
         };
-        items.push(rule::horizontal(1).into());
+        items.push(rule::horizontal(1).boxed());
         items.push(collapsible_header(
             header,
             expanded,
@@ -418,7 +414,7 @@ pub(crate) fn right_pane<'a>(
     // ── accessed files ──
     if !session.accessed.files.is_empty() {
         let expanded = sections.accessed_files;
-        items.push(rule::horizontal(1).into());
+        items.push(rule::horizontal(1).boxed());
         items.push(collapsible_header(
             Cow::Borrowed(lang.tr("Accessed Files")),
             expanded,
@@ -432,14 +428,14 @@ pub(crate) fn right_pane<'a>(
                 .iter()
                 .map(|p| file_row(p, session.accessed_this_round(p)))
                 .collect();
-            items.push(column(files).spacing(2).into());
+            items.push(column(files).spacing(2).boxed());
         }
     }
 
     // ── modified files ──
     if !session.modified.files.is_empty() {
         let expanded = sections.modified_files;
-        items.push(rule::horizontal(1).into());
+        items.push(rule::horizontal(1).boxed());
         // Revert All is available only when snapshots exist and the session is
         // idle; then the list is always shown expanded.
         let show_revert_all = !tab.snapshot_files.is_empty() && !tab.running();
@@ -473,13 +469,13 @@ pub(crate) fn right_pane<'a>(
                             revert_button(lang.tr("Revert"), RightPaneEvent::RevertFile(p.clone())),
                         ]
                         .align_y(Alignment::Center)
-                        .into()
+                        .boxed()
                     } else {
                         path_row
                     }
                 })
                 .collect();
-            items.push(column(files).spacing(2).into());
+            items.push(column(files).spacing(2).boxed());
         }
         if let Some(err) = &tab.modified_files_error {
             items.push(
@@ -488,7 +484,7 @@ pub(crate) fn right_pane<'a>(
                     revert_button("\u{00d7}", RightPaneEvent::DismissRevertError),
                 ))
                 .padding(padding::top(2))
-                .into(),
+                .boxed(),
             );
         }
     }
@@ -510,7 +506,7 @@ pub(crate) fn right_pane<'a>(
                 .size(14),
         ]
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
     }
     let toggles = row![
         toggle_group(
@@ -527,7 +523,7 @@ pub(crate) fn right_pane<'a>(
     ]
     .align_y(Alignment::Center)
     .padding(padding::top(12).right(16).left(16));
-    let mut header = column![toggles].spacing(4);
+    let mut header: iced::widget::Column<Element<'a, RightPaneEvent>> = column![toggles].spacing(4);
     if acp.enabled {
         let (status, color) = if acp.stdio {
             // Host-spawned transport — no HTTP address to show.
@@ -540,7 +536,9 @@ pub(crate) fn right_pane<'a>(
             }
         };
         header = header.push(
-            container(text(status).size(12).color(color)).padding(padding::left(16).right(16)),
+            container(text(status).size(12).color(color))
+                .padding(padding::left(16).right(16))
+                .boxed(),
         );
     }
 
@@ -558,11 +556,11 @@ pub(crate) fn right_pane<'a>(
         scrollable(container(col.padding(padding::all(20).left(16).top(8))))
             .direction(thin_vertical())
             .height(Fill)
-            .into();
+            .boxed();
 
     container(column![header, body, footer])
         .width(Length::Fixed(pane_width))
         .height(Fill)
         .style(pane_side)
-        .into()
+        .boxed()
 }

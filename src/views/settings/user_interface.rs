@@ -1,7 +1,7 @@
 //! User Interface page: language, appearance, font scale, and renderer backend.
 
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Element, Length, Widget,
     widget::{column, container, row, text},
 };
 
@@ -24,24 +24,24 @@ pub(super) fn user_interface_page<'a>(state: &'a SettingsState) -> Element<'a, S
         renderer_backend_card(state),
     ]
     .spacing(8)
-    .into()
+    .boxed()
 }
 
 /// Titled settings card: muted bold title over the given body.
 fn card<'a>(
     title: &'static str,
-    body: impl Into<Element<'a, SettingsEvent>>,
+    body: impl Widget<SettingsEvent, iced::Theme, iced::Renderer> + 'a,
 ) -> Element<'a, SettingsEvent> {
-    container(column![section_title(title), body.into()].spacing(6))
+    container(column![section_title(title), body].spacing(6))
         .padding([6, 12])
         .style(form_card_style)
         .width(Length::Fill)
-        .into()
+        .boxed()
 }
 
 /// Muted hint line shown beneath a card's controls.
 fn hint(label: &str) -> Element<'_, SettingsEvent> {
-    text(label).size(11).color(color_muted()).into()
+    text(label).size(11).color(color_muted()).boxed()
 }
 
 /// Dropdown entry: the label shown to the user plus the value it selects.
@@ -70,7 +70,7 @@ where
         .width(Length::Fixed(220.0))
         .text_size(13)
         .style(secondary_dropdown_style)
-        .into()
+        .boxed()
 }
 
 /// Language picker card.
@@ -161,12 +161,9 @@ fn font_scale_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
     )
 }
 
-/// Renderer-backend presets as `(label, ICED_BACKEND value)`.
-const BACKEND_PRESETS: [(&str, &str); 3] = [
-    ("Auto", "auto"),
-    ("Tiny Skia", "tiny_skia"),
-    ("Wgpu", "wgpu"),
-];
+/// Renderer-backend presets as `(label, stored value)`.
+const BACKEND_PRESETS: [(&str, &str); 3] =
+    [("Auto", "auto"), ("Wgpu", "wgpu"), ("Software", "software")];
 
 /// Renderer-backend picker card; takes effect after a restart.
 fn renderer_backend_card<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {

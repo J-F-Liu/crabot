@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use iced::{
-    Border, Element, Font, Length, Theme, font,
+    Border, Element, Font, Length, Theme, Widget, font,
     widget::{Space, button, column, container, mouse_area, row, rule, stack, text},
 };
 
@@ -27,8 +27,8 @@ const DELETE_TITLE_CHARS: usize = 40;
 fn modal<'a>(
     dismiss: OverlayEvent,
     title: &'a str,
-    body: impl Into<Element<'a, OverlayEvent>>,
-    buttons: impl Into<Element<'a, OverlayEvent>>,
+    body: impl Widget<OverlayEvent, Theme, iced::Renderer> + 'a,
+    buttons: impl Widget<OverlayEvent, Theme, iced::Renderer> + 'a,
 ) -> Element<'a, OverlayEvent> {
     let backdrop = mouse_area(
         container(Space::new().width(Length::Fill).height(Length::Fill))
@@ -51,8 +51,8 @@ fn modal<'a>(
                 radius: 0.0.into(),
                 snap: false,
             }),
-            body.into(),
-            buttons.into(),
+            body,
+            buttons,
         ]
         .spacing(10)
         .padding(20)
@@ -63,7 +63,7 @@ fn modal<'a>(
         border: Border::default().rounded(CRABOT_DIALOG_RADIUS),
         ..container::Style::default()
     })
-    .max_width(400);
+    .width(Length::Fit.max(400));
 
     stack![
         backdrop,
@@ -73,7 +73,7 @@ fn modal<'a>(
             .center_x(Length::Fill)
             .center_y(Length::Fill),
     ]
-    .into()
+    .boxed()
 }
 
 pub fn workspace_modal(default_path: &Path, lang: Lang) -> Element<'_, OverlayEvent> {
@@ -153,7 +153,7 @@ fn danger_cancel_buttons(
     ]
     .spacing(20)
     .padding(10)
-    .into()
+    .boxed()
 }
 
 /// Ask whether a stopped sub-agent reports its cancellation to the parent.
@@ -197,5 +197,5 @@ fn yes_no_buttons(
     ]
     .spacing(20)
     .padding(10)
-    .into()
+    .boxed()
 }

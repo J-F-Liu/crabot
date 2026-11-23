@@ -185,7 +185,7 @@ fn live_processes() -> Vec<LiveProcess> {
 }
 
 /// Parse one `/proc/<pid>/stat` line; `comm` may contain spaces and parentheses, so fields follow the last ')'.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn parse_stat(pid: u32, stat: &str) -> Option<LiveProcess> {
     let mut fields = stat
         .rfind(')')

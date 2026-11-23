@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
+use iced::widget::text::Style as SelectionStyle;
 use iced::{
-    Alignment, Border, Color, Element, Fill, Font, Theme, font, padding,
+    Alignment, Border, Color, Element, Fill, Font, Theme, Widget as _, font, padding,
     widget::text::{IntoFragment, Span},
     widget::{Space, column, container, rich_text, row, span, text, text::Wrapping},
 };
-use iced_selection::text::Style as SelectionStyle;
 
 use super::ASK_INPUT;
 use super::styles::{primary_button, secondary_button};
@@ -51,13 +51,13 @@ fn tool_result_box(background: Color, border: Color) -> impl Fn(&Theme) -> conta
 
 /// Shared container style for ask tool views (active and completed).
 fn ask_tool_container<'a>(
-    content: impl Into<Element<'a, ConversationEvent>>,
+    content: impl iced::Widget<ConversationEvent, iced::Theme, iced::Renderer> + 'a,
 ) -> Element<'a, ConversationEvent> {
-    container(content.into())
+    container(content)
         .padding([10, 14])
         .style(tool_content_box)
         .width(Fill)
-        .into()
+        .boxed()
 }
 
 /// Render a list of options with checkmarks.
@@ -80,30 +80,30 @@ fn ask_option_list<'a>(
                     .on_press(ConversationEvent::AskAction(AskAction::OptionSelected(
                         option.to_owned(),
                     )))
-                    .into()
+                    .boxed()
             } else {
                 selectable(option, "")
                     .size(13.0 * font_scale)
                     .style(sel_default)
-                    .into()
+                    .boxed()
             };
             row![
                 text(check).width(16.0 * font_scale).size(13.0 * font_scale),
                 label,
             ]
             .align_y(Alignment::Center)
-            .into()
+            .boxed()
         })
         .collect()
 }
 
 /// Free-text answer input shared by both ask layouts.
 fn ask_answer_input(input: &str, lang: Lang) -> Element<'static, ConversationEvent> {
-    text_input(lang.tr("Type your answer…"), input)
+    text_input(lang.tr("Type your answer…"), input.to_string())
         .id(ASK_INPUT.clone())
         .on_input(ConversationEvent::AskInputChanged)
         .on_submit_maybe((!input.is_empty()).then_some(ConversationEvent::AskAction(AskAction::Ok)))
-        .into()
+        .boxed()
 }
 
 /// Interactive response controls for the builtin ask tool.
@@ -136,7 +136,7 @@ pub(crate) fn ask_view<'a>(
     ]
     .spacing(8)
     .align_y(Alignment::Center)
-    .into();
+    .boxed();
     let header = row![
         text(lang.tr("🤖 LLM asks:"))
             .size(13.0)
@@ -145,7 +145,7 @@ pub(crate) fn ask_view<'a>(
         countdown
     ];
     let question: Element<'a, ConversationEvent> =
-        selectable(&request.question, "").style(sel_default).into();
+        selectable(&request.question, "").style(sel_default).boxed();
     let enter_answer = button(text(lang.tr("Enter my answer")))
         .style(secondary_button)
         .on_press(ConversationEvent::AskAction(AskAction::EnterAnswer));
@@ -158,7 +158,7 @@ pub(crate) fn ask_view<'a>(
     let controls: Element<'a, ConversationEvent> = if request.options.is_empty() {
         row![ask_answer_input(input, lang), ok, you_decide]
             .spacing(8)
-            .into()
+            .boxed()
     } else {
         let mut options_col = column(ask_option_list(
             request.options.iter().map(String::as_str),
@@ -173,7 +173,7 @@ pub(crate) fn ask_view<'a>(
         let action_row = row![ok, enter_answer, you_decide]
             .spacing(8)
             .padding([4, 16]);
-        column![options_col, action_row].spacing(8).into()
+        column![options_col, action_row].spacing(8).boxed()
     };
     ask_tool_container(column![header, question, controls].spacing(8))
 }
@@ -203,7 +203,7 @@ pub(crate) fn ask_result_view<'a>(
     };
 
     let question_text: Element<'a, ConversationEvent> =
-        selectable(question, "").style(sel_default).into();
+        selectable(question, "").style(sel_default).boxed();
 
     let answer_label = lang.tr(if is_ok { "Answer" } else { "Error" });
     let answer_color = if is_ok {
@@ -212,7 +212,7 @@ pub(crate) fn ask_result_view<'a>(
         color_danger_text()
     };
 
-    let mut answer_col = column![];
+    let mut answer_col: iced::widget::Column<Element<'a, ConversationEvent>> = column![];
 
     if !options.is_empty() {
         let matched = options.contains(&answer);
@@ -224,9 +224,10 @@ pub(crate) fn ask_result_view<'a>(
                     text(format!("{answer_label}:"))
                         .size(12.0 * font_scale)
                         .color(answer_color)
-                        .font(bold_font()),
+                        .font(bold_font())
+                        .boxed(),
                 )
-                .push(column(option_rows).spacing(2));
+                .push(column(option_rows).spacing(2).boxed());
         } else {
             // When the answer doesn't match any option (e.g. the user skipped),
             // show the actual answer text so it isn't lost.
@@ -235,9 +236,10 @@ pub(crate) fn ask_result_view<'a>(
                     text(lang.tr("Options:"))
                         .size(12.0 * font_scale)
                         .color(answer_color)
-                        .font(bold_font()),
+                        .font(bold_font())
+                        .boxed(),
                 )
-                .push(column(option_rows).spacing(2))
+                .push(column(option_rows).spacing(2).boxed())
                 .push(
                     row![
                         text(format!("{answer_label}: "))
@@ -249,14 +251,15 @@ pub(crate) fn ask_result_view<'a>(
                             .style(sel_default),
                     ]
                     .spacing(4)
-                    .padding(padding::top(4)),
+                    .padding(padding::top(4))
+                    .boxed(),
                 );
         }
     } else {
         let answer_element: Element<'a, ConversationEvent> = selectable(answer, "")
             .size(13.0 * font_scale)
             .style(sel_default)
-            .into();
+            .boxed();
         answer_col = answer_col.push(
             row![
                 text(format!("{answer_label}: "))
@@ -265,7 +268,8 @@ pub(crate) fn ask_result_view<'a>(
                     .font(bold_font()),
                 answer_element,
             ]
-            .spacing(4),
+            .spacing(4)
+            .boxed(),
         );
     }
 
@@ -276,10 +280,7 @@ pub(crate) fn ask_result_view<'a>(
 ///
 /// A `&str`/`&String` is borrowed, an owned `String` moves in: the only copy
 /// left is splitting an owned fragment whose match needs slicing.
-fn highlighted_spans<'a>(
-    content: impl IntoFragment<'a>,
-    query: &str,
-) -> Vec<Span<'a, (), iced::Font>> {
+fn highlighted_spans<'a>(content: impl IntoFragment<'a>, query: &str) -> Vec<Span<'a>> {
     let content = content.into_fragment();
 
     if query.trim().is_empty() {
@@ -310,9 +311,8 @@ fn highlighted_spans<'a>(
     }
 }
 
-/// Build the span list for byte `ranges` inside `text`, highlighting each match;
-/// every fragment is a slice of `text`.
-fn split_spans<'a>(text: &'a str, ranges: &[Range<usize>]) -> Vec<Span<'a, (), iced::Font>> {
+/// Split `text` at `ranges`, highlighting each match; every span borrows `text`.
+fn split_spans<'a>(text: &'a str, ranges: &[Range<usize>]) -> Vec<Span<'a>> {
     let mut spans = Vec::with_capacity(ranges.len() * 2 + 1);
     let mut last_end = 0;
 
@@ -341,18 +341,16 @@ pub(super) fn highlighted_text<'a, M: Clone + 'static>(
     rich_text(highlighted_spans(content, query))
         .size(size)
         .font(font)
-        .into()
+        .boxed()
 }
 
-/// Selectable rich text, `query` matches highlighted (an empty query renders the
-/// content plain); returns the widget so callers chain `.size()`, `.font()`,
-/// `.style()`.
-/// Use rich_text instead of `iced_selection::Text` so `\t` stays a tab stop, not a `.notdef` box.
+/// Selectable rich text with `query` matches highlighted.
+/// Uses `rich_text` so tabs stay tab stops rather than `.notdef` boxes.
 pub(super) fn selectable<'a, M: Clone + 'static>(
     content: impl IntoFragment<'a>,
     query: &str,
-) -> iced_selection::text::Rich<'a, (), M, iced::Theme, iced::Renderer> {
-    iced_selection::rich_text(highlighted_spans(content, query))
+) -> iced::widget::text::Rich<'a, (), M> {
+    rich_text(highlighted_spans(content, query)).selectable(true)
 }
 
 /// Small monospace selectable text for tool arguments, `query` matches highlighted.
@@ -366,7 +364,7 @@ fn mono_selectable<'a, M: Clone + 'static>(
         .size(12.0 * font_scale)
         .font(mono_font())
         .style(style)
-        .into()
+        .boxed()
 }
 
 /// Monospace font stack for paths and code snippets.
@@ -420,7 +418,7 @@ fn diff_row<'a, M: Clone + 'static>(
         },
         ..container::Style::default()
     })
-    .into()
+    .boxed()
 }
 
 /// A plain `key: value` argument row.
@@ -439,7 +437,7 @@ fn arg_row<'a, M: Clone + 'static>(
         mono_selectable(value, search_query, font_scale, sel_default),
     ]
     .spacing(0)
-    .into()
+    .boxed()
 }
 
 /// Embedded table for the `edits` argument — each edit becomes a labelled block.
@@ -474,7 +472,7 @@ fn edits_table<M: Clone + 'static>(
                     .color(color_muted()),
             )
             .padding([2, 0])
-            .into();
+            .boxed();
 
             match edit {
                 EditRow::Edit { old_text, new_text } => vec![
@@ -517,7 +515,7 @@ fn edits_table<M: Clone + 'static>(
     column![header.width(Fill), column(rows).spacing(4).width(Fill)]
         .spacing(6)
         .width(Fill)
-        .into()
+        .boxed()
 }
 
 /// Status colours for todo items.
@@ -550,7 +548,7 @@ fn todo_row<'a, M: Clone + 'static>(
         .padding(2),
     ]
     .spacing(8)
-    .into()
+    .boxed()
 }
 
 fn todo_item_row<M: Clone + 'static>(
@@ -597,7 +595,7 @@ fn todo_table<M: Clone + 'static>(
     ]
     .spacing(8);
 
-    let mut elements: Vec<Element<'static, M>> = vec![col_header.into()];
+    let mut elements: Vec<Element<'static, M>> = vec![col_header.boxed()];
     for (index, item) in items.into_iter().enumerate() {
         if index > 0 {
             elements.push(
@@ -606,7 +604,7 @@ fn todo_table<M: Clone + 'static>(
                         background: Some(color_tool_content_border().into()),
                         ..container::Style::default()
                     })
-                    .into(),
+                    .boxed(),
             );
         }
         elements.push(todo_item_row(item, font_scale, search_query, lang));
@@ -616,7 +614,7 @@ fn todo_table<M: Clone + 'static>(
         .padding(4)
         .style(|_theme: &Theme| tool_box_style(None, color_tool_content_border(), 4.0))
         .width(Fill)
-        .into()
+        .boxed()
 }
 
 /// Render [`tool_view`] argument rows as elements for the live view.
@@ -664,7 +662,7 @@ fn offset_limit_row<M: Clone + 'static>(
     ))
     .padding([4, 8])
     .style(tool_content_box)
-    .into()
+    .boxed()
 }
 
 /// Live-render window; the final result replaces this view on finish.
@@ -686,11 +684,12 @@ pub(super) fn streaming_result_text<'a, M: Clone + 'static>(
     lang: Lang,
 ) -> Element<'a, M> {
     let (shown, skipped) = tail_window(buffer, STREAMING_RENDER_WINDOW);
-    let mut body = column![
+    let mut body: iced::widget::Column<Element<'a, M>> = column![
         text(lang.tr("Running…"))
             .size(11.0 * font_scale)
             .color(color_tool_accent())
             .font(bold_font())
+            .boxed()
     ]
     .spacing(4)
     .width(Fill);
@@ -702,17 +701,23 @@ pub(super) fn streaming_result_text<'a, M: Clone + 'static>(
             )
             .size(11.0 * font_scale)
             .color(color_muted())
-            .font(mono_font()),
+            .font(mono_font())
+            .boxed(),
         );
     }
-    body = body.push(text(shown).size(13.0 * font_scale).font(mono_font()));
+    body = body.push(
+        text(shown)
+            .size(13.0 * font_scale)
+            .font(mono_font())
+            .boxed(),
+    );
     container(body)
         .padding([8, 10])
         .style(tool_result_box(
             color_tool_content_bg(),
             color_tool_content_border(),
         ))
-        .into()
+        .boxed()
 }
 
 /// Tool result text (success or error).
@@ -748,9 +753,9 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
         .font(mono_font())
         .style(move |_theme: &Theme| SelectionStyle {
             color: Some(color_text_strong()),
-            selection: accent,
+            selection: Some(accent),
         })
-        .into();
+        .boxed();
 
     container(
         column![
@@ -765,5 +770,5 @@ pub(super) fn result_text<'a, M: Clone + 'static>(
     )
     .padding([8, 10])
     .style(tool_result_box(fill, border))
-    .into()
+    .boxed()
 }

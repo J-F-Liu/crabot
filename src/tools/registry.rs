@@ -151,13 +151,6 @@ impl ToolRegistry {
             .unwrap_or_default()
     }
 
-    /// Clear all todo items.
-    pub fn clear_todo(&self) {
-        if let Ok(mut items) = self.todo_items.lock() {
-            items.clear();
-        }
-    }
-
     /// Collect every tool whose name appears in `enabled`.
     /// MCP tools are further filtered by `enabled_servers` (server name must be present).
     pub fn enabled_tools(

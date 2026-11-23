@@ -32,18 +32,21 @@ tokio = { version = "1", features = [
     "process",
     "io-util",
 ] }
-# `image` would also pull iced's codec set (AV1/TIFF/EXR/...); our own `image`
-# dependency below enables exactly the formats this app decodes.
-iced = { version = "0.14.0", features = [
+iced = { git = "https://github.com/iced-rs/iced", rev = "98bd48fe011efc0ec5819fee0fa7673a7169ff11", default-features = false, features = [
     "advanced",
     "tokio",
     "highlighter",
     "markdown",
     "image-without-codecs",
     "svg",
+    "wgpu",
+    "vello-cpu",
+    "vello-cpu-multithreading",
+    "crisp",
+    "web-colors",
 ] }
-iced_runtime = "0.14.0"
-iced_selection = "0.5.0"
+# `image` would also pull iced's codec set (AV1/TIFF/EXR/...); our own `image`
+# dependency below enables exactly the formats this app decodes.
 indexmap = { version = "2.14.0", features = ["serde"] }
 regex = "1.12.4"
 
@@ -51,8 +54,6 @@ ignore = "0.4.26"
 dunce = "1"
 gh-emoji = "1.0.8"
 ron = "0.12.2"
-fontdb = "0.23"
-iced_aw = { version = "0.14.1", features = ["tab_bar"] }
 tinytemplate = "1.2.1"
 shell-words = "1.1.1"
 pulldown-cmark = "0.12"
@@ -138,18 +139,6 @@ anstyle-parse = { version = "1.0.0", default-features = false }
 base64 = "0.23.1"
 # Screen capture for the `screenshot` tool; Linux builds need the PipeWire/XCB dev libs.
 xcap = "0.9.8"
-# Clipboard image reading for prompt paste.
-arboard = { version = "3.7.0", default-features = false, features = [
-    "image-data",
-] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# Read clipboard images on pure Wayland too; arboard falls back to X11 when the
-# compositor does not expose the data-control protocol.
-arboard = { version = "3.7.0", default-features = false, features = [
-    "image-data",
-    "wayland-data-control",
-] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -164,6 +153,16 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_Foundation",
     "Win32_Security",
+] }
+
+# X11/Wayland windowing and Linux theme detection only matter on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+iced = { git = "https://github.com/iced-rs/iced", rev = "98bd48fe011efc0ec5819fee0fa7673a7169ff11", default-features = false, features = [
+    "x11",
+    "wayland",
+    "wayland-dlopen",
+    "wayland-decorations",
+    "linux-theme-detection",
 ] }
 
 [build-dependencies]

@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 
 use iced::{
-    Alignment, Element, Length, padding,
+    Alignment, Element, Length, Widget as _, padding,
     widget::{Space, button, column, image, row, scrollable, text, toggler},
 };
 
@@ -139,7 +139,7 @@ pub(crate) fn about_page<'a>(state: &'a super::SettingsState) -> Element<'a, Set
     )
     .width(Length::Fill)
     .height(Length::Fill)
-    .into()
+    .boxed()
 }
 
 /// Link button style: muted by default, primary color on hover.

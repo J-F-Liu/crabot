@@ -13,7 +13,7 @@ use crate::widgets::textarea::TextArea;
 use crabot::i18n::Lang;
 use crabot::tools::custom::{CustomTool, ParameterType, ToolParameter};
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Element, Length, Widget as _,
     widget::{button, checkbox, column, container, row, text, text_input},
 };
 
@@ -86,7 +86,7 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Set
                 )
             })
             .collect();
-        column(cards).spacing(8).into()
+        column(cards).spacing(8).boxed()
     };
 
     let action_row = super::save_action_row(
@@ -95,7 +95,7 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Set
         SettingsEvent::CustomTools(CustomToolsEvent::SaveTools),
     );
 
-    column![header, body, action_row].spacing(12).into()
+    column![header, body, action_row].spacing(12).boxed()
 }
 
 // ── Tool card ─────────────────────────────────────────────────────
@@ -146,7 +146,7 @@ fn tool_card<'a>(
     .padding([10, 12])
     .style(form_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 // ── Edit form ─────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ fn tool_form<'a>(
         .color(color_muted()),
     ]
     .spacing(8)
-    .into()
+    .boxed()
 }
 
 // ── Parameters ────────────────────────────────────────────────────
@@ -303,7 +303,7 @@ fn param_card<'a>(
     .padding(8)
     .style(sub_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 // ── Kind helpers ──────────────────────────────────────────────────

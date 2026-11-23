@@ -1,16 +1,9 @@
 use iced::{
-    Alignment, Element, Fill, Length, Padding, padding,
+    Alignment, Element, Fill, Length, Padding, Widget, padding,
     widget::{button, checkbox, column, container, row, scrollable, text, text::Wrapping},
 };
 
-use crate::views::theme::{
-    color_accent, color_accent_hover, color_border, color_muted, color_on_accent, color_surface,
-    color_text_strong,
-};
-use iced_aw::{
-    style::{status::Status, tab_bar::Style as TabBarStyle},
-    widget::tab_bar::{TabBar, TabLabel},
-};
+use crate::views::theme::color_muted;
 
 use super::styles::{
     attachment_chip_style, icon_button_style, menu_container_style, menu_item_style,
@@ -41,30 +34,13 @@ pub(crate) fn user_prompt_view<'a>(
     // Blank input sends nothing, so the button shows that instead of failing silently.
     let can_send = !user_prompt.is_blank() || !attachments.is_empty();
 
-    let mut tab_bar_builder = TabBar::new(PromptEvent::SelectWorkMode);
-    for mode in WorkMode::all() {
-        tab_bar_builder = tab_bar_builder.push(*mode, TabLabel::Text(mode.label(lang).to_string()));
-    }
-    let tab_bar: Element<'_, PromptEvent> = tab_bar_builder
-        .set_active_tab(&workmode)
-        .tab_width(Length::Shrink)
-        .width(Length::Shrink)
-        .text_size(13.0)
-        .padding([0, 8])
-        .style(|_theme: &iced::Theme, status| TabBarStyle {
-            tab_label_background: match status {
-                Status::Active => iced::Background::Color(color_accent()),
-                Status::Hovered => iced::Background::Color(color_accent_hover()),
-                _ => iced::Background::Color(color_surface()),
-            },
-            tab_label_border_color: color_border(),
-            text_color: match status {
-                Status::Active => color_on_accent(),
-                _ => color_text_strong(),
-            },
-            ..Default::default()
-        })
-        .into();
+    let tab_bar = crate::views::tab_bar(WorkMode::all().iter().map(|mode| {
+        (
+            mode.label(lang).to_string(),
+            *mode == workmode,
+            PromptEvent::SelectWorkMode(*mode),
+        )
+    }));
 
     // ── Recipe dropdown ──────────────────────────────────────────
     let overlay: Element<'_, PromptEvent> = container(
@@ -75,14 +51,14 @@ pub(crate) fn user_prompt_view<'a>(
                     .padding([4, 10])
                     .width(Length::Fill)
                     .style(menu_item_style)
-                    .into()
+                    .boxed()
             }))
             .padding([4, 0]),
         )
         .height(Length::Fill),
     )
     .style(menu_container_style)
-    .into();
+    .boxed();
 
     let recipe_dropdown = dropdown(
         lang.tr("Recipes ▾"),
@@ -111,7 +87,7 @@ pub(crate) fn user_prompt_view<'a>(
         .padding([4, 0]),
     )
     .style(menu_container_style)
-    .into();
+    .boxed();
 
     let attachment_dropdown = dropdown(
         lang.tr("Attachment ▾"),
@@ -130,7 +106,7 @@ pub(crate) fn user_prompt_view<'a>(
                 .width(Length::Fill)
                 .on_toggle(PromptEvent::ToggleWorkMode)
                 .style(crate::views::primary_checkbox)
-                .text_wrapping(Wrapping::None),
+                .wrapping(Wrapping::None),
             tab_bar,
         ]
         .spacing(8)
@@ -158,11 +134,12 @@ pub(crate) fn user_prompt_view<'a>(
                     .style(crate::views::primary_button),
             ]
             .spacing(8)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Center)
+            .boxed(),
         )
         .spacing(4)
         .padding(padding::bottom(4))
-        .into()
+        .boxed()
 }
 
 /// A labeled button that opens a fixed-width popup menu of items.
@@ -184,7 +161,7 @@ fn dropdown<'a>(
         .height(height)
         .gap(2.0)
         .on_dismiss(on_dismiss)
-        .into()
+        .boxed()
 }
 
 /// One horizontally scrollable row of selected-file chips below the textarea.
@@ -207,7 +184,7 @@ fn attachment_row<'a>(attachments: &'a [UserAttachment]) -> Element<'a, PromptEv
         )
         .padding([2, 6])
         .style(attachment_chip_style)
-        .into();
+        .boxed();
         chips = chips.push(chip);
     }
 
@@ -217,7 +194,7 @@ fn attachment_row<'a>(attachments: &'a [UserAttachment]) -> Element<'a, PromptEv
         ))
         .width(Fill)
         .height(Length::Fixed(30.0))
-        .into()
+        .boxed()
 }
 
 // ── Workspace tree view ──────────────────────────────────────────
@@ -242,8 +219,9 @@ fn files_field_view<'a>(
             .size(12)
             .style(|_| text::Style {
                 color: Some(color_muted()),
+                selection: None,
             })
-            .into()
+            .boxed()
         } else {
             scrollable(
                 container(
@@ -258,13 +236,13 @@ fn files_field_view<'a>(
                 horizontal: Scrollbar::new().width(4).scroller_width(4),
             })
             .height(Length::Fixed(200.0))
-            .into()
+            .boxed()
         };
         column![header, body]
             .spacing(4)
             .padding(Padding::new(0.0).top(4.0))
             .width(Fill)
-            .into()
+            .boxed()
     } else {
         header
     }

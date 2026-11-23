@@ -1,27 +1,23 @@
-//! A text-area widget wrapping `iced::widget::text_editor` with undo/redo support.
-
-use iced::advanced::text::highlighter::PlainText;
-use iced::widget::text_editor;
-use iced::widget::text_editor::TextEditor;
+//! Multi-line text input with bounded, coalescing undo/redo history.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use iced::advanced::text::parser::PlainText;
+use iced::widget::text_editor;
+use iced::widget::text_editor::TextEditor;
+
 /// Messages that the `TextArea` component can process.
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// An edit action from the text editor (insert, delete, paste, etc.).
+    /// An edit action from the text editor (insert, delete, paste, …).
     Edit(text_editor::Action),
-    /// Undo the last edit.
-    Undo,
-    /// Redo the last undone edit.
-    Redo,
 }
 
 impl Message {
     /// Returns `true` if this message originates from a mouse click.
     pub fn is_click(&self) -> bool {
-        matches!(self, Self::Edit(text_editor::Action::Click(_)))
+        matches!(self, Self::Edit(text_editor::Action::Click(..)))
     }
 
     /// Returns `true` if this message is an Enter edit (newline insertion).
@@ -64,8 +60,12 @@ impl EditKind {
     fn of(edit: &text_editor::Edit) -> Self {
         match edit {
             text_editor::Edit::Insert(_) => Self::Insert,
-            text_editor::Edit::Backspace => Self::Backspace,
-            text_editor::Edit::Delete => Self::Delete,
+            text_editor::Edit::Backspace
+            | text_editor::Edit::BackspaceWord
+            | text_editor::Edit::BackspaceLine => Self::Backspace,
+            text_editor::Edit::Delete
+            | text_editor::Edit::DeleteWord
+            | text_editor::Edit::DeleteLine => Self::Delete,
             _ => Self::Atomic,
         }
     }
@@ -80,8 +80,7 @@ struct LastEdit {
     word_boundary: bool,
 }
 
-/// A multi-line text input with undo/redo; consecutive same-kind edits
-/// coalesce into a single undo unit.
+/// A multi-line text input with undo/redo history.
 #[derive(Debug, Clone)]
 pub struct TextArea {
     content: text_editor::Content,
@@ -109,23 +108,33 @@ impl TextArea {
 
     /// Processes a [`Message`]; `shift_held` enables Shift+Click selection.
     pub fn update(&mut self, message: Message, shift_held: bool) {
-        match message {
-            Message::Edit(action) => {
-                // Shift+Click extends the selection from the previous cursor position.
-                if shift_held && matches!(action, text_editor::Action::Click(_)) {
-                    let anchor = self.cursor().position;
-                    self.perform(action);
-                    let cursor = self.cursor();
-                    self.move_to(text_editor::Cursor {
-                        position: cursor.position,
-                        selection: Some(anchor),
-                    });
-                } else {
-                    self.perform(action);
-                }
+        let Message::Edit(action) = message;
+
+        // iced maps Ctrl/Cmd+Z and Ctrl/Cmd+Y to native undo/redo; keep our
+        // snapshot stacks authoritative.
+        match &action {
+            text_editor::Action::Edit(text_editor::Edit::Undo) => {
+                self.undo();
+                return;
             }
-            Message::Undo => self.undo(),
-            Message::Redo => self.redo(),
+            text_editor::Action::Edit(text_editor::Edit::Redo) => {
+                self.redo();
+                return;
+            }
+            _ => {}
+        }
+
+        // Shift+Click extends the selection from the previous cursor position.
+        if shift_held && matches!(action, text_editor::Action::Click(..)) {
+            let anchor = self.cursor().position;
+            self.perform(action);
+            let cursor = self.cursor();
+            self.content.move_to(text_editor::Cursor {
+                position: cursor.position,
+                selection: Some(anchor),
+            });
+        } else {
+            self.perform(action);
         }
     }
 
@@ -180,11 +189,6 @@ impl TextArea {
         self.content.cursor()
     }
 
-    /// Moves the cursor to the given position.
-    pub fn move_to(&mut self, cursor: text_editor::Cursor) {
-        self.content.move_to(cursor);
-    }
-
     /// Empties the content but keeps it on the undo stack, so `undo` recalls it.
     pub fn clear(&mut self) {
         self.replace_text("");
@@ -206,8 +210,7 @@ impl TextArea {
         self.content = text_editor::Content::with_text(text);
     }
 
-    // ── private helpers ────────────────────────────────────────────────
-
+    /// Applies an edit action, snapshotting the state before each undo unit.
     fn perform(&mut self, action: text_editor::Action) {
         if let text_editor::Action::Edit(edit) = &action {
             let kind = EditKind::of(edit);
@@ -280,7 +283,7 @@ impl TextArea {
 
 /// Whether `press` is Ctrl/Cmd+V in a focused editor.
 fn paste_key(press: &text_editor::KeyPress) -> bool {
-    matches!(press.status, text_editor::Status::Focused { .. })
+    press.is_focused
         && press.modifiers.command()
         && !press.modifiers.alt()
         && press.key.to_latin(press.physical_key) == Some('v')
@@ -289,5 +292,80 @@ fn paste_key(press: &text_editor::KeyPress) -> bool {
 impl Default for TextArea {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn edit(editor: &mut TextArea, edit: text_editor::Edit) {
+        editor.update(Message::Edit(text_editor::Action::Edit(edit)), false);
+    }
+
+    fn type_str(editor: &mut TextArea, text: &str) {
+        for c in text.chars() {
+            edit(editor, text_editor::Edit::Insert(c));
+        }
+    }
+
+    #[test]
+    fn typed_runs_coalesce_into_one_undo_unit() {
+        let mut editor = TextArea::with_text("");
+        type_str(&mut editor, "hello");
+
+        assert_eq!(editor.undo_stack.len(), 1);
+        edit(&mut editor, text_editor::Edit::Undo);
+        assert_eq!(editor.text(), "");
+        edit(&mut editor, text_editor::Edit::Redo);
+        assert_eq!(editor.text(), "hello");
+    }
+
+    #[test]
+    fn whitespace_starts_a_new_undo_unit() {
+        let mut editor = TextArea::with_text("");
+        type_str(&mut editor, "hello world");
+
+        editor.undo();
+        assert_eq!(editor.text(), "hello ");
+        editor.undo();
+        assert_eq!(editor.text(), "");
+    }
+
+    #[test]
+    fn history_is_capped() {
+        let mut editor = TextArea::with_text("");
+        for _ in 0..(MAX_HISTORY + 20) {
+            type_str(&mut editor, "a ");
+        }
+
+        assert_eq!(editor.undo_stack.len(), MAX_HISTORY);
+    }
+
+    #[test]
+    fn replace_text_is_undoable_and_set_text_resets_history() {
+        let mut editor = TextArea::with_text("old");
+        editor.replace_text("new");
+        assert_eq!(editor.text(), "new");
+
+        editor.undo();
+        assert_eq!(editor.text(), "old");
+
+        editor.set_text("fresh");
+        assert!(editor.undo_stack.is_empty());
+        editor.undo();
+        assert_eq!(editor.text(), "fresh");
+    }
+
+    #[test]
+    fn new_edit_clears_redo() {
+        let mut editor = TextArea::with_text("");
+        type_str(&mut editor, "a");
+        editor.undo();
+        assert_eq!(editor.text(), "");
+
+        type_str(&mut editor, "b");
+        editor.redo();
+        assert_eq!(editor.text(), "b");
     }
 }

@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element, Fill, Length,
+    Alignment, Element, Fill, Length, Widget,
     widget::{
         Space, button, checkbox, column, container, mouse_area, row, scrollable, text,
         text::Wrapping, text_editor, text_input,
@@ -37,7 +37,7 @@ pub(crate) fn expandable_header<'a>(
     ]
     .spacing(4)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 // ── field views ──────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ pub(crate) fn preamble_picker_view<'a>(
     ]
     .spacing(4)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 /// Skills checkbox + multi-select dropdown of skill files.
@@ -112,7 +112,7 @@ pub(crate) fn skills_picker_view<'a>(
                 .label(name.clone())
                 .style(crate::views::primary_checkbox)
                 .on_toggle(move |v| PromptEvent::ToggleSkill(name.clone(), v))
-                .into()
+                .boxed()
         })
         .collect();
     let overlay =
@@ -121,11 +121,10 @@ pub(crate) fn skills_picker_view<'a>(
 
     let dropdown: Element<'_, PromptEvent> = PopupMenu::new(trigger, overlay, expanded)
         .width(Length::Fixed(240.0))
-        .height(Length::Shrink)
-        .max_height(200.0)
+        .height(Length::Fit.max(200.0))
         .gap(2.0)
         .on_dismiss(PromptEvent::DismissSkillsMenu)
-        .into();
+        .boxed();
 
     row![
         checkbox(enabled)
@@ -137,7 +136,7 @@ pub(crate) fn skills_picker_view<'a>(
     ]
     .spacing(4)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 pub(crate) fn tools_field_view<'a>(
@@ -158,7 +157,7 @@ pub(crate) fn tools_field_view<'a>(
             .direction(thin_vertical()),
         ]
         .spacing(4)
-        .into()
+        .boxed()
     } else {
         header
     }
@@ -220,7 +219,7 @@ pub(crate) fn workspace_field_view<'a>(
     ]
     .spacing(4)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 /// Build picker options for a prompt file directory (preamble / skills).
@@ -292,7 +291,7 @@ pub(crate) fn agents_md_field_view<'a>(field: &'a (bool, String)) -> Element<'a,
         .label(name)
         .style(crate::views::primary_checkbox)
         .on_toggle(move |v| PromptEvent::ToggleEnabled(name, v))
-        .into()
+        .boxed()
 }
 
 pub(crate) fn date_field_view<'a>(
@@ -316,5 +315,5 @@ pub(crate) fn date_field_view<'a>(
     ]
     .spacing(4)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }

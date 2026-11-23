@@ -1,7 +1,8 @@
+use iced::widget::Id;
+use iced::widget::operation::{Animation, scrollable as scrollable_op};
 use iced::widget::scrollable::{AbsoluteOffset, Direction, Scrollbar};
-use iced::widget::{Id, operation};
 use iced::{
-    Alignment, Color, Element, Font, Length, Padding, Task, font, mouse,
+    Alignment, Color, Element, Font, Length, Padding, Task, Widget as _, font, mouse,
     widget::{Space, button, container, mouse_area, row, scrollable, svg, text},
 };
 
@@ -30,12 +31,13 @@ pub(crate) const TAB_SCROLL_STEP: f32 = 120.0;
 
 /// Return a task that scrolls the tab bar to the given absolute horizontal offset.
 pub(crate) fn scroll_tab_bar_to(target_x: f32) -> Task<()> {
-    operation::scroll_to(
+    scrollable_op::scroll_to(
         TAB_BAR_ID.clone(),
         AbsoluteOffset {
             x: Some(target_x),
             y: None,
         },
+        Animation::Instant,
     )
 }
 
@@ -64,7 +66,7 @@ pub(crate) fn session_tabs(
         .width(Length::Fill)
         .height(Length::Shrink)
         .id(TAB_BAR_ID.clone())
-        .on_scroll(CenterPaneEvent::TabBarScrolled);
+        .on_scroll(|scroll| CenterPaneEvent::TabBarScrolled(scroll.viewport));
 
     let (toggle_icon, toggle_tip) = if right_pane_collapsed {
         (PANEL_RIGHT_OPEN, "Show right pane")
@@ -89,7 +91,7 @@ pub(crate) fn session_tabs(
     .height(Length::Fixed(BAR_HEIGHT))
     .padding(Padding::new(0.0).top(BAR_VPAD).horizontal(4.0))
     .style(bordered_bar_style)
-    .into()
+    .boxed()
 }
 
 /// Localize a fixed "Session N"-style tab label ("Session 2", "Session 1-2")
@@ -119,10 +121,13 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool, lang: Lang) -> Element<'a, 
         tab.end_status.map(|s| ("●", end_status_color(s), 0.0))
     };
 
-    let mut content = row![].spacing(4).align_y(Alignment::Center);
+    let mut content: iced::widget::Row<Element<'a, CenterPaneEvent>> =
+        row![].spacing(4).align_y(Alignment::Center);
     if let Some((glyph, color, raise)) = status {
         content = content.push(
-            container(text(glyph).size(9.0).color(color)).padding(Padding::new(0.0).bottom(raise)),
+            container(text(glyph).size(9.0).color(color))
+                .padding(Padding::new(0.0).bottom(raise))
+                .boxed(),
         );
     }
 
@@ -143,7 +148,7 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool, lang: Lang) -> Element<'a, 
     } else {
         &tab.session.title
     };
-    content = content.push(with_tooltip(label.into(), tip));
+    content = content.push(with_tooltip(label.boxed(), tip));
 
     // Close button — disabled while this tab is running; the glyph also stays muted on hover.
     let close = button(tinted_icon(CLOSE, CLOSE_SIZE, !running))
@@ -152,7 +157,7 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool, lang: Lang) -> Element<'a, 
         )
         .padding(0)
         .style(tab_close_button_style);
-    content = content.push(close);
+    content = content.push(close.boxed());
 
     button(container(content).center_y(Length::Fill))
         .on_press(CenterPaneEvent::Conversation(ConversationEvent::SwitchTab(
@@ -161,7 +166,7 @@ fn tab_button<'a>(tab: &'a SessionTab, active: bool, lang: Lang) -> Element<'a, 
         .padding(Padding::from([4, 8]).top(6))
         .height(Length::Fixed(TAB_HEIGHT))
         .style(session_tab_style(active, running && !active))
-        .into()
+        .boxed()
 }
 
 /// A small chevron arrow button for scrolling the tab bar. When the bar cannot
@@ -188,7 +193,7 @@ fn arrow_button<'a>(
         return Space::new()
             .width(0.0)
             .height(Length::Fixed(TAB_HEIGHT))
-            .into();
+            .boxed();
     }
 
     let held = conversation.tab_bar_held_direction == Some(direction);
@@ -218,7 +223,7 @@ fn arrow_button<'a>(
             background: (held || hovered).then(|| theme::color_hover().into()),
             ..container::Style::default()
         })
-        .into()
+        .boxed()
 }
 
 /// An inline SVG icon tinted muted, brightening on hover if interactive.

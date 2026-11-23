@@ -17,22 +17,20 @@ const PASTED_IMAGE_DIR: &str = ".agent/attachments";
 
 /// Handle Ctrl/Cmd+V in the prompt editor.
 pub(crate) fn paste(app: &mut App) -> Task<Message> {
-    let Ok(mut clipboard) = arboard::Clipboard::new() else {
-        return clipboard_text();
-    };
-    if let Ok(image) = clipboard.get_image() {
-        let dir = image_dir(app);
-        return Task::perform(store_image(image, dir), |result| {
-            Message::Prompt(PromptEvent::ClipboardImage(result))
-        });
-    }
-    match clipboard.get_text() {
-        Ok(text) if !text.is_empty() => {
-            insert_text(app, text);
-            Task::none()
+    let dir = image_dir(app);
+    clipboard::read_image().then(move |result| match result {
+        Ok(image) => {
+            let dir = dir.clone();
+            Task::perform(store_image(image, dir), |result| {
+                Message::Prompt(PromptEvent::ClipboardImage(result))
+            })
         }
-        _ => clipboard_text(),
-    }
+        Err(_) => clipboard::read_text().map(|result| {
+            Message::Prompt(PromptEvent::ClipboardText(
+                result.ok().map(|text| text.to_string()),
+            ))
+        }),
+    })
 }
 
 /// Insert text at the editor's cursor or selection.
@@ -42,11 +40,6 @@ pub(crate) fn insert_text(app: &mut App, text: String) {
     app.prompt
         .user_prompt
         .update(textarea::Message::Edit(action), shift_held);
-}
-
-/// Read text through iced when arboard cannot access the clipboard.
-fn clipboard_text() -> Task<Message> {
-    clipboard::read().map(|text| Message::Prompt(PromptEvent::ClipboardText(text)))
 }
 
 /// Workspace scratch dir, or the config dir before a workspace is picked.
@@ -60,19 +53,14 @@ fn image_dir(app: &App) -> PathBuf {
 }
 
 /// Save clipboard pixels as a PNG off the UI thread and validate them.
-async fn store_image(
-    image: arboard::ImageData<'static>,
-    dir: PathBuf,
-) -> Result<UserAttachment, String> {
+async fn store_image(image: clipboard::Image, dir: PathBuf) -> Result<UserAttachment, String> {
     tokio::task::spawn_blocking(move || save_image(image, &dir))
         .await
         .unwrap_or_else(|error| Err(format!("pasted image task failed: {error}")))
 }
 
-fn save_image(image: arboard::ImageData<'static>, dir: &Path) -> Result<UserAttachment, String> {
-    let width = u32::try_from(image.width).map_err(|_| "clipboard image is too wide")?;
-    let height = u32::try_from(image.height).map_err(|_| "clipboard image is too tall")?;
-    let pixels = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())
+fn save_image(image: clipboard::Image, dir: &Path) -> Result<UserAttachment, String> {
+    let pixels = image::RgbaImage::from_raw(image.size.width, image.size.height, image.rgba.into())
         .ok_or("clipboard image data does not match its dimensions")?;
 
     std::fs::create_dir_all(dir)

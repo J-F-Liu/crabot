@@ -85,7 +85,7 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
             }
         }
         PromptEvent::EditTextContent(name, action) => {
-            if matches!(action, text_editor::Action::Click(_)) {
+            if matches!(action, text_editor::Action::Click(..)) {
                 app.layout.focused = Some(FocusedTarget::EditText(name));
             }
             let Some(content) = app.prompt.content_mut(name) else {

@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Element, Length, Widget as _,
     widget::{column, container, row, text, text_input, toggler},
 };
 
@@ -263,7 +263,7 @@ pub(super) fn builtin_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Se
         ),
     ]
     .spacing(8)
-    .into()
+    .boxed()
 }
 
 // ── Agent card ─────────────────────────────────────────────────────
@@ -281,7 +281,7 @@ fn setting_row<'a>(
     ]
     .spacing(8)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 /// Numeric text input bound to a settings field.
@@ -295,7 +295,7 @@ fn num_input<'a>(
         .width(Length::Fixed(110.0))
         .padding(3)
         .size(13)
-        .into()
+        .boxed()
 }
 
 fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
@@ -341,7 +341,7 @@ fn agent_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
     .padding([6, 12])
     .style(form_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 // ── Network card ──────────────────────────────────────────────────
@@ -363,7 +363,7 @@ fn proxy_toggle_row(
     ]
     .spacing(8)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 fn network_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
@@ -392,7 +392,7 @@ fn network_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
     .padding([6, 12])
     .style(form_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 // ── Tool limits card ───────────────────────────────────────────────
@@ -406,7 +406,7 @@ fn limit_row(state: &SettingsState, field: ToolLimitField) -> Element<'_, Settin
     row![text(field.label(lang)).size(13).width(180.0), input,]
         .spacing(8)
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
 }
 
 fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
@@ -430,7 +430,7 @@ fn tool_limits_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
     .padding([6, 12])
     .style(form_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 // ── Sub-agent task models card ─────────────────────────────────────
@@ -467,7 +467,7 @@ fn task_models_card<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> 
     .padding([6, 12])
     .style(form_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 fn tier_row<'a>(
@@ -484,7 +484,7 @@ fn tier_row<'a>(
         text(lang.tr("Inherit parent model"))
             .size(12)
             .color(color_muted())
-            .into()
+            .boxed()
     } else {
         let selected_provider = providers.iter().find(|e| e.id == cfg.provider_id).cloned();
         let models: Vec<Model> = state
@@ -506,7 +506,7 @@ fn tier_row<'a>(
         ]
         .spacing(4)
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
     };
 
     let toggle: Element<'a, SettingsEvent> = if no_providers {
@@ -515,7 +515,7 @@ fn tier_row<'a>(
             .label(lang.tr("Inherit"))
             .text_size(12)
             .style(crate::views::primary_toggler)
-            .into()
+            .boxed()
     } else {
         toggler(inherit)
             .label(lang.tr("Inherit"))
@@ -524,7 +524,7 @@ fn tier_row<'a>(
                 SettingsEvent::BuiltinTools(BuiltinToolsEvent::TaskModelInherit(tier, v))
             })
             .style(crate::views::primary_toggler)
-            .into()
+            .boxed()
     };
 
     row![
@@ -534,7 +534,7 @@ fn tier_row<'a>(
     ]
     .spacing(8)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 // ── Update ─────────────────────────────────────────────────────────

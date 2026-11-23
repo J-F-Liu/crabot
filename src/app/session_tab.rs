@@ -51,8 +51,6 @@ pub(crate) struct SessionTab {
     pub(crate) expanded_turns: HashSet<(usize, usize)>,
     /// Expanded dialog indices.
     pub(crate) expanded_dialogs: HashSet<usize>,
-    /// Currently selectable (double-clicked) turn indices.
-    pub(crate) selectable_msgs: HashSet<usize>,
     /// Inline previews, keyed by path.
     pub(crate) attachment_previews: HashMap<String, AttachmentPreview>,
     /// Latest preview load request id.
@@ -98,7 +96,6 @@ impl SessionTab {
             latest_tokens,
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
-            selectable_msgs: HashSet::new(),
             attachment_previews: HashMap::new(),
             preview_generation: 0,
             search: SearchState::default(),

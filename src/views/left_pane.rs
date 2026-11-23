@@ -1,5 +1,5 @@
 use iced::{
-    Element, Fill, Length,
+    Element, Fill, Length, Widget as _,
     widget::{column, container, scrollable},
 };
 
@@ -95,9 +95,11 @@ pub(crate) fn left_pane<'a>(
                             date_field_view(&prompt.date, lang).map(LeftPaneEvent::Prompt),
                         ]
                         .spacing(8)
-                        .into()
+                        .boxed()
                     } else {
-                        date_field_view(&prompt.date, lang).map(LeftPaneEvent::Prompt)
+                        date_field_view(&prompt.date, lang)
+                            .map(LeftPaneEvent::Prompt)
+                            .boxed()
                     },
                     session_view(
                         session_options,
@@ -159,7 +161,7 @@ pub(crate) fn left_pane<'a>(
     .width(Length::Fixed(left_w))
     .height(Fill)
     .style(pane_side)
-    .into()
+    .boxed()
 }
 
 /// Map a [`super::tool_list::ToolListEvent`] to the pane [`LeftPaneEvent`].

@@ -631,10 +631,10 @@ pub(crate) fn update(
 /// Track a session-view scroll: pause auto-scroll away from the bottom, resume at it.
 pub(crate) fn handle_scroll(state: &SessionState, viewport: Viewport) {
     let offset_y = viewport.absolute_offset().y;
-    let distance_y = viewport.absolute_offset_reversed().y;
+    let distance_y = viewport.distance_to_end().y;
     state
         .content_overflows
-        .set(viewport.content_bounds().height > viewport.bounds().height);
+        .set(viewport.content.height > viewport.bounds.height);
     // Track while idle too, so the baseline is never stale at stream start.
     let previous = state.last_scroll.replace(Some((offset_y, distance_y)));
     if state.phase != DialogPhase::Idle

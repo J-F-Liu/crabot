@@ -15,7 +15,7 @@ use crabot::model::{Cost, Model, currency_symbol};
 use crabot::model_database::ModelDatabase;
 use genai::adapter::AdapterKind;
 use iced::{
-    Alignment, Border, Element, Length, mouse,
+    Alignment, Border, Element, Length, Widget as _, mouse,
     widget::{
         PickList, Row, button, checkbox, column, container, mouse_area, row, scrollable, text,
         text_input,
@@ -217,7 +217,7 @@ fn small_button(
         .padding([2, 8])
         .style(crate::views::styles::secondary_button)
         .on_press_maybe(on_press)
-        .into()
+        .boxed()
 }
 
 /// Height of the models row: the ID list on the left, the editor on the right.
@@ -597,7 +597,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
                         .size(12)
                         .padding([2, 6])
                         .width(Length::Fixed(160.0))
-                        .into()
+                        .boxed()
                 });
             checkbox_row(
                 lang.tr("Strict Mode"),
@@ -618,7 +618,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             .padding(16)
             .style(form_card_style)
             .width(Length::Fill)
-            .into()
+            .boxed()
     } else {
         column![
             text(lang.tr("Select a provider to edit, or create a new one."))
@@ -632,14 +632,14 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
         .spacing(12)
         .align_x(Alignment::Center)
         .width(Length::Fill)
-        .into()
+        .boxed()
     };
 
     let action_button: Element<'_, SettingsEvent> = if state.is_new_provider {
         button(text(lang.tr("Cancel")))
             .style(crate::views::styles::secondary_button)
             .on_press(SettingsEvent::Models(ModelsEvent::CancelNewProvider))
-            .into()
+            .boxed()
     } else if !state.selected_provider_id.is_empty() {
         button(text(lang.tr("Delete")))
             .style(|theme: &iced::Theme, status| {
@@ -650,9 +650,9 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
             .on_press(SettingsEvent::Models(ModelsEvent::DeleteProvider(
                 state.selected_provider_id.clone(),
             )))
-            .into()
+            .boxed()
     } else {
-        iced::widget::Space::new().width(0).into()
+        iced::widget::Space::new().width(0).boxed()
     };
 
     column![
@@ -672,7 +672,7 @@ pub(super) fn provider_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Set
         form,
     ]
     .spacing(12)
-    .into()
+    .boxed()
 }
 
 // ── Label section ──────────────────────────────────────────────────
@@ -682,7 +682,7 @@ fn form_error_row<'a>(message: &'a str, lang: Lang) -> Element<'a, SettingsEvent
     text(lang.tr(message))
         .size(12)
         .color(color_danger_text())
-        .into()
+        .boxed()
 }
 
 /// Labels are shown as draggable capsules on a single (scrollable) row.
@@ -724,7 +724,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
                 } else {
                     mouse::Interaction::Grab
                 })
-                .into()
+                .boxed()
         })
         .collect();
 
@@ -733,7 +733,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
             text(lang.tr("No labels yet. Click + to add one."))
                 .size(13)
                 .color(color_muted())
-                .into(),
+                .boxed(),
         );
     }
 
@@ -747,7 +747,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
                 .padding([5, 12])
                 .width(140)
                 .style(chip_input_style)
-                .into(),
+                .boxed(),
         );
     } else {
         chips.push(
@@ -757,7 +757,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
                     .style(add_chip_style),
             )
             .on_press(SettingsEvent::Models(ModelsEvent::StartAddLabel))
-            .into(),
+            .boxed(),
         );
     }
 
@@ -778,7 +778,7 @@ pub(super) fn label_tab_view<'a>(state: &'a SettingsState) -> Element<'a, Settin
             .width(Length::Fill)
     ]
     .spacing(10)
-    .into()
+    .boxed()
 }
 
 // ── Capsule styles ────────────────────────────────────────────────
@@ -816,7 +816,6 @@ fn chip_input_style(_theme: &iced::Theme, _status: text_input::Status) -> text_i
             .rounded(999)
             .width(1)
             .color(color_accent()),
-        icon: color_muted(),
         placeholder: color_muted(),
         value: color_text_strong(),
         selection: color_selection(),
@@ -851,7 +850,7 @@ fn api_key_row<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
     row![label_col(lang.tr("API Key")), input, more]
         .spacing(10)
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
 }
 
 fn checkbox_row<'a>(
@@ -869,10 +868,10 @@ fn checkbox_row<'a>(
         .align_y(Alignment::Center);
     if let Some(t) = trailing {
         r = r
-            .push(iced::widget::Space::new().width(Length::Fill))
+            .push(iced::widget::Space::new().width(Length::Fill).boxed())
             .push(t);
     }
-    r.into()
+    r.boxed()
 }
 
 /// Inline editor that adds a model by typing its ID; Enter or Add commits.
@@ -903,9 +902,9 @@ fn manual_add_editor<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent>
 
     let mut col = column![input, actions].spacing(4).width(Length::Fill);
     if let Some(err) = &state.model_add_error {
-        col = col.push(text(err).size(11).color(color_danger_text()));
+        col = col.push(text(err).size(11).color(color_danger_text()).boxed());
     }
-    col.into()
+    col.boxed()
 }
 
 /// Renders the models section with a table of checkboxes and model IDs.
@@ -929,7 +928,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
         text(lang.tr("Loading models…"))
             .size(12)
             .color(color_muted())
-            .into()
+            .boxed()
     } else if all_ids.is_empty() {
         if state.adding_model {
             manual_add_editor(state)
@@ -951,9 +950,9 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
             .spacing(8);
             let mut content = column![actions].spacing(4);
             if let Some(err) = &state.models_fetch_error {
-                content = content.push(text(err).size(11).color(color_danger_text()));
+                content = content.push(text(err).size(11).color(color_danger_text()).boxed());
             }
-            content.into()
+            content.boxed()
         }
     } else if display_ids.is_empty() {
         container(
@@ -963,7 +962,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
         )
         .padding(8)
         .style(form_card_style)
-        .into()
+        .boxed()
     } else {
         // ── Table column ──────────────────────────────────────────
         let model_rows: Vec<Element<'_, SettingsEvent>> = display_ids
@@ -1006,7 +1005,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
 
                 container(row![cb, id_cell].spacing(8).align_y(Alignment::Center))
                     .padding(1)
-                    .into()
+                    .boxed()
             })
             .collect();
 
@@ -1027,7 +1026,7 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
                 ),
             ]
             .spacing(8)
-            .into()
+            .boxed()
         })
         .padding(1);
 
@@ -1047,12 +1046,12 @@ fn models_section_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEven
             ..container::Style::default()
         });
 
-        row![table, model_details_view(state)].spacing(10).into()
+        row![table, model_details_view(state)].spacing(10).boxed()
     };
     row![header, body]
         .spacing(10)
         .height(Length::Fixed(MODELS_SECTION_HEIGHT))
-        .into()
+        .boxed()
 }
 
 /// Right-hand panel: editable form for a checked model, preview otherwise.
@@ -1108,7 +1107,7 @@ fn model_details_view<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent
     ]
     .spacing(6)
     .width(MODEL_DETAIL_WIDTH)
-    .into()
+    .boxed()
 }
 
 /// Renders the common lower half of the model detail panel.
@@ -1124,12 +1123,12 @@ fn model_detail_panel<'a>(
     let ctx = if context_window > 0 {
         context_window.to_string()
     } else {
-        "—".into()
+        "—".to_string()
     };
     let max_tok = if max_tokens > 0 {
         max_tokens.to_string()
     } else {
-        "—".into()
+        "—".to_string()
     };
 
     let mut rows = header;
@@ -1161,7 +1160,7 @@ fn model_detail_panel<'a>(
         .padding(8)
         .style(form_card_style)
         .width(MODEL_DETAIL_WIDTH)
-        .into()
+        .boxed()
 }
 
 /// Muted placeholder shown when no model detail is available.
@@ -1170,7 +1169,7 @@ fn detail_placeholder(message: &'static str) -> Element<'static, SettingsEvent> 
         .padding(8)
         .style(form_card_style)
         .width(MODEL_DETAIL_WIDTH)
-        .into()
+        .boxed()
 }
 
 /// Shared Name/Thinking(/Levels) rows for model detail panels.
@@ -1184,7 +1183,7 @@ fn base_header(
         detail_row(
             lang.tr("Name"),
             if name.is_empty() {
-                "—".into()
+                "—".to_string()
             } else {
                 name.to_string()
             },
@@ -1244,14 +1243,12 @@ fn model_edit_panel<'a>(
             .style(crate::views::primary_checkbox)
     };
     // One form row: leading label + widget body.
-    let form_row =
-        |label: &'static str, body: Row<'a, SettingsEvent>| -> Element<'a, SettingsEvent> {
-            row![tag(label, 74.0)]
-                .push(body.spacing(6).align_y(Alignment::Center))
-                .spacing(6)
-                .align_y(Alignment::Center)
-                .into()
-        };
+    let form_row = |label: &'static str, body: Row<Element<'a, SettingsEvent>>| {
+        row![tag(label, 74.0), body.spacing(6).align_y(Alignment::Center)]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .boxed()
+    };
     let num = |val: &'a str, mk: fn(String) -> ModelParam| input(val, "0", Length::Fixed(72.0), mk);
 
     // Known currencies first; keep any custom value already on the model.
@@ -1365,7 +1362,7 @@ fn model_edit_panel<'a>(
         .padding(8)
         .style(form_card_style)
         .width(MODEL_DETAIL_WIDTH)
-        .into()
+        .boxed()
 }
 
 /// Single label–value row for the model detail panel.
@@ -1376,7 +1373,7 @@ fn detail_row(label: &'static str, value: String) -> Element<'static, SettingsEv
     ]
     .spacing(6)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 // ── Page ───────────────────────────────────────────────────────────
@@ -1394,7 +1391,7 @@ pub(super) fn ai_models_page<'a>(state: &'a SettingsState) -> Element<'a, Settin
 
     column![providers_section, labels_section, action_row]
         .spacing(16)
-        .into()
+        .boxed()
 }
 
 // ── Update ─────────────────────────────────────────────────────────

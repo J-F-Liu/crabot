@@ -11,6 +11,7 @@ pub mod session_tabs;
 pub mod settings;
 pub mod styles;
 pub mod system_prompt;
+pub mod tab_bar;
 pub mod theme;
 pub mod tool_list;
 pub mod tool_message;
@@ -43,3 +44,4 @@ pub(crate) use settings::{
 pub(crate) use styles::DividerState;
 pub(crate) use styles::divider;
 pub(crate) use system_prompt::{build_md_file_options, build_workspace_options};
+pub(crate) use tab_bar::{scrollable_tab_bar, tab_bar};

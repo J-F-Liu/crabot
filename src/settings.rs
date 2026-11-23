@@ -179,7 +179,8 @@ pub struct Settings {
     pub color_style: ColorStyle,
     /// UI language.
     pub language: Lang,
-    /// Renderer backend (`ICED_BACKEND` value); `auto`/empty = wgpu → tiny-skia.
+    /// Renderer backend: `auto`, `wgpu`, `software`, or a custom iced name.
+    /// Legacy `tiny_skia`/`vello-cpu` values are treated as `software`.
     pub iced_backend: String,
     /// Whether the built-in ACP HTTP server is enabled.
     pub acp_server_enabled: bool,

@@ -6,19 +6,21 @@ use crabot::model::ModelConfig;
 use crabot::session::{SearchHit, SearchHitKind, Session};
 use crabot::user::{AttachmentKind, UserPrompt};
 use genai::chat::ChatRole;
+use iced::widget::markdown::Viewer as _;
 use iced::{
-    Alignment, Background, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Task,
-    Theme, Vector,
-    advanced::text::{Highlight, IntoFragment},
-    advanced::widget::operation::{Operation, Outcome, Scrollable, scrollable as scrollable_op},
+    Alignment, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Size, Task, Theme,
+    Vector, Widget,
+    advanced::text::IntoFragment,
+    advanced::widget::operate,
+    advanced::widget::operation::{Operation, Outcome, Scrollable},
     alignment, font, mouse,
-    widget::scrollable::{Direction, Scrollbar},
+    widget::operation::{Animation, scrollable as scrollable_op},
+    widget::scrollable::{AbsoluteOffset, Direction, RelativeOffset, Scrollbar},
     widget::{
-        self, Space, button, column, container, image, markdown, mouse_area, row, scrollable,
-        stack, text,
+        self, Space, button, column, container, image, markdown, mouse_area, rich_text, row,
+        scrollable, stack, text,
     },
 };
-use iced_runtime::task::widget as task_widget;
 
 use crate::app::session_state::SessionEvent;
 use crate::app::{AttachmentPreview, ConversationState, PreviewContent, SessionTab};
@@ -33,12 +35,13 @@ use super::session_tabs::localize_tab_label;
 use super::styles::{
     assistant_bubble_style, attachment_chip_style, bordered_bar_style, icon_button_style,
     menu_container_style, menu_item_style, pane_center, reasoning_box_style, role_badge_style,
-    sel_default, sel_muted, session_header_style, tool_bubble_style, user_bubble_style,
+    sel_default, sel_markdown, sel_muted, session_header_style, tool_bubble_style,
+    user_bubble_style,
 };
 use super::theme::{
     CRABOT_DIALOG_RADIUS, color_accent, color_code_bg, color_code_border, color_code_text,
     color_danger_text, color_dialog_bg, color_muted, color_success, color_surface,
-    color_text_strong, color_tool_accent, thin_vertical,
+    color_tool_accent, thin_vertical,
 };
 use super::tool_message::{
     arg_rows, ask_result_view, bold_font, highlighted_text, result_text, selectable,
@@ -65,12 +68,13 @@ pub(crate) const PREVIEW_MAX_HEIGHT: f32 = 360.0;
 /// Height a long text preview scrolls within.
 const TEXT_PREVIEW_MAX_HEIGHT: f32 = 260.0;
 
-/// Snap the message scroll to the end unconditionally.
+/// Snap the message scroll to the end; a relative offset keeps it pinned as content grows.
 pub(crate) fn scroll_to_end() -> Task<()> {
-    task_widget(scrollable_op::snap_to(
+    scrollable_op::snap_to(
         MESSAGE_SCROLL.clone(),
-        scrollable::RelativeOffset::END.into(),
-    ))
+        RelativeOffset::END,
+        Animation::Instant,
+    )
 }
 
 /// Follow the conversation to the ask controls and focus the answer input.
@@ -80,18 +84,20 @@ pub(crate) fn reveal_ask() -> Task<()> {
 
 /// Snap the message scroll to the start unconditionally.
 pub(crate) fn scroll_to_start() -> Task<()> {
-    task_widget(scrollable_op::snap_to(
+    scrollable_op::snap_to(
         MESSAGE_SCROLL.clone(),
-        scrollable::RelativeOffset::START.into(),
-    ))
+        RelativeOffset::START,
+        Animation::Instant,
+    )
 }
 
 /// Scroll the message viewport vertically by `delta_y` pixels (positive = down).
 pub(crate) fn scroll_by(delta_y: f32) -> Task<()> {
-    task_widget(scrollable_op::scroll_by(
+    scrollable_op::scroll_by(
         MESSAGE_SCROLL.clone(),
-        scrollable::AbsoluteOffset { x: 0.0, y: delta_y },
-    ))
+        AbsoluteOffset { x: 0.0, y: delta_y },
+        Animation::Instant,
+    )
 }
 
 /// Scroll the message viewport down by one page.
@@ -118,7 +124,7 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
             operate(self);
         }
 
-        fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle) {
+        fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle, _viewport: &Rectangle) {
             if let Some(id) = id
                 && let Some(idx) = self.turn_ids.iter().position(|tid| tid == id)
                 && let Some(sb) = self.scrollable_bounds
@@ -138,7 +144,7 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
             &mut self,
             id: Option<&widget::Id>,
             bounds: Rectangle,
-            _content_bounds: Rectangle,
+            _content: Size,
             _translation: Vector,
             _state: &mut dyn Scrollable,
         ) {
@@ -152,7 +158,7 @@ pub(crate) fn measure_turn_offsets(turn_ids: Vec<widget::Id>) -> Task<Vec<f32>> 
         }
     }
 
-    task_widget(MeasureAll {
+    operate(MeasureAll {
         scrollable_id: MESSAGE_SCROLL.clone(),
         turn_ids,
         scrollable_bounds: None,
@@ -175,17 +181,22 @@ pub(crate) fn pin_scroll() -> Task<()> {
         fn scrollable(
             &mut self,
             id: Option<&widget::Id>,
-            _bounds: Rectangle,
-            _content_bounds: Rectangle,
+            bounds: Rectangle,
+            content: Size,
             translation: Vector,
             state: &mut dyn Scrollable,
         ) {
             if id == Some(&MESSAGE_SCROLL) {
                 // `translation` is the current visual offset; store it as absolute.
-                state.scroll_to(scrollable::AbsoluteOffset {
-                    x: None,
-                    y: Some(translation.y),
-                });
+                state.scroll_to(
+                    AbsoluteOffset {
+                        x: None,
+                        y: Some(translation.y),
+                    },
+                    Animation::Instant,
+                    bounds,
+                    content,
+                );
             }
         }
 
@@ -195,19 +206,20 @@ pub(crate) fn pin_scroll() -> Task<()> {
         }
     }
 
-    task_widget(PinScroll)
+    operate(PinScroll)
 }
 
 /// Scroll the message view to an absolute y-offset; `None` scrolls to top.
 pub(crate) fn scroll_to(y: Option<f32>) -> Task<()> {
     match y {
-        Some(y) => task_widget(scrollable_op::scroll_to(
+        Some(y) => scrollable_op::scroll_to(
             MESSAGE_SCROLL.clone(),
-            scrollable::AbsoluteOffset {
+            AbsoluteOffset {
                 x: None,
                 y: Some(y),
             },
-        )),
+            Animation::Instant,
+        ),
         None => scroll_to_start(),
     }
 }
@@ -227,7 +239,7 @@ pub(crate) fn dialog_header_title(dialog: &Dialog, index: usize, lang: Lang) -> 
 /// Hover-revealed delete action; its width is reserved when hidden.
 fn dialog_delete_action(index: usize, visible: bool) -> Element<'static, CenterPaneEvent> {
     if !visible {
-        return Space::new().width(14).height(14).into();
+        return Space::new().width(14).height(14).boxed();
     }
     button(icons::svg_icon(icons::TRASH))
         .on_press(CenterPaneEvent::Conversation(
@@ -235,7 +247,7 @@ fn dialog_delete_action(index: usize, visible: bool) -> Element<'static, CenterP
         ))
         .padding(0)
         .style(icon_button_style)
-        .into()
+        .boxed()
 }
 
 fn dialog_container_style(_theme: &Theme) -> container::Style {
@@ -320,7 +332,7 @@ fn work_mode_badge<'a>(
         text_color: Some(color_accent()),
         ..container::Style::default()
     })
-    .into()
+    .boxed()
 }
 
 /// Small turn-count pill.
@@ -343,13 +355,12 @@ fn turn_count_badge(
             text_color: Some(color_muted()),
             ..container::Style::default()
         })
-        .into()
+        .boxed()
 }
 
 /// Shared context for building turn blocks.
 struct TurnView<'a> {
     expanded_turns: &'a HashSet<(usize, usize)>,
-    selectable_msgs: &'a HashSet<usize>,
     attachment_previews: &'a HashMap<String, AttachmentPreview>,
     theme: &'a Theme,
     font_scale: f32,
@@ -367,7 +378,7 @@ impl<'a> TurnView<'a> {
         if !self.search_lower.trim().is_empty() && ts.to_lowercase().contains(&self.search_lower) {
             highlighted_text(ts, self.search_query, size, Font::DEFAULT)
         } else {
-            text(ts).size(size).color(color_muted()).into()
+            text(ts).size(size).color(color_muted()).boxed()
         }
     }
 }
@@ -391,36 +402,36 @@ fn role_badge<'a>(
     ))
     .padding([3, 0])
     .style(role_badge_style(style_label))
-    .into()
+    .boxed()
 }
 
 /// Wrap a turn's content in its role-colored bubble.
 fn wrap_bubble<'a>(
-    content: impl Into<Element<'a, CenterPaneEvent>>,
+    content: impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a,
     style: fn(&Theme) -> container::Style,
 ) -> Element<'a, CenterPaneEvent> {
     container(content)
         .width(Fill)
         .padding([8, 12])
         .style(style)
-        .into()
+        .boxed()
 }
 
 /// Tool item header without an expand indicator (pending/streaming/ask items).
 fn tool_header_row<'a>(
-    badge: impl Into<Element<'a, CenterPaneEvent>>,
-    status_text: impl Into<Element<'a, CenterPaneEvent>>,
-    ts_text: impl Into<Element<'a, CenterPaneEvent>>,
+    badge: impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a,
+    status_text: impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a,
+    ts_text: impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a,
 ) -> Element<'a, CenterPaneEvent> {
     row![
-        badge.into(),
-        status_text.into(),
+        badge,
+        status_text,
         Space::new().width(Length::Fill),
-        ts_text.into(),
+        ts_text,
     ]
     .spacing(6)
     .align_y(Alignment::Center)
-    .into()
+    .boxed()
 }
 
 /// Build a Tool turn block — completed (`Tool`) or pending (`Temp`) calls;
@@ -434,14 +445,14 @@ fn tool_turn_block<'a>(
     let items = tool_items(msg, streaming_ids);
     if items.is_empty() {
         // No results yet — avoid rendering an empty bubble.
-        return Space::new().height(0).into();
+        return Space::new().height(0).boxed();
     }
 
     let mut elements: Vec<Element<'a, CenterPaneEvent>> = Vec::new();
 
     for (idx, (name, args, result, ts, streaming)) in items.into_iter().enumerate() {
         if idx > 0 {
-            elements.push(Space::new().height(8).into());
+            elements.push(Space::new().height(8).boxed());
         }
 
         // Localize the chrome only; `name` stays raw for search highlighting.
@@ -494,7 +505,8 @@ fn tool_turn_block<'a>(
             elements.push(tool_header_row(badge, status_text, ts_text));
             elements.push(
                 ask_result_view(args, result.unwrap(), ctx.font_scale, ctx.lang)
-                    .map(CenterPaneEvent::Conversation),
+                    .map(CenterPaneEvent::Conversation)
+                    .boxed(),
             );
             continue;
         }
@@ -520,7 +532,7 @@ fn tool_turn_block<'a>(
                         ConversationEvent::ToggleTurnExpand(i, idx),
                     ))
                     .interaction(mouse::Interaction::Pointer)
-                    .into(),
+                    .boxed(),
             );
         } else {
             elements.push(tool_header_row(badge, status_text, ts_text));
@@ -587,7 +599,7 @@ fn preview_toggle<'a>(
     )
     .on_press(CenterPaneEvent::Conversation(event))
     .interaction(mouse::Interaction::Pointer)
-    .into()
+    .boxed()
 }
 
 /// Clickable row that expands the picture a tool call returned.
@@ -604,7 +616,7 @@ fn image_toggle<'a>(
         text(label)
             .size(12.0 * ctx.font_scale)
             .color(color_tool_accent())
-            .into(),
+            .boxed(),
         expanded,
         ctx,
         ConversationEvent::ToggleAttachmentPreview(path.to_string(), AttachmentKind::Image),
@@ -617,10 +629,37 @@ fn is_plain_text(md: &markdown::Content) -> bool {
     md.items().len() == 1 && matches!(md.items().first(), Some(markdown::Item::Paragraph(_)))
 }
 
-/// Markdown viewer that paints fenced code blocks in the active palette.
-struct CrabotViewer;
+/// Markdown viewer with palette-styled code blocks and selectable text.
+struct CrabotViewer<'a> {
+    theme: &'a Theme,
+}
 
-impl<'a> markdown::Viewer<'a, CenterPaneEvent, Theme, iced::Renderer> for CrabotViewer {
+impl<'a> CrabotViewer<'a> {
+    /// Selectable rich text with the app's markdown selection style.
+    fn text_widget(
+        &self,
+        settings: markdown::Settings,
+        text: &markdown::Text,
+        size: impl Into<iced::Pixels>,
+    ) -> impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a {
+        rich_text(text.spans(settings, self.theme(), self.highlighter()))
+            .on_link_click(Self::on_link_click)
+            .size(size)
+            .line_height(settings.line_height)
+            .selectable(true)
+            .style(sel_markdown)
+    }
+}
+
+impl<'a> markdown::Viewer<'a, CenterPaneEvent, Theme, iced::Renderer> for CrabotViewer<'a> {
+    fn theme(&self) -> &Theme {
+        self.theme
+    }
+
+    fn highlighter(&self) -> &dyn iced::advanced::text::Highlighter<iced::Code, Theme> {
+        <Theme as markdown::Catalog>::highlighter(self.theme)
+    }
+
     fn on_link_click(url: markdown::Uri) -> CenterPaneEvent {
         CenterPaneEvent::LinkClicked(url)
     }
@@ -631,26 +670,27 @@ impl<'a> markdown::Viewer<'a, CenterPaneEvent, Theme, iced::Renderer> for Crabot
         _language: Option<&'a str>,
         _code: &'a str,
         lines: &'a [markdown::Text],
-    ) -> Element<'a, CenterPaneEvent, Theme, iced::Renderer> {
+    ) -> impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a {
         container(
             scrollable(
-                container(column(lines.iter().map(|line| {
-                    iced::widget::rich_text(line.spans(settings.style))
-                        .on_link_click(CenterPaneEvent::LinkClicked)
-                        .font(settings.style.code_block_font)
-                        .size(settings.code_size)
-                        .into()
-                })))
-                .padding(settings.code_size),
+                column(lines.iter().map(|line| {
+                    rich_text(line.spans(settings, self.theme(), self.highlighter()))
+                        .on_link_click(Self::on_link_click)
+                        .font(settings.code_block_font)
+                        .size(settings.code_block_size)
+                        .selectable(true)
+                        .style(sel_markdown)
+                }))
+                .padding(settings.code_block_size),
             )
             .direction(Direction::Horizontal(
                 Scrollbar::default()
-                    .width(settings.code_size / 2)
-                    .scroller_width(settings.code_size / 2),
+                    .width(settings.code_block_size / 2)
+                    .scroller_width(settings.code_block_size / 2),
             )),
         )
         .width(Length::Fill)
-        .padding(settings.code_size / 4)
+        .padding(settings.code_block_size / 4)
         .style(|_theme: &Theme| container::Style {
             background: Some(color_code_bg().into()),
             border: Border {
@@ -661,36 +701,58 @@ impl<'a> markdown::Viewer<'a, CenterPaneEvent, Theme, iced::Renderer> for Crabot
             text_color: Some(color_code_text()),
             ..container::Style::default()
         })
-        .into()
+    }
+
+    fn heading(
+        &self,
+        settings: markdown::Settings,
+        level: &'a markdown::HeadingLevel,
+        text: &'a markdown::Text,
+    ) -> impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a {
+        let size = match level {
+            markdown::HeadingLevel::H1 => settings.h1_size,
+            markdown::HeadingLevel::H2 => settings.h2_size,
+            markdown::HeadingLevel::H3 => settings.h3_size,
+            markdown::HeadingLevel::H4 => settings.h4_size,
+            markdown::HeadingLevel::H5 => settings.h5_size,
+            markdown::HeadingLevel::H6 => settings.h6_size,
+        };
+        container(self.text_widget(
+            markdown::Settings {
+                font: Font {
+                    weight: font::Weight::Bold,
+                    ..settings.font
+                },
+                inline_code_font: Font {
+                    weight: font::Weight::Bold,
+                    ..settings.inline_code_font
+                },
+                inline_code_size: size * (settings.inline_code_size / settings.text_size),
+                ..settings
+            },
+            text,
+            size,
+        ))
+    }
+
+    fn paragraph(
+        &self,
+        settings: markdown::Settings,
+        text: &markdown::Text,
+    ) -> impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a {
+        let size = settings.text_size;
+        self.text_widget(settings, text, size)
     }
 }
 
-/// Render markdown as double-click-to-select text with transparent inline-code styling.
+/// Render Markdown as selectable rich text.
 fn markdown_element<'a>(
     md: &'a markdown::Content,
-    i: usize,
     text_size: f32,
     ctx: &TurnView<'a>,
 ) -> Element<'a, CenterPaneEvent> {
-    let code_size = (text_size - 1.0) * ctx.font_scale;
-    let text_size = text_size * ctx.font_scale;
-    let mut md_style = markdown::Style::from(ctx.theme.clone());
-    md_style.inline_code_highlight = Highlight {
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border::default(),
-    };
-    md_style.inline_code_padding = 0.into();
-    md_style.inline_code_color = color_text_strong();
-    md_style.code_block_font = Font::MONOSPACE;
-    let md_settings = markdown::Settings {
-        code_size: code_size.into(),
-        ..markdown::Settings::with_text_size(text_size, md_style)
-    };
-    mouse_area(markdown::view_with(md.items(), md_settings, &CrabotViewer))
-        .on_double_click(CenterPaneEvent::Conversation(
-            ConversationEvent::ToggleSelectableMode(Some(i)),
-        ))
-        .into()
+    let settings = markdown::Settings::with_text_size(text_size * ctx.font_scale);
+    markdown::view_with(md.items(), settings, &CrabotViewer { theme: ctx.theme }).boxed()
 }
 
 /// Build a complete Text turn block (header + body + bubble).
@@ -712,7 +774,8 @@ fn text_turn_block<'a>(
     // because `role_badge_style` keys its palette on it.
     let badge = role_badge(ctx.lang.tr(role_label), role_label, ctx.font_scale, "");
     let ts_text = ctx.timestamp(&msg.timestamp);
-    let mut content_col = column![].spacing(8).width(Fill);
+    let mut content_col: iced::widget::Column<Element<'a, CenterPaneEvent>> =
+        column![].spacing(8).width(Fill);
 
     // ── header: badge + (indicator if reasoning) + timestamp ──
     if tc.reasoning.is_some() {
@@ -734,12 +797,13 @@ fn text_turn_block<'a>(
                 .on_press(CenterPaneEvent::Conversation(
                     ConversationEvent::ToggleTurnExpand(i, 0),
                 ))
-                .interaction(mouse::Interaction::Pointer),
+                .interaction(mouse::Interaction::Pointer)
+                .boxed(),
         );
     } else {
         let header =
             row![badge, Space::new().width(Length::Fill), ts_text].align_y(Alignment::Center);
-        content_col = content_col.push(header);
+        content_col = content_col.push(header.boxed());
     }
 
     // ── body: reasoning + content ──
@@ -747,16 +811,15 @@ fn text_turn_block<'a>(
         // Default expanded; badge-row click toggles collapse.
         if !ctx.expanded_turns.contains(&(i, 0)) {
             let reasoning_body: Element<'_, CenterPaneEvent> = if ctx.search_query.trim().is_empty()
-                && !ctx.selectable_msgs.contains(&i)
                 && let Some(md) = &tc.reasoning_md
                 && (!is_plain_text(md) || tc.reasoning_has_url)
             {
-                markdown_element(md, i, 13.0, ctx)
+                markdown_element(md, 13.0, ctx)
             } else {
                 selectable(reasoning, ctx.search_query)
                     .size(13.0 * ctx.font_scale)
                     .style(sel_muted)
-                    .into()
+                    .boxed()
             };
             content_col = content_col.push(
                 container(reasoning_body)
@@ -767,22 +830,23 @@ fn text_turn_block<'a>(
                         right: 10.0,
                         bottom: 6.0,
                         left: 10.0,
-                    }),
+                    })
+                    .boxed(),
             );
         }
     }
     // Search hits stay selectable as plain text; otherwise prefer markdown.
     if ctx.search_query.trim().is_empty()
-        && !ctx.selectable_msgs.contains(&i)
         && let Some(md) = &tc.content_md
         && (!is_plain_text(md) || tc.has_url)
     {
-        content_col = content_col.push(markdown_element(md, i, 14.0, ctx));
+        content_col = content_col.push(markdown_element(md, 14.0, ctx));
     } else {
         content_col = content_col.push(
             selectable(&tc.content, ctx.search_query)
                 .size(14.0 * ctx.font_scale)
-                .style(sel_default),
+                .style(sel_default)
+                .boxed(),
         );
     }
 
@@ -853,7 +917,7 @@ fn attachment_preview_body<'a>(
         AttachmentPreview::Loading(_) => text(ctx.lang.tr("Loading…"))
             .size(12.0 * ctx.font_scale)
             .color(color_muted())
-            .into(),
+            .boxed(),
         AttachmentPreview::Failed(reason) => text(
             ctx.lang
                 .tr("Failed to load attachment: {reason}")
@@ -861,14 +925,14 @@ fn attachment_preview_body<'a>(
         )
         .size(12.0 * ctx.font_scale)
         .color(color_danger_text())
-        .into(),
+        .boxed(),
         AttachmentPreview::Ready(PreviewContent::Image(handle)) => {
             container(image(handle.clone()).border_radius(6.0))
-                .max_width(PREVIEW_MAX_WIDTH)
-                .max_height(PREVIEW_MAX_HEIGHT)
+                .width(Length::Fit.max(PREVIEW_MAX_WIDTH))
+                .height(Length::Fit.max(PREVIEW_MAX_HEIGHT))
                 .padding(4)
                 .style(attachment_chip_style)
-                .into()
+                .boxed()
         }
         AttachmentPreview::Ready(PreviewContent::Text(content)) => container(
             scrollable(
@@ -881,11 +945,11 @@ fn attachment_preview_body<'a>(
                 Scrollbar::new().width(4).scroller_width(4),
             )),
         )
-        .max_height(TEXT_PREVIEW_MAX_HEIGHT)
+        .height(Length::Fit.max(TEXT_PREVIEW_MAX_HEIGHT))
         .width(Fill)
         .padding(8)
         .style(attachment_chip_style)
-        .into(),
+        .boxed(),
     }
 }
 
@@ -904,7 +968,6 @@ pub(crate) fn center_pane<'a>(
     let status = conversation.status(lang);
     let streaming: DialogPhase = tab.session_state.phase;
     let retrying = tab.session_state.retry.is_some();
-    let selectable_msgs: &HashSet<usize> = &tab.selectable_msgs;
     let pending_user_prompt: Option<&UserPrompt> = tab.session_state.pending_prompt.as_ref();
     let ask_request: Option<&AskRequest> = tab.session_state.ask_request.as_ref();
     let ask_input: &str = &tab.session_state.ask_input;
@@ -934,7 +997,6 @@ pub(crate) fn center_pane<'a>(
     // Set up shared context for turn block builders.
     let turn_ctx = TurnView {
         expanded_turns,
-        selectable_msgs,
         attachment_previews: &tab.attachment_previews,
         theme,
         font_scale,
@@ -961,7 +1023,7 @@ pub(crate) fn center_pane<'a>(
                 text(indicator)
                     .size(10.0 * font_scale)
                     .color(color_accent())
-                    .into(),
+                    .boxed(),
             ];
             if let Some(mode) = &dialog.mode {
                 row_elements.push(work_mode_badge(mode.label(lang), font_scale, search_query));
@@ -1032,7 +1094,7 @@ pub(crate) fn center_pane<'a>(
                             .padding(2)
                             .style(style)
                             .id(turn_ids[i].clone())
-                            .into()
+                            .boxed()
                     })
                     .collect()
             };
@@ -1043,75 +1105,71 @@ pub(crate) fn center_pane<'a>(
                 content = content.push(
                     container(column(turn_blocks).spacing(8))
                         .padding(Padding::new(10.0).top(8.0))
-                        .width(Fill),
+                        .width(Fill)
+                        .boxed(),
                 );
             }
             container(content.spacing(0).width(Fill))
                 .style(dialog_container_style)
                 .clip(true)
-                .into()
+                .boxed()
         })
         .collect();
 
-    mouse_area(
-        container(column![
-            super::session_tabs::session_tabs(conversation, lang, right_pane_collapsed),
-            session_header(tab.header_title(), conversation, lang),
-            pending_header(pending_user_prompt, viewing_number, lang),
-            if search_state.visible {
-                super::search_bar::view(search_query, search_results, search_state.current, lang)
-                    .map(|event| {
-                        CenterPaneEvent::Conversation(ConversationEvent::SearchEvent(event))
-                    })
-            } else {
-                row![].into()
-            },
-            scrollable(
-                column![
-                    session_info(&tab.session, font_scale, conversation, lang),
-                    column(dialog_blocks).spacing(8),
-                ]
-                .spacing(8)
-                .padding(14),
-            )
-            .height(Fill)
-            .direction(Direction::Vertical(
-                Scrollbar::new().width(6).scroller_width(6)
-            ))
-            .id(MESSAGE_SCROLL.clone())
-            .on_scroll(CenterPaneEvent::SessionViewScrolled),
-            ask_request
-                .map(|request| {
-                    super::tool_message::ask_view(
-                        request,
-                        ask_input,
-                        ask_custom_input,
-                        tab.session_state.ask_seconds_left,
-                        font_scale,
-                        lang,
-                    )
-                    .map(CenterPaneEvent::Conversation)
-                })
-                .unwrap_or_else(|| Space::new().into()),
-            status_line(
-                status,
-                streaming,
-                retrying,
-                &running_tabs,
-                viewing_number,
-                font_scale,
-                lang,
-                usage,
-            ),
-        ])
-        .width(Fill)
+    container(column![
+        super::session_tabs::session_tabs(conversation, lang, right_pane_collapsed),
+        session_header(tab.header_title(), conversation, lang),
+        pending_header(pending_user_prompt, viewing_number, lang),
+        if search_state.visible {
+            super::search_bar::view(search_query, search_results, search_state.current, lang)
+                .map(|event| CenterPaneEvent::Conversation(ConversationEvent::SearchEvent(event)))
+                .boxed()
+        } else {
+            Space::new().width(0).height(0).boxed()
+        },
+        scrollable(
+            column![
+                session_info(&tab.session, font_scale, conversation, lang),
+                column(dialog_blocks).spacing(8),
+            ]
+            .spacing(8)
+            .padding(14),
+        )
         .height(Fill)
-        .style(pane_center),
-    )
-    .on_press(CenterPaneEvent::Conversation(
-        ConversationEvent::DefocusSessionPicker,
-    ))
-    .into()
+        .direction(Direction::Vertical(
+            Scrollbar::new().width(6).scroller_width(6)
+        ))
+        .id(MESSAGE_SCROLL.clone())
+        .on_scroll(|scroll| CenterPaneEvent::SessionViewScrolled(scroll.viewport)),
+        ask_request
+            .map(|request| {
+                super::tool_message::ask_view(
+                    request,
+                    ask_input,
+                    ask_custom_input,
+                    tab.session_state.ask_seconds_left,
+                    font_scale,
+                    lang,
+                )
+                .map(CenterPaneEvent::Conversation)
+                .boxed()
+            })
+            .unwrap_or_else(|| Space::new().boxed()),
+        status_line(
+            status,
+            streaming,
+            retrying,
+            &running_tabs,
+            viewing_number,
+            font_scale,
+            lang,
+            usage,
+        ),
+    ])
+    .width(Fill)
+    .height(Fill)
+    .style(pane_center)
+    .boxed()
 }
 
 // ── session header ──────────────────────────────────────────────────
@@ -1129,7 +1187,7 @@ fn session_header<'a>(
         prompt
     };
     header_bar(
-        selectable(title, "").size(14.0).style(sel_default).into(),
+        selectable(title, "").size(14.0).style(sel_default).boxed(),
         header_actions_menu(conversation, lang),
         session_header_style,
     )
@@ -1189,7 +1247,7 @@ fn header_actions_menu(
             if let Some(event) = event {
                 item = item.on_press(CenterPaneEvent::Conversation(event));
             }
-            item.into()
+            item.boxed()
         }))
         .width(180)
         .padding([4, 0]),
@@ -1209,7 +1267,7 @@ fn header_actions_menu(
         .on_dismiss(CenterPaneEvent::Conversation(
             ConversationEvent::ToggleHeaderActionsMenu,
         ))
-        .into()
+        .boxed()
 }
 
 /// Displays model ID, the spawning parent session, and creation time.
@@ -1222,9 +1280,10 @@ fn session_info<'a>(
     let model_id = session.model.as_ref().map(|m| m.model_id.as_str());
     let parent = session.parent.as_str();
     if model_id.is_none() && parent.is_empty() {
-        return row![].into();
+        return Space::new().width(0).height(0).boxed();
     }
-    let mut info = row![].spacing(8).align_y(Alignment::Center);
+    let mut info: iced::widget::Row<Element<'a, CenterPaneEvent>> =
+        row![].spacing(8).align_y(Alignment::Center);
     if let Some(model_id) = model_id {
         let model = lang
             .tr("Model: {model_id}")
@@ -1232,16 +1291,18 @@ fn session_info<'a>(
         info = info.push(
             selectable(model, "")
                 .size(12.0 * font_scale)
-                .style(sel_muted),
+                .style(sel_muted)
+                .boxed(),
         );
     }
     if !parent.is_empty() {
         let source = parent_label(conversation, parent, lang);
         let spawned = lang.tr("Spawned from {}").replacen("{}", &source, 1);
-        info = info.push(Space::new().width(Length::Fill)).push(
+        info = info.push(Space::new().width(Length::Fill).boxed()).push(
             selectable(spawned, "")
                 .size(12.0 * font_scale)
-                .style(sel_muted),
+                .style(sel_muted)
+                .boxed(),
         );
     }
     let created = lang
@@ -1249,9 +1310,10 @@ fn session_info<'a>(
         .replacen("{}", &session.created_at, 1);
     let time_text = selectable(created, "")
         .size(12.0 * font_scale)
-        .style(sel_muted);
+        .style(sel_muted)
+        .boxed();
     container(
-        info.push(Space::new().width(Length::Fill))
+        info.push(Space::new().width(Length::Fill).boxed())
             .push(time_text)
             .width(Fill),
     )
@@ -1261,7 +1323,7 @@ fn session_info<'a>(
         bottom: 4.0,
         left: 12.0,
     })
-    .into()
+    .boxed()
 }
 
 /// Parent reference: the open tab's label ("Session 2"), else the raw session id.
@@ -1286,7 +1348,9 @@ fn header_bar<'a>(
         .width(Fill)
         .height(Length::Shrink);
     let bar = row![
-        container(label).width(Fill).max_height(HEADER_MAX_HEIGHT),
+        container(label)
+            .width(Fill)
+            .height(Length::Fit.max(HEADER_MAX_HEIGHT)),
         action,
     ]
     .spacing(6)
@@ -1295,7 +1359,7 @@ fn header_bar<'a>(
         .width(Fill)
         .padding([6, 14])
         .style(style)
-        .into()
+        .boxed()
 }
 
 /// Pending prompt bar: muted, selectable text plus a button that hands the
@@ -1306,13 +1370,13 @@ fn pending_header<'a>(
     lang: Lang,
 ) -> Element<'a, CenterPaneEvent> {
     let Some(prompt) = prompt else {
-        return row![].into();
+        return Space::new().width(0).height(0).boxed();
     };
     header_bar(
         selectable(pending_prompt_text(prompt), "")
             .size(13.0)
             .style(sel_muted)
-            .into(),
+            .boxed(),
         icons::icon_action(
             icons::CLOSE,
             lang.tr("Discard pending prompt"),
@@ -1363,13 +1427,15 @@ fn status_line(
     lang: Lang,
     usage: Option<String>,
 ) -> Element<'static, CenterPaneEvent> {
-    let mut row = row![].align_y(Alignment::Center).spacing(8);
+    let mut row: iced::widget::Row<Element<'static, CenterPaneEvent>> =
+        row![].align_y(Alignment::Center).spacing(8);
 
     // Viewing tab status; stop button while streaming.
     row = row.push(
         text(lang.tr(status_text.as_ref()).to_string())
             .size(12.0 * font_scale)
-            .color(color_muted()),
+            .color(color_muted())
+            .boxed(),
     );
     // Streaming actions: stop while busy, retry while a countdown is pending.
     for (show, label, event) in [
@@ -1383,7 +1449,8 @@ fn status_line(
                         ConversationEvent::SessionEvent(viewing_number, event),
                     ))
                     .padding([4, 10])
-                    .style(icon_button_style),
+                    .style(icon_button_style)
+                    .boxed(),
             );
         }
     }
@@ -1401,7 +1468,12 @@ fn status_line(
         } else {
             lang.tr("Sessions {} running…").replacen("{}", &nums, 1)
         };
-        row = row.push(text(label).size(12.0 * font_scale).color(color_muted()));
+        row = row.push(
+            text(label)
+                .size(12.0 * font_scale)
+                .color(color_muted())
+                .boxed(),
+        );
     }
 
     let bar = container(row)
@@ -1412,7 +1484,7 @@ fn status_line(
 
     // Overlay the usage text so the centered status text keeps its position.
     let Some(usage) = usage else {
-        return bar.into();
+        return bar.boxed();
     };
     stack![
         bar,
@@ -1421,5 +1493,5 @@ fn status_line(
             .center_y(Fill)
             .padding([0, 12])
     ]
-    .into()
+    .boxed()
 }

@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use iced::{
-    Element,
-    widget::{button, svg, text, tooltip},
+    Element, Widget as _,
+    widget::{button, container, svg, text, tooltip},
 };
 
 use super::styles::{icon_button_style, tooltip_style};
@@ -94,7 +94,7 @@ pub(crate) fn icon_action<M: Clone + 'static>(
             .on_press(on_press)
             .padding(6)
             .style(icon_button_style)
-            .into(),
+            .boxed(),
         tip,
     )
 }
@@ -105,11 +105,16 @@ pub(crate) fn with_tooltip<'a, M: 'static>(
     content: Element<'a, M>,
     tip: &'a str,
 ) -> Element<'a, M> {
-    tooltip(content, text(tip).size(11), tooltip::Position::Bottom)
-        .gap(4)
-        .delay(Duration::from_millis(400))
-        .style(tooltip_style)
-        .into()
+    tooltip(
+        content,
+        container(text(tip).size(11))
+            .padding([3, 6])
+            .style(tooltip_style),
+    )
+    .position(tooltip::Position::Bottom)
+    .gap(4)
+    .delay(Duration::from_millis(400))
+    .boxed()
 }
 
 /// Chevron button that collapses or expands a section, with a tooltip.

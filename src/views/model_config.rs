@@ -1,19 +1,12 @@
 use super::icons;
 use super::styles::styled_pick_list;
-use super::theme::{
-    color_accent, color_accent_hover, color_border, color_on_accent, color_surface,
-    color_text_strong,
-};
+use super::theme::{color_border, color_text_strong};
 use crabot::model::{Model, ModelConfig, ModelList};
 use iced::{
-    Alignment, Background, Border, Element, Fill, Length,
+    Alignment, Border, Element, Fill, Widget as _,
     border::Radius,
     mouse,
-    widget::{button, column, container, mouse_area, row, svg, text, toggler},
-};
-use iced_aw::{
-    style::{status::Status, tab_bar::Style as TabBarStyle},
-    widget::tab_bar::{TabBar, TabLabel},
+    widget::{button, column, mouse_area, row, svg, text, toggler},
 };
 
 /// Pick-list entry pairing a provider id with its display name.
@@ -55,38 +48,13 @@ pub(crate) fn model_config_view<'a>(
         })
         .collect();
     // ── Tab bar for model config switching ───────────────────────
-    let tab_bar: Element<_> = {
-        let names: Vec<String> = provided_models.models.keys().cloned().collect();
-        let mut bar = TabBar::new(move |name: String| Event::SelectModelConfig(name))
-            .tab_width(Length::Shrink)
-            .text_size(13.0)
-            .padding([0, 8])
-            .style(|_theme: &iced::Theme, status| TabBarStyle {
-                tab_border_radius: Radius {
-                    top_left: 6.0,
-                    top_right: 6.0,
-                    bottom_right: 0.0,
-                    bottom_left: 0.0,
-                },
-                tab_label_background: match status {
-                    Status::Active => Background::Color(color_accent()),
-                    Status::Hovered => Background::Color(color_accent_hover()),
-                    _ => Background::Color(color_surface()),
-                },
-                tab_label_border_color: color_border(),
-                text_color: match status {
-                    Status::Active => color_on_accent(),
-                    _ => color_text_strong(),
-                },
-                ..Default::default()
-            });
-
-        for name in names {
-            bar = bar.push(name.clone(), TabLabel::Text(name));
-        }
-        bar = bar.set_active_tab(selected);
-        bar.into()
-    };
+    let tab_bar = crate::views::scrollable_tab_bar(provided_models.models.keys().map(|name| {
+        (
+            name.clone(),
+            name == selected,
+            Event::SelectModelConfig(name.clone()),
+        )
+    }));
 
     let gear_icon = svg(svg::Handle::from_memory(icons::SETTINGS))
         .width(16)
@@ -100,13 +68,11 @@ pub(crate) fn model_config_view<'a>(
             .padding([2, 6])
             .style(crate::views::styles::secondary_button)
             .on_press(Event::OpenSettings)
-            .into(),
+            .boxed(),
         lang.tr("Open Settings"),
     );
 
-    let header_row: Element<_> = row![container(tab_bar).width(Fill), gear_button,]
-        .align_y(Alignment::Center)
-        .into();
+    let header_row = row![tab_bar, gear_button].align_y(Alignment::Center);
 
     let selected_config = provided_models.get_config(selected);
     let selected_entry: Option<ProviderEntry> = selected_config
@@ -134,22 +100,22 @@ pub(crate) fn model_config_view<'a>(
         toggler(thinking_enabled)
             .on_toggle(Event::ToggleThinking)
             .style(crate::views::primary_toggler)
-            .into()
+            .boxed()
     } else {
         mouse_area(toggler(false).style(crate::views::primary_toggler))
             .interaction(mouse::Interaction::None)
-            .into()
+            .boxed()
     };
 
     let thinking_row: Element<_> = if supported {
         let levels: &[String] = selected_model.map(|m| &*m.thinking_levels).unwrap_or(&[]);
         let selected_level = thinking_level.and_then(|i| levels.get(i));
         let level_picker: Element<_> = if levels.is_empty() {
-            iced::widget::Space::new().width(Fill).height(30.0).into()
+            iced::widget::Space::new().width(Fill).height(30.0).boxed()
         } else {
             styled_pick_list(levels, selected_level, Event::SelectThinkingLevel)
                 .width(Fill)
-                .into()
+                .boxed()
         };
         row![
             text(lang.tr("Thinking")).size(14).width(60.0),
@@ -159,7 +125,7 @@ pub(crate) fn model_config_view<'a>(
         ]
         .spacing(8)
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
     } else {
         row![
             text(lang.tr("Thinking")).size(14).width(60.0),
@@ -168,7 +134,7 @@ pub(crate) fn model_config_view<'a>(
         ]
         .spacing(8)
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
     };
 
     column![
@@ -203,7 +169,7 @@ pub(crate) fn model_config_view<'a>(
         }),
     ]
     .spacing(0)
-    .into()
+    .boxed()
 }
 
 pub(crate) fn update(

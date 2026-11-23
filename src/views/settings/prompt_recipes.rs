@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Element, Length, Widget as _,
     widget::{button, column, container, row, text, text_input},
 };
 
@@ -59,7 +59,7 @@ pub(super) fn prompt_recipes_page<'a>(state: &'a SettingsState) -> Element<'a, S
                 )
             })
             .collect();
-        column(cards).spacing(8).into()
+        column(cards).spacing(8).boxed()
     };
 
     let action_row = super::save_action_row(
@@ -68,7 +68,7 @@ pub(super) fn prompt_recipes_page<'a>(state: &'a SettingsState) -> Element<'a, S
         SettingsEvent::Recipes(RecipesEvent::SavePromptRecipes),
     );
 
-    column![header, body, action_row].spacing(12).into()
+    column![header, body, action_row].spacing(12).boxed()
 }
 
 // ── Mode card ─────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ fn mode_card<'a>(
     .padding([10, 12])
     .style(form_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 // ── Recipe list within an expanded mode ────────────────────────────
@@ -125,7 +125,7 @@ fn recipe_list<'a>(
             add_recipe_button(mk, lang),
         ]
         .spacing(8)
-        .into();
+        .boxed();
     }
 
     let items: Vec<Element<'a, SettingsEvent>> = recipes
@@ -136,7 +136,7 @@ fn recipe_list<'a>(
 
     column![column(items).spacing(8), add_recipe_button(mk, lang),]
         .spacing(8)
-        .into()
+        .boxed()
 }
 
 fn add_recipe_button(mode_key: String, lang: Lang) -> Element<'static, SettingsEvent> {
@@ -144,7 +144,7 @@ fn add_recipe_button(mode_key: String, lang: Lang) -> Element<'static, SettingsE
         .padding([4, 10])
         .style(crate::views::styles::primary_button)
         .on_press(SettingsEvent::Recipes(RecipesEvent::NewRecipe(mode_key)))
-        .into()
+        .boxed()
 }
 
 // ── Recipe row ────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ fn recipe_row<'a>(
         .width(Length::Fill)
         .padding(4)
         .size(13)
-        .into();
+        .boxed();
 
     container(
         row![label, input, delete]
@@ -186,7 +186,7 @@ fn recipe_row<'a>(
             .align_y(Alignment::Center),
     )
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 // ── Update ─────────────────────────────────────────────────────────

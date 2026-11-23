@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use iced::widget::scrollable::Viewport;
 use iced::widget::{Space, column, container, row, text_editor};
-use iced::{Element, Length, Point, Size, Subscription, Task, Theme};
+use iced::{Element, Length, Point, Size, Subscription, Task, Theme, Widget as _};
 
 use crabot::model::{self, ModelConfig, ModelList};
 use crabot::settings::{Appearance, FONT_SCALE_MAX, FONT_SCALE_MIN};
@@ -75,6 +75,8 @@ pub(crate) struct LayoutState {
     pub(crate) ctrl_held: bool,
     pub(crate) scroll_viewport_height: f32,
     pub(crate) focused: Option<FocusedTarget>,
+    /// Horizontal span of the pane where the last text selection began.
+    pub(crate) selection_x: Option<(f32, f32)>,
     /// Whether the window has OS focus (gates taskbar attention).
     pub(crate) window_focused: bool,
 }
@@ -300,12 +302,7 @@ impl ToolState {
     }
 }
 
-/// Compact scroll state for the tab-bar scrollable.
-///
-/// The `Viewport` type has private fields, so we track the three values we need
-/// separately.  The struct is updated both by `on_scroll` (user scroll / layout)
-/// and eagerly when arrow buttons are clicked, keeping arrow visibility and
-/// scroll-target clamping in sync.
+/// Scroll offsets and sizes of the tab bar, updated on scroll and arrow clicks.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TabBarScrollState {
     /// Current absolute horizontal scroll offset.
@@ -320,8 +317,8 @@ impl TabBarScrollState {
     pub fn from_viewport(vp: &Viewport) -> Self {
         Self {
             offset: vp.absolute_offset().x,
-            viewport_w: vp.bounds().width,
-            content_w: vp.content_bounds().width,
+            viewport_w: vp.bounds.width,
+            content_w: vp.content.width,
         }
     }
 
@@ -560,7 +557,10 @@ pub(crate) struct App {
 #[derive(Clone)]
 pub(crate) enum LayoutEvent {
     CursorMoved(Point),
-    LeftPressed,
+    /// A left press; `ignored` means no widget consumed it.
+    LeftPressed {
+        ignored: bool,
+    },
     LeftReleased,
     WindowResized(Size),
     WindowMoved(Point),
@@ -573,7 +573,6 @@ pub(crate) enum LayoutEvent {
     ScrollPageUp,
     ScrollToHome,
     ScrollToEnd,
-    UndoRedo(textarea::Message),
     EscapePressed,
     Zoom(f32),
     ToggleTheme(bool),
@@ -619,7 +618,7 @@ pub(crate) enum PromptEvent {
     AttachmentsValidated(Vec<UserAttachment>, Vec<String>),
     /// Ctrl/Cmd+V in the prompt editor; images are checked first.
     PasteClipboard,
-    /// Clipboard text from iced when the native clipboard fails.
+    /// Clipboard text read through iced.
     ClipboardText(Option<String>),
     /// A saved clipboard image or why it could not be attached.
     ClipboardImage(Result<UserAttachment, String>),
@@ -704,7 +703,6 @@ pub(crate) enum ConversationEvent {
     /// Result of the HTML export.
     ExportSessionHtmlDone(crate::views::export::ExportOutcome),
     AppClosing,
-    ToggleSelectableMode(Option<usize>),
     SearchEvent(crate::views::SearchEvent),
     /// (tab_number, generation, offsets, target_y) — target_y scrolls only if that tab is still viewing.
     TurnOffsetsMeasured(usize, u64, Vec<f32>, Option<f32>),
@@ -960,6 +958,7 @@ impl App {
                 ctrl_held: false,
                 scroll_viewport_height: 0.0,
                 focused: None,
+                selection_x: None,
                 window_focused: true,
             },
             prompt,
@@ -1310,7 +1309,7 @@ impl App {
                     .center_x(Length::Fill)
                     .center_y(Length::Fill),
             ]
-            .into()
+            .boxed()
         } else if self.overlay.show_workspace_dialog {
             iced::widget::stack![
                 main,
@@ -1320,29 +1319,29 @@ impl App {
                 )
                 .map(Message::Overlay),
             ]
-            .into()
+            .boxed()
         } else if self.overlay.show_revert_all_confirm {
             iced::widget::stack![
                 main,
                 crate::views::revert_all_modal(self.settings.language).map(Message::Overlay)
             ]
-            .into()
+            .boxed()
         } else if let Some(confirm) = &self.overlay.delete_dialog {
             iced::widget::stack![
                 main,
                 crate::views::delete_dialog_modal(confirm, self.settings.language)
                     .map(Message::Overlay)
             ]
-            .into()
+            .boxed()
         } else if let Some(confirm) = &self.overlay.stop_subtask {
             iced::widget::stack![
                 main,
                 crate::views::stop_subtask_modal(confirm, self.settings.language)
                     .map(Message::Overlay)
             ]
-            .into()
+            .boxed()
         } else {
-            iced::widget::stack![main].into()
+            iced::widget::stack![main].boxed()
         }
     }
 
@@ -1352,7 +1351,7 @@ impl App {
         let right_pane_collapsed = self.settings.right_pane_width <= 0.0;
         let right_side: Element<'_, Message> = if right_pane_collapsed {
             // Collapsed: skip laying out the pane content entirely.
-            Space::new().into()
+            Space::new().boxed()
         } else {
             row![
                 divider(&self.layout.right_divider),
@@ -1382,57 +1381,60 @@ impl App {
                     }
                 }),
             ]
-            .into()
+            .boxed()
         };
-        row![
-            left_pane(
-                &self.settings,
-                &self.prompt,
-                &self.conversation,
-                &self.tools,
-                &self.models,
-            )
-            .map(|event| match event {
-                LeftPaneEvent::ModelConfig(e) => {
-                    Message::ModelSettings(ModelSettingsEvent::ModelConfig(e))
-                }
-                LeftPaneEvent::Prompt(e) => Message::Prompt(e),
-                LeftPaneEvent::Conversation(e) => Message::Conversation(e),
-                LeftPaneEvent::Tools(e) => Message::Tools(e),
-            }),
-            divider(&self.layout.left_divider),
-            center_pane(
-                &self.conversation,
-                &self.layout.theme,
-                self.settings.font_scale,
-                self.settings.language,
-                model,
-                right_pane_collapsed,
-            )
-            .map(|event| match event {
-                CenterPaneEvent::Conversation(e) => Message::Conversation(e),
-                CenterPaneEvent::SessionViewScrolled(vp) => {
-                    Message::Layout(LayoutEvent::SessionViewScrolled(vp))
-                }
-                CenterPaneEvent::LinkClicked(url) => {
-                    if self.layout.ctrl_held
-                        && let Err(e) = open::that_detached(&url)
-                    {
-                        tracing::warn!("failed to open link '{url}': {e}");
+        crate::widgets::selection_scope::selection_scope(
+            row![
+                left_pane(
+                    &self.settings,
+                    &self.prompt,
+                    &self.conversation,
+                    &self.tools,
+                    &self.models,
+                )
+                .map(|event| match event {
+                    LeftPaneEvent::ModelConfig(e) => {
+                        Message::ModelSettings(ModelSettingsEvent::ModelConfig(e))
                     }
-                    Message::Conversation(ConversationEvent::DefocusSessionPicker)
-                }
-                CenterPaneEvent::TabBarScrolled(vp) => {
-                    Message::Layout(LayoutEvent::TabBarScrolled(vp))
-                }
-                CenterPaneEvent::ToggleRightPane => {
-                    Message::Layout(LayoutEvent::ToggleRightPane)
-                }
-            }),
-            right_side,
-        ]
-        .spacing(0)
-        .into()
+                    LeftPaneEvent::Prompt(e) => Message::Prompt(e),
+                    LeftPaneEvent::Conversation(e) => Message::Conversation(e),
+                    LeftPaneEvent::Tools(e) => Message::Tools(e),
+                }),
+                divider(&self.layout.left_divider),
+                center_pane(
+                    &self.conversation,
+                    &self.layout.theme,
+                    self.settings.font_scale,
+                    self.settings.language,
+                    model,
+                    right_pane_collapsed,
+                )
+                .map(|event| match event {
+                    CenterPaneEvent::Conversation(e) => Message::Conversation(e),
+                    CenterPaneEvent::SessionViewScrolled(vp) => {
+                        Message::Layout(LayoutEvent::SessionViewScrolled(vp))
+                    }
+                    CenterPaneEvent::LinkClicked(url) => {
+                        if self.layout.ctrl_held
+                            && let Err(e) = open::that_detached(&url)
+                        {
+                            tracing::warn!("failed to open link '{url}': {e}");
+                        }
+                        Message::Conversation(ConversationEvent::DefocusSessionPicker)
+                    }
+                    CenterPaneEvent::TabBarScrolled(vp) => {
+                        Message::Layout(LayoutEvent::TabBarScrolled(vp))
+                    }
+                    CenterPaneEvent::ToggleRightPane => {
+                        Message::Layout(LayoutEvent::ToggleRightPane)
+                    }
+                }),
+                right_side,
+            ]
+            .spacing(0)
+            .boxed(),
+            self.layout.selection_x,
+        )
     }
 
     /// Optionally prepend the update-available banner.
@@ -1448,7 +1450,7 @@ impl App {
                 body
             ]
             .spacing(0)
-            .into()
+            .boxed()
         } else {
             body
         }

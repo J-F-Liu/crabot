@@ -334,9 +334,9 @@ fn dark_colors() -> &'static ModeColors {
     }
 }
 
-/// iced palette derived from a [`ModeColors`] table.
-fn palette(colors: &ModeColors) -> iced::theme::Palette {
-    iced::theme::Palette {
+/// iced palette seed derived from a [`ModeColors`] table.
+fn palette_seed(colors: &ModeColors) -> iced::theme::palette::Seed {
+    iced::theme::palette::Seed {
         background: colors.bg,
         text: colors.text,
         primary: colors.accent,
@@ -350,7 +350,7 @@ fn palette(colors: &ModeColors) -> iced::theme::Palette {
 pub(crate) fn theme_for_current() -> Theme {
     let dark = is_dark();
     let name = if dark { "Crabot Dark" } else { "Crabot Light" };
-    Theme::custom(name, palette(colors_for(dark)))
+    Theme::custom(name, palette_seed(colors_for(dark)))
 }
 
 fn thin_scrollbar() -> Scrollbar {

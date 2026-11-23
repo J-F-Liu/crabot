@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Element, Fill, Font, font,
+    Alignment, Element, Fill, Font, Widget, font,
     widget::{button, column, container, row, text},
 };
 
@@ -95,7 +95,7 @@ pub(crate) fn session_view<'a>(
         .width(Fill)
         .align_x(Alignment::Start)
         .padding([5, 8])
-        .into()
+        .boxed()
     } else {
         let list = DropDown::new(session_options, selected, ConversationEvent::LoadSession)
             .width(Fill)
@@ -112,7 +112,7 @@ pub(crate) fn session_view<'a>(
             list.style(crate::views::secondary_dropdown_style)
         };
 
-        container(list).into()
+        container(list).boxed()
     };
 
     column![
@@ -127,7 +127,7 @@ pub(crate) fn session_view<'a>(
         .spacing(8),
     ]
     .spacing(4)
-    .into()
+    .boxed()
 }
 
 /// Only the fields needed for the dropdown; serde skips the rest.

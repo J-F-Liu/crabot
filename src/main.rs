@@ -25,15 +25,17 @@ pub(crate) use app::{
 
 use crate::views::theme::MIN_W;
 
-/// Apply the stored backend choice to `ICED_BACKEND` before iced starts:
-/// auto/empty leaves it unset, anything else (trimmed) is set verbatim.
-fn apply_iced_backend(backend: &str) {
+/// Map a stored backend name to an iced [`Backend`], keeping legacy names working.
+fn parse_backend(backend: &str) -> iced::Backend {
     let value = backend.trim();
-    // SAFETY: single-threaded startup, before iced reads the var in `run()`.
-    if value.is_empty() || value.eq_ignore_ascii_case("auto") {
-        unsafe { std::env::remove_var("ICED_BACKEND") };
-    } else {
-        unsafe { std::env::set_var("ICED_BACKEND", value) };
+    match value.to_ascii_lowercase().as_str() {
+        "" | "auto" => iced::Backend::Best,
+        "wgpu" => iced::Backend::Hardware(iced::backend::Api::Best),
+        // Legacy software renderer names.
+        "tiny_skia" | "tiny-skia" | "software" | "vello-cpu" | "vello_cpu" => {
+            iced::Backend::Software
+        }
+        _ => iced::Backend::Custom(value.to_owned()),
     }
 }
 
@@ -42,8 +44,7 @@ pub fn main() -> iced::Result {
     // Must precede any HTTP client: reqwest is built with `rustls-no-provider`.
     setup::install_crypto_provider();
     let saved = crabot::settings::Settings::load();
-    // Iced reads `ICED_BACKEND` once in `run()`, so apply it beforehand.
-    apply_iced_backend(&saved.iced_backend);
+    let backend = parse_backend(&saved.iced_backend);
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         iced_backend = %saved.iced_backend,
@@ -73,6 +74,7 @@ pub fn main() -> iced::Result {
     iced::application(move || App::boot(saved.clone()), App::update, App::view)
         .subscription(App::subscription)
         .theme(|state: &App| state.layout.theme.clone())
+        .backend(backend)
         .window(iced::window::Settings {
             size,
             position,

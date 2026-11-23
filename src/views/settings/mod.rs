@@ -11,11 +11,8 @@ use crabot::tools::custom::{CustomTool, ToolList, ToolParameter};
 use crabot::tools::mcp::{McpList, McpServer, McpTransport};
 use iced::padding;
 use iced::{
-    Alignment, Border, Color, Element, Length,
-    widget::{
-        Container, button, column, container, mouse_area, row, rule, scrollable, svg, text,
-        text_input,
-    },
+    Alignment, Border, Color, Element, Length, Widget as _,
+    widget::{button, column, container, mouse_area, row, rule, scrollable, svg, text, text_input},
 };
 use indexmap::IndexMap;
 use std::collections::{BTreeMap, HashMap};
@@ -78,7 +75,7 @@ pub(crate) enum SettingsEvent {
     SetColorStyle(ColorStyle),
     /// Change the chat font scale, clamped to 0.5–2.0 (applied immediately).
     SetFontScale(f32),
-    /// Choose the renderer backend (`ICED_BACKEND` value); takes effect after a restart.
+    /// Choose the renderer backend; takes effect after a restart.
     SetIcedBackend(String),
     Close,
     /// Events for the AI Models tab (providers, models, labels).
@@ -799,7 +796,7 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
                 .width(Length::Fill)
                 .style(sidebar_tab_style(is_active))
                 .on_press(SettingsEvent::SelectTab(tab))
-                .into()
+                .boxed()
         })
         .collect();
 
@@ -853,9 +850,9 @@ pub(crate) fn settings_dialog<'a>(state: &'a SettingsState) -> Element<'a, Setti
         border: Border::default().rounded(CRABOT_DIALOG_RADIUS),
         ..container::Style::default()
     })
-    .max_width(900)
-    .max_height(800)
-    .into()
+    .width(Length::Fit.max(900))
+    .height(Length::Fit.max(800))
+    .boxed()
 }
 
 pub(super) fn form_card_style(_theme: &iced::Theme) -> container::Style {
@@ -874,7 +871,7 @@ pub(super) fn section_rule() -> Element<'static, SettingsEvent> {
             radius: 0.0.into(),
             snap: false,
         })
-        .into()
+        .boxed()
 }
 
 // ── Shared form helpers ────────────────────────────────────────────
@@ -898,14 +895,15 @@ pub(super) fn save_action_row<'a>(
     row![iced::widget::Space::new().width(Length::Fill), save_button]
         .spacing(10)
         .padding(padding::top(8))
-        .into()
+        .boxed()
 }
 
 /// Right-aligned 90px label column used by form rows.
-pub(super) fn label_col<'a>(label: &'static str) -> Container<'a, SettingsEvent> {
+pub(super) fn label_col(label: &'static str) -> Element<'static, SettingsEvent> {
     container(text(label).size(14))
         .width(90)
         .align_x(Alignment::End)
+        .boxed()
 }
 
 /// A labelled single-line text input row used by the settings forms.
@@ -936,7 +934,7 @@ pub(super) fn field_row<'a>(
     row![label, input]
         .spacing(10)
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
 }
 
 /// A labelled multi-line [`TextArea`] row for editing longer text fields.
@@ -946,9 +944,7 @@ pub(super) fn textarea_field_row<'a>(
     placeholder: &'a str,
     on_action: impl Fn(crate::widgets::textarea::Message) -> SettingsEvent + 'a,
 ) -> Element<'a, SettingsEvent> {
-    let label = label_col(label)
-        .align_y(Alignment::Start)
-        .padding(padding::top(4));
+    let label = container(label_col(label)).padding(padding::top(4));
     let editor = area
         .view(on_action)
         .placeholder(placeholder)
@@ -956,7 +952,7 @@ pub(super) fn textarea_field_row<'a>(
     row![label, container(editor).width(Length::Fill)]
         .spacing(10)
         .align_y(Alignment::Start)
-        .into()
+        .boxed()
 }
 
 /// Thin separator between a card header and the expanded form.
@@ -968,7 +964,7 @@ pub(super) fn card_rule() -> Element<'static, SettingsEvent> {
             radius: 0.0.into(),
             snap: false,
         })
-        .into()
+        .boxed()
 }
 
 /// Sub-card used for nested editors inside a form card.
@@ -993,12 +989,16 @@ pub(super) fn delete_button_style(_theme: &iced::Theme, status: button::Status) 
 
 /// Bold primary-colored section heading.
 pub(super) fn section_header(title: &'static str) -> Element<'static, SettingsEvent> {
-    text(title).size(13).font(BOLD).color(color_accent()).into()
+    text(title)
+        .size(13)
+        .font(BOLD)
+        .color(color_accent())
+        .boxed()
 }
 
 /// Muted bold section title inside a settings card.
 pub(super) fn section_title(title: &'static str) -> Element<'static, SettingsEvent> {
-    text(title).size(12).font(BOLD).color(color_muted()).into()
+    text(title).size(12).font(BOLD).color(color_muted()).boxed()
 }
 
 /// Muted hint paragraph for an empty list.
@@ -1006,7 +1006,7 @@ pub(super) fn empty_hint(message: &'static str) -> Element<'static, SettingsEven
     container(text(message).size(12).color(color_muted()))
         .padding(16)
         .center_x(Length::Fill)
-        .into()
+        .boxed()
 }
 
 /// Clickable card header: expand arrow, bold title, muted summary.
@@ -1032,7 +1032,7 @@ pub(super) fn collapsible_header<'a>(
         .width(Length::Fill),
     )
     .on_press(on_toggle)
-    .into()
+    .boxed()
 }
 
 /// Section with a right-aligned label, a "+ Add" button, and optional
@@ -1055,7 +1055,7 @@ pub(super) fn add_section<'a>(
     .spacing(10)
     .align_y(Alignment::Center);
     if cards.is_empty() {
-        return column![header].spacing(6).into();
+        return column![header].spacing(6).boxed();
     }
     column![
         header,
@@ -1065,7 +1065,7 @@ pub(super) fn add_section<'a>(
         ],
     ]
     .spacing(6)
-    .into()
+    .boxed()
 }
 
 /// `{n} {word}` with an `s` plural when `n != 1`.

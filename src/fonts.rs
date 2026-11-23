@@ -1,5 +1,5 @@
-use fontdb::Family;
 use iced::advanced::graphics::text;
+use iced::advanced::graphics::text::cosmic_text::fontdb::{self, Family};
 
 pub fn load_system_fonts() {
     let mut fs = text::font_system().write().expect("Write font system");

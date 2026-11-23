@@ -13,7 +13,7 @@ use crate::widgets::textarea::TextArea;
 use crabot::i18n::Lang;
 use crabot::tools::mcp::{McpServer, McpTransport};
 use iced::{
-    Alignment, Element, Length,
+    Alignment, Element, Length, Widget as _,
     widget::{button, checkbox, column, container, row, text, text_input},
 };
 use indexmap::IndexMap;
@@ -83,7 +83,7 @@ pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Sett
                 )
             })
             .collect();
-        column(cards).spacing(8).into()
+        column(cards).spacing(8).boxed()
     };
 
     let action_row = super::save_action_row(
@@ -92,7 +92,7 @@ pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Sett
         SettingsEvent::Mcp(McpEvent::SaveMcp),
     );
 
-    column![header, body, action_row].spacing(12).into()
+    column![header, body, action_row].spacing(12).boxed()
 }
 
 // ── Server card ─────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ fn server_card<'a>(
     .padding([10, 12])
     .style(form_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 /// One-line summary of the transport, e.g. `stdio · npx -y @org/server`.
@@ -189,7 +189,7 @@ fn server_form<'a>(
             map_section(index, lang.tr("Env Vars"), "NAME", env_vars, lang),
         ]
         .spacing(8)
-        .into(),
+        .boxed(),
         McpTransport::Http { url, headers } => column![
             field_row(
                 lang.tr("URL"),
@@ -203,7 +203,7 @@ fn server_form<'a>(
             map_section(index, lang.tr("Headers"), "Header-Name", headers, lang),
         ]
         .spacing(8)
-        .into(),
+        .boxed(),
     };
 
     column![
@@ -233,7 +233,7 @@ fn server_form<'a>(
         .color(color_muted()),
     ]
     .spacing(8)
-    .into()
+    .boxed()
 }
 
 /// Transport kind picker row.
@@ -254,7 +254,7 @@ fn transport_row<'a>(
     row![label_col(lang.tr("Transport")), picker]
         .spacing(10)
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
 }
 
 /// Checkbox controlling whether tool names are prefixed with the server name.
@@ -275,7 +275,7 @@ fn qualify_row<'a>(index: usize, server: &'a McpServer, lang: Lang) -> Element<'
     row![label_col(lang.tr("Qualify")), toggle]
         .spacing(10)
         .align_y(Alignment::Center)
-        .into()
+        .boxed()
 }
 
 // ── Env vars / headers ──────────────────────────────────────────────
@@ -344,7 +344,7 @@ fn map_entry_card<'a>(
     .padding(8)
     .style(sub_card_style)
     .width(Length::Fill)
-    .into()
+    .boxed()
 }
 
 // ── Update ─────────────────────────────────────────────────────────

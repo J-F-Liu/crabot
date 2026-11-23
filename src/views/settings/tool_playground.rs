@@ -1,5 +1,5 @@
 use iced::{
-    Alignment, Border, Color, Element, Length,
+    Alignment, Border, Color, Element, Length, Widget,
     widget::{
         button, checkbox, column, container, row, scrollable, text, text::Wrapping, text_input,
     },
@@ -330,7 +330,7 @@ fn param_note(content: String) -> Element<'static, SettingsEvent> {
         .size(11)
         .color(color_muted())
         .wrapping(Wrapping::Word)
-        .into()
+        .boxed()
 }
 
 fn render_param_field<'a>(
@@ -352,7 +352,7 @@ fn render_param_field<'a>(
                         v.to_string(),
                     ))
                 })
-                .into()
+                .boxed()
         }
         "array" => {
             let items: Vec<String> = serde_json::from_str(current_value)
@@ -384,7 +384,7 @@ fn render_param_field<'a>(
                     .get(&(name.clone(), i))
                     .cloned()
                     .unwrap_or_else(|| item_text.clone());
-                let mut input = text_input("", &display)
+                let mut input = text_input("", display)
                     .on_input(move |v| {
                         SettingsEvent::Playground(PlaygroundEvent::EditPlaygroundArrayItem(
                             edit_name.clone(),
@@ -416,7 +416,7 @@ fn render_param_field<'a>(
                     ]
                     .spacing(4)
                     .align_y(Alignment::Center)
-                    .into(),
+                    .boxed(),
                 );
             }
 
@@ -428,7 +428,7 @@ fn render_param_field<'a>(
                     PlaygroundEvent::AddPlaygroundArrayItem(add_name, items_type),
                 ));
 
-            column(item_rows).spacing(4).push(add_btn).into()
+            column(item_rows).spacing(4).push(add_btn.boxed()).boxed()
         }
         _ => {
             let placeholder = if p.required {
@@ -438,7 +438,7 @@ fn render_param_field<'a>(
             };
             let name = p.name.clone();
             let is_mono = p.param_type == "object";
-            let mut input = text_input(placeholder, current_value)
+            let mut input = text_input(placeholder, current_value.to_string())
                 .on_input(move |v| {
                     SettingsEvent::Playground(PlaygroundEvent::EditPlaygroundParam(name.clone(), v))
                 })
@@ -448,7 +448,7 @@ fn render_param_field<'a>(
             if is_mono {
                 input = input.font(iced::Font::MONOSPACE);
             }
-            Element::from(input)
+            input.boxed()
         }
     }
 }
@@ -465,12 +465,12 @@ fn result_text(output: String) -> Element<'static, SettingsEvent> {
     )
     .width(Length::Fill)
     .height(Length::Fixed(160.0))
-    .into()
+    .boxed()
 }
 
 /// Box with a colored border and a matching translucent background.
 fn result_box<'a>(
-    content: impl Into<Element<'a, SettingsEvent>>,
+    content: impl Widget<SettingsEvent, iced::Theme, iced::Renderer> + 'a,
     color: Color,
 ) -> Element<'a, SettingsEvent> {
     container(content)
@@ -481,7 +481,7 @@ fn result_box<'a>(
         })
         .padding(8)
         .width(Length::Fill)
-        .into()
+        .boxed()
 }
 
 fn render_result_widget<'a>(state: &'a SettingsState) -> Element<'a, SettingsEvent> {
@@ -539,7 +539,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
     .item_indent(16.0)
     .header_font(super::BOLD)
     .style(secondary_dropdown_style)
-    .into();
+    .boxed();
 
     let selected_tool = state
         .playground_selected_index
@@ -581,7 +581,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
             .style(form_card_style)
             .padding(12)
             .width(Length::Fill)
-            .into()
+            .boxed()
         } else {
             let param_label = text(lang.tr("Parameters:"))
                 .size(13)
@@ -628,13 +628,13 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
                     }
                     col = col.push(field);
 
-                    container(col).padding(8).width(Length::Fill).into()
+                    container(col).padding(8).width(Length::Fill).boxed()
                 })
                 .collect();
 
             column![param_label, column(fields).spacing(6)]
                 .spacing(8)
-                .into()
+                .boxed()
         };
 
         // Execute / Cancel buttons
@@ -648,7 +648,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
                     )),
             ]
             .spacing(8)
-            .into()
+            .boxed()
         } else {
             row![
                 button(text(lang.tr("▶ Execute")).size(13))
@@ -659,7 +659,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
                 iced::widget::Space::new().width(Length::Fill),
             ]
             .width(Length::Fill)
-            .into()
+            .boxed()
         };
 
         // Result area
@@ -675,7 +675,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
             result_widget,
         ]
         .spacing(10)
-        .into()
+        .boxed()
     } else {
         container(
             text(lang.tr(
@@ -688,7 +688,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         .style(form_card_style)
         .padding(16)
         .width(Length::Fill)
-        .into()
+        .boxed()
     };
 
     column![
@@ -703,7 +703,7 @@ pub(crate) fn playground_page<'a>(state: &'a SettingsState) -> Element<'a, Setti
         tool_detail,
     ]
     .spacing(12)
-    .into()
+    .boxed()
 }
 
 /// Build [`ToolInfo`] snapshots from the live tool registry for the playground,

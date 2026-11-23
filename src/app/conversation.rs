@@ -104,7 +104,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         }
         ConversationEvent::CopySessionTitle => {
             close_header_menu(app);
-            return iced::clipboard::write(localized_header_title(app));
+            return iced::clipboard::write(localized_header_title(app)).discard();
         }
         ConversationEvent::ResendSessionHistory => {
             close_header_menu(app);
@@ -287,16 +287,6 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
         }
         ConversationEvent::AskInputChanged(input) => {
             app.conversation.viewing_mut().session_state.ask_input = input;
-        }
-        ConversationEvent::ToggleSelectableMode(index) => {
-            let tab = app.conversation.viewing_mut();
-            match index {
-                Some(index) => {
-                    let selected = tab.selectable_msgs.contains(&index);
-                    tab.selectable_msgs.set(index, !selected);
-                }
-                None => tab.selectable_msgs.clear(),
-            }
         }
         ConversationEvent::TurnOffsetsMeasured(tab_number, generation, offsets, target_y) => {
             let Some(pos) = app.conversation.tab_pos(tab_number) else {
@@ -1202,9 +1192,8 @@ pub(crate) fn delete_dialog(app: &mut App, tab_number: usize, index: usize) -> T
     } else {
         tab.expanded_dialogs.clear();
     }
-    // Flat turn indices shifted — cached expansion and selection are stale.
+    // Flat turn indices shifted — cached expansion state is stale.
     tab.expanded_turns.clear();
-    tab.selectable_msgs.clear();
     tab.search.invalidate_offsets();
     let _ = tab.search.submit(&tab.session);
     // A loaded session has no dialog title from this run; leave its header alone.

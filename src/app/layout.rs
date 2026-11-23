@@ -1,16 +1,21 @@
 use iced::{Point, Task};
 
 use crate::app::session_state;
-use crate::app::{App, FocusedTarget, LayoutEvent, Message, ModelSettingsEvent, TabBarScrollState};
+use crate::app::{App, LayoutEvent, Message, ModelSettingsEvent, TabBarScrollState};
 use crate::views;
 use crate::views::theme::{HANDLE, MIN_W};
-use crate::widgets::textarea;
 
 /// Update application layout and global input state.
 pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
     match event {
         LayoutEvent::CursorMoved(pos) => cursor_moved(app, pos),
-        LayoutEvent::LeftPressed => return left_pressed(app),
+        LayoutEvent::LeftPressed { ignored } => {
+            if ignored {
+                app.layout.focused = None;
+                app.layout.selection_x = Some(pane_x_bounds(app));
+            }
+            return left_pressed(app);
+        }
         LayoutEvent::LeftReleased => left_released(app),
         LayoutEvent::WindowResized(size) => {
             if size.width > 0.0 && size.height > 0.0 {
@@ -25,7 +30,7 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
         LayoutEvent::ShiftHeld(held) => app.layout.shift_held = held,
         LayoutEvent::CtrlHeld(held) => app.layout.ctrl_held = held,
         LayoutEvent::SessionViewScrolled(viewport) => {
-            app.layout.scroll_viewport_height = viewport.bounds().height;
+            app.layout.scroll_viewport_height = viewport.bounds.height;
             let tab = app.conversation.viewing_mut();
             tab.scroll_offset = Some(viewport.absolute_offset().y);
             session_state::handle_scroll(&tab.session_state, viewport);
@@ -50,7 +55,6 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
                 .set_auto_scroll(true);
             return views::scroll_to_end().discard();
         }
-        LayoutEvent::UndoRedo(message) => undo_redo(app, message),
         LayoutEvent::EscapePressed => return escape(app),
         LayoutEvent::Zoom(delta) => app.set_font_scale(app.settings.font_scale + delta),
         LayoutEvent::ToggleTheme(dark) => {
@@ -109,6 +113,22 @@ fn cursor_moved(app: &mut App, pos: Point) {
     }
 }
 
+/// Horizontal span of the pane under the pointer.
+fn pane_x_bounds(app: &App) -> (f32, f32) {
+    let x = app.layout.cursor.x;
+    let width = app.layout.window_size.width;
+    let left = app.settings.left_pane_width;
+    let right = app.settings.right_pane_width;
+    if x < left {
+        (0.0, left)
+    } else if right > 0.0 && x > width - right {
+        (width - right, width)
+    } else {
+        let end = if right > 0.0 { width - right } else { width };
+        (left + HANDLE, end)
+    }
+}
+
 fn left_pressed(app: &mut App) -> Task<Message> {
     let left_x = app.settings.left_pane_width;
     let right_x = app.layout.window_size.width - app.settings.right_pane_width - HANDLE;
@@ -148,13 +168,6 @@ fn left_released(app: &mut App) {
     }
 }
 
-fn undo_redo(app: &mut App, message: textarea::Message) {
-    let layout = &app.layout;
-    if let Some(FocusedTarget::UserPrompt) = layout.focused {
-        app.prompt.user_prompt.update(message, layout.shift_held);
-    }
-}
-
 fn escape(app: &mut App) -> Task<Message> {
     if app.settings_dialog.open {
         if app.settings_dialog.is_adding_label() {
@@ -169,8 +182,6 @@ fn escape(app: &mut App) -> Task<Message> {
         let tab = app.conversation.viewing_mut();
         return views::search_bar::update_on(views::SearchEvent::ToggleSearch, tab, tab_number)
             .map(Message::Conversation);
-    } else {
-        app.conversation.viewing_mut().selectable_msgs.clear();
     }
     Task::none()
 }

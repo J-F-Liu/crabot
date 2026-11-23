@@ -1,10 +1,10 @@
 use std::borrow::Borrow;
 
+use iced::widget::text::Style as SelectionStyle;
 use iced::{
-    Border, Color, Element, Font, Length, Shadow, Theme, Vector, font,
-    widget::{button, checkbox, container, mouse_area, pick_list, rule, toggler},
+    Border, Color, Element, Font, Length, Shadow, Theme, Vector, Widget as _, font,
+    widget::{button, checkbox, container, mouse_area, opaque, pick_list, rule, toggler},
 };
-use iced_selection::text::Style as SelectionStyle;
 
 use super::theme::*;
 
@@ -62,7 +62,7 @@ pub(crate) fn label<'a, M: Clone + 'static>(
         ..Font::DEFAULT
     }))
     .width(width)
-    .into()
+    .boxed()
 }
 
 // ── divider ───────────────────────────────────────────────────────
@@ -84,14 +84,17 @@ pub(crate) fn divider<M: Clone + 'static>(state: &DividerState) -> Element<'stat
     } else {
         color_border()
     };
-    mouse_area(rule::vertical(HANDLE).style(move |_theme| rule::Style {
-        color,
-        fill_mode: rule::FillMode::Full,
-        radius: 0.0.into(),
-        snap: false,
-    }))
-    .interaction(iced::mouse::Interaction::ResizingHorizontally)
-    .into()
+    // Capture presses so dragging a divider never starts text selection.
+    opaque(
+        mouse_area(rule::vertical(HANDLE).style(move |_theme| rule::Style {
+            color,
+            fill_mode: rule::FillMode::Full,
+            radius: 0.0.into(),
+            snap: false,
+        }))
+        .interaction(iced::mouse::Interaction::ResizingHorizontally),
+    )
+    .boxed()
 }
 
 // ── button styles ───────────────────────────────────────────────
@@ -534,6 +537,7 @@ impl From<pick_list::Status> for TriggerStatus {
             pick_list::Status::Active => Self::Active,
             pick_list::Status::Hovered => Self::Hovered,
             pick_list::Status::Opened { .. } => Self::Opened,
+            pick_list::Status::Disabled => Self::Active,
         }
     }
 }
@@ -602,7 +606,8 @@ where
     V: Borrow<T> + 'a,
     Message: Clone,
 {
-    iced::widget::pick_list(options, selected, on_selected)
+    iced::widget::pick_list(selected, options, T::to_string)
+        .on_select(on_selected)
         .style(pick_list_style)
         .menu_style(pick_list_menu_style)
 }
@@ -631,7 +636,7 @@ pub(crate) fn tooltip_style(_theme: &Theme) -> container::Style {
 fn selection_style(color: Color) -> SelectionStyle {
     SelectionStyle {
         color: Some(color),
-        selection: color_selection(),
+        selection: Some(color_selection()),
     }
 }
 
@@ -645,4 +650,12 @@ pub(crate) fn sel_primary(_theme: &Theme) -> SelectionStyle {
 
 pub(crate) fn sel_muted(_theme: &Theme) -> SelectionStyle {
     selection_style(color_muted())
+}
+
+/// Rendered Markdown keeps its theme text color but uses the app selection color.
+pub(crate) fn sel_markdown(_theme: &Theme) -> SelectionStyle {
+    SelectionStyle {
+        color: None,
+        selection: Some(color_selection()),
+    }
 }
