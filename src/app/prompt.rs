@@ -390,6 +390,8 @@ pub(crate) fn apply_workspace(app: &mut App, path: PathBuf) -> Task<Message> {
         .recent_workspaces
         .insert(0, (path.clone(), preferred));
     app.settings.recent_workspaces.truncate(10);
+    // Persist the recents immediately so a crash cannot lose the switch.
+    app.save_settings();
 
     // The tree and AGENTS.md are scanned off the UI thread.
     scan_workspace_content(path.clone(), Some(preferred)).chain(session_list_task(app, path, false))
