@@ -1,0 +1,12 @@
+# Normalize every text file to LF in the working tree, on all platforms.
+# include_dir! embeds working-tree bytes, so a Windows checkout with
+# core.autocrlf would otherwise bake CRLF into the release binary.
+* text=auto eol=lf
+
+# Keep binary assets untouched.
+*.png binary
+*.ico binary
+*.webp binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
