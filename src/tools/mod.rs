@@ -18,6 +18,7 @@ mod capture;
 mod cargo_registry;
 mod context;
 mod exec;
+mod http;
 pub mod image;
 mod limits;
 mod normalize;

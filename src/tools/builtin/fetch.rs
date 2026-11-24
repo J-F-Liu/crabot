@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
@@ -8,7 +7,7 @@ use dom_smoothie::{Article, Config, Readability};
 use serde_json::{Value, json};
 
 use crate::tools::{
-    CANCEL_REASON, Tool, arg_str, decode_bytes, required_str, tool_limits, truncate_output,
+    CANCEL_REASON, Tool, arg_str, decode_bytes, http, required_str, tool_limits, truncate_output,
 };
 
 pub struct FetchTool;
@@ -71,7 +70,8 @@ pub enum ContentKind {
 }
 
 pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String, String> {
-    let max_body_bytes = tool_limits().fetch_max_body_bytes;
+    let limits = tool_limits();
+    let max_body_bytes = limits.fetch_max_body_bytes;
 
     let url = required_str(args, "url")?;
     let format = match arg_str(args, "format").unwrap_or("markdown") {
@@ -86,15 +86,10 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
     };
 
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL '{url}': {e}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!(
-            "Unsupported URL scheme '{}' (only http and https are allowed)",
-            parsed.scheme()
-        ));
-    }
+    http::ensure_http_url(&parsed)?;
 
     // Read at call time so runtime settings changes take effect (the client is cached).
-    let timeout = Duration::from_millis(tool_limits().fetch_timeout_ms);
+    let timeout = Duration::from_millis(limits.fetch_timeout_ms);
 
     tokio::runtime::Handle::current().block_on(async {
         // Race the HTTP request against user cancellation.
@@ -103,7 +98,7 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
             _ = cancel.cancelled() => {
                 return Err(CANCEL_REASON.into());
             }
-            r = client()?.get(parsed.clone()).timeout(timeout).send() => {
+            r = http::client()?.get(parsed.clone()).timeout(timeout).send() => {
                 // reqwest embeds the URL in its error; the call args already show it.
                 r.map_err(|e| format!("Failed to fetch: {}", e.without_url()))?
             }
@@ -114,15 +109,6 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
             return Err(format!("Failed to fetch: HTTP {status}"));
         }
 
-        // Refuse known-huge bodies before downloading.
-        if let Some(len) = resp.content_length()
-            && len > max_body_bytes as u64
-        {
-            return Err(format!(
-                "Response body too large: {len} bytes (max {max_body_bytes})"
-            ));
-        }
-
         let content_type = resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -130,27 +116,7 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
             .unwrap_or_default()
             .to_string();
 
-        // Stream the body with a hard byte cap — chunked responses without
-        // Content-Length must not grow memory unbounded.
-        use futures::StreamExt;
-        let mut body_bytes: Vec<u8> = Vec::with_capacity(max_body_bytes.min(1 << 20));
-        let mut stream = resp.bytes_stream();
-        while let Some(chunk) = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(CANCEL_REASON.into()),
-            chunk = stream.next() => chunk,
-        } {
-            let chunk = match chunk {
-                Ok(chunk) => chunk,
-                Err(e) => return Err(format!("Failed to read response body: {e}")),
-            };
-            if body_bytes.len() + chunk.len() > max_body_bytes {
-                return Err(format!(
-                    "Response body exceeds {max_body_bytes} bytes (no Content-Length limit)"
-                ));
-            }
-            body_bytes.extend_from_slice(&chunk);
-        }
+        let body_bytes = http::read_body(resp, max_body_bytes, cancel).await?;
 
         // Charset-aware decoding only — a fetched body is data, not terminal
         // output, so escapes and control characters stay. Re-truncate since
@@ -168,24 +134,6 @@ pub(super) fn execute(args: &Value, cancel: &CancellationToken) -> Result<String
         };
         Ok(truncate_output(output))
     })
-}
-
-// ── async helpers ──────────────────────────────────────────────────
-
-/// Shared async client: one connection pool for all fetch calls. No client-level
-/// timeout — each request reads the current [`tool_limits`](super::tool_limits).
-/// Tools proxy off → `no_proxy()` blocks reqwest's registry fallback.
-fn client() -> Result<&'static reqwest::Client, String> {
-    static CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-        let mut builder = reqwest::Client::builder().user_agent(crate::app_title());
-        if !crate::tools::tools_proxy_active() {
-            builder = builder.no_proxy();
-        }
-        builder
-            .build()
-            .map_err(|e| format!("Failed to build HTTP client: {e}"))
-    });
-    CLIENT.as_ref().map_err(Clone::clone)
 }
 
 // ── body helpers ───────────────────────────────────────────────────

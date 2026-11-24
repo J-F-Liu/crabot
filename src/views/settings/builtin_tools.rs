@@ -4,7 +4,7 @@ use iced::{
 };
 
 use super::{
-    SettingsEvent, SettingsState, SettingsTab, form_card_style, section_header, section_title,
+    SettingsEvent, SettingsState, SettingsTab, form_card_style, hint, section_header, section_title,
 };
 use crate::views::model_config::ProviderEntry;
 use crate::views::styles::styled_pick_list;
@@ -96,8 +96,8 @@ impl ToolLimitField {
             ToolLimitField::ReadMaxImageSide => lang.tr("read image max side"),
             ToolLimitField::FindMaxLines => lang.tr("find max lines"),
             ToolLimitField::SearchMaxLines => lang.tr("search max lines"),
-            ToolLimitField::FetchMaxBodyBytes => lang.tr("fetch max body bytes"),
-            ToolLimitField::FetchTimeoutMs => lang.tr("fetch timeout (ms)"),
+            ToolLimitField::FetchMaxBodyBytes => lang.tr("HTTP max body bytes"),
+            ToolLimitField::FetchTimeoutMs => lang.tr("HTTP timeout (ms)"),
             ToolLimitField::McpConnectTimeoutMs => lang.tr("mcp connect timeout (ms)"),
             ToolLimitField::McpCallTimeoutMs => lang.tr("mcp call timeout (ms)"),
         }
@@ -274,14 +274,10 @@ fn setting_row<'a>(
     input: Element<'a, SettingsEvent>,
     hint: &'static str,
 ) -> Element<'a, SettingsEvent> {
-    row![
-        text(label).size(13).width(180.0),
-        input,
-        text(hint).size(11).color(color_muted()),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .boxed()
+    row![text(label).size(13).width(180.0), input, super::hint(hint),]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .boxed()
 }
 
 /// Numeric text input bound to a settings field.
@@ -359,7 +355,7 @@ fn proxy_toggle_row(
             .text_size(12)
             .on_toggle(move |v| SettingsEvent::BuiltinTools(on_toggle(v)))
             .style(crate::views::primary_toggler),
-        text(hint).size(11).color(color_muted()),
+        super::hint(hint),
     ]
     .spacing(8)
     .align_y(Alignment::Center)
@@ -380,12 +376,10 @@ fn network_card(state: &SettingsState) -> Element<'_, SettingsEvent> {
             proxy_toggle_row(
                 state.working_use_system_proxy_tools,
                 lang.tr("Tools traffic via system proxy"),
-                lang.tr("Fetch, bash curl/wget, and child processes."),
+                lang.tr("Fetch, custom HTTP tools, bash curl/wget, and child processes."),
                 BuiltinToolsEvent::ToggleUseSystemProxyTools,
             ),
-            text(lang.tr("Takes effect on restart."))
-                .size(11)
-                .color(color_muted()),
+            hint(lang.tr("Takes effect on restart.")),
         ]
         .spacing(8),
     )

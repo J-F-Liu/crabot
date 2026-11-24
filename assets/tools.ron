@@ -1,3 +1,45 @@
 (
-    custom_tools: [],
+    custom_tools: [
+        (
+            name: "web_search",
+            description: "Search the web via the DeepSeek Search API and return ranked results with titles, URLs, summaries, and optional page content.",
+            instruction: "Use this tool to find current web information. Supports site:, lang:, after:, before:, and quoted phrases.",
+            parameters: [
+                (name: "query", kind: String, description: "Search query; supports site:, lang:, after:, before:, and quoted phrases.", required: true),
+                (name: "count", kind: Integer, description: "Number of results, 1-50 (default 10).", required: false),
+                (name: "need_content", kind: Boolean, description: "Include full page content when true.", required: false),
+            ],
+            kind: Http((
+                method: Post,
+                url: "https://api.deepseek.com/v1/tools/search",
+                headers: [
+                    (name: "Authorization", value: "Bearer {env.DEEPSEEK_API_KEY}"),
+                ],
+                body: r#"{
+  "query": {query}
+  {{ if count }}, "count": {count}{{ endif }}
+  {{ if need_content }}, "need_content": {need_content}{{ endif }}
+}"#,
+                response_template: r#"[
+{{ for r in response.results }}  {
+    "title": {r.title | json},
+    "url": {r.url | json}{{ if r.summary }},
+    "summary": {r.summary | json}{{ endif }}{{ if r.content }},
+    "content": {r.content | json}{{ endif }},
+    "rerank_score": {r.rerank_score | json},
+    "authority": {r.authority | json}
+  }{{ if @last }}{{ else }},{{ endif }}
+{{ endfor }}]"#,
+            )),
+        ),
+        (
+            name: "calculator",
+            description: "Evaluate a mathematical expression with kalker. Supports arithmetic, functions, constants, and calculus; unit conversions are not supported.",
+            instruction: "Use this tool for precise math instead of mental arithmetic. Pass the complete expression in `expr`, e.g. `sqrt(2) + sin(pi/4)`.",
+            parameters: [
+                (name: "expr", kind: String, description: "Expression to evaluate, e.g. `2^10`, `sqrt(2)`, or `sin(pi/4)`.", required: true),
+            ],
+            kind: Command("kalker {expr}"),
+        ),
+    ],
 )

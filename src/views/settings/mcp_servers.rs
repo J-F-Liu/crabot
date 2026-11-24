@@ -3,12 +3,11 @@
 
 use super::{
     SettingsEvent, SettingsState, SettingsTab, add_section, card_rule, collapsible_header,
-    delete_button_style, empty_hint, field_row, form_card_style, label_col, numbered_name,
+    delete_button_style, empty_hint, field_row, form_card_style, hint, label_col, numbered_name,
     remove_expanded, section_header, sub_card_style, textarea_field_row, toggle_expanded,
     unique_name,
 };
 use crate::views::styles::styled_pick_list;
-use crate::views::theme::color_muted;
 use crate::widgets::textarea::TextArea;
 use crabot::i18n::Lang;
 use crabot::tools::mcp::{McpServer, McpTransport};
@@ -152,18 +151,7 @@ fn transport_summary(transport: &McpTransport) -> String {
     if target.is_empty() {
         kind.to_string()
     } else {
-        format!("{kind} · {}", truncate(target, 48))
-    }
-}
-
-/// Truncate a string to at most `max` chars, appending an ellipsis.
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max).collect();
-        out.push('…');
-        out
+        format!("{kind} · {}", crabot::truncate_chars(target, 48))
     }
 }
 
@@ -223,14 +211,14 @@ fn server_form<'a>(
             lang.tr("Prompt"),
             prompt_area,
             lang.tr("System-prompt text injected when this server is enabled"),
+            64.0,
+            false,
             move |msg| SettingsEvent::Mcp(McpEvent::McpTextArea(msg)),
         ),
-        text(lang.tr(
+        hint(lang.tr(
             "Prompt is added to the system prompt when the server is enabled and \
               at least one of its tools is selected.",
-        ))
-        .size(11)
-        .color(color_muted()),
+        )),
     ]
     .spacing(8)
     .boxed()

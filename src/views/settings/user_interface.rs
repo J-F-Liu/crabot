@@ -5,9 +5,8 @@ use iced::{
     widget::{column, container, row, text},
 };
 
-use super::{SettingsEvent, SettingsState, form_card_style, section_header, section_title};
+use super::{SettingsEvent, SettingsState, form_card_style, hint, section_header, section_title};
 use crate::views::styles::secondary_dropdown_style;
-use crate::views::theme::color_muted;
 use crate::widgets::dropdown::DropDown;
 use crabot::i18n::Lang;
 use crabot::settings::{Appearance, ColorStyle, FONT_SCALE_MAX, FONT_SCALE_MIN, FONT_SCALE_STEP};
@@ -37,11 +36,6 @@ fn card<'a>(
         .style(form_card_style)
         .width(Length::Fill)
         .boxed()
-}
-
-/// Muted hint line shown beneath a card's controls.
-fn hint(label: &str) -> Element<'_, SettingsEvent> {
-    text(label).size(11).color(color_muted()).boxed()
 }
 
 /// Dropdown entry: the label shown to the user plus the value it selects.

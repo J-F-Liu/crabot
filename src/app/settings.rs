@@ -119,6 +119,10 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
         }
         SettingsEvent::CustomTools(CustomToolsEvent::SaveTools) => {
             app.settings_dialog.update(event);
+            // Validation failed: do not persist or register invalid tools.
+            if app.settings_dialog.tool_form_error.is_some() {
+                return Task::none();
+            }
             // Persist custom tools and sync the tool registry.
             let old_names: HashSet<String> =
                 app.tools.tool_registry.custom_names().into_iter().collect();

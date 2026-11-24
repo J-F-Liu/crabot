@@ -33,9 +33,9 @@ pub struct ToolLimits {
     pub find_max_lines: usize,
     /// `search`: maximum result lines.
     pub search_max_lines: usize,
-    /// `fetch`: maximum downloaded body bytes.
+    /// HTTP tools (`fetch`, custom HTTP): maximum downloaded body bytes.
     pub fetch_max_body_bytes: usize,
-    /// `fetch`: HTTP request timeout (ms).
+    /// HTTP tools (`fetch`, custom HTTP): request timeout (ms).
     pub fetch_timeout_ms: u64,
     /// `mcp`: connection (handshake) timeout (ms).
     pub mcp_connect_timeout_ms: u64,

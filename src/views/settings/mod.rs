@@ -7,7 +7,9 @@ use super::theme::{
 use crate::widgets::textarea::TextArea;
 use crabot::model::{ModelConfig, ModelList, Provider, TaskModels};
 use crabot::model_database::ModelDatabase;
-use crabot::tools::custom::{CustomTool, ToolList, ToolParameter};
+use crabot::tools::custom::{
+    CustomTool, HttpHeader, HttpRequest, ToolKind, ToolList, ToolMode, ToolParameter,
+};
 use crabot::tools::mcp::{McpList, McpServer, McpTransport};
 use iced::padding;
 use iced::{
@@ -95,6 +97,29 @@ pub(crate) enum SettingsEvent {
 }
 
 // ── State ─────────────────────────────────────────────────────────────
+
+/// Inactive Command/HTTP payload retained while switching tool types.
+#[derive(Debug, Clone, Default)]
+pub(super) struct ToolDraft {
+    command: String,
+    http: HttpRequest,
+}
+
+impl ToolDraft {
+    fn take(&mut self, mode: ToolMode) -> ToolKind {
+        match mode {
+            ToolMode::Command => ToolKind::Command(std::mem::take(&mut self.command)),
+            ToolMode::Http => ToolKind::Http(std::mem::take(&mut self.http)),
+        }
+    }
+
+    fn store(&mut self, kind: ToolKind) {
+        match kind {
+            ToolKind::Command(command) => self.command = command,
+            ToolKind::Http(request) => self.http = request,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SettingsState {
@@ -195,6 +220,14 @@ pub(crate) struct SettingsState {
     pub(super) tool_desc_area: TextArea,
     /// `TextArea` for the instruction of the currently expanded tool.
     pub(super) tool_instr_area: TextArea,
+    /// `TextArea` for the HTTP body of the currently expanded tool.
+    pub(super) tool_body_area: TextArea,
+    /// `TextArea` for the HTTP response template of the currently expanded tool.
+    pub(super) tool_response_template_area: TextArea,
+    /// Per-card drafts of the inactive tool type, aligned with `working_tools`.
+    pub(super) tool_drafts: Vec<ToolDraft>,
+    /// Validation error shown on the Custom Tools page after a failed save.
+    pub(crate) tool_form_error: Option<String>,
     /// Working copy of MCP servers edited within the dialog — saved on Save.
     pub(crate) working_mcp: McpList,
     /// Index of the MCP server card currently expanded, if any.
@@ -284,6 +317,10 @@ impl Default for SettingsState {
             expanded_tool: None,
             tool_desc_area: TextArea::new(),
             tool_instr_area: TextArea::new(),
+            tool_body_area: TextArea::new(),
+            tool_response_template_area: TextArea::new(),
+            tool_drafts: Vec::new(),
+            tool_form_error: None,
             working_mcp: McpList::default(),
             expanded_mcp: None,
             mcp_prompt_area: TextArea::new(),
@@ -404,10 +441,14 @@ impl SettingsState {
 
     /// Load custom tools into the dialog's working copy (on dialog open).
     pub(crate) fn load_tools(&mut self, tools: ToolList) {
+        self.tool_drafts = vec![ToolDraft::default(); tools.custom_tools.len()];
         self.working_tools = tools;
         self.expanded_tool = None;
         self.tool_desc_area = TextArea::new();
         self.tool_instr_area = TextArea::new();
+        self.tool_body_area = TextArea::new();
+        self.tool_response_template_area = TextArea::new();
+        self.tool_form_error = None;
     }
 
     /// Load MCP servers into the dialog's working copy (on dialog open).
@@ -579,6 +620,45 @@ impl SettingsState {
         self.working_tools.custom_tools.get_mut(index)
     }
 
+    /// Draft slot for a tool card; grows the list defensively.
+    fn tool_draft_mut(&mut self, index: usize) -> &mut ToolDraft {
+        if self.tool_drafts.len() <= index {
+            self.tool_drafts.resize_with(index + 1, ToolDraft::default);
+        }
+        &mut self.tool_drafts[index]
+    }
+
+    /// Switch a card between Command and HTTP without losing either payload.
+    fn set_tool_kind(&mut self, index: usize, mode: ToolMode) {
+        self.flush_tool_text_areas();
+        let previous = {
+            let Some(tool) = self.working_tools.custom_tools.get_mut(index) else {
+                return;
+            };
+            if tool.kind.mode() == mode {
+                return;
+            }
+            std::mem::take(&mut tool.kind)
+        };
+        let draft = self.tool_draft_mut(index);
+        let next = draft.take(mode);
+        draft.store(previous);
+        self.working_tools.custom_tools[index].kind = next;
+        self.init_tool_text_areas();
+    }
+
+    /// Borrow the HTTP request of the custom tool at `index` for editing.
+    fn http_mut(&mut self, index: usize) -> Option<&mut HttpRequest> {
+        match &mut self.working_tools.custom_tools.get_mut(index)?.kind {
+            ToolKind::Http(request) => Some(request),
+            ToolKind::Command(_) => None,
+        }
+    }
+
+    fn header_mut(&mut self, tool_index: usize, index: usize) -> Option<&mut HttpHeader> {
+        self.http_mut(tool_index)?.headers.get_mut(index)
+    }
+
     /// Borrow one parameter of a custom tool for in-place editing.
     fn param_mut(&mut self, tool_index: usize, index: usize) -> Option<&mut ToolParameter> {
         self.working_tools
@@ -589,22 +669,35 @@ impl SettingsState {
 
     /// Flush TextArea content back to the currently expanded tool.
     fn flush_tool_text_areas(&mut self) {
-        if let Some(i) = self.expanded_tool
-            && let Some(tool) = self.working_tools.custom_tools.get_mut(i)
-        {
-            tool.description = self.tool_desc_area.text();
-            tool.instruction = self.tool_instr_area.text();
+        let Some(tool) = self
+            .expanded_tool
+            .and_then(|i| self.working_tools.custom_tools.get_mut(i))
+        else {
+            return;
+        };
+        tool.description = self.tool_desc_area.text();
+        tool.instruction = self.tool_instr_area.text();
+        if let ToolKind::Http(request) = &mut tool.kind {
+            request.body = self.tool_body_area.text();
+            request.response_template = self.tool_response_template_area.text();
         }
     }
 
     /// Initialize TextArea content from the currently expanded tool.
     fn init_tool_text_areas(&mut self) {
-        if let Some(i) = self.expanded_tool
-            && let Some(tool) = self.working_tools.custom_tools.get(i)
-        {
-            self.tool_desc_area.set_text(&tool.description);
-            self.tool_instr_area.set_text(&tool.instruction);
-        }
+        let tool = self
+            .expanded_tool
+            .and_then(|i| self.working_tools.custom_tools.get(i));
+        let (body, template): (&str, &str) = match tool.map(|t| &t.kind) {
+            Some(ToolKind::Http(request)) => (&request.body, &request.response_template),
+            _ => ("", ""),
+        };
+        self.tool_desc_area
+            .set_text(tool.map_or("", |t| &t.description));
+        self.tool_instr_area
+            .set_text(tool.map_or("", |t| &t.instruction));
+        self.tool_body_area.set_text(body);
+        self.tool_response_template_area.set_text(template);
     }
 
     /// Borrow the MCP server at `index` for in-place editing.
@@ -906,6 +999,11 @@ pub(super) fn label_col(label: &'static str) -> Element<'static, SettingsEvent> 
         .boxed()
 }
 
+/// Muted 11px hint line used by settings forms.
+pub(super) fn hint<'a>(label: &'a str) -> Element<'a, SettingsEvent> {
+    text(label).size(11).color(color_muted()).boxed()
+}
+
 /// A labelled single-line text input row used by the settings forms.
 pub(super) fn field_row<'a>(
     label: &'static str,
@@ -942,13 +1040,18 @@ pub(super) fn textarea_field_row<'a>(
     label: &'static str,
     area: &'a TextArea,
     placeholder: &'a str,
+    height: f32,
+    mono: bool,
     on_action: impl Fn(crate::widgets::textarea::Message) -> SettingsEvent + 'a,
 ) -> Element<'a, SettingsEvent> {
     let label = container(label_col(label)).padding(padding::top(4));
-    let editor = area
+    let mut editor = area
         .view(on_action)
         .placeholder(placeholder)
-        .height(Length::Fixed(64.0));
+        .height(Length::Fixed(height));
+    if mono {
+        editor = editor.font(iced::Font::MONOSPACE);
+    }
     row![label, container(editor).width(Length::Fill)]
         .spacing(10)
         .align_y(Alignment::Start)

@@ -32,7 +32,7 @@ A single window with a resizable left pane (model config, system-prompt sections
 | `src/views/`                                          | UI panes, custom styling, settings dialog tabs, HTML export, self-update |
 | `src/widgets/`                                        | Custom widgets: `TextArea` (undo/redo), `DropDown`, `PopupMenu`          |
 | `src/llm/`                                            | Streaming agent loop, retry/stall handling, parallel tool-call execution, attachment/image materialization |
-| `src/tools/`                                          | Tool trait, registry, built-ins, custom/MCP tools, process plumbing      |
+| `src/tools/`                                          | Tool trait, registry, built-ins, custom/MCP tools, HTTP plumbing         |
 | `src/chat.rs`, `src/session.rs`                       | Conversation UI types; raw history, JSONL persistence, todos             |
 | `src/model.rs`, `src/model_database.rs`               | Model/provider/task-model types; embedded model database generated from models.dev/models-cn |
 | `src/settings.rs`, `src/setup.rs`, `src/workspace.rs` | Persisted settings; first-boot seeding and logging; workspace scanning   |
@@ -44,12 +44,12 @@ A single window with a resizable left pane (model config, system-prompt sections
 
 ## Tool System
 
-Tools implement a small trait with a name, description, JSON schema, and a blocking `execute` plus a streaming variant for live output. The registry groups them into built-in, custom, and per-MCP-server sets, and builds the declarations sent to the LLM; tools can be enabled or disabled per session.
+Tools implement a small trait with a name, description, JSON schema, and a blocking `execute` plus a streaming variant for live output. The registry groups them into built-in, custom, and per-MCP-server sets, and builds the declarations sent to the LLM; tools can be enabled or disabled per session. A custom tool runs either a command or an HTTP request; HTTP tools support `{param}` / `{env.VAR}` templates, type-preserving JSON bodies, and an optional response template (see the README for the DeepSeek Search/Fetch example).
 
 | Category      | Source                | Notes                                                                            |
 | ------------- | --------------------- | -------------------------------------------------------------------------------- |
 | Built-in (14) | `src/tools/builtin/`  | File I/O, dependency lookup, shell, process, interaction, web, capture, delegation |
-| Custom        | `~/.crabot/tools.ron` | User-defined CLI tools: templated command + typed parameters                     |
+| Custom        | `~/.crabot/tools.ron` | User-defined CLI or HTTP API tools: templated request + typed parameters         |
 | MCP           | `~/.crabot/mcp.ron`   | Remote tools from stdio/HTTP servers, auto-discovered on startup                 |
 
 Built-ins: `read`, `write`, `edit` (file I/O with pagination, truncation, and overlap checks; `read` attaches image files as pictures instead of returning bytes, and one shared image policy in `src/tools/image.rs` decides the budget, the delivered size, and the encoding for both the tool result and the request); `find`, `search` (gitignore-aware glob and regex search); `crate_source` (resolve a locked dependency's local source directory from `Cargo.lock` without scanning the cache; missing crates.io sources point to the download URL); `bash` (interpreter-backed shell with timeouts and cancellation; optional Wasm CPython for `python`/`python3` behind the `python` feature); `process` (long-running process lifecycle); `ask` (interactive question to the user); `todo` (shared task list); `task` (delegate a subtask to a background session tab); `renew` (hand off to a fresh session when context is nearly full); `fetch` (web page → Markdown); `screenshot` (capture a monitor or window with `xcap`, saved under `.agent/screenshots/` and attached as a picture; omitting both targets lists monitors and windows). See the README for parameters.

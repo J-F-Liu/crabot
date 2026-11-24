@@ -21,6 +21,14 @@ pub fn app_title() -> &'static str {
     concat!("Crabot v", env!("CARGO_PKG_VERSION"))
 }
 
+/// Truncate to `max_chars` characters, appending `…` only when shortened.
+pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    }
+}
+
 pub trait HashSetExt<T> {
     fn set(&mut self, value: T, enabled: bool);
 }

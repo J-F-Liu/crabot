@@ -23,7 +23,7 @@ Most coding agents today run inside a terminal as TUIs. Crabot is built on the b
 - [x] Configure through dialogs — a settings dialog with 8 tab pages (User Interface, AI Models, Prompt Recipes, Builtin Tools, Custom Tools, MCP Servers, Tool Playground, About), no need to write config files by hand.
 - [x] An explicit context window, with every detail customizable.
 - [x] Native, high-performance built-in tools.
-- [x] Custom CLI tools and MCP server tools, defined and managed in-app.
+- [x] Custom CLI or HTTP API tools and MCP server tools, defined and managed in-app.
 - [x] Built in pure Rust — single native binary, no runtime dependency, zero GC pauses.
 - [x] Each session is saved as a JSONL file in the workspace `.agent/sessions` folder, appended message by message so nothing is lost if the app closes mid-turn.
 
@@ -51,11 +51,22 @@ If you know the structure of the LLM context window, you will appreciate the UI 
 | `screenshot`   | `monitor`, `window`                                                                                | Capture a monitor or window as a picture attached to the conversation; omit both targets to list monitors and windows                                                                                 |
 | `crate_source` | `crate`                                                                                            | Resolve a crate's locked source directory from `Cargo.lock` without scanning the cache; `name@version` picks an exact or partial version, and missing crates.io sources include a download URL        |
 
-Beyond the built-ins, you can add your own **custom CLI tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session tab.
+Beyond the built-ins, you can add your own **custom CLI or HTTP API tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session tab.
 
 The `screenshot` tool is backed by [XCap](https://crates.io/crates/xcap). On Linux, building Crabot needs `pkg-config libclang-dev libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev`, and the binary needs the PipeWire, XCB, XRandR, and GBM runtime libraries. On macOS, grant Crabot Screen Recording permission.
 
 Grep-style tool output is normalized before it enters the conversation: a run of lines that share a file path (`path:12:text`, plus `path-12-text` context lines from `-A/-B/-C`) collapses into a `path:` heading followed by the original line numbers and text, so no repetition is paid for twice. What you read in the UI, in the session file, and in the HTML export is exactly what was sent to the model; the live stream stays raw.
+
+## Custom Tools
+
+The **Custom Tools** settings tab (or `~/.crabot/tools.ron`) defines your own tools. A custom tool is either:
+
+- **Command** — a CLI command template such as `git log {args}`.
+- **HTTP API** — a method, URL, headers, body, and optional response template. These templates use [TinyTemplate](https://docs.rs/tinytemplate/1.2.1/tinytemplate/syntax/index.html):
+  - `{param}` inserts a parameter. URL values are percent-encoded; in a JSON body, the parameter keeps its JSON type whether bare (`{"query": {query}}` becomes a string, `{"count": {count}}` a number) or quoted (`{"query": "{query}"}`).
+  - `{env.VAR}` inserts an environment variable, so API keys stay out of the config file.
+  - Literal JSON braces are written normally. Optional fields can use `{{ if param }}…{{ endif }}`.
+  - The optional response template is applied to the parsed JSON response with `{response.field}`, `{body}`, and `{status}`. Add `| json` to a value to emit it JSON-escaped (quotes and newlines included), so a template can build a valid JSON response. For example: `{{ for r in response.results }}{r.title} — {r.url}\n{r.summary}\n\n{{ endfor }}`.
 
 ## Prompt Attachments
 

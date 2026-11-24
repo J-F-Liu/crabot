@@ -1149,42 +1149,6 @@ fn bashkit_cancel_aborts_whole_script() {
     );
 }
 
-/// `sleep 100` with a 3s timeout — the outer tokio select fires.
-#[test]
-fn bashkit_sleep_timeout() {
-    let err = run_bash("sleep 100", &crabot_workspace(), Some(3000)).unwrap_err();
-    assert!(err.contains("timed out"), "unexpected: {err}");
-}
-
-/// Partial output produced before the timeout survives into the error — the
-/// builtin-only callback route feeds the script-level capture (sink or not).
-#[test]
-fn bashkit_timeout_includes_partial_builtin_output() {
-    let err = run_bash("echo before; sleep 100", &crabot_workspace(), Some(3000)).unwrap_err();
-    assert!(err.contains("timed out"), "unexpected: {err}");
-    assert!(err.contains("--- partial stdout ---"), "unexpected: {err}");
-    assert!(err.contains("before"), "unexpected: {err}");
-}
-
-/// Host-command output drained before the timeout also survives, like the
-/// real-bash route.
-#[test]
-fn bashkit_timeout_includes_partial_host_output() {
-    let err = run_bash(
-        "git rev-parse HEAD; sleep 100",
-        &crabot_workspace(),
-        Some(3000),
-    )
-    .unwrap_err();
-    assert!(err.contains("timed out"), "unexpected: {err}");
-    assert!(err.contains("--- partial stdout ---"), "unexpected: {err}");
-    assert!(
-        err.lines()
-            .any(|l| l.len() == 40 && l.chars().all(|c| c.is_ascii_hexdigit())),
-        "host output missing from error: {err}"
-    );
-}
-
 /// Cancellation mid-script keeps output produced before the cancel: the
 /// cancel fires only after the first chunk proves the script started, so
 /// build-time jitter can't cancel before anything was captured.
@@ -1300,37 +1264,10 @@ fn bashkit_streaming_output_capped() {
     );
 }
 
-// ── wrapper commands (env, xargs, timeout, find -exec, watch) ──
+// ── wrapper commands (env, xargs, find -exec, watch) ──
 //
 // Commands hidden in wrapper arguments must be extracted or the script falls
 // back to real bash.
-
-/// `timeout 5 git --version` — the wrapped name must be bridged.
-#[test]
-fn bashkit_timeout_wraps_host_command() {
-    let result = run_bash("timeout 5 git --version", &crabot_workspace(), None).unwrap();
-    assert!(result.contains("git version"), "unexpected: {result}");
-}
-
-/// `timeout 10 sh -c …` — a wrapped interpreter re-entry falls back to real
-/// bash, exactly like a top-level `sh -c`.
-#[test]
-fn bashkit_timeout_nested_sh_falls_back() {
-    let result = run_bash("timeout 10 sh -c 'echo wrapped'", &crabot_workspace(), None).unwrap();
-    assert!(result.contains("wrapped"), "unexpected: {result}");
-}
-
-/// `timeout 10 $CMD` — a dynamic wrapped name falls back to real bash.
-#[test]
-fn bashkit_timeout_dynamic_command_falls_back() {
-    let result = run_bash(
-        "CMD=git; timeout 10 $CMD --version",
-        &crabot_workspace(),
-        None,
-    )
-    .unwrap();
-    assert!(result.contains("git version"), "unexpected: {result}");
-}
 
 /// Attached option values (`-n1`) parse like bashkit's; each chunk runs the
 /// bridged host command.

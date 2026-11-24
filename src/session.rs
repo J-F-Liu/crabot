@@ -434,10 +434,7 @@ pub fn first_line_label(text: &str, max: usize) -> String {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .unwrap_or_default();
-    match line.char_indices().nth(max) {
-        Some((end, _)) => format!("{}…", &line[..end]),
-        None => line.to_string(),
-    }
+    crate::truncate_chars(line, max)
 }
 
 impl Session {

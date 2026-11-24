@@ -1,18 +1,5 @@
 (
     servers: [
-        // Requires `deepseek-web-tools` on PATH and a DeepSeek API key:
-        //   deepseek-web-tools config set-key, or export DEEPSEEK_API_KEY (inherited by the MCP child)
-        (
-            name: "deepseek-web-tools",
-            transport: Stdio(
-                cmd: "deepseek-web-tools mcp",
-                env_vars: {},
-            ),
-            qualify_tool_names: false,
-            prompt: r#"
-<tool name="deepseek_search">Search the web for any topic and get clean, ready-to-use content,  query supports site:, -site:, lang:, after:, before:, "exact phrase"</tool>
-"#,
-        ),
         (
             name: "exa",
             transport: Http(

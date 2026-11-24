@@ -180,8 +180,8 @@ pub static TABLE: &[(&str, &str)] = &[
         "Windows 使用系统代理；其他平台使用 HTTP(S)_PROXY 环境变量。",
     ),
     (
-        "Fetch, bash curl/wget, and child processes.",
-        "适用于 Fetch、bash curl/wget 及子进程。",
+        "Fetch, custom HTTP tools, bash curl/wget, and child processes.",
+        "适用于 Fetch、自定义 HTTP 工具、bash curl/wget 及子进程。",
     ),
     ("Takes effect on restart.", "重启后生效。"),
     ("Tool Limits", "工具限制"),
@@ -199,8 +199,8 @@ pub static TABLE: &[(&str, &str)] = &[
     ("read image max side", "读取图片最长边"),
     ("find max lines", "查找最大行数"),
     ("search max lines", "搜索最大行数"),
-    ("fetch max body bytes", "抓取最大正文字节数"),
-    ("fetch timeout (ms)", "抓取超时 (ms)"),
+    ("HTTP max body bytes", "HTTP 最大正文字节数"),
+    ("HTTP timeout (ms)", "HTTP 超时 (ms)"),
     ("mcp connect timeout (ms)", "MCP 连接超时 (ms)"),
     ("mcp call timeout (ms)", "MCP 调用超时 (ms)"),
     ("Sub-agent Models", "子智能体模型"),
@@ -215,8 +215,8 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── Custom Tools page (custom_tools.rs) ──
     ("+ New Tool", "+ 新建工具"),
     (
-        "No custom tools yet. Click + New Tool to define a command-line tool.",
-        "还没有自定义工具。点击“+ 新建工具”定义一个命令行工具。",
+        "No custom tools yet. Click + New Tool to define a command-line or HTTP API tool.",
+        "还没有自定义工具。点击“+ 新建工具”定义一个命令行或 HTTP API 工具。",
     ),
     ("untitled", "未命名"),
     ("Description", "描述"),
@@ -241,6 +241,34 @@ pub static TABLE: &[(&str, &str)] = &[
     (
         "Command uses TinyTemplate syntax: {param} inserts a value, {{ if param }}…{{ endif }} adds conditional arguments.",
         "命令使用 TinyTemplate 语法：{param} 插入参数值，{{ if param }}…{{ endif }} 按条件添加参数。",
+    ),
+    ("Type", "类型"),
+    ("HTTP API", "HTTP API"),
+    ("Method", "方法"),
+    ("Request URL", "请求地址"),
+    ("Header name", "请求头名称"),
+    ("Header value", "请求头值"),
+    ("Body", "请求体"),
+    ("Response Template", "响应模板"),
+    (
+        "JSON or text; {param} inserts a value",
+        "JSON 或文本；{param} 插入参数值",
+    ),
+    (
+        "Optional TinyTemplate for the JSON response",
+        "可选的 JSON 响应 TinyTemplate 模板",
+    ),
+    (
+        "HTTP request uses TinyTemplate syntax: {param} inserts a value (percent-encoded in the URL, type-preserving in a JSON body), and {env.VAR} inserts an environment variable.",
+        "HTTP 请求使用 TinyTemplate 语法：{param} 插入参数值（URL 中会进行百分号编码，JSON body 中保留类型），{env.VAR} 插入环境变量。",
+    ),
+    (
+        "JSON braces are written normally; optional fields can use {{ if param }}…{{ endif }}.",
+        "JSON 花括号正常书写；可选字段可用 {{ if param }}…{{ endif }} 控制。",
+    ),
+    (
+        "Response Template is applied to the JSON response: use {response.field}, {body}, {status}, or {{ for item in response.results }}…{{ endfor }}. Leave empty to return the raw body.",
+        "响应模板应用于 JSON 响应：可使用 {response.field}、{body}、{status} 或 {{ for item in response.results }}…{{ endfor }}。留空则返回原始响应正文。",
     ),
     ("Parameters", "参数"),
     ("Parameter name", "参数名称"),
