@@ -1407,8 +1407,11 @@ fn pending_prompt_text(prompt: &UserPrompt) -> String {
 /// `12.3% · $0.05`.
 fn usage_summary(tab: &SessionTab, model: Option<&ModelConfig>) -> String {
     let mut parts = Vec::new();
-    if let Some(cw) = model.map(|m| m.context_window).filter(|&cw| cw > 0) {
-        let ratio = tab.latest_tokens.context_fill_ratio(cw);
+    let latest_usage = tab.session.latest_usage();
+    if let Some(cw) = model.map(|m| m.context_window).filter(|&cw| cw > 0)
+        && let Some(tokens) = latest_usage.as_ref()
+    {
+        let ratio = tokens.context_fill_ratio(cw);
         parts.push(format!("{ratio:.1}%"));
     }
     parts.push(tab.session.formatted_cost());

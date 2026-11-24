@@ -4,7 +4,6 @@ use std::sync::Arc;
 use crate::app::prompt_options::PromptOptions;
 use crate::app::session_state::SessionState;
 use crate::llm::DialogPhase;
-use crate::model::TokenAmount;
 use crate::tools::todo::{self, TodoList};
 use crate::views::search_bar::SearchState;
 use crabot::session::Session;
@@ -45,8 +44,6 @@ pub(crate) struct SessionTab {
     pub(crate) dialog_title: String,
     /// Per-tab streaming lifecycle.
     pub(crate) session_state: SessionState,
-    /// Token usage for the most recent request in this tab.
-    pub(crate) latest_tokens: TokenAmount,
     /// Expanded (turn, sub-item) keys for tool-call details.
     pub(crate) expanded_turns: HashSet<(usize, usize)>,
     /// Expanded dialog indices.
@@ -85,7 +82,6 @@ impl SessionTab {
         number: usize,
         session: Session,
         pane: PromptOptions,
-        latest_tokens: TokenAmount,
         todo_items: TodoList,
     ) -> Self {
         Self {
@@ -93,7 +89,6 @@ impl SessionTab {
             session,
             dialog_title: String::new(),
             session_state: SessionState::new(),
-            latest_tokens,
             expanded_turns: HashSet::new(),
             expanded_dialogs: HashSet::new(),
             attachment_previews: HashMap::new(),
@@ -113,24 +108,13 @@ impl SessionTab {
 
     /// Create a fresh (unsaved, empty) tab with the given number.
     pub(crate) fn new(number: usize, pane: PromptOptions) -> Self {
-        Self::from_parts(
-            number,
-            Session::new(),
-            pane,
-            TokenAmount::default(),
-            TodoList::default(),
-        )
+        Self::from_parts(number, Session::new(), pane, TodoList::default())
     }
 
     /// Build a tab from a previously-saved session loaded from disk.
     pub(crate) fn from_session(number: usize, session: Session, pane: PromptOptions) -> Self {
-        let latest_tokens = TokenAmount {
-            prompt: session.tokens.prompt,
-            output: session.tokens.output,
-            ..Default::default()
-        };
         let todo_items = todo::create_todo_list(session.last_todo_items());
-        Self::from_parts(number, session, pane, latest_tokens, todo_items)
+        Self::from_parts(number, session, pane, todo_items)
     }
 
     /// Whether this tab has an active LLM stream.

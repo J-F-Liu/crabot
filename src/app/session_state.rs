@@ -352,7 +352,6 @@ pub(crate) fn update(
         session,
         dialog_title,
         search,
-        latest_tokens,
         expanded_dialogs,
         expanded_turns,
         end_status,
@@ -528,7 +527,6 @@ pub(crate) fn update(
                 return Task::none();
             }
             session.accumulate_tokens(&tokens, model_cost);
-            *latest_tokens = tokens;
             // Refresh the markdown cache after all chunks are collected.
             if let Some(last) = session.last_turn_mut()
                 && let TurnBody::Text(tc) = &mut last.body
@@ -603,7 +601,8 @@ pub(crate) fn update(
                     && state.pending_prompt.is_none()
                     && let Some(cw) = context_window
                     && cw >= MIN_CW_FOR_RENEW_HINT
-                    && latest_tokens.context_fill_ratio(cw) >= fill_ratio_threshold
+                    && let Some(tokens) = session.latest_usage()
+                    && tokens.context_fill_ratio(cw) >= fill_ratio_threshold
                 {
                     let prompt = UserPrompt::new(
                         session.dialogs.last().and_then(|d| d.mode),

@@ -40,6 +40,9 @@ pub enum SessionRecord {
     /// Cumulative usage snapshot — last record wins on load.
     Tally {
         tokens: TokenAmount,
+        /// Latest response usage for the context estimate.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_usage: Option<TokenAmount>,
         cost: f64,
         currency: Currency,
         requests: u32,
@@ -87,6 +90,9 @@ pub struct Session {
     pub requests: u32,
     /// Accumulated token usage across all turns.
     pub tokens: TokenAmount,
+    /// Latest response usage; `None` until one is reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_usage: Option<TokenAmount>,
     /// Accumulated token cost.
     pub cost: f64,
     /// Currency for the accumulated cost (ISO 4217 code, e.g. "USD", "CNY").
@@ -454,6 +460,7 @@ impl Session {
             saved_meta: None,
             requests: 0,
             tokens: TokenAmount::default(),
+            last_usage: None,
             cost: 0.0,
             currency: Currency::new(),
             modified: TrackedFiles::default(),
@@ -494,9 +501,9 @@ impl Session {
         // so dialog-only turns (error/notice messages) don't carry over.
         session.history.retain(|m| m.role != ChatRole::System);
         session.rebuild_dialogs();
-        // Save the forked session; failures are logged inside `save`.
+        // Persist the fork's usage too; failures are logged inside `save_with_tally`.
         if session.workspace.is_dir() {
-            let _ = session.save();
+            let _ = session.save_with_tally();
         }
         session
     }
@@ -560,8 +567,9 @@ impl Session {
         compacted.extend(answer.take());
         session.history = compacted;
         session.rebuild_dialogs();
-        // Fresh accumulators
+        // Fresh accumulators — compacted history has no measured usage.
         session.tokens = TokenAmount::default();
+        session.last_usage = None;
         session.requests = 0;
         // Save the compacted session; failures are logged inside `save_with_tally`.
         if session.workspace.is_dir() {
@@ -689,6 +697,7 @@ impl Session {
     /// Accumulate token usage and recalculate cost from the model's pricing.
     pub fn accumulate_tokens(&mut self, tokens: &TokenAmount, cost: Option<crate::model::Cost>) {
         self.requests += 1;
+        self.last_usage = Some(*tokens);
         self.tokens.accumulate(tokens);
         if let Some(c) = cost {
             self.cost += c.calculate(tokens);
@@ -696,6 +705,16 @@ impl Session {
                 self.currency = c.currency;
             }
         }
+    }
+
+    /// Latest response usage; old files fall back to the last prompt only.
+    pub fn latest_usage(&self) -> Option<TokenAmount> {
+        self.last_usage.or_else(|| {
+            (self.tokens.prompt > 0).then_some(TokenAmount {
+                prompt: self.tokens.prompt,
+                ..Default::default()
+            })
+        })
     }
 
     /// Time part of `updated_at` ("%H:%M:%S"), for compact display.
@@ -1117,12 +1136,14 @@ impl Session {
                 Ok(SessionRecord::Tally {
                     requests,
                     tokens,
+                    last_usage,
                     cost,
                     currency,
                     updated_at,
                 }) => {
                     session.requests = requests;
                     session.tokens = tokens;
+                    session.last_usage = last_usage;
                     session.cost = cost;
                     session.currency = currency;
                     session.updated_at = updated_at;
@@ -1215,6 +1236,7 @@ impl Session {
         let line = serde_json::to_string(&SessionRecord::Tally {
             requests: self.requests,
             tokens: self.tokens,
+            last_usage: self.last_usage,
             cost: self.cost,
             currency: self.currency,
             updated_at: self.updated_at.clone(),

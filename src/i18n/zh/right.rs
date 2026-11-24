@@ -9,6 +9,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Context window", "上下文窗口"),
     ("Prompt tokens:", "填充词元数："),
     ("Cached tokens:", "缓存词元数："),
+    ("Last output tokens:", "最后输出词元数："),
     ("Fill ratio:", "填充比例："),
     // ── token usage section ──
     ("Token Usage", "词元用量"),

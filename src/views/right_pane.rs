@@ -18,7 +18,7 @@ use crate::RightPaneEvent;
 use crate::acp::AcpState;
 use crate::app::{QueuedTask, SessionTab};
 use crabot::i18n::Lang;
-use crabot::model::ModelConfig;
+use crabot::model::{ModelConfig, TokenAmount};
 use crabot::tools::{
     process,
     todo::{TodoItem, TodoStatus},
@@ -83,6 +83,11 @@ fn with_trailing<'a>(
 /// Label-value row with the value right-aligned via a fill spacer.
 fn token_row<'a>(label: &'a str, value: String) -> Element<'a, RightPaneEvent> {
     with_trailing(text(label).size(16), text(value).size(16).font(MONO))
+}
+
+/// Token-derived display value, or an em dash when usage is unknown.
+fn token_text(tokens: Option<&TokenAmount>, value: impl FnOnce(&TokenAmount) -> String) -> String {
+    tokens.map(value).unwrap_or_else(|| "—".to_string())
 }
 
 fn section_header(title: Cow<'static, str>) -> Element<'static, RightPaneEvent> {
@@ -258,8 +263,9 @@ pub(crate) fn right_pane<'a>(
     acp: &AcpState,
     lang: Lang,
 ) -> Element<'a, RightPaneEvent> {
-    let token_amount = &tab.latest_tokens;
     let session = &tab.session;
+    let latest_usage = session.latest_usage();
+    let token_amount = latest_usage.as_ref();
     let todo_items: Vec<TodoItem> = tab
         .todo_items
         .lock()
@@ -273,15 +279,14 @@ pub(crate) fn right_pane<'a>(
     let cw = context_window.filter(|&cw| cw > 0);
     let expanded = sections.context_window;
     // Collapsed shows only the fill ratio; expanded shows the raw size.
-    let header = match cw {
-        Some(cw) if !expanded => lang.tr("Context window: {:.1}%").replace(
-            "{:.1}%",
-            &format!("{:.1}%", token_amount.context_fill_ratio(cw)),
-        ),
-        Some(cw) => lang
+    let header = match (cw, token_amount) {
+        (Some(cw), Some(tokens)) if !expanded => lang
+            .tr("Context window: {:.1}%")
+            .replace("{:.1}%", &format!("{:.1}%", tokens.context_fill_ratio(cw))),
+        (Some(cw), _) => lang
             .tr("Context window ({cw})")
             .replace("{cw}", &cw.to_string()),
-        None => lang.tr("Context window").to_string(),
+        (None, _) => lang.tr("Context window").to_string(),
     };
     items.push(collapsible_header(
         Cow::from(header),
@@ -292,16 +297,22 @@ pub(crate) fn right_pane<'a>(
     if expanded {
         items.push(token_row(
             lang.tr("Prompt tokens:"),
-            token_amount.prompt.to_string(),
+            token_text(token_amount, |t| t.prompt.to_string()),
         ));
         items.push(token_row(
             lang.tr("Cached tokens:"),
-            (token_amount.cache_read + token_amount.cache_write).to_string(),
+            token_text(token_amount, |t| (t.cache_read + t.cache_write).to_string()),
+        ));
+        items.push(token_row(
+            lang.tr("Last output tokens:"),
+            token_text(token_amount, |t| t.output.to_string()),
         ));
         if let Some(cw) = cw {
             items.push(token_row(
                 lang.tr("Fill ratio:"),
-                format!("{:.1}%", token_amount.context_fill_ratio(cw)),
+                token_text(token_amount, |t| {
+                    format!("{:.1}%", t.context_fill_ratio(cw))
+                }),
             ));
         }
     }

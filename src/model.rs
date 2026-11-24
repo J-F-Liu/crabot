@@ -319,8 +319,7 @@ impl TokenAmount {
             output: usage.completion_tokens.unwrap_or(0),
         }
     }
-    /// Percentage of `context_window` used by the estimated next-turn
-    /// context size: last prompt plus the response just generated.
+    /// Estimated next-turn context use: last prompt plus latest output.
     pub fn context_fill_ratio(&self, context_window_size: u32) -> f32 {
         (self.prompt + self.output) as f32 * 100.0 / context_window_size as f32
     }
