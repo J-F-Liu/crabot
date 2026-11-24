@@ -5,9 +5,7 @@ use iced::{
 
 use crate::views::theme::color_muted;
 
-use super::styles::{
-    attachment_chip_style, icon_button_style, menu_container_style, menu_item_style,
-};
+use super::styles::{chip_style, icon_button_style, menu_container_style, menu_item_style};
 use super::system_prompt::expandable_header;
 use crate::WORKSPACE_TREE;
 use crate::app::FileTreePane;
@@ -183,7 +181,7 @@ fn attachment_row<'a>(attachments: &'a [UserAttachment]) -> Element<'a, PromptEv
             .align_y(Alignment::Center),
         )
         .padding([2, 6])
-        .style(attachment_chip_style)
+        .style(chip_style)
         .boxed();
         chips = chips.push(chip);
     }

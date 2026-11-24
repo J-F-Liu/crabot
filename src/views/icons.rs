@@ -99,6 +99,23 @@ pub(crate) fn icon_action<M: Clone + 'static>(
     )
 }
 
+/// Like [`icon_action`], but builds the message only when pressed.
+#[must_use]
+pub(crate) fn icon_action_with<'a, M: Clone + 'static>(
+    icon: &'static [u8],
+    tip: &'a str,
+    on_press: impl Fn() -> M + 'a,
+) -> Element<'a, M> {
+    with_tooltip(
+        button(svg_icon(icon))
+            .on_press_with(on_press)
+            .padding(6)
+            .style(icon_button_style)
+            .boxed(),
+        tip,
+    )
+}
+
 /// Wrap `content` in the standard dark tooltip shown below on hover.
 #[must_use]
 pub(crate) fn with_tooltip<'a, M: 'static>(

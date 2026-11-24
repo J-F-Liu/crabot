@@ -378,8 +378,8 @@ pub(crate) fn icon_button_style(_theme: &Theme, status: button::Status) -> butto
     style
 }
 
-/// Small chip holding one selected attachment above the send row.
-pub(crate) fn attachment_chip_style(_theme: &Theme) -> container::Style {
+/// Neutral chip with a thin border, shared by attachments and code-block actions.
+pub(crate) fn chip_style(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(color_surface().into()),
         border: Border {

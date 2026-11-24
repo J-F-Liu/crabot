@@ -17,7 +17,7 @@ use iced::{
     widget::operation::{Animation, scrollable as scrollable_op},
     widget::scrollable::{AbsoluteOffset, Direction, RelativeOffset, Scrollbar},
     widget::{
-        self, Space, button, column, container, image, markdown, mouse_area, rich_text, row,
+        self, Space, button, column, container, hover, image, markdown, mouse_area, rich_text, row,
         scrollable, stack, text,
     },
 };
@@ -33,7 +33,7 @@ use crabot::i18n::Lang;
 use super::icons;
 use super::session_tabs::localize_tab_label;
 use super::styles::{
-    assistant_bubble_style, attachment_chip_style, bordered_bar_style, icon_button_style,
+    assistant_bubble_style, bordered_bar_style, chip_style, icon_button_style,
     menu_container_style, menu_item_style, pane_center, reasoning_box_style, role_badge_style,
     sel_default, sel_markdown, sel_muted, session_header_style, tool_bubble_style,
     user_bubble_style,
@@ -632,6 +632,7 @@ fn is_plain_text(md: &markdown::Content) -> bool {
 /// Markdown viewer with palette-styled code blocks and selectable text.
 struct CrabotViewer<'a> {
     theme: &'a Theme,
+    lang: Lang,
 }
 
 impl<'a> CrabotViewer<'a> {
@@ -668,10 +669,10 @@ impl<'a> markdown::Viewer<'a, CenterPaneEvent, Theme, iced::Renderer> for Crabot
         &self,
         settings: markdown::Settings,
         _language: Option<&'a str>,
-        _code: &'a str,
+        code: &'a str,
         lines: &'a [markdown::Text],
     ) -> impl Widget<CenterPaneEvent, Theme, iced::Renderer> + 'a {
-        container(
+        let block = container(
             scrollable(
                 column(lines.iter().map(|line| {
                     rich_text(line.spans(settings, self.theme(), self.highlighter()))
@@ -700,7 +701,23 @@ impl<'a> markdown::Viewer<'a, CenterPaneEvent, Theme, iced::Renderer> for Crabot
             },
             text_color: Some(color_code_text()),
             ..container::Style::default()
-        })
+        });
+
+        let copy = container(icons::icon_action_with(
+            icons::COPY,
+            self.lang.tr("Copy code"),
+            || CenterPaneEvent::CopyCode(code.to_owned()),
+        ))
+        .padding(1)
+        .style(chip_style);
+        let overlay = container(copy)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::End)
+            .align_y(Alignment::Start)
+            .padding(4);
+
+        hover(block, overlay)
     }
 
     fn heading(
@@ -752,7 +769,15 @@ fn markdown_element<'a>(
     ctx: &TurnView<'a>,
 ) -> Element<'a, CenterPaneEvent> {
     let settings = markdown::Settings::with_text_size(text_size * ctx.font_scale);
-    markdown::view_with(md.items(), settings, &CrabotViewer { theme: ctx.theme }).boxed()
+    markdown::view_with(
+        md.items(),
+        settings,
+        &CrabotViewer {
+            theme: ctx.theme,
+            lang: ctx.lang,
+        },
+    )
+    .boxed()
 }
 
 /// Build a complete Text turn block (header + body + bubble).
@@ -931,7 +956,7 @@ fn attachment_preview_body<'a>(
                 .width(Length::Fit.max(PREVIEW_MAX_WIDTH))
                 .height(Length::Fit.max(PREVIEW_MAX_HEIGHT))
                 .padding(4)
-                .style(attachment_chip_style)
+                .style(chip_style)
                 .boxed()
         }
         AttachmentPreview::Ready(PreviewContent::Text(content)) => container(
@@ -948,7 +973,7 @@ fn attachment_preview_body<'a>(
         .height(Length::Fit.max(TEXT_PREVIEW_MAX_HEIGHT))
         .width(Fill)
         .padding(8)
-        .style(attachment_chip_style)
+        .style(chip_style)
         .boxed(),
     }
 }

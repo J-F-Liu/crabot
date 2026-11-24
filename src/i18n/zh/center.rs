@@ -19,6 +19,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ),
     ("Show image", "展开图片"),
     ("Hide image", "收起图片"),
+    ("Copy code", "复制代码"),
     // ── session header menu & info (center_pane.rs) ──
     ("Copy title", "复制标题"),
     ("Resend session", "重新发送"),

@@ -698,6 +698,8 @@ pub(crate) enum ConversationEvent {
     /// Close the currently-viewed tab (Ctrl+W).
     CloseCurrentTab,
     CopySessionTitle,
+    /// Copy a Markdown code block to the clipboard.
+    CopyCode(String),
     /// Export the current session to an HTML file (opens a save dialog).
     ExportSessionHtml,
     /// Result of the HTML export.
@@ -765,6 +767,8 @@ pub(crate) enum LeftPaneEvent {
 #[derive(Clone)]
 pub(crate) enum CenterPaneEvent {
     Conversation(ConversationEvent),
+    /// The copy button of a Markdown code block was clicked.
+    CopyCode(String),
     SessionViewScrolled(Viewport),
     LinkClicked(String),
     /// Tab bar scrollable viewport changed.
@@ -1411,6 +1415,9 @@ impl App {
                 )
                 .map(|event| match event {
                     CenterPaneEvent::Conversation(e) => Message::Conversation(e),
+                    CenterPaneEvent::CopyCode(code) => {
+                        Message::Conversation(ConversationEvent::CopyCode(code))
+                    }
                     CenterPaneEvent::SessionViewScrolled(vp) => {
                         Message::Layout(LayoutEvent::SessionViewScrolled(vp))
                     }

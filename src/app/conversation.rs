@@ -106,6 +106,9 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             close_header_menu(app);
             return iced::clipboard::write(localized_header_title(app)).discard();
         }
+        ConversationEvent::CopyCode(code) => {
+            return iced::clipboard::write(code).discard();
+        }
         ConversationEvent::ResendSessionHistory => {
             close_header_menu(app);
             return resend_session(app);
