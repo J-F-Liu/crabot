@@ -1,11 +1,15 @@
 use iced::{
     Alignment, Element, Fill, Length, Padding, Widget, padding,
-    widget::{button, checkbox, column, container, row, scrollable, text, text::Wrapping},
+    widget::{
+        button, checkbox, column, container, rich_text, row, scrollable, span, text, text::Wrapping,
+    },
 };
 
 use crate::views::theme::color_muted;
 
-use super::styles::{chip_style, icon_button_style, menu_container_style, menu_item_style};
+use super::styles::{
+    chip_style, icon_button_style, menu_container_style, menu_item_style, sel_default,
+};
 use super::system_prompt::expandable_header;
 use crate::WORKSPACE_TREE;
 use crate::app::FileTreePane;
@@ -223,9 +227,11 @@ fn files_field_view<'a>(
         } else {
             scrollable(
                 container(
-                    text(&files.tree)
+                    rich_text([span::<()>(&files.tree)])
                         .font(iced::Font::MONOSPACE)
-                        .wrapping(Wrapping::None),
+                        .wrapping(Wrapping::None)
+                        .selectable(true)
+                        .style(sel_default),
                 )
                 .padding(Padding::new(0.0).bottom(12.0)),
             )
@@ -233,6 +239,7 @@ fn files_field_view<'a>(
                 vertical: Scrollbar::new().width(4).scroller_width(4),
                 horizontal: Scrollbar::new().width(4).scroller_width(4),
             })
+            .width(Fill)
             .height(Length::Fixed(200.0))
             .boxed()
         };
