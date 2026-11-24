@@ -407,13 +407,15 @@ fn exit_code_of_impl(status: &std::process::ExitStatus, msys: bool) -> i32 {
     -1
 }
 
-/// Combine stdout, stderr, and exit code into one string, then truncate.
-/// Output is decoded charset-aware and reduced to plain text (see
-/// [`decode_plain`]); pass `msys = true` only for output of a real
-/// MSYS/Cygwin `bash`.
-pub(crate) fn format_command_output(output: &std::process::Output, msys: bool) -> String {
-    let stdout = decode_plain(&output.stdout);
-    let stderr = decode_plain(&output.stderr);
+/// Combine and truncate stdout/stderr, decoded with `encoding` as plain text.
+/// Pass `msys = true` only for a real MSYS/Cygwin `bash`.
+pub(crate) fn format_command_output(
+    output: &std::process::Output,
+    msys: bool,
+    encoding: &'static encoding_rs::Encoding,
+) -> String {
+    let stdout = decode_plain(&output.stdout, encoding);
+    let stderr = decode_plain(&output.stderr, encoding);
     truncate_output(combine_output(
         &stdout,
         &stderr,

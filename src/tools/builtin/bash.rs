@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::tools::{
     ChunkForwarder, OutputSink, Tool, WaitError, bash_kit, host_path_lists, required_str,
-    resolve_command, tool_limits, wait_with_timeout,
+    resolve_command, script_encoding, tool_limits, wait_with_timeout,
 };
 
 pub struct BashTool;
@@ -109,9 +109,16 @@ fn run(
     match bash_kit::analyze_script(command, workspace) {
         Ok(plan) => bash_kit::execute(command, workspace, timeout, cancel, plan, sink),
         Err(bash_kit::ScriptIssue::Refused(message)) => Err(message.into()),
-        Err(bash_kit::ScriptIssue::Fallback) => {
+        Err(bash_kit::ScriptIssue::Fallback(analysis)) => {
             tracing::info!("bashkit falling back to host bash: {}", command);
-            execute_real_bash(command, workspace, timeout, cancel, sink)
+            execute_real_bash(
+                command,
+                workspace,
+                timeout,
+                cancel,
+                script_encoding(command, analysis.as_ref()),
+                sink,
+            )
         }
     }
 }
@@ -122,6 +129,7 @@ fn execute_real_bash(
     workspace: &Path,
     timeout: Duration,
     cancel: &CancellationToken,
+    encoding: &'static encoding_rs::Encoding,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
     let (stdout_tx, stdout_rx) = crate::tools::create_pipe_pair("stdout")?;
@@ -146,7 +154,7 @@ fn execute_real_bash(
         .spawn()
         .map_err(|e| format!("Failed to execute command: {e}"))?;
 
-    let mut forwarder = ChunkForwarder::new(sink);
+    let mut forwarder = ChunkForwarder::new(sink, encoding);
     let result = wait_with_timeout(
         child,
         Some(stdout_rx),
@@ -154,6 +162,7 @@ fn execute_real_bash(
         timeout,
         timeout,
         true, // bash runs in its own process group → kill the whole group
+        encoding,
         cancel,
         Some(&mut forwarder),
     );
@@ -162,7 +171,7 @@ fn execute_real_bash(
     let output = result.map_err(WaitError::into_message)?;
     // The fallback runs a real (MSYS/Cygwin on Windows) bash, whose signal
     // deaths use the `signal << 8` exit-code encoding.
-    Ok(crate::tools::format_command_output(&output, true))
+    Ok(crate::tools::format_command_output(&output, true, encoding))
 }
 
 /// Render a timeout in milliseconds as a human-readable duration, e.g.

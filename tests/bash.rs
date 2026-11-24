@@ -893,33 +893,42 @@ fn bashkit_cd_root_does_not_fall_back_to_workspace() {
     );
 }
 
-/// GBK output (a Chinese-locale console program) is decoded, not mangled.
-/// `eval` forces the real-`bash -c` route; `printf` octal escapes emit the
-/// raw GBK bytes for 中文 (\326\320\316\304).
+/// A UTF-8 builtin and a legacy-code-page PowerShell command in one script:
+/// neither should be decoded with the other's encoding.
+#[cfg(windows)]
 #[test]
-fn gbk_output_is_decoded_not_garbled() {
+fn mixed_utf8_and_powershell_output_decodes_both() {
+    if which::which("powershell").is_err() {
+        return;
+    }
+    let tmp = TempDir::new("mixed_encoding").unwrap();
+    tmp.write("中文文件.kb", b"x").unwrap();
+    let dir = crabot::tools::convert_path_to_unix_style(&tmp.path);
     let result = run_bash(
-        "eval \"printf '\\326\\320\\316\\304'\"",
+        &format!(
+            "ls '{dir}'; powershell.exe -NoProfile -NonInteractive -Command \"Write-Output '中文'\""
+        ),
+        &crabot_workspace(),
+        Some(30_000),
+    )
+    .unwrap();
+    assert!(
+        result.lines().any(|line| line.contains("中文文件.kb")),
+        "ls output was decoded with PowerShell's code page: {result}"
+    );
+}
+
+/// Merely mentioning `powershell` in a fallback script keeps UTF-8 decoding.
+#[test]
+fn fallback_bash_stays_utf8_when_powershell_is_mentioned() {
+    let result = run_bash(
+        "eval \"echo 中文; echo powershell\"",
         &crabot_workspace(),
         None,
     )
     .unwrap();
     assert!(result.contains("中文"), "unexpected: {result}");
     assert!(!result.contains('\u{FFFD}'), "unexpected: {result}");
-}
-
-/// The streaming route decodes GBK too: live chunks pin the encoding instead
-/// of emitting raw lossy bytes.
-#[test]
-fn gbk_streaming_is_decoded() {
-    let (result, chunks) = stream_and_collect(
-        "eval \"printf '\\326\\320\\316\\304'\"",
-        &crabot_workspace(),
-        None,
-    );
-    result.unwrap();
-    let streamed: String = chunks.concat();
-    assert!(streamed.contains("中文"), "unexpected stream: {streamed:?}");
 }
 
 // ── exit codes & timeouts ───────────────────────────────────

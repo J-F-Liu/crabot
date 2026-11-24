@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use encoding_rs::Encoding;
 use futures::stream::BoxStream;
 use serde_json::{Value, json};
 use shell_words::split;
@@ -26,10 +27,10 @@ use std::os::windows::io::{AsRawHandle, RawHandle};
 use crate::lock;
 use crate::tools::{
     CANCEL_REASON, ChunkDecoder, OutputSink, PlainTextDecoder, ProcessSignal, StdinWriteError,
-    Tool, WindowFacts, arg_str, arg_u64, convert_path_list_to_native, detach_child, exit_code_of,
-    host_path_lists, is_path_env_key, process_tree_pids, required_str, resolve_command,
-    resolve_path, sanitize_child_env, signal_process_tree, spawn_worker, tool_limits, window_facts,
-    write_stdin_bounded,
+    Tool, WindowFacts, arg_str, arg_u64, argv_encoding, convert_path_list_to_native, detach_child,
+    exit_code_of, host_path_lists, is_path_env_key, process_tree_pids, required_str,
+    resolve_command, resolve_path, sanitize_child_env, signal_process_tree, spawn_worker,
+    tool_limits, window_facts, write_stdin_bounded,
 };
 use xcap::Window;
 
@@ -741,6 +742,7 @@ fn start_command(
     let (exe, exe_args) = parts
         .split_first()
         .expect("command was validated non-empty");
+    let encoding = argv_encoding(exe, exe_args);
 
     // Resolve through `PATH`: `npx`-style shims (`.cmd`) need a shell lookup.
     let paths = host_path_lists(env_path_override(&env));
@@ -793,9 +795,9 @@ fn start_command(
     notify_process_changed();
 
     let stdout_raw = raw_pipe(&stdout);
-    spawn_reader(Arc::clone(&entry), stdout, stdout_raw);
+    spawn_reader(Arc::clone(&entry), stdout, encoding, stdout_raw);
     let stderr_raw = raw_pipe(&stderr);
-    spawn_reader(Arc::clone(&entry), stderr, stderr_raw);
+    spawn_reader(Arc::clone(&entry), stderr, encoding, stderr_raw);
     spawn_reaper(Arc::clone(&entry), child);
     Ok(entry)
 }
@@ -836,13 +838,14 @@ enum ReadStep {
 fn spawn_reader(
     entry: Arc<ProcessEntry>,
     mut reader: impl Read + Send + 'static,
+    encoding: &'static Encoding,
     #[cfg(unix)] raw: i32,
     #[cfg(windows)] raw: RawHandle,
 ) {
     #[cfg(windows)]
     let raw = raw as isize; // RawHandle is !Send; the handle stays owned by `reader`.
     std::thread::spawn(move || {
-        let mut decoder = PlainTextDecoder::new();
+        let mut decoder = PlainTextDecoder::new(encoding);
         let mut out = Vec::new();
         let mut buf = [0u8; 8192];
         let mut exit_seen_at: Option<Instant> = None;

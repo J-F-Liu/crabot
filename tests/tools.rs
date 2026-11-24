@@ -235,12 +235,18 @@ fn sanitize_keeps_timeouts_valid() {
 
 /// Forwarder whose chunks are collected into a Vec for inspection.
 fn forwarder() -> (ChunkForwarder, Arc<Mutex<Vec<String>>>) {
+    forwarder_with(encoding_rs::UTF_8)
+}
+
+fn forwarder_with(
+    encoding: &'static encoding_rs::Encoding,
+) -> (ChunkForwarder, Arc<Mutex<Vec<String>>>) {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let sink: OutputSink = Arc::new({
         let captured = Arc::clone(&captured);
         move |chunk| captured.lock().unwrap().push(chunk.to_string())
     });
-    (ChunkForwarder::new(Some(sink)), captured)
+    (ChunkForwarder::new(Some(sink), encoding), captured)
 }
 
 /// All captured chunks joined into one string.
@@ -342,6 +348,30 @@ fn carries_incomplete_utf8_across_chunks() {
     push_stdout(&mut f, &[0xAD, b'x']);
     f.finish();
     assert_eq!(joined(&out), "中x");
+}
+
+#[test]
+fn decodes_utf16le_output() {
+    let (mut f, out) = forwarder_with(encoding_rs::UTF_16LE);
+    let bytes: Vec<u8> = "中文\r\n"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    // Split inside a code unit to exercise the decoder's carry.
+    push_stdout(&mut f, &bytes[..3]);
+    push_stdout(&mut f, &bytes[3..]);
+    f.finish();
+    assert_eq!(joined(&out), "中文\n");
+}
+
+#[test]
+fn explicit_bom_overrides_the_default_encoding() {
+    let (mut f, out) = forwarder();
+    let mut bytes = vec![0xFF, 0xFE];
+    bytes.extend("hi".encode_utf16().flat_map(u16::to_le_bytes));
+    push_stdout(&mut f, &bytes);
+    f.finish();
+    assert_eq!(joined(&out), "hi");
 }
 
 #[test]

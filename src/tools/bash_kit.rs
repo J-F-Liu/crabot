@@ -54,10 +54,12 @@ use bashkit::{
     CommandStatus, ExecResult, ExecutionLimits, FileSystem, HttpLimits, NetworkAllowlist,
     async_trait, vfs_join,
 };
+use encoding_rs::{Encoding, UTF_8};
 
 use super::{
-    CANCEL_REASON, ChunkForwarder, OutStream, OutputSink, WHOLE_CARGO_REGISTRY_MESSAGE, cargo_home,
-    is_whole_cargo_registry, resolve_path, timeout_message,
+    CANCEL_REASON, ChunkForwarder, FixedDecoder, OutStream, OutputSink,
+    WHOLE_CARGO_REGISTRY_MESSAGE, cargo_home, is_whole_cargo_registry, resolve_path,
+    timeout_message,
 };
 use crate::lock;
 
@@ -141,59 +143,55 @@ pub(crate) struct ScriptPlan {
 
 /// Why a script cannot run through the in-process interpreter.
 pub(crate) enum ScriptIssue {
-    /// Use the host `bash -c` fallback.
-    Fallback,
+    /// Use host bash, retaining any parse for output-encoding detection.
+    Fallback(Option<ScriptAnalysis>),
     /// Refuse the script with this agent-facing message.
     Refused(&'static str),
 }
 
-impl From<()> for ScriptIssue {
-    fn from((): ()) -> Self {
-        Self::Fallback
-    }
-}
-
-/// Statically analyze a script for the in-process interpreter.
-///
-/// `ScriptIssue::Fallback` means the script needs the host `bash -c` path;
-/// `ScriptIssue::Refused` means it must not run.
+/// Analyze for in-process execution, distinguishing host fallback from refusal.
 pub(crate) fn analyze_script(script: &str, workspace: &Path) -> Result<ScriptPlan, ScriptIssue> {
-    let analysis = analyze_with_limits(script, 100, 100_000).map_err(|_| ScriptIssue::Fallback)?;
+    let analysis =
+        analyze_with_limits(script, 100, 100_000).map_err(|_| ScriptIssue::Fallback(None))?;
     if let Some(message) = whole_cargo_registry_search(&analysis, workspace) {
         return Err(ScriptIssue::Refused(message));
     }
-    if analysis.is_opaque() {
-        return Err(ScriptIssue::Fallback);
-    }
-    if splits_declaration_operand(script) {
-        return Err(ScriptIssue::Fallback);
+    if analysis.is_opaque() || splits_declaration_operand(script) {
+        return Err(ScriptIssue::Fallback(Some(analysis)));
     }
     let mut names = Vec::new();
+    if scan_bridgable_commands(&analysis, &mut names).is_err() {
+        return Err(ScriptIssue::Fallback(Some(analysis)));
+    }
+    Ok(ScriptPlan {
+        external_names: names,
+        analysis,
+    })
+}
+
+/// Collect host bridges, or `Err(())` when faithful in-process execution is impossible.
+fn scan_bridgable_commands(analysis: &ScriptAnalysis, names: &mut Vec<String>) -> Result<(), ()> {
     for command in &analysis.commands {
         let Some(name) = command.name.as_deref() else {
             continue; // dynamic names already made the analysis opaque
         };
         // Unsupported: opaque payload, path-based (`./s.sh`), glob-shaped (`$TOOL`).
         if is_unbridgeable(name) {
-            return Err(ScriptIssue::Fallback);
+            return Err(());
         }
-        // Wrappers hide a command in their arguments — extract it for bridging,
-        // or fall back when it cannot run faithfully in-process.
+        // Extract commands hidden in wrapper arguments for host bridging.
         match name {
-            "find" => collect_find_commands(command, &mut names)?,
+            "find" => collect_find_commands(command, names)?,
             "env" | "nice" | "sudo" | "flock" | "busybox" | "timeout" | "xargs" => {
-                collect_wrapped_command(command, &mut names)?
+                collect_wrapped_command(command, names)?
             }
-            "watch" => return Err(ScriptIssue::Fallback), // never runs its command
-            "parallel" => return Err(ScriptIssue::Fallback), // dry-run stub only
+            "watch" => return Err(()),    // never runs its command
+            "parallel" => return Err(()), // dry-run stub only
             _ => {}
         }
-        push_external(name, &mut names);
+        push_external(name, names);
     }
-    Ok(ScriptPlan {
-        external_names: names,
-        analysis,
-    })
+    Ok(())
 }
 
 // ── Detach requests (`&`, `nohup`) ─────────────────────────────────
@@ -1049,8 +1047,8 @@ pub(crate) fn execute(
     plan: ScriptPlan,
     sink: Option<OutputSink>,
 ) -> Result<String, String> {
-    // Script-level forwarder: coalescing and partial capture apply per script.
-    let forwarder = Arc::new(Mutex::new(ChunkForwarder::new(sink)));
+    // Legacy host output is transcoded to UTF-8, so the script decoder is UTF-8.
+    let forwarder = Arc::new(Mutex::new(ChunkForwarder::new(sink, UTF_8)));
 
     // One mount table for the rewrite and the interpreter.
     let home_mount = real_home_mount();
@@ -1149,10 +1147,18 @@ impl Drop for FlushTicker {
     }
 }
 
-/// Build a bashkit `Bash` wired to the real workspace.
-///
-/// Applies the mount table, seeds env, bridges external command names, and
-/// installs the path-aware `which`/`type` replacements.
+/// Encoding for a bridged command, from its name and literal arguments.
+fn host_encoding(plan: &ScriptPlan, program: &str) -> &'static Encoding {
+    let args = plan
+        .analysis
+        .commands
+        .iter()
+        .filter(|command| command.name.as_deref() == Some(program))
+        .flat_map(|command| command.args.iter().flatten().map(String::as_str));
+    super::host_command_encoding(program, args)
+}
+
+/// Build a bashkit `Bash` with crabot's mounts, env, and host-command bridges.
 fn build_bash(
     workspace: &Path,
     timeout: Duration,
@@ -1265,6 +1271,7 @@ fn build_bash(
 
     // Bridge each host command; bashkit's own `uname` reports a virtual platform.
     let host_command = |program: String| HostCommand {
+        encoding: host_encoding(plan, &program),
         program,
         mounts: Arc::clone(&shared_mounts),
         home: home_mount.clone(),
@@ -1297,6 +1304,8 @@ static SILENCER_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) struct HostCommand {
     /// Program to spawn: a `PATH` name or the resolved host `uname` path.
     program: String,
+    /// Re-encode child output from this encoding; `UTF_8` passes through.
+    encoding: &'static Encoding,
     /// VFS mount table, shared with `build_bash` via Arc.
     mounts: Arc<[RealMount]>,
     /// Seeded home mount; maps the interpreter's VFS HOME to the host path.
@@ -1394,6 +1403,7 @@ impl Command for HostCommand {
             ctx.stdin.clone(),
             ctx.stdout.clone(),
             ctx.stderr.clone(),
+            self.encoding,
         )
         .await
         {
@@ -1415,11 +1425,12 @@ async fn wait_with_pipes(
     stdin: CommandInput,
     stdout: CommandOutput,
     stderr: CommandOutput,
+    encoding: &'static Encoding,
 ) -> bashkit::Result<std::process::ExitStatus> {
     let mut guard = KillTree(child.id());
     let mut feed = Box::pin(feed_stdin(stdin, child.stdin.take()));
-    let mut out = Box::pin(pump(child.stdout.take(), stdout));
-    let mut err = Box::pin(pump(child.stderr.take(), stderr));
+    let mut out = Box::pin(pump(child.stdout.take(), stdout, encoding));
+    let mut err = Box::pin(pump(child.stderr.take(), stderr, encoding));
 
     let (mut feed_done, mut out_done, mut err_done) = (false, false, false);
     let status = loop {
@@ -1488,28 +1499,78 @@ async fn feed_stdin(
 }
 
 /// Copy a child pipe into a shell stream; a closed reader stops it.
-async fn pump<R>(reader: Option<R>, out: CommandOutput) -> bashkit::Result<()>
+async fn pump<R>(
+    reader: Option<R>,
+    out: CommandOutput,
+    encoding: &'static Encoding,
+) -> bashkit::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let Some(reader) = reader else {
+        return Ok(());
+    };
+    if encoding == UTF_8 {
+        pump_raw(reader, &out).await
+    } else {
+        pump_transcoded(reader, &out, encoding).await
+    }
+}
+
+/// Pass bytes through untouched (already UTF-8).
+async fn pump_raw<R>(mut reader: R, out: &CommandOutput) -> bashkit::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::io::AsyncReadExt;
 
-    let Some(mut reader) = reader else {
-        return Ok(());
-    };
+    let mut buf = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut buf).await?;
+        if read == 0 || !write_output(out, &buf[..read]).await? {
+            return Ok(());
+        }
+    }
+}
+
+/// Re-encode legacy output into UTF-8 on its way into the shell stream.
+async fn pump_transcoded<R>(
+    mut reader: R,
+    out: &CommandOutput,
+    encoding: &'static Encoding,
+) -> bashkit::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut decoder = FixedDecoder::new(encoding);
     let mut buf = [0u8; 8192];
     loop {
         let read = reader.read(&mut buf).await?;
         if read == 0 {
+            let text = decoder.finish();
+            let _ = write_output(out, text.as_bytes()).await?;
             return Ok(());
         }
-        match out.write_all(&buf[..read]).await {
-            Ok(()) => {}
-            Err(bashkit::Error::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {
-                return Ok(());
-            }
-            Err(error) => return Err(error),
+        let text = decoder.feed(&buf[..read]);
+        if !write_output(out, text.as_bytes()).await? {
+            return Ok(());
         }
+    }
+}
+
+/// Write one chunk; `false` when the reader closed its end.
+async fn write_output(out: &CommandOutput, bytes: &[u8]) -> bashkit::Result<bool> {
+    if bytes.is_empty() {
+        return Ok(true);
+    }
+    match out.write_all(bytes).await {
+        Ok(()) => Ok(true),
+        Err(bashkit::Error::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+            Ok(false)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -2570,12 +2631,10 @@ fn home_host_path() -> Option<PathBuf> {
     None
 }
 
-/// Format an `ExecResult` like `format_command_output`, using the raw bytes
-/// (`StreamData`'s `Deref` already ran `from_utf8_lossy`) and surfacing
-/// bashkit's head truncation so the final marker stays accurate.
+/// Format an `ExecResult` as UTF-8 text, surfacing bashkit's head truncation.
 fn format_exec_result(result: &ExecResult) -> String {
-    let stdout = super::decode_plain(result.stdout.as_bytes());
-    let stderr = super::decode_plain(result.stderr.as_bytes());
+    let stdout = super::decode_plain(result.stdout.as_bytes(), UTF_8);
+    let stderr = super::decode_plain(result.stderr.as_bytes(), UTF_8);
     let mut output = super::combine_output(&stdout, &stderr, result.exit_code);
     if result.stdout_truncated || result.stderr_truncated {
         if !output.is_empty() {

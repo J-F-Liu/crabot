@@ -1,14 +1,8 @@
-//! Charset-aware decoding for tool output, replacing the lossy UTF-8
-//! assumption that garbles legacy encodings (GBK on Chinese Windows,
-//! Shift_JIS, windows-1252, …).
+//! Decoding for tool input and output.
 //!
-//! [`decode_bytes`] decodes a whole buffer and [`StreamDecoder`] streams; both
-//! honor a leading UTF-8/UTF-16 BOM, pass valid UTF-8 through, and fall back to
-//! a `chardetng` guess decoded via `encoding_rs` — bytes in, text out, nothing
-//! dropped, `\r\n` untouched. [`decode_plain`] and [`PlainTextDecoder`] add the
-//! terminal filter of [`super::ansi`] on top — escape stripping and the
-//! `\r\n` → `\n` normalization live in that layer alone — which shell output
-//! needs and arbitrary content (a fetched body, say) must not get.
+//! Command output uses a fixed encoding: [`PlainTextDecoder`] pins it and adds
+//! the terminal filter of [`super::ansi`]. Arbitrary data (a fetched body) uses
+//! [`decode_bytes`], which still detects legacy charsets.
 
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{CoderResult, Decoder, Encoding, UTF_8};
@@ -26,9 +20,10 @@ pub(crate) fn decode_bytes(bytes: &[u8]) -> String {
     decode_all(&mut StreamDecoder::new(), bytes)
 }
 
-/// Decode a whole buffer into plain text: [`PlainTextDecoder`] fed in one go.
-pub(crate) fn decode_plain(bytes: &[u8]) -> String {
-    decode_all(&mut PlainTextDecoder::new(), bytes)
+/// Decode a whole buffer into plain text with `encoding`: [`PlainTextDecoder`]
+/// fed in one go.
+pub(crate) fn decode_plain(bytes: &[u8], encoding: &'static Encoding) -> String {
+    decode_all(&mut PlainTextDecoder::new(encoding), bytes)
 }
 
 /// Feed a whole buffer through `decoder`, flush, and merge the chunks.
@@ -47,8 +42,9 @@ pub(crate) trait ChunkDecoder {
     fn flush(&mut self, out: &mut Vec<String>);
 }
 
-/// Incremental charset decoder: ASCII passes through immediately, and the
-/// charset is pinned by a BOM, valid UTF-8, or a detector guess.
+/// Incremental charset detector for arbitrary data: ASCII passes through
+/// immediately, and the charset is pinned by a BOM, valid UTF-8, or a detector
+/// guess.
 struct StreamDecoder {
     /// Pinned decoder; `None` while the encoding is still undecided.
     decoder: Option<Decoder>,
@@ -148,29 +144,70 @@ impl ChunkDecoder for StreamDecoder {
     }
 }
 
-/// [`StreamDecoder`] plus the [`PlainText`] filter: what a terminal would show.
-pub(crate) struct PlainTextDecoder {
-    decoder: StreamDecoder,
-    plain: PlainText,
-    /// Chunks from `decoder` awaiting the filter; reused across feeds.
-    raw: Vec<String>,
+/// Incremental fixed-encoding decoder; a leading BOM may override the encoding.
+pub(crate) struct FixedDecoder {
+    decoder: Decoder,
+    /// Leading bytes held while a BOM is still possible.
+    pending: Vec<u8>,
+    at_start: bool,
 }
 
-impl PlainTextDecoder {
-    pub(crate) fn new() -> Self {
+impl FixedDecoder {
+    pub(crate) fn new(encoding: &'static Encoding) -> Self {
         Self {
-            decoder: StreamDecoder::new(),
-            plain: PlainText::new(),
-            raw: Vec::new(),
+            decoder: encoding.new_decoder_without_bom_handling(),
+            pending: Vec::new(),
+            at_start: true,
         }
     }
 
-    /// Move the decoder's chunks through the filter into `out`.
-    fn filter(&mut self, out: &mut Vec<String>) {
-        for text in self.raw.drain(..) {
-            if let Some(clean) = self.plain.push(text) {
-                out.push(clean);
-            }
+    /// Decode `bytes`, returning the text ready so far (possibly empty).
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> String {
+        if bytes.is_empty() {
+            return String::new();
+        }
+        if !self.at_start {
+            return decode_with(&mut self.decoder, bytes, false);
+        }
+        self.pending.extend_from_slice(bytes);
+        if let Some((encoding, bom)) = Encoding::for_bom(&self.pending) {
+            self.decoder = encoding.new_decoder_without_bom_handling();
+            self.at_start = false;
+            let pending = std::mem::take(&mut self.pending);
+            return decode_with(&mut self.decoder, &pending[bom..], false);
+        }
+        if self.pending.len() >= 3 {
+            self.at_start = false;
+            let pending = std::mem::take(&mut self.pending);
+            return decode_with(&mut self.decoder, &pending, false);
+        }
+        String::new()
+    }
+
+    /// Flush the bytes held for BOM sniffing and any partial sequence.
+    pub(crate) fn finish(&mut self) -> String {
+        let mut text = String::new();
+        if self.at_start {
+            self.at_start = false;
+            let pending = std::mem::take(&mut self.pending);
+            text.push_str(&decode_with(&mut self.decoder, &pending, false));
+        }
+        text.push_str(&decode_with(&mut self.decoder, &[], true));
+        text
+    }
+}
+
+/// [`FixedDecoder`] plus the [`PlainText`] filter: what a terminal would show.
+pub(crate) struct PlainTextDecoder {
+    decoder: FixedDecoder,
+    plain: PlainText,
+}
+
+impl PlainTextDecoder {
+    pub(crate) fn new(encoding: &'static Encoding) -> Self {
+        Self {
+            decoder: FixedDecoder::new(encoding),
+            plain: PlainText::new(),
         }
     }
 }
@@ -178,15 +215,17 @@ impl PlainTextDecoder {
 impl ChunkDecoder for PlainTextDecoder {
     /// Decode `bytes`, appending plain-text chunks to `out`.
     fn feed(&mut self, bytes: &[u8], out: &mut Vec<String>) {
-        self.decoder.feed(bytes, &mut self.raw);
-        self.filter(out);
+        if let Some(clean) = self.plain.push(self.decoder.feed(bytes)) {
+            out.push(clean);
+        }
     }
 
     /// Flush buffered bytes, the decoder's carried partial sequence, and the
     /// line the filter holds.
     fn flush(&mut self, out: &mut Vec<String>) {
-        self.decoder.flush(&mut self.raw);
-        self.filter(out);
+        if let Some(clean) = self.plain.push(self.decoder.finish()) {
+            out.push(clean);
+        }
         if let Some(held) = self.plain.finish() {
             out.push(held);
         }

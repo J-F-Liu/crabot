@@ -1,6 +1,7 @@
 //! Incremental output forwarding and bounded capture: [`ChunkForwarder`] for
 //! live streaming plus [`wait_with_timeout`] for polling child processes.
 
+use encoding_rs::Encoding;
 use interprocess::unnamed_pipe;
 use std::io::Read;
 use std::sync::{Mutex, MutexGuard};
@@ -44,14 +45,12 @@ pub enum OutStream {
     Stderr,
 }
 
-/// Forwards pipe bytes to an [`OutputSink`] as plain-text chunks: stdout/stderr
-/// merged in arrival order, decoded charset-aware with escapes stripped, small
-/// chunks coalesced (the live-output cap lives in
-/// [`capping_sink`](super::capping_sink)). Per-stream windows are also captured
-/// for partial-output errors, even without a sink.
+/// Forwards pipe bytes to an [`OutputSink`] as coalesced plain-text chunks,
+/// decoded with `encoding`; per-stream windows feed partial-output errors.
 pub struct ChunkForwarder {
     /// Live streaming sink; `None` when only the partial capture is needed.
     sink: Option<OutputSink>,
+    encoding: &'static Encoding,
     decoder: PlainTextDecoder,
     /// Scratch for decoder chunks, drained into `pending`.
     texts: Vec<String>,
@@ -64,11 +63,12 @@ pub struct ChunkForwarder {
 }
 
 impl ChunkForwarder {
-    pub fn new(sink: Option<OutputSink>) -> Self {
+    pub fn new(sink: Option<OutputSink>, encoding: &'static Encoding) -> Self {
         let keep = per_stream_keep();
         Self {
             sink,
-            decoder: PlainTextDecoder::new(),
+            encoding,
+            decoder: PlainTextDecoder::new(encoding),
             texts: Vec::new(),
             pending: String::new(),
             last_flush: std::time::Instant::now(),
@@ -119,7 +119,7 @@ impl ChunkForwarder {
 
     /// Append the captured stdout/stderr to `msg`, like [`kill_and_error`].
     pub fn append_partial_output(&self, msg: &mut String) {
-        append_partial_output(msg, &self.stdout_cap, &self.stderr_cap);
+        append_partial_output(msg, &self.stdout_cap, &self.stderr_cap, self.encoding);
     }
 
     fn flush(&mut self) {
@@ -170,9 +170,9 @@ impl WaitError {
 ///
 /// `remaining` is the budget actually waited; `timeout_total` is reported in
 /// the timeout message (they differ when the caller already spent budget).
-/// `forwarder` also gets each drained chunk for live streaming and partial
-/// capture.
-#[allow(clippy::too_many_arguments)] // 8 params; a context struct would churn 3 call sites
+/// Output is decoded with `encoding`; `forwarder` also gets each drained chunk
+/// for live streaming and partial capture.
+#[allow(clippy::too_many_arguments)] // 9 params; a context struct would churn 3 call sites
 pub(crate) fn wait_with_timeout(
     mut child: std::process::Child,
     mut stdout: Option<unnamed_pipe::Recver>,
@@ -180,6 +180,7 @@ pub(crate) fn wait_with_timeout(
     remaining: Duration,
     timeout_total: Duration,
     kill_tree: bool,
+    encoding: &'static Encoding,
     cancel: &CancellationToken,
     mut forwarder: Option<&mut ChunkForwarder>,
 ) -> Result<std::process::Output, WaitError> {
@@ -199,6 +200,7 @@ pub(crate) fn wait_with_timeout(
                 kill_tree,
                 &stdout_cap,
                 &stderr_cap,
+                encoding,
                 &format!("Failed to set pipe non-blocking mode: {e}"),
             )));
         }
@@ -237,6 +239,7 @@ pub(crate) fn wait_with_timeout(
                 kill_tree,
                 &stdout_cap,
                 &stderr_cap,
+                encoding,
                 CANCEL_REASON,
             )));
         }
@@ -251,6 +254,7 @@ pub(crate) fn wait_with_timeout(
                         kill_tree,
                         &stdout_cap,
                         &stderr_cap,
+                        encoding,
                         &timeout_message(timeout_total),
                     )));
                 }
@@ -263,6 +267,7 @@ pub(crate) fn wait_with_timeout(
                     kill_tree,
                     &stdout_cap,
                     &stderr_cap,
+                    encoding,
                     &format!("Failed to wait on command: {e}"),
                 )));
             }
@@ -378,17 +383,22 @@ fn per_stream_keep() -> usize {
 }
 
 /// Append partial stdout/stderr content to an error message.
-fn append_partial_output(msg: &mut String, stdout: &BoundedCapture, stderr: &BoundedCapture) {
-    append_stream(msg, "stdout", stdout);
-    append_stream(msg, "stderr", stderr);
+fn append_partial_output(
+    msg: &mut String,
+    stdout: &BoundedCapture,
+    stderr: &BoundedCapture,
+    encoding: &'static Encoding,
+) {
+    append_stream(msg, "stdout", stdout, encoding);
+    append_stream(msg, "stderr", stderr, encoding);
 }
 
-fn append_stream(msg: &mut String, name: &str, cap: &BoundedCapture) {
+fn append_stream(msg: &mut String, name: &str, cap: &BoundedCapture, encoding: &'static Encoding) {
     if cap.total() == 0 {
         return;
     }
     msg.push_str(&format!("\n--- partial {name} ---\n"));
-    msg.push_str(&decode_plain(&cap.materialize()));
+    msg.push_str(&decode_plain(&cap.materialize(), encoding));
     let skipped = cap.skipped();
     if skipped > 0 {
         msg.push_str(&crate::truncation_marker(skipped, cap.total(), None));
@@ -403,6 +413,7 @@ fn kill_and_error(
     kill_tree: bool,
     stdout: &BoundedCapture,
     stderr: &BoundedCapture,
+    encoding: &'static Encoding,
     reason: &str,
 ) -> String {
     if kill_tree {
@@ -412,6 +423,6 @@ fn kill_and_error(
     }
     let _ = child.wait();
     let mut msg = reason.to_string();
-    append_partial_output(&mut msg, stdout, stderr);
+    append_partial_output(&mut msg, stdout, stderr, encoding);
     msg
 }

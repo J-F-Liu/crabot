@@ -11,6 +11,7 @@ pub mod bash_kit;
 pub mod custom;
 mod decoder;
 pub mod mcp;
+mod text_encoding;
 
 // ── Submodules ─────────────────────────────────────────────────────
 mod capture;
@@ -41,7 +42,10 @@ pub use renew::move_renews_to_end;
 pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
 
 pub use context::{current_tab_number, with_tab_scope};
-pub(crate) use decoder::{ChunkDecoder, PlainTextDecoder, decode_bytes, decode_plain};
+pub(crate) use decoder::{
+    ChunkDecoder, FixedDecoder, PlainTextDecoder, decode_bytes, decode_plain,
+};
+pub(crate) use text_encoding::{argv_encoding, host_command_encoding, script_encoding};
 
 // ── tool ────────────────────────────────────────────────────────────
 pub(crate) use tool::CAPTURE_GRACE;
