@@ -37,7 +37,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio_util::sync::CancellationToken;
 
@@ -51,11 +51,13 @@ use bashkit::parser::{
 };
 use bashkit::{
     Bash, Builtin, BuiltinContext, Command, CommandContext, CommandInput, CommandOutput,
-    CommandStatus, ExecResult, ExecutionLimits, FileSystem, HttpLimits, NetworkAllowlist,
-    async_trait, vfs_join,
+    CommandStatus, ExecResult, ExecutionLimits, FileSystem, HttpLimits, InMemoryFs, MountableFs,
+    NetworkAllowlist, PosixFs, RealFs, RealFsMode, async_trait, vfs_join,
 };
 use encoding_rs::{Encoding, UTF_8};
 
+use super::mount_table;
+use super::protected_fs::{MountRule, ProtectedFs};
 use super::{
     CANCEL_REASON, ChunkForwarder, FixedDecoder, OutStream, OutputSink,
     WHOLE_CARGO_REGISTRY_MESSAGE, cargo_home, is_whole_cargo_registry, resolve_path,
@@ -1050,15 +1052,20 @@ pub(crate) fn execute(
     // Legacy host output is transcoded to UTF-8, so the script decoder is UTF-8.
     let forwarder = Arc::new(Mutex::new(ChunkForwarder::new(sink, UTF_8)));
 
-    // One mount table for the rewrite and the interpreter.
+    // One mount table for the rewrite, the VFS, and the host-command bridge.
     let home_mount = real_home_mount();
     let mount_specs = mounts(workspace, home_mount.as_ref());
     // Windows: rewrite host-style paths in builtin args to VFS form.
     let script = rewrite_host_paths(command, &plan.analysis, &mount_specs);
 
-    let mut bash = build_bash(workspace, timeout, &plan, mount_specs, home_mount);
-
     let handle = tokio::runtime::Handle::current();
+    let vfs = handle.block_on(build_vfs(
+        workspace,
+        &mount_specs,
+        real_username().as_deref(),
+    ))?;
+    let mut bash = build_bash(workspace, timeout, &plan, mount_specs, home_mount, vfs);
+
     let result = handle
         .block_on(async {
             // Flush time-due chunks while output is quiet.
@@ -1165,25 +1172,14 @@ fn build_bash(
     plan: &ScriptPlan,
     mount_specs: Vec<RealMount>,
     home_mount: Option<RealMount>,
+    vfs: Arc<dyn FileSystem>,
 ) -> Bash {
     let workspace_vfs = super::convert_path_to_unix_style(workspace);
-    let shared_mounts: Arc<[RealMount]> = Arc::from(mount_specs.clone());
+    let shared_mounts: Arc<[RealMount]> = Arc::from(mount_specs);
 
-    let mut builder = Bash::builder()
-        .cwd(PathBuf::from(&workspace_vfs))
-        .allowed_mount_paths(
-            mount_specs
-                .iter()
-                .map(|m| m.host_path.clone())
-                .collect::<Vec<_>>(),
-        );
-    for m in mount_specs {
-        builder = if m.writable {
-            builder.mount_real_readwrite_at(m.host_path, m.vfs_path)
-        } else {
-            builder.mount_real_readonly_at(m.host_path, m.vfs_path)
-        };
-    }
+    // Mounts and policy come from `build_vfs`; bashkit wraps them with RootFs,
+    // MountableFs, and FollowFs.
+    let mut builder = Bash::builder().cwd(PathBuf::from(&workspace_vfs)).fs(vfs);
 
     builder = builder.limits(
         ExecutionLimits::default()
@@ -1291,14 +1287,8 @@ fn build_bash(
         builder = builder.command("uname", host_command(uname.to_string_lossy().into_owned()));
     }
 
-    // bashkit warns on stderr per read-write mount; silence it while building.
-    let _lock = lock(&SILENCER_LOCK);
-    let _silence = stderr_silencer::StderrSilencer::new();
     builder.build()
 }
-
-/// Serializes `Bash::build`: the stderr swap is process-wide.
-static SILENCER_LOCK: Mutex<()> = Mutex::new(());
 
 /// Host command bridged into the interpreter as a streaming command.
 pub(crate) struct HostCommand {
@@ -2026,23 +2016,6 @@ fn is_keyword(name: &str) -> bool {
     )
 }
 
-/// Match a VFS path against a mount's VFS prefix; returns the corresponding
-/// host path when the prefix matches, `None` otherwise.
-fn match_mount(vfs_cwd: &Path, vfs_prefix: &str, host_root: &Path) -> Option<PathBuf> {
-    let mut components = vfs_cwd.components();
-    if components.next() != Some(Component::RootDir) {
-        return None;
-    }
-    let prefix_parts: Vec<&str> = vfs_prefix.split('/').filter(|p| !p.is_empty()).collect();
-    for expected in &prefix_parts {
-        match components.next() {
-            Some(Component::Normal(actual)) if actual == *expected => continue,
-            _ => return None,
-        }
-    }
-    Some(host_root.join(components.as_path()))
-}
-
 /// Translate the bashkit VFS cwd to the real host path via the mount table.
 fn resolve_cwd(vfs_cwd: &Path, mount_specs: &[RealMount]) -> Result<PathBuf, String> {
     resolve_vfs(vfs_cwd, mount_specs)
@@ -2051,9 +2024,7 @@ fn resolve_cwd(vfs_cwd: &Path, mount_specs: &[RealMount]) -> Result<PathBuf, Str
 
 /// Resolve a VFS absolute path through the mount table; `None` when unmapped.
 fn resolve_vfs(vfs: &Path, mount_specs: &[RealMount]) -> Option<PathBuf> {
-    mount_specs
-        .iter()
-        .find_map(|m| match_mount(vfs, &m.vfs_path.to_string_lossy(), &m.host_path))
+    mount_table::host_path_of(vfs, mount_specs, false)
 }
 
 /// Translate the interpreter's MSYS-style `PATH` back to the native form a host
@@ -2482,8 +2453,93 @@ fn mounted_vfs(arg: &str, mounts: &[RealMount]) -> Option<String> {
     ))
 }
 
-/// VFS mount table in match order (specific mounts before broad ones).
-/// Single source of truth for `build_bash` and `HostCommand`.
+/// Build the real mounts plus the path policy.
+///
+/// Mounting by hand (instead of bashkit's `mount_real_*`) keeps the policy above
+/// every backend. An unmountable workspace fails the call; other mounts are
+/// skipped with a warning.
+async fn build_vfs(
+    workspace: &Path,
+    mount_specs: &[RealMount],
+    username: Option<&str>,
+) -> Result<Arc<dyn FileSystem>, String> {
+    let root = InMemoryFs::new();
+    root.add_dir(format!("/home/{}", username.unwrap_or("sandbox")), 0o755);
+    let mountable = MountableFs::new(Arc::new(root));
+
+    let mut rules = Vec::with_capacity(mount_specs.len());
+    // Canonical host of the workspace mount: the base for the path policy.
+    let mut workspace_host: Option<PathBuf> = None;
+    for mount in mount_specs {
+        // A missing workspace must fail, not silently write to memory.
+        let is_workspace = mount.host_path == workspace;
+        let host = match tokio::fs::canonicalize(&mount.host_path).await {
+            Ok(host) => host,
+            Err(error) if is_workspace => {
+                return Err(workspace_error(workspace, "access", error));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "skipping unmountable path {}: {error}",
+                    mount.host_path.display()
+                );
+                continue;
+            }
+        };
+        let mode = if mount.writable {
+            RealFsMode::ReadWrite
+        } else {
+            RealFsMode::ReadOnly
+        };
+        let real = match RealFs::open(&host, mode).await {
+            Ok(real) => real,
+            Err(error) if is_workspace => {
+                return Err(workspace_error(workspace, "mount", error));
+            }
+            Err(error) => {
+                tracing::warn!("failed to mount {}: {error}", mount.host_path.display());
+                continue;
+            }
+        };
+        let backend: Arc<dyn FileSystem> = Arc::new(PosixFs::new(real));
+        if let Err(error) = mountable.mount(&mount.vfs_path, backend) {
+            if is_workspace {
+                return Err(workspace_error(workspace, "mount", error));
+            }
+            tracing::warn!("failed to mount at {}: {error}", mount.vfs_path.display());
+            continue;
+        }
+        if is_workspace {
+            workspace_host = Some(host.clone());
+        }
+        rules.push(MountRule {
+            vfs: mount.vfs_path.clone(),
+            host,
+        });
+    }
+
+    // Fail closed: the policy must not guess the workspace's host spelling.
+    let base = workspace_host.ok_or_else(|| {
+        format!(
+            "bash: workspace {} is missing from the mount table",
+            workspace.display()
+        )
+    })?;
+    Ok(Arc::new(ProtectedFs::new(
+        Arc::new(mountable),
+        rules,
+        &base,
+    )))
+}
+
+fn workspace_error(workspace: &Path, step: &str, error: impl std::fmt::Display) -> String {
+    format!(
+        "bash: cannot {step} workspace {}: {error}",
+        workspace.display()
+    )
+}
+
+/// VFS mount table shared by the VFS, `HostCommand`, and the path policy.
 fn mounts(workspace: &Path, home: Option<&RealMount>) -> Vec<RealMount> {
     let mut list = vec![
         RealMount::rw(workspace, super::convert_path_to_unix_style(workspace)),
@@ -2571,6 +2627,16 @@ impl RealMount {
     }
 }
 
+impl mount_table::MountPoint for RealMount {
+    fn vfs_root(&self) -> &Path {
+        &self.vfs_path
+    }
+
+    fn host_root(&self) -> &Path {
+        &self.host_path
+    }
+}
+
 /// Resolve the real host home directory and its POSIX VFS mount path.
 fn real_home_mount() -> Option<RealMount> {
     let host_home = home_host_path()?;
@@ -2648,138 +2714,4 @@ fn format_exec_result(result: &ExecResult) -> String {
         );
     }
     super::truncate_output(output)
-}
-
-/// Drain a captured-stderr pipe, re-emitting everything except bashkit
-/// warnings expected by design: writable mounts (cannot be silenced) and
-/// drive roots that failed to mount (unreadable media probed every build).
-fn drain_and_reemit(mut file: std::fs::File) {
-    const EXPECTED: [&str; 2] = [
-        "bashkit: warning: writable mount",
-        "bashkit: warning: failed to canonicalize mount path",
-    ];
-    let mut buf = Vec::new();
-    let _ = std::io::Read::read_to_end(&mut file, &mut buf);
-    for line in String::from_utf8_lossy(&buf).lines() {
-        if !EXPECTED.iter().any(|p| line.starts_with(*p)) {
-            eprintln!("{line}");
-        }
-    }
-}
-
-/// Swap stderr to a pipe during `Bash::build`; on drop, restore stderr and
-/// re-emit the captured output via `drain_and_reemit`.
-#[cfg(unix)]
-mod stderr_silencer {
-    use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
-
-    pub(super) struct StderrSilencer {
-        saved: Option<OwnedFd>,
-        read_end: Option<OwnedFd>,
-    }
-
-    impl StderrSilencer {
-        pub(super) fn new() -> Self {
-            let mut fds = [0i32; 2];
-            // SAFETY: pipe() creates two fresh fds, wrapped in OwnedFd at once.
-            let (read_end, write_end) = if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
-                unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
-            } else {
-                return Self {
-                    saved: None,
-                    read_end: None,
-                };
-            };
-            // SAFETY: dup() duplicates the stderr fd.
-            let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
-            if saved < 0 {
-                return Self {
-                    saved: None,
-                    read_end: None,
-                }; // write_end closed here
-            }
-            // SAFETY: saved is a fresh fd, now owned.
-            let saved = unsafe { OwnedFd::from_raw_fd(saved) };
-            // SAFETY: dup2 on raw fds; STDERR_FILENO then holds a dup of the
-            // write end, so dropping `write_end` keeps the pipe open.
-            unsafe { libc::dup2(write_end.as_raw_fd(), libc::STDERR_FILENO) };
-            drop(write_end);
-            Self {
-                saved: Some(saved),
-                read_end: Some(read_end),
-            }
-        }
-    }
-
-    impl Drop for StderrSilencer {
-        fn drop(&mut self) {
-            // Restore stderr — this dup2 also closes the pipe write end held
-            // in STDERR_FILENO, so the drain below reaches EOF.
-            if let Some(saved) = self.saved.take() {
-                // SAFETY: saved is the fd captured in `new`.
-                unsafe { libc::dup2(saved.as_raw_fd(), libc::STDERR_FILENO) };
-                // saved (OwnedFd) dropped here → closes the duplicate.
-            }
-            if let Some(read_end) = self.read_end.take() {
-                super::drain_and_reemit(std::fs::File::from(read_end));
-            }
-        }
-    }
-}
-
-/// Same as the Unix variant via `SetStdHandle` — std re-queries
-/// `STD_ERROR_HANDLE` per write, so the swap takes effect immediately.
-#[cfg(windows)]
-mod stderr_silencer {
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, SetStdHandle};
-    use windows_sys::Win32::System::Pipes::CreatePipe;
-
-    pub(super) struct StderrSilencer {
-        saved: Option<HANDLE>,
-        read_end: Option<OwnedHandle>,
-        /// Held open during `build()`; closed on drop before reading the pipe.
-        write_end: Option<OwnedHandle>,
-    }
-
-    impl StderrSilencer {
-        pub(super) fn new() -> Self {
-            let mut read: HANDLE = std::ptr::null_mut();
-            let mut write: HANDLE = std::ptr::null_mut();
-            // SAFETY: CreatePipe with valid out-pointers; null attrs → defaults.
-            if unsafe { CreatePipe(&mut read, &mut write, std::ptr::null(), 0) } == 0 {
-                return Self {
-                    saved: None,
-                    read_end: None,
-                    write_end: None,
-                };
-            }
-            // SAFETY: handles are freshly created, wrapped in OwnedHandle.
-            let read_end = unsafe { OwnedHandle::from_raw_handle(read) };
-            let write_end = unsafe { OwnedHandle::from_raw_handle(write) };
-            // SAFETY: GetStdHandle/SetStdHandle with valid constants.
-            let saved = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
-            unsafe { SetStdHandle(STD_ERROR_HANDLE, write_end.as_raw_handle()) };
-            Self {
-                saved: Some(saved),
-                read_end: Some(read_end),
-                write_end: Some(write_end),
-            }
-        }
-    }
-
-    impl Drop for StderrSilencer {
-        fn drop(&mut self) {
-            // Restore stderr first, then close the write end so reads reach EOF.
-            if let Some(saved) = self.saved.take() {
-                // SAFETY: restores the handle captured in `new`.
-                unsafe { SetStdHandle(STD_ERROR_HANDLE, saved) };
-            }
-            self.write_end.take();
-            if let Some(read_end) = self.read_end.take() {
-                super::drain_and_reemit(std::fs::File::from(read_end));
-            }
-        }
-    }
 }

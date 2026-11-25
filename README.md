@@ -53,6 +53,8 @@ If you know the structure of the LLM context window, you will appreciate the UI 
 
 Beyond the built-ins, you can add your own **custom CLI or HTTP API tools** and connect **MCP servers** (Stdio or HTTP) to expose their tools — everything is managed in-app and toggleable per session tab.
 
+The in-process interpreter refuses writes to `.git` and `.agent/sessions` from shell builtins and redirects — including parent-directory deletes and ancestor replacement, alternate VFS spellings such as `/tmp/<workspace>`, and paths through symlinked parents. This is a guard against accidental damage, not a sandbox boundary: bridged host commands, the real `bash -c` fallback, and the file tools run outside that VFS and can still write those directories.
+
 The `screenshot` tool is backed by [XCap](https://crates.io/crates/xcap). On Linux, building Crabot needs `pkg-config libclang-dev libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev`, and the binary needs the PipeWire, XCB, XRandR, and GBM runtime libraries. On macOS, grant Crabot Screen Recording permission.
 
 Grep-style tool output is normalized before it enters the conversation: a run of lines that share a file path (`path:12:text`, plus `path-12-text` context lines from `-A/-B/-C`) collapses into a `path:` heading followed by the original line numbers and text, so no repetition is paid for twice. What you read in the UI, in the session file, and in the HTML export is exactly what was sent to the model; the live stream stays raw.

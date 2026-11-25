@@ -460,6 +460,333 @@ fn bashkit_readonly_zone_rm_fails() {
     let _ = fs::remove_file(&probe_host);
 }
 
+// ── protected workspace metadata ────────────────────────────
+
+/// Temp workspace with both protected trees populated.
+fn protected_workspace(prefix: &str) -> TempDir {
+    let tmp = TempDir::new(prefix).unwrap();
+    tmp.write(".git/config", b"[core]\n").unwrap();
+    tmp.write(".agent/sessions/keep.jsonl", b"keep\n").unwrap();
+    tmp
+}
+
+/// `.git` and `.agent/sessions` are protected from shell builtins and redirects
+/// by a path policy above every real mount, not by read-only sub-mounts.
+#[test]
+fn bashkit_protected_workspace_paths_are_readonly() {
+    let tmp = protected_workspace("bash_protected");
+
+    let result = run_bash(
+        "cat .git/config; cat .agent/sessions/keep.jsonl",
+        &tmp.path,
+        None,
+    )
+    .unwrap();
+    assert!(result.contains("[core]"), "unexpected: {result}");
+    assert!(result.contains("keep"), "unexpected: {result}");
+
+    for command in [
+        "rm -r .git",
+        "rm -r .agent/sessions",
+        "printf x > .git/config",
+        "echo x >> .git/config",
+        "cp .git/config .git/config.bak",
+        "touch .agent/sessions/new.jsonl",
+        "cd .git && rm config",
+    ] {
+        let result = run_bash(command, &tmp.path, None).unwrap();
+        assert!(
+            result.contains("read-only"),
+            "{command} unexpectedly succeeded: {result}"
+        );
+    }
+
+    // `rm -f` swallows remove errors; the host files must still survive.
+    let result = run_bash("rm -rf .git .agent/sessions", &tmp.path, None).unwrap();
+    assert!(!result.contains("Exit code"), "unexpected: {result}");
+    assert!(tmp.join(".git/config").exists());
+    assert!(tmp.join(".agent/sessions/keep.jsonl").exists());
+}
+
+/// A worktree `.git` file stays readable and protected, and a missing sessions
+/// dir does not disable the policy (it is path-based, not mount-based).
+#[test]
+fn bashkit_protected_paths_need_no_metadata_dirs() {
+    let tmp = TempDir::new("bash_protected_skip").unwrap();
+    tmp.write(".git", b"gitdir: ../actual.git\n").unwrap();
+
+    let result = run_bash("cat .git && echo ok", &tmp.path, None).unwrap();
+    assert!(result.contains("gitdir:"), "unexpected: {result}");
+    assert!(result.contains("ok"), "unexpected: {result}");
+    assert!(!result.contains("Exit code"), "unexpected: {result}");
+
+    let result = run_bash("printf x > .git", &tmp.path, None).unwrap();
+    assert!(result.contains("read-only"), "unexpected: {result}");
+    assert_eq!(
+        fs::read_to_string(tmp.join(".git")).unwrap(),
+        "gitdir: ../actual.git\n",
+        "unexpected: {result}"
+    );
+}
+
+/// Parent-directory deletes and moves cannot reach protected files through the
+/// writable workspace mount.
+#[test]
+fn bashkit_protected_paths_survive_parent_ops() {
+    for command in [
+        "rm -rf .agent",
+        "rm -rf .",
+        "rm -rf .agent/sessions/..",
+        "mv .agent .agent-old",
+        "mv .git .git-old",
+    ] {
+        let tmp = protected_workspace("bash_protected_parent");
+
+        // `; echo` proves the script actually ran rather than being rejected
+        // before execution, which would also leave the files untouched.
+        let script = format!("{command}; echo policy-probe-done");
+        let result = run_bash(&script, &tmp.path, None).unwrap();
+        assert!(
+            result.contains("policy-probe-done"),
+            "{command} did not run: {result}"
+        );
+        assert!(
+            tmp.join(".git/config").exists(),
+            "{command} removed .git/config: {result}"
+        );
+        assert!(
+            tmp.join(".agent/sessions/keep.jsonl").exists(),
+            "{command} removed the session: {result}"
+        );
+    }
+}
+
+/// The policy compares host paths, so an alternative VFS spelling of the same
+/// directory (`/tmp/<workspace>` via the shared tmp mount) is protected too.
+#[test]
+fn bashkit_protected_paths_cover_other_mount_spellings() {
+    let tmp = TempDir::new("bash_protected_spelling").unwrap();
+    tmp.write(".git/config", b"[core]\n").unwrap();
+    let name = tmp.path.file_name().unwrap().to_string_lossy();
+    let command = format!("printf x > /tmp/{name}/.git/config");
+
+    let result = run_bash(&command, &tmp.path, None).unwrap();
+    assert!(result.contains("read-only"), "unexpected: {result}");
+    assert_eq!(
+        fs::read_to_string(tmp.join(".git/config")).unwrap(),
+        "[core]\n",
+        "unexpected: {result}"
+    );
+}
+
+/// A protected directory created mid-script is already covered: no TOCTOU from
+/// probing whether the directory exists at mount time.
+#[test]
+fn bashkit_protected_paths_cover_new_dirs() {
+    let tmp = TempDir::new("bash_protected_new").unwrap();
+    let command = "mkdir -p .agent/sessions && printf x > .agent/sessions/new.jsonl";
+
+    let result = run_bash(command, &tmp.path, None).unwrap();
+    assert!(result.contains("read-only"), "unexpected: {result}");
+    assert!(
+        !tmp.join(".agent/sessions/new.jsonl").exists(),
+        "unexpected: {result}"
+    );
+}
+
+/// The checks shared by the parent symlink/junction tests: reads pass, writes
+/// and removes through `link` are refused, and the host tree survives.
+#[cfg(any(unix, windows))]
+fn assert_parent_link_protected(tmp: &TempDir) {
+    let reads = run_bash("cat link/sessions/keep.jsonl", &tmp.path, None).unwrap();
+    assert!(reads.contains("keep"), "unexpected: {reads}");
+
+    // `rm -f` swallows the refusal; the host tree must survive.
+    let result = run_bash("rm -rf link/sessions", &tmp.path, None).unwrap();
+    assert!(!result.contains("Exit code"), "unexpected: {result}");
+    assert!(tmp.join(".agent/sessions/keep.jsonl").exists());
+
+    for command in [
+        "printf x > link/sessions/evil.jsonl",
+        "mv link/sessions stolen",
+    ] {
+        let result = run_bash(command, &tmp.path, None).unwrap();
+        assert!(
+            result.contains("read-only"),
+            "{command} unexpectedly succeeded: {result}"
+        );
+        assert!(tmp.join(".agent/sessions/keep.jsonl").exists());
+        assert!(!tmp.join(".agent/sessions/evil.jsonl").exists());
+        assert!(!tmp.join("stolen").exists());
+    }
+}
+
+/// A symlinked parent must not smuggle a delete, write, or move into a
+/// protected directory; `RealFs` follows the host link on its own.
+#[cfg(unix)]
+#[test]
+fn bashkit_protected_paths_cover_parent_symlinks() {
+    let tmp = TempDir::new("bash_protected_parent_link").unwrap();
+    tmp.write(".agent/sessions/keep.jsonl", b"keep\n").unwrap();
+    std::os::unix::fs::symlink(".agent", tmp.join("link")).unwrap();
+
+    assert_parent_link_protected(&tmp);
+
+    // Unlinking the link itself is fine; it never touched the target.
+    let result = run_bash("rm link", &tmp.path, None).unwrap();
+    assert!(!result.contains("Exit code"), "unexpected: {result}");
+    assert!(tmp.join(".agent/sessions/keep.jsonl").exists());
+}
+
+/// Windows: a directory junction is the host-side equivalent of a symlinked
+/// parent, and `RealFs` follows it the same way.
+#[cfg(windows)]
+#[test]
+fn bashkit_protected_paths_cover_parent_junctions() {
+    let tmp = TempDir::new("bash_protected_parent_junction").unwrap();
+    tmp.write(".agent/sessions/keep.jsonl", b"keep\n").unwrap();
+    let link = tmp.join("link");
+    let created = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(tmp.join(".agent"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !created {
+        return; // junction creation is unavailable in this environment
+    }
+
+    assert_parent_link_protected(&tmp);
+    let _ = fs::remove_dir(&link);
+}
+
+/// Replacing `.agent` before the app owns it would pre-create
+/// `.agent/sessions`, so ancestor targets are refused too.
+#[test]
+fn bashkit_protected_paths_reject_ancestor_creation() {
+    let tmp = TempDir::new("bash_protected_ancestor").unwrap();
+    tmp.write("file", b"data\n").unwrap();
+    tmp.mkdir("evil/sessions").unwrap();
+
+    for command in [
+        "printf pwn > .agent",
+        "mkdir .agent",
+        "cp file .agent",
+        "mv evil .agent",
+    ] {
+        let result = run_bash(command, &tmp.path, None).unwrap();
+        assert!(
+            result.contains("read-only"),
+            "{command} unexpectedly succeeded: {result}"
+        );
+        assert!(
+            !tmp.join(".agent").exists(),
+            "{command} created .agent: {result}"
+        );
+    }
+}
+
+/// Moves and copies into the protected paths are refused before the backend
+/// sees them, as are moves out of them.
+#[test]
+fn bashkit_protected_paths_reject_metadata_targets() {
+    let tmp = protected_workspace("bash_protected_targets");
+    tmp.write("src.txt", b"data\n").unwrap();
+    tmp.mkdir("sub").unwrap();
+
+    for command in [
+        "mv sub .git/sub",
+        "cp src.txt .git/src.txt",
+        "mv .agent/sessions stolen",
+        "mv .git/config stolen-config",
+    ] {
+        let result = run_bash(command, &tmp.path, None).unwrap();
+        assert!(
+            result.contains("read-only"),
+            "{command} unexpectedly succeeded: {result}"
+        );
+    }
+
+    assert!(tmp.join(".git/config").exists());
+    assert!(tmp.join(".agent/sessions/keep.jsonl").exists());
+    assert!(tmp.join("sub").exists());
+    assert!(!tmp.join("stolen").exists());
+    assert!(!tmp.join("stolen-config").exists());
+}
+
+/// Windows: VFS paths are case-sensitive but the host filesystem is not.
+#[cfg(windows)]
+#[test]
+fn bashkit_protected_paths_ignore_case() {
+    let tmp = TempDir::new("bash_protected_case").unwrap();
+    tmp.write(".git/config", b"[core]\n").unwrap();
+
+    let result = run_bash("printf x > .GIT/config", &tmp.path, None).unwrap();
+    assert_eq!(
+        fs::read_to_string(tmp.join(".git/config")).unwrap(),
+        "[core]\n",
+        "unexpected: {result}"
+    );
+}
+
+/// `FollowFs` follows a link in the final component before the write lands;
+/// on Windows the VFS stores symlinks as files, so the junction test covers
+/// the host-side path instead.
+#[cfg(unix)]
+#[test]
+fn bashkit_protected_paths_cover_symlink_writes() {
+    let tmp = TempDir::new("bash_protected_link").unwrap();
+    tmp.write(".git/config", b"[core]\n").unwrap();
+    let command = "ln -s .git/config link && printf x > link";
+
+    let result = run_bash(command, &tmp.path, None).unwrap();
+    assert!(
+        fs::symlink_metadata(tmp.join("link")).is_ok(),
+        "symlink was not created: {result}"
+    );
+    assert_eq!(
+        fs::read_to_string(tmp.join(".git/config")).unwrap(),
+        "[core]\n",
+        "unexpected: {result}"
+    );
+}
+
+/// Ordinary workspace writes, copies, and removes are unaffected.
+#[test]
+fn bashkit_protected_paths_allow_normal_writes() {
+    let tmp = TempDir::new("bash_protected_normal").unwrap();
+    tmp.write(".git/config", b"[core]\n").unwrap();
+    let command = "mkdir sub && echo hello > sub/a.txt && cp sub/a.txt . && rm sub/a.txt";
+
+    let result = run_bash(command, &tmp.path, None).unwrap();
+    assert!(!result.contains("Exit code"), "unexpected: {result}");
+    assert_eq!(
+        fs::read_to_string(tmp.join("a.txt")).unwrap(),
+        "hello\n",
+        "unexpected: {result}"
+    );
+}
+
+/// `git` is a bridged host command; it bypasses the VFS by design and can still
+/// write `.git`. The policy is not a sandbox boundary for host commands.
+#[test]
+fn bashkit_host_git_still_writes_git_dir() {
+    fix_test_path();
+    if !host_command_exists("git") {
+        return;
+    }
+    let tmp = TempDir::new("bash_git_rw").unwrap();
+    tmp.write("tracked.txt", b"tracked\n").unwrap();
+
+    for command in ["git init -q", "git add tracked.txt"] {
+        let result = run_bash(command, &tmp.path, None).unwrap();
+        assert!(!result.contains("Exit code"), "{command} failed: {result}");
+    }
+    assert!(tmp.join(".git/index").exists());
+}
+
 /// Windows: the drive root is also readable at its drive-letter VFS path
 /// (`/d/...` for `D:\`), consistent with the workspace's own VFS form.
 /// Read-only enforcement there is covered by the readonly tests above.
