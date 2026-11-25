@@ -26,7 +26,12 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
             }
         }
         LayoutEvent::WindowMoved(pos) => app.layout.window_pos = pos,
-        LayoutEvent::WindowFocusChanged(focused) => app.layout.window_focused = focused,
+        LayoutEvent::WindowFocusChanged(focused) => {
+            app.layout.window_focused = focused;
+            if !focused {
+                app.prompt.clear_drop_hover();
+            }
+        }
         LayoutEvent::ShiftHeld(held) => app.layout.shift_held = held,
         LayoutEvent::CtrlHeld(held) => app.layout.ctrl_held = held,
         LayoutEvent::SessionViewScrolled(viewport) => {
@@ -55,7 +60,10 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
                 .set_auto_scroll(true);
             return views::scroll_to_end().discard();
         }
-        LayoutEvent::EscapePressed => return escape(app),
+        LayoutEvent::EscapePressed => {
+            app.prompt.clear_drop_hover();
+            return escape(app);
+        }
         LayoutEvent::Zoom(delta) => app.set_font_scale(app.settings.font_scale + delta),
         LayoutEvent::ToggleTheme(dark) => {
             // Preview only; the persisted appearance is untouched.

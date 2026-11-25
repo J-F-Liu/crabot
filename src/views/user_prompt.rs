@@ -5,10 +5,11 @@ use iced::{
     },
 };
 
-use crate::views::theme::color_muted;
+use crate::views::theme::{color_accent, color_muted};
 
 use super::styles::{
-    chip_style, icon_button_style, menu_container_style, menu_item_style, sel_default,
+    chip_style, drop_target_editor_style, icon_button_style, menu_container_style, menu_item_style,
+    sel_default,
 };
 use super::system_prompt::expandable_header;
 use crate::WORKSPACE_TREE;
@@ -29,6 +30,7 @@ pub(crate) fn user_prompt_view<'a>(
     recipe_dropdown_expanded: bool,
     attachments: &'a [UserAttachment],
     attachment_menu_expanded: bool,
+    drop_hover: bool,
     files: &'a FileTreePane,
     workspace_set: bool,
     lang: Lang,
@@ -101,6 +103,18 @@ pub(crate) fn user_prompt_view<'a>(
         Length::Shrink,
     );
 
+    let editor = user_prompt
+        .view_with_paste(
+            |msg| PromptEvent::EditTextArea(FocusedTarget::UserPrompt, msg),
+            PromptEvent::PasteClipboard,
+        )
+        .height(120);
+    let editor = if drop_hover {
+        editor.style(drop_target_editor_style)
+    } else {
+        editor
+    };
+
     let mut prompt_column = column![
         row![
             checkbox(workmode_enabled)
@@ -114,13 +128,18 @@ pub(crate) fn user_prompt_view<'a>(
         .spacing(8)
         .align_y(Alignment::Center),
         files_field_view(files, workspace_set, lang),
-        user_prompt
-            .view_with_paste(
-                |msg| PromptEvent::EditTextArea(FocusedTarget::UserPrompt, msg),
-                PromptEvent::PasteClipboard,
-            )
-            .height(120),
+        editor,
     ];
+    if drop_hover {
+        prompt_column = prompt_column.push(
+            text(lang.tr("Drop files to attach"))
+                .size(11)
+                .color(color_accent())
+                .width(Length::Fill)
+                .align_x(Alignment::Center)
+                .boxed(),
+        );
+    }
     if !attachments.is_empty() {
         prompt_column = prompt_column.push(attachment_row(attachments));
     }

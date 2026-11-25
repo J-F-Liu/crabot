@@ -7,6 +7,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use iced::widget::scrollable::Viewport;
 use iced::widget::{Space, column, container, row, text_editor};
@@ -121,11 +122,20 @@ pub(crate) struct PromptWorkspaceState {
     pub(crate) attachments: Vec<UserAttachment>,
     /// Whether the attachment menu is open.
     pub(crate) attachment_menu_expanded: bool,
+    /// When the current drag highlight started; `None` when no drag is active.
+    pub(crate) drop_hover_at: Option<Instant>,
+    /// Paths from one drop, gathered before validation.
+    pub(crate) pending_drops: Vec<PathBuf>,
     /// Whether the skills multi-select dropdown is open.
     pub(crate) skills_menu_expanded: bool,
 }
 
 impl PromptWorkspaceState {
+    /// Hide the drag highlight (drop, leave, cancel, or timeout).
+    pub(crate) fn clear_drop_hover(&mut self) {
+        self.drop_hover_at = None;
+    }
+
     pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut (bool, String)> {
         match name {
             prompt::AGENTS_MD => Some(&mut self.agents_md),
@@ -616,6 +626,16 @@ pub(crate) enum PromptEvent {
     AttachmentDialogResult(AttachmentKind, Option<Vec<PathBuf>>),
     /// Returned by the attachment validator: accepted files and rejection reasons.
     AttachmentsValidated(Vec<UserAttachment>, Vec<String>),
+    /// Files entered the window during a drag.
+    FilesHovered,
+    /// The dragged files left the window or the drag was cancelled.
+    FilesHoveredLeft,
+    /// Timeout fallback when the end-of-drag event is lost.
+    DropHoverCheck,
+    /// A file was dropped; the OS emits one event per file.
+    FileDropped(PathBuf),
+    /// A dropped-file batch is ready to validate.
+    DroppedFilesReady,
     /// Ctrl/Cmd+V in the prompt editor; images are checked first.
     PasteClipboard,
     /// Clipboard text read through iced.
@@ -935,6 +955,8 @@ impl App {
             recipe_dropdown_expanded: false,
             attachments: Vec::new(),
             attachment_menu_expanded: false,
+            drop_hover_at: None,
+            pending_drops: Vec::new(),
             skills_menu_expanded: false,
         };
 

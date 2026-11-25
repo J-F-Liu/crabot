@@ -1,15 +1,11 @@
-//! Materialize user-selected text attachments for a request.
-//!
-//! History carries only attachment markers (see
-//! [`crabot::chat::attachment_marker_message`]), so text files are read here
-//! when a request is built. Images in the same marker are rewritten into the
-//! regular `[image: ...]` form and handled by [`super::image`].
+//! Materialize attachments for a request: text files are read, non-text files
+//! contribute only their path, and images become `[image: ...]` markers.
 
 use std::path::Path;
 
 use genai::chat::{ChatMessage, ContentPart, MessageContent};
 
-use crabot::chat::{attachment_marker_items, image_marker_text};
+use crabot::chat::{attachment_marker_items, attachment_text, image_marker_text};
 use crabot::tools::{read_text_attachment, resolve_path};
 use crabot::user::AttachmentKind;
 
@@ -29,7 +25,7 @@ pub(super) async fn attach_text_files(messages: &mut Vec<ChatMessage>, workspace
             match item.kind {
                 AttachmentKind::Text => {
                     parts.push(ContentPart::Text(
-                        read_text_file(&item.path, workspace).await,
+                        read_attachment(&item.path, workspace).await,
                     ));
                 }
                 AttachmentKind::Image => image_paths.push(item.path),
@@ -46,9 +42,8 @@ pub(super) async fn attach_text_files(messages: &mut Vec<ChatMessage>, workspace
     *messages = out;
 }
 
-/// Read one text attachment with a bounded buffer, turning failures into a
-/// notice the model can reason about instead of aborting the request.
-async fn read_text_file(path: &str, workspace: &Path) -> String {
+/// Read one attachment, turning failures into a model-readable notice.
+async fn read_attachment(path: &str, workspace: &Path) -> String {
     let resolved = match resolve_path(path, workspace) {
         Ok(path) => path,
         Err(reason) => return unavailable(path, &reason.to_string()),
@@ -57,7 +52,7 @@ async fn read_text_file(path: &str, workspace: &Path) -> String {
         .await
         .unwrap_or_else(|err| Err(format!("read task failed: {err}")));
     match content {
-        Ok(content) => format!("[Attached file: {path}]\n\n{content}"),
+        Ok(content) => attachment_text(path, content.as_deref()),
         Err(reason) => unavailable(path, &reason),
     }
 }

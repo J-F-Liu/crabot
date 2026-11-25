@@ -1,6 +1,7 @@
 use iced::{Task, widget::text_editor};
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crabot::user::{AttachmentKind, UserAttachment, UserPrompt};
 use crabot::workspace;
@@ -193,15 +194,10 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
             });
         }
         PromptEvent::AttachmentDialogResult(kind, paths) => {
-            let Some(paths) = paths else {
+            let Some(paths) = paths.filter(|paths| !paths.is_empty()) else {
                 return Task::none();
             };
-            if paths.is_empty() {
-                return Task::none();
-            }
-            return Task::perform(validate_attachments(kind, paths), |(accepted, rejected)| {
-                Message::Prompt(PromptEvent::AttachmentsValidated(accepted, rejected))
-            });
+            return validate_candidates(paths.into_iter().map(|path| (kind, path)));
         }
         PromptEvent::AttachmentsValidated(accepted, mut rejected) => {
             rejected.extend(add_attachments(app, accepted));
@@ -214,6 +210,39 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
                 );
                 return show_attachment_warning(app, &body);
             }
+        }
+        PromptEvent::FilesHovered => app.prompt.drop_hover_at = Some(Instant::now()),
+        PromptEvent::FilesHoveredLeft => app.prompt.clear_drop_hover(),
+        PromptEvent::DropHoverCheck => {
+            if app
+                .prompt
+                .drop_hover_at
+                .is_some_and(|at| at.elapsed() >= DROP_HOVER_TIMEOUT)
+            {
+                app.prompt.clear_drop_hover();
+            }
+        }
+        PromptEvent::FileDropped(path) => {
+            app.prompt.clear_drop_hover();
+            let schedule = app.prompt.pending_drops.is_empty();
+            app.prompt.pending_drops.push(path);
+            // One event per file; wait briefly to validate the drop as a batch.
+            if schedule {
+                return Task::perform(tokio::time::sleep(DROP_SETTLE), |_| {
+                    Message::Prompt(PromptEvent::DroppedFilesReady)
+                });
+            }
+        }
+        PromptEvent::DroppedFilesReady => {
+            let paths = std::mem::take(&mut app.prompt.pending_drops);
+            if paths.is_empty() {
+                return Task::none();
+            }
+            return validate_candidates(
+                paths
+                    .into_iter()
+                    .map(|path| (AttachmentKind::from_path(&path), path)),
+            );
         }
         PromptEvent::PasteClipboard => return crate::app::paste::paste(app),
         PromptEvent::ClipboardText(text) => {
@@ -249,6 +278,12 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
 
 /// Files one prompt may carry; matches the request image allowance.
 const MAX_ATTACHMENTS_PER_PROMPT: usize = 20;
+
+/// Delay that groups per-file drop events into one validation batch.
+const DROP_SETTLE: Duration = Duration::from_millis(100);
+
+/// Clear a highlight whose final OS event was lost (e.g. a cancelled drag).
+const DROP_HOVER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Add accepted files, skipping duplicates and noting ones over the limit.
 fn add_attachments(app: &mut App, accepted: Vec<UserAttachment>) -> Vec<String> {
@@ -306,33 +341,37 @@ fn toggle_dropdown(target: &mut bool, other: &mut bool) {
     }
 }
 
-/// Validate selected files off the UI thread. Images are fully decoded so an
-/// unsupported, corrupt, or oversized file never enters the prompt list.
+/// Validate candidates off the UI thread, fully decoding images.
 async fn validate_attachments(
-    kind: AttachmentKind,
-    paths: Vec<PathBuf>,
+    candidates: Vec<(AttachmentKind, PathBuf)>,
 ) -> (Vec<UserAttachment>, Vec<String>) {
     tokio::task::spawn_blocking(move || {
         let mut accepted = Vec::new();
         let mut rejected = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for path in paths {
+        for (kind, path) in candidates {
             let stored = path.to_string_lossy().into_owned();
             if !seen.insert(stored.clone()) {
-                continue;
-            }
-            if kind == AttachmentKind::Text {
-                accepted.push(UserAttachment::new(kind, stored));
                 continue;
             }
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or(&stored)
-                .to_string();
-            match crabot::tools::probe(Path::new(&stored), &name) {
+                .unwrap_or(&stored);
+            if kind == AttachmentKind::Text {
+                match std::fs::metadata(&path) {
+                    Ok(metadata) if metadata.is_file() => {
+                        accepted.push(UserAttachment::new(kind, stored));
+                    }
+                    Ok(_) => rejected.push(format!("{name}: not a file")),
+                    Err(error) => rejected.push(format!("{name}: {error}")),
+                }
+                continue;
+            }
+            // `probe` decodes the image and names the file in every failure.
+            match crabot::tools::probe(&path, name) {
                 Ok(_) => accepted.push(UserAttachment::new(kind, stored)),
-                Err(reason) => rejected.push(format!("{name}: {reason}")),
+                Err(reason) => rejected.push(reason),
             }
         }
         (accepted, rejected)
@@ -343,6 +382,16 @@ async fn validate_attachments(
             Vec::new(),
             vec![format!("attachment validation failed: {error}")],
         )
+    })
+}
+
+/// Validate candidates in the background and deliver the accepted files.
+fn validate_candidates(
+    candidates: impl IntoIterator<Item = (AttachmentKind, PathBuf)>,
+) -> Task<Message> {
+    let candidates = candidates.into_iter().collect();
+    Task::perform(validate_attachments(candidates), |(accepted, rejected)| {
+        Message::Prompt(PromptEvent::AttachmentsValidated(accepted, rejected))
     })
 }
 

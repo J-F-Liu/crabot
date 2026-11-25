@@ -454,6 +454,14 @@ pub fn attachment_marker_text(attachments: &[UserAttachment]) -> String {
         .join("\n")
 }
 
+/// Text shown for one attachment; `None` content sends only its path.
+pub fn attachment_text(path: &str, content: Option<&str>) -> String {
+    match content {
+        Some(content) => format!("[Attached file: {path}]\n\n{content}"),
+        None => format!("[Attached file (non-text): {path}]"),
+    }
+}
+
 /// Attachments referenced by an attachment-marker message; `None` for any
 /// other message.
 pub fn attachment_marker_items(msg: &ChatMessage) -> Option<Vec<UserAttachment>> {

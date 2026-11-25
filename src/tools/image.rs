@@ -295,6 +295,9 @@ impl Source {
     fn load(path: &Path, display: &str) -> Result<Self, String> {
         let metadata =
             std::fs::metadata(path).map_err(|e| format!("Failed to read image {display}: {e}"))?;
+        if !metadata.is_file() {
+            return Err(format!("Image {display} is not a file"));
+        }
         if metadata.len() > MAX_SOURCE_BYTES {
             return Err(format!(
                 "Image {display} is {} bytes; the limit is {MAX_SOURCE_BYTES} bytes",

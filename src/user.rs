@@ -65,7 +65,7 @@ impl From<&str> for WorkMode {
 /// How a user-selected attachment reaches the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentKind {
-    /// File content is inserted as text in the request.
+    /// Textual content is inserted; non-text files are referenced by path.
     Text,
     /// File bytes are sent as an image content part.
     Image,
@@ -86,6 +86,15 @@ impl AttachmentKind {
             "text" => Some(Self::Text),
             "image" => Some(Self::Image),
             _ => None,
+        }
+    }
+
+    /// Infer the kind from the file's image extension; everything else is text.
+    pub fn from_path(path: &Path) -> Self {
+        if crate::tools::media_type_for_extension(path).is_some() {
+            Self::Image
+        } else {
+            Self::Text
         }
     }
 

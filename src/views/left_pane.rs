@@ -118,6 +118,7 @@ pub(crate) fn left_pane<'a>(
                         recipe_dropdown_expanded,
                         attachments,
                         attachment_menu_expanded,
+                        prompt.drop_hover_at.is_some(),
                         files,
                         workspace_set,
                         lang,

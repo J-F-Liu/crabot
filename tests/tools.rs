@@ -16,6 +16,16 @@ use crabot::tools::{
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
+/// Read an attachment, panicking on I/O errors; `None` means binary.
+fn read_attachment(path: &Path) -> Option<String> {
+    crabot::tools::read_text_attachment(path).unwrap()
+}
+
+/// Read with an explicit byte limit, panicking on I/O errors.
+fn read_with_limit(path: &Path, limit: usize) -> Option<String> {
+    crabot::tools::read_text_with_limit(path, limit).unwrap()
+}
+
 // ── resolve_path ────────────────────────────────────────────
 
 #[test]
@@ -1009,18 +1019,67 @@ fn text_preview_read_is_bounded_and_rejects_binary() {
     let path = tmp.join("note.txt");
 
     fs::write(&path, "a\r\nb\r\n").unwrap();
-    assert_eq!(
-        crabot::tools::read_text_limited(&path, 1024).unwrap(),
-        "a\nb\n"
-    );
+    assert_eq!(read_with_limit(&path, 1024).as_deref(), Some("a\nb\n"));
 
     fs::write(&path, "0123456789").unwrap();
-    let truncated = crabot::tools::read_text_limited(&path, 4).unwrap();
+    let truncated = read_with_limit(&path, 4).unwrap();
     assert!(truncated.starts_with("0123"), "{truncated}");
     assert!(truncated.contains("truncated at 4 bytes"), "{truncated}");
 
     fs::write(&path, b"a\0b").unwrap();
-    assert!(crabot::tools::read_text_limited(&path, 1024).is_err());
+    assert_eq!(read_attachment(&path), None);
+    assert_eq!(read_with_limit(&path, 1024), None);
+
+    // Control-heavy binary content is detected without a NUL byte.
+    fs::write(&path, [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]).unwrap();
+    assert_eq!(read_attachment(&path), None);
+    assert_eq!(read_with_limit(&path, 1024), None);
+}
+
+/// Legacy attachments decode to UTF-8; binary bytes stay path-only.
+#[test]
+fn text_attachment_decodes_to_utf8() {
+    let tmp = TempDir::new("text_attachment_encoding").unwrap();
+    let path = tmp.join("note.txt");
+
+    fs::write(&path, "plain text\r\n").unwrap();
+    assert_eq!(read_attachment(&path).as_deref(), Some("plain text\n"));
+
+    fs::write(&path, b"\xEF\xBB\xBFhello").unwrap();
+    assert_eq!(read_attachment(&path).as_deref(), Some("hello"));
+
+    // A BOM must not exempt binary bytes from the text heuristic.
+    fs::write(&path, b"\xEF\xBB\xBFbinary\0\0\0\0\0\0\0\0").unwrap();
+    assert_eq!(read_attachment(&path), None);
+
+    let mut gbk = Vec::new();
+    for _ in 0..32 {
+        gbk.extend_from_slice(b"\xD6\xD0\xCE\xC4"); // GBK for "中文"
+    }
+    fs::write(&path, &gbk).unwrap();
+    assert_eq!(
+        read_attachment(&path).as_deref(),
+        Some("中文".repeat(32).as_str())
+    );
+
+    let mut utf16 = vec![0xFF, 0xFE];
+    for unit in "hello 世界".encode_utf16() {
+        utf16.extend_from_slice(&unit.to_le_bytes());
+    }
+    fs::write(&path, &utf16).unwrap();
+    assert_eq!(read_attachment(&path).as_deref(), Some("hello 世界"));
+
+    // A byte limit may cut a UTF-8 character; keep the valid prefix, not a replacement.
+    fs::write(&path, "中文abc").unwrap();
+    let cut = read_with_limit(&path, 4).unwrap();
+    assert!(cut.starts_with('中'), "{cut}");
+    assert!(!cut.contains('\u{FFFD}'), "{cut}");
+    assert!(cut.contains("truncated at 4 bytes"), "{cut}");
+
+    // High-byte noise must not decode into private-use glyphs.
+    let noise: Vec<u8> = (0..8).flat_map(|_| 0x80u8..=0xFF).collect();
+    fs::write(&path, &noise).unwrap();
+    assert_eq!(read_attachment(&path), None);
 }
 
 /// A minimal JPEG carrying EXIF orientation 6 (rotate 90 degrees clockwise).

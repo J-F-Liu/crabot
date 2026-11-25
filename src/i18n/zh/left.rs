@@ -21,6 +21,7 @@ pub static TABLE: &[(&str, &str)] = &[
     ("Attach image file", "附加图片文件"),
     ("Attachment not added", "附件未添加"),
     ("Attachment not sent", "附件未发送"),
+    ("Drop files to attach", "拖放文件以添加附件"),
     ("Some files were not attached:", "以下文件未能附加："),
     (
         "Attachment limit reached ({} per prompt).",

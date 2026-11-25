@@ -402,8 +402,9 @@ fn load_attachment_preview(
                 iced::widget::image::Handle::from_rgba(preview.width, preview.height, preview.rgba),
             ))
         }
-        AttachmentKind::Text => crabot::tools::read_text_attachment(&resolved)
-            .map(|text| PreviewContent::Text(text.into())),
+        AttachmentKind::Text => crabot::tools::read_text_attachment(&resolved).map(|text| {
+            PreviewContent::Text(crabot::chat::attachment_text(path, text.as_deref()).into())
+        }),
     }
 }
 

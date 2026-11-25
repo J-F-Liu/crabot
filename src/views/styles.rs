@@ -3,7 +3,9 @@ use std::borrow::Borrow;
 use iced::widget::text::Style as SelectionStyle;
 use iced::{
     Border, Color, Element, Font, Length, Shadow, Theme, Vector, Widget as _, font,
-    widget::{button, checkbox, container, mouse_area, opaque, pick_list, rule, toggler},
+    widget::{
+        button, checkbox, container, mouse_area, opaque, pick_list, rule, text_editor, toggler,
+    },
 };
 
 use super::theme::*;
@@ -375,6 +377,21 @@ pub(crate) fn icon_button_style(_theme: &Theme, status: button::Status) -> butto
         _ => {}
     }
     style.text_color = color_muted();
+    style
+}
+
+/// Accent border and tint for the prompt editor while files are dragged over it.
+pub(crate) fn drop_target_editor_style(
+    theme: &Theme,
+    status: text_editor::Status,
+) -> text_editor::Style {
+    let mut style = text_editor::default(theme, status);
+    style.background = iced::Background::Color(color_accent().scale_alpha(0.06));
+    style.border = Border {
+        color: color_accent(),
+        width: 2.0,
+        radius: 6.0.into(),
+    };
     style
 }
 

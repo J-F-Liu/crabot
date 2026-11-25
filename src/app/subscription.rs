@@ -11,7 +11,7 @@ use iced::{Event, Point, Subscription};
 use crabot::settings::FONT_SCALE_STEP;
 use crabot::tools::process;
 
-use super::{App, ConversationEvent, LayoutEvent, Message};
+use super::{App, ConversationEvent, LayoutEvent, Message, PromptEvent};
 
 /// Last Ctrl state, kept off `App` (non-capturing closure) and synced with
 /// `layout.ctrl_held` via messages.
@@ -74,6 +74,15 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
         }
         Event::Window(window::Event::Unfocused) => {
             Some(Message::Layout(LayoutEvent::WindowFocusChanged(false)))
+        }
+        Event::Window(window::Event::FileHovered(_)) => {
+            Some(Message::Prompt(PromptEvent::FilesHovered))
+        }
+        Event::Window(window::Event::FilesHoveredLeft) => {
+            Some(Message::Prompt(PromptEvent::FilesHoveredLeft))
+        }
+        Event::Window(window::Event::FileDropped(path)) => {
+            Some(Message::Prompt(PromptEvent::FileDropped(path)))
         }
         // Handle Escape even when captured so overlays close in one keypress.
         Event::Keyboard(keyboard::Event::KeyPressed {
@@ -189,6 +198,13 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
     } else {
         Subscription::none()
     };
+    // Only watch a live drag highlight, so a lost OS event cannot leave it on.
+    let drop_hover_sub = if state.prompt.drop_hover_at.is_some() {
+        time::every(std::time::Duration::from_secs(1))
+            .map(|_| Message::Prompt(PromptEvent::DropHoverCheck))
+    } else {
+        Subscription::none()
+    };
     Subscription::batch([
         event_sub,
         window::close_requests().map(|_id| Message::Conversation(ConversationEvent::AppClosing)),
@@ -196,6 +212,7 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
         iced::system::theme_changes()
             .map(|mode| Message::SystemThemeChanged(mode == iced::theme::Mode::Dark)),
         repeat_sub,
+        drop_hover_sub,
         // Refresh the Date field when the local date rolls over at midnight.
         Subscription::run(midnight_events),
         // One tick per process start/exit; each tick refreshes the cached

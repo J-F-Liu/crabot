@@ -4,8 +4,10 @@
 //! the terminal filter of [`super::ansi`]. Arbitrary data (a fetched body) uses
 //! [`decode_bytes`], which still detects legacy charsets.
 
+use std::borrow::Cow;
+
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
-use encoding_rs::{CoderResult, Decoder, Encoding, UTF_8};
+use encoding_rs::{CoderResult, Decoder, Encoding, UTF_8, X_USER_DEFINED};
 
 use super::ansi::PlainText;
 
@@ -13,6 +15,84 @@ use super::ansi::PlainText;
 /// almost never valid UTF-8, so in practice the guess fires on the first
 /// non-ASCII byte).
 const DETECT_THRESHOLD: usize = 1024;
+
+/// Detector shared by whole-buffer and streaming decode paths.
+fn new_detector() -> EncodingDetector {
+    EncodingDetector::new(Iso2022JpDetection::Deny)
+}
+
+/// Share of control bytes above which a buffer is treated as binary.
+const MAX_CONTROL_PERCENT: usize = 10;
+
+/// C0 control byte (except whitespace) or DEL.
+const fn is_control(byte: u8) -> bool {
+    matches!(byte, 0x00..=0x08 | 0x0e..=0x1a | 0x1c..=0x1f | 0x7f)
+}
+
+/// Binary heuristic: NUL bytes or too many control bytes.
+fn looks_like_text(bytes: &[u8]) -> bool {
+    !bytes.contains(&0)
+        && bytes.iter().filter(|&&byte| is_control(byte)).count() * 100
+            <= bytes.len() * MAX_CONTROL_PERCENT
+}
+
+/// Decode a bounded buffer to UTF-8, or `None` when it looks binary. A BOM
+/// overrides the heuristic (UTF-16 text is full of NULs); BOM-less UTF-16
+/// stays binary, and legacy charsets are guessed and validated. Unlike
+/// [`StreamDecoder`], this path rejects binary data and keeps the valid UTF-8
+/// prefix when a byte limit cuts a character.
+pub(crate) fn decode_text_attachment(bytes: &[u8]) -> Option<String> {
+    if let Some((encoding, bom)) = Encoding::for_bom(bytes) {
+        let (text, _) = encoding.decode_without_bom_handling(&bytes[bom..]);
+        return clean_text(text);
+    }
+    if !looks_like_text(bytes) {
+        return None;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Some(text.to_owned()),
+        // A byte limit can cut a multi-byte character in half.
+        Err(err) if err.error_len().is_none() => {
+            Some(String::from_utf8_lossy(&bytes[..err.valid_up_to()]).into_owned())
+        }
+        Err(_) => legacy_text(bytes),
+    }
+}
+
+/// Guess a legacy charset for bytes that are not valid UTF-8.
+fn legacy_text(bytes: &[u8]) -> Option<String> {
+    let mut detector = new_detector();
+    detector.feed(bytes, true);
+    // Deny UTF-8 here: unlike `StreamDecoder`, this buffer already failed
+    // UTF-8 validation, so a UTF-8 guess would only produce replacements.
+    let encoding = detector.guess(None, Utf8Detection::Deny);
+    // x-user-defined maps every byte to a private-use glyph: a failed guess.
+    if encoding == X_USER_DEFINED {
+        return None;
+    }
+    let (text, _) = encoding.decode_without_bom_handling(bytes);
+    clean_text(text)
+}
+
+/// Reject decodes full of controls or replacement/private-use glyphs: a wrong
+/// guess or binary data. One is allowed at a truncation boundary.
+fn clean_text(text: Cow<'_, str>) -> Option<String> {
+    let mut chars = 0;
+    let mut suspicious = 0;
+    for c in text.chars() {
+        chars += 1;
+        if suspicious_char(c) {
+            suspicious += 1;
+        }
+    }
+    (suspicious <= 1 || suspicious * 100 <= chars).then(|| text.into_owned())
+}
+
+/// [`is_control`] plus replacement and private-use glyphs from a bad guess.
+fn suspicious_char(c: char) -> bool {
+    matches!(c, '\u{FFFD}' | '\u{007F}'..='\u{009F}' | '\u{F780}'..='\u{F7FF}')
+        || u8::try_from(c).is_ok_and(is_control)
+}
 
 /// Decode a whole buffer into text: [`StreamDecoder`] fed in one go. Escapes
 /// and control characters survive — use [`decode_plain`] for shell output.
@@ -60,7 +140,7 @@ impl StreamDecoder {
         Self {
             decoder: None,
             pending: Vec::new(),
-            detector: EncodingDetector::new(Iso2022JpDetection::Deny),
+            detector: new_detector(),
             at_start: true,
         }
     }

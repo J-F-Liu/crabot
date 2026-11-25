@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use super::decoder::decode_text_attachment;
 use super::limits::tool_limits;
 
 /// Convert Windows-style `\r\n` line endings to Unix `\n`.
@@ -15,8 +16,14 @@ pub fn normalize_newlines(s: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(s.replace("\r\n", "\n"))
 }
 
-/// Read up to `limit` text bytes, rejecting binary input and marking truncation.
-pub fn read_text_limited(path: &Path, limit: usize) -> Result<String, String> {
+/// Read an attachment under the configured byte limit; `None` means binary.
+pub fn read_text_attachment(path: &Path) -> Result<Option<String>, String> {
+    read_text_with_limit(path, tool_limits().read_max_bytes.max(1))
+}
+
+/// Read up to `limit` bytes as text, decoding legacy charsets; `None` when
+/// the bytes are not text. Overlong reads are truncated with a marker.
+pub fn read_text_with_limit(path: &Path, limit: usize) -> Result<Option<String>, String> {
     let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
     let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
     file.take((limit as u64).saturating_add(1))
@@ -26,20 +33,17 @@ pub fn read_text_limited(path: &Path, limit: usize) -> Result<String, String> {
     if truncated {
         bytes.truncate(limit);
     }
-    let text = String::from_utf8_lossy(&bytes);
-    if text.contains('\0') {
-        return Err("the file contains binary data".into());
-    }
-    let mut text = normalize_newlines(&text).into_owned();
+    let Some(text) = decode_text_attachment(&bytes) else {
+        return Ok(None);
+    };
+    let mut text = match normalize_newlines(&text) {
+        std::borrow::Cow::Borrowed(_) => text,
+        std::borrow::Cow::Owned(normalized) => normalized,
+    };
     if truncated {
         text.push_str(&format!("\n\n[… attached file truncated at {limit} bytes]"));
     }
-    Ok(text)
-}
-
-/// Read a text attachment under the configured byte limit.
-pub fn read_text_attachment(path: &Path) -> Result<String, String> {
-    read_text_limited(path, tool_limits().read_max_bytes.max(1))
+    Ok(Some(text))
 }
 
 pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {

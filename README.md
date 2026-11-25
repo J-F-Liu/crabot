@@ -72,7 +72,7 @@ The **Custom Tools** settings tab (or `~/.crabot/tools.ron`) defines your own to
 
 ## Prompt Attachments
 
-The prompt editor's **Attachment ▾** menu adds text or image files to the next prompt (up to 20 files). Pasting an image from the clipboard (`Ctrl/Cmd+V`) attaches it directly, saving the picture under `.agent/attachments/`. Text files are inserted into the request up to the `read` limit and truncated with a marker; images go through the same downscaling and re-encoding pipeline as the `read` tool, and the selected model must accept image input. The chat lists every attachment with a clickable preview, while history keeps only the file path, so attachments are read again when a session is reloaded.
+The prompt editor's **Attachment ▾** menu adds text or image files to the next prompt (up to 20 files). Files can also be dragged from the system file manager onto the window (not supported on Wayland); images are recognized by extension and everything else is attached as text. Pasting an image from the clipboard (`Ctrl/Cmd+V`) attaches it directly, saving the picture under `.agent/attachments/`. Text files are inserted into the request up to the `read` limit and truncated with a marker; files that are neither text nor images are referenced by path only, so their bytes never enter the request; images go through the same downscaling and re-encoding pipeline as the `read` tool, and the selected model must accept image input. The chat lists every attachment with a clickable preview, while history keeps only the file path, so attachments are read again when a session is reloaded.
 
 ## Context Window & Sessions
 
@@ -106,10 +106,11 @@ To keep context lean, a few habits help:
 
 ### Mouse
 
-| Gesture               | Action                                                      |
-| --------------------- | ----------------------------------------------------------- |
-| Drag across a message | Select rendered Markdown or plain text (`Ctrl+C` copies it) |
-| `Ctrl+Click` a link   | Open the link in your default browser                       |
+| Gesture                  | Action                                                      |
+| ------------------------ | ----------------------------------------------------------- |
+| Drag across a message    | Select rendered Markdown or plain text (`Ctrl+C` copies it) |
+| Drag files onto the app  | Attach them to the next prompt                              |
+| `Ctrl+Click` a link      | Open the link in your default browser                       |
 
 ### Prompt & inputs
 
