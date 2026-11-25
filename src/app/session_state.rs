@@ -500,8 +500,8 @@ pub(crate) fn update(
             // Attachment markers become their own user-facing block. History
             // keeps the marker; file contents are materialized per request.
             if let Some(items) = attachment_marker_items(&msg) {
-                session.push_turn(Turn::attachment(items));
-                session.history.push(msg);
+                let timestamp = session.push_message(msg);
+                session.push_turn_at(Turn::attachment(items), timestamp);
                 let _ = session.save();
                 return if viewing {
                     maybe_scroll_to_end(&state.auto_scroll)
@@ -516,7 +516,7 @@ pub(crate) fn update(
             }
             // Only non-empty assistant messages are emitted, so record as-is.
             backfill_assistant_turn(state, session, &msg);
-            session.history.push(msg);
+            session.push_message(msg);
             let _ = session.save();
         }
         SessionEvent::TokenUsage(usage) => {
@@ -1165,16 +1165,14 @@ fn task_mode_preamble(mode: Option<&str>) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
-/// Extract the last non-empty assistant text from a finished session — the
-/// sub-agent's final report returned to the parent as the task tool result.
+/// Last non-empty assistant text — the sub-agent's report to the parent.
 fn final_assistant_text(session: &Session) -> Option<String> {
     session
-        .history
-        .iter()
+        .messages()
         .rev()
-        .filter(|m| m.role == ChatRole::Assistant)
-        .find_map(|m| {
-            let text = m.content.joined_texts().unwrap_or_default();
+        .filter(|message| message.role == ChatRole::Assistant)
+        .find_map(|message| {
+            let text = message.content.joined_texts().unwrap_or_default();
             (!text.trim().is_empty()).then_some(text)
         })
 }

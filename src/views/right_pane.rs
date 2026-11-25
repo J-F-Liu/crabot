@@ -362,11 +362,8 @@ pub(crate) fn right_pane<'a>(
             lang.tr("Num Requests:"),
             session.requests.to_string(),
         ));
-        if !session.updated_at.is_empty() {
-            items.push(token_row(
-                lang.tr("Last Response:"),
-                session.updated_at_time(),
-            ));
+        if let Some(time) = session.updated_at_time() {
+            items.push(token_row(lang.tr("Last Response:"), time));
         }
     }
 

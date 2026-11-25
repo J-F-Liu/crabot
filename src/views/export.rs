@@ -71,9 +71,10 @@ pub(crate) fn render_session_html(
                 .to_string(),
         );
     }
+    let created_at = session.created_at_text();
     meta.push(
         lang.tr("Created: {}")
-            .replacen("{}", &escape_html(&session.created_at), 1)
+            .replacen("{}", &escape_html(&created_at), 1)
             .to_string(),
     );
     if !meta.is_empty() {

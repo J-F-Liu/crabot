@@ -1332,7 +1332,7 @@ fn session_info<'a>(
     }
     let created = lang
         .tr("Created: {}")
-        .replacen("{}", &session.created_at, 1);
+        .replacen("{}", &session.created_at_text(), 1);
     let time_text = selectable(created, "")
         .size(12.0 * font_scale)
         .style(sel_muted)

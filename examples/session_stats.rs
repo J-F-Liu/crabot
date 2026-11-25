@@ -2,8 +2,8 @@
 //!
 //! Costs are attributed per model from each session's `Meta`/`Tally` records:
 //! tallies are cumulative, so each delta (current − previous) is charged to the
-//! most recent `Meta` model. Sessions without tallies (legacy `.json`, or no
-//! completed requests) fall back to the session-level model and totals.
+//! most recent `Meta` model. Sessions without tallies (no completed requests)
+//! fall back to the session-level model and totals.
 //!
 //! By default only the current month is counted; `--month YYYY-MM` counts a
 //! specific month instead.
@@ -225,18 +225,12 @@ fn main() {
             }
         };
 
-        // Skip legacy flat-dir files from other months.
+        // Skip flat-dir JSONL files from other months.
         if session::year_month_from_id(&session.id) != target_month {
             continue;
         }
 
-        // Date portion of created_at ("YYYY-MM-DD HH:MM:SS" → "YYYY-MM-DD").
-        let day = session
-            .created_at
-            .split_whitespace()
-            .next()
-            .unwrap_or("unknown")
-            .to_string();
+        let day = session.created_at.format("%Y-%m-%d").to_string();
 
         *day_sessions.entry(day.clone()).or_default() += 1;
         for (model_id, stats) in session_model_stats(&session, path) {

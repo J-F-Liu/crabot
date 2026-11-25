@@ -1339,7 +1339,7 @@ pub(crate) fn start_dialog(
         image_cache: tab.session_state.image_cache.clone(),
     };
 
-    let mut history = tab.session.history.clone();
+    let mut history = tab.session.request_history();
     // Deepseek rejects tool-calls without a reasoning part — patch the request copy.
     if model_config.model_id.starts_with("deepseek") {
         fix_history(&mut history);

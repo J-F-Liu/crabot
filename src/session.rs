@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use chrono::{Datelike, TimeZone};
+use chrono::{DateTime, Datelike, Local, TimeZone};
 
 use crate::chat::{
     Dialog, ToolResult, Turn, TurnBody, attachment_marker_items, image_marker_paths,
@@ -20,6 +20,51 @@ use crate::user::{UserPrompt, WorkMode};
 /// Prompt injected when the context is nearly full, suggesting `renew`.
 pub const RENEW_HINT_PROMPT: &str = "Context fill ratio is near its limit, consider calling the renew tool to continue current task.";
 
+/// Serde helpers for local wall-clock timestamps (`YYYY-MM-DD HH:MM:SS`).
+mod local_datetime {
+    use chrono::{DateTime, Local, NaiveDateTime};
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    const FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+
+    pub fn serialize<S>(time: &DateTime<Local>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(&time.format(FORMAT))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Local>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        parse(&value).ok_or_else(|| D::Error::custom(format!("invalid timestamp: {value:?}")))
+    }
+
+    fn parse(value: &str) -> Option<DateTime<Local>> {
+        let value = value.trim();
+        // Older files stored an empty `updated_at` before the first response.
+        if value.is_empty() {
+            return Some(DateTime::default());
+        }
+        NaiveDateTime::parse_from_str(value, FORMAT)
+            .ok()?
+            .and_local_timezone(Local)
+            .earliest()
+    }
+}
+
+/// One timestamped message in the session history.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryEntry {
+    pub message: ChatMessage,
+    /// Local time when the message was recorded.
+    #[serde(with = "local_datetime")]
+    pub timestamp: DateTime<Local>,
+}
+
 /// One self-contained line in a `{id}.jsonl` session file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -31,12 +76,24 @@ pub enum SessionRecord {
         model: Option<ModelConfig>,
         title: String,
         workspace: PathBuf,
-        created_at: String,
+        #[serde(default, with = "local_datetime")]
+        created_at: DateTime<Local>,
     },
     /// One history message, appended incrementally.
-    Message { message: ChatMessage },
+    Message {
+        message: ChatMessage,
+        /// Local time when the message was recorded.
+        #[serde(default, with = "local_datetime")]
+        timestamp: DateTime<Local>,
+    },
     /// UI-only notice turn (e.g. a truncated reply); never part of the history.
-    Notice { at: usize, text: String },
+    Notice {
+        at: usize,
+        text: String,
+        /// Local time when the notice was emitted.
+        #[serde(default, with = "local_datetime")]
+        timestamp: DateTime<Local>,
+    },
     /// Cumulative usage snapshot — last record wins on load.
     Tally {
         tokens: TokenAmount,
@@ -46,21 +103,25 @@ pub enum SessionRecord {
         cost: f64,
         currency: Currency,
         requests: u32,
-        updated_at: String,
+        /// Last response time; the default epoch means no response yet.
+        #[serde(default, with = "local_datetime")]
+        updated_at: DateTime<Local>,
     },
 }
 
 /// A UI-only notice turn, anchored to the history length when it appeared.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct NoticeTurn {
     /// Number of history messages already recorded when the notice was emitted.
     pub at: usize,
     pub text: String,
+    /// Local time when the notice was emitted.
+    #[serde(with = "local_datetime")]
+    pub timestamp: DateTime<Local>,
 }
 
 /// A conversation session, persisted to `.agent/sessions/` as `{id}.jsonl`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Session {
     pub id: String,
     /// Parent session id — set by `renew`/`task` spawns, empty for user tabs.
@@ -68,10 +129,9 @@ pub struct Session {
     pub title: String,
     pub model: Option<ModelConfig>,
     pub workspace: PathBuf,
-    /// Raw genai messages — exact history sent to / received from the LLM.
-    pub history: Vec<ChatMessage>,
+    /// Timestamped messages in the order sent to and received from the LLM.
+    history: Vec<HistoryEntry>,
     /// Notice turns (warnings) shown between messages but never sent to the LLM.
-    #[serde(default)]
     pub notices: Vec<NoticeTurn>,
     /// Notice turns already written to the jsonl file.
     #[serde(skip)]
@@ -91,7 +151,7 @@ pub struct Session {
     /// Accumulated token usage across all turns.
     pub tokens: TokenAmount,
     /// Latest response usage; `None` until one is reported.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_usage: Option<TokenAmount>,
     /// Accumulated token cost.
     pub cost: f64,
@@ -106,8 +166,12 @@ pub struct Session {
     /// Current round id — bumped per user message, rebuilt from history on load.
     #[serde(skip)]
     round: u32,
-    pub created_at: String,
-    pub updated_at: String,
+    /// Session creation time.
+    #[serde(with = "local_datetime")]
+    pub created_at: DateTime<Local>,
+    /// Last response time; the default means no response yet.
+    #[serde(with = "local_datetime")]
+    pub updated_at: DateTime<Local>,
 }
 
 impl Default for Session {
@@ -173,15 +237,30 @@ struct PendingAsk {
     tool_turn: Turn,
 }
 
+/// Format a turn timestamp; legacy records without one stay hidden.
+fn format_turn_time(timestamp: DateTime<Local>) -> String {
+    if timestamp == DateTime::<Local>::default() {
+        String::new()
+    } else {
+        timestamp.format("%H:%M:%S").to_string()
+    }
+}
+
+/// Set a turn's `HH:MM:SS` display timestamp.
+fn stamp_turn(mut turn: Turn, timestamp: DateTime<Local>) -> Turn {
+    turn.timestamp = format_turn_time(timestamp);
+    turn
+}
+
 /// Incremental dialog reconstruction that tracks which records each dialog owns.
 struct DialogBuilder<'a> {
-    history: &'a [ChatMessage],
+    history: &'a [HistoryEntry],
     notices: &'a [NoticeTurn],
     dialogs: Vec<Dialog>,
     modified: TrackedFiles,
     accessed: TrackedFiles,
     round: u32,
-    results: HashMap<String, String>,
+    results: HashMap<String, (String, DateTime<Local>)>,
     ask_exchanges: HashMap<usize, usize>,
     history_owners: Vec<Option<usize>>,
     notice_owners: Vec<Option<usize>>,
@@ -191,13 +270,16 @@ struct DialogBuilder<'a> {
 
 impl<'a> DialogBuilder<'a> {
     /// Rebuild dialogs from `history`, recording the records each one owns.
-    fn build(history: &'a [ChatMessage], notices: &'a [NoticeTurn]) -> DialogBuild {
-        let results = history
-            .iter()
-            .filter(|msg| msg.role == ChatRole::Tool)
-            .flat_map(|msg| msg.content.tool_responses())
-            .map(|tr| (tr.call_id.clone(), tr.content.clone()))
-            .collect();
+    fn build(history: &'a [HistoryEntry], notices: &'a [NoticeTurn]) -> DialogBuild {
+        let mut results = HashMap::new();
+        for entry in history {
+            if entry.message.role != ChatRole::Tool {
+                continue;
+            }
+            for tr in entry.message.content.tool_responses() {
+                results.insert(tr.call_id.clone(), (tr.content.clone(), entry.timestamp));
+            }
+        }
         let mut builder = Self {
             history,
             notices,
@@ -220,6 +302,11 @@ impl<'a> DialogBuilder<'a> {
         builder.push_notices(usize::MAX);
         builder.close_pending();
         builder.finish()
+    }
+
+    /// Stamp a turn with the recording time of `history[index]`.
+    fn stamp(&self, turn: Turn, index: usize) -> Turn {
+        stamp_turn(turn, self.history[index].timestamp)
     }
 
     /// Append `turn` to the last dialog, creating one when none exists.
@@ -245,8 +332,9 @@ impl<'a> DialogBuilder<'a> {
             .is_some_and(|notice| notice.at <= upto)
         {
             self.open_pending(upto);
-            let text = self.notices[self.notice_index].text.clone();
-            let owner = self.push(Turn::assistant(text, None));
+            let notice = &self.notices[self.notice_index];
+            let turn = stamp_turn(Turn::assistant(notice.text.clone(), None), notice.timestamp);
+            let owner = self.push(turn);
             self.notice_owners[self.notice_index] = Some(owner);
             self.notice_index += 1;
         }
@@ -262,11 +350,11 @@ impl<'a> DialogBuilder<'a> {
             .push(Dialog::new(ask.title, vec![ask.tool_turn], ask.mode));
         let end = upto.min(self.history.len());
         let cutoff = (ask.start + 1..end)
-            .rfind(|&i| self.history[i].role == ChatRole::Tool)
+            .rfind(|&i| self.history[i].message.role == ChatRole::Tool)
             .unwrap_or(ask.start);
         self.ask_exchanges.insert(index, cutoff);
         for i in ask.start..end {
-            if self.history[i].role != ChatRole::System {
+            if self.history[i].message.role != ChatRole::System {
                 self.history_owners[i] = Some(index);
             }
         }
@@ -285,7 +373,7 @@ impl<'a> DialogBuilder<'a> {
     }
 
     fn process(&mut self, index: usize) {
-        match self.history[index].role {
+        match self.history[index].message.role {
             ChatRole::System => {}
             ChatRole::User => self.user(index),
             ChatRole::Assistant => self.assistant(index),
@@ -294,20 +382,21 @@ impl<'a> DialogBuilder<'a> {
     }
 
     fn user(&mut self, index: usize) {
-        if image_marker_paths(&self.history[index]).is_some() {
+        let message = &self.history[index].message;
+        if image_marker_paths(message).is_some() {
             // Image markers ride along in history but are not user turns.
             self.history_owners[index] = self.dialogs.len().checked_sub(1);
             return;
         }
-        if let Some(items) = attachment_marker_items(&self.history[index]) {
+        if let Some(items) = attachment_marker_items(message) {
             // Attachment markers become their own display block.
             self.open_pending(index);
-            let owner = self.push(Turn::attachment(items));
+            let owner = self.push(self.stamp(Turn::attachment(items), index));
             self.history_owners[index] = Some(owner);
             return;
         }
-        let mode = mode_from_user_message(&self.history[index]);
-        let text = self.history[index]
+        let mode = mode_from_user_message(message);
+        let text = message
             .content
             .parts()
             .last()
@@ -316,29 +405,37 @@ impl<'a> DialogBuilder<'a> {
             .to_string();
         self.close_pending();
         let title = Session::derive_title(&text);
-        self.dialogs
-            .push(Dialog::new(title, vec![Turn::user(text)], mode));
+        self.dialogs.push(Dialog::new(
+            title,
+            vec![self.stamp(Turn::user(text), index)],
+            mode,
+        ));
         self.history_owners[index] = Some(self.dialogs.len() - 1);
         self.round += 1;
     }
 
     fn assistant(&mut self, index: usize) {
-        let (text, reasoning) = {
-            let msg = &self.history[index];
-            (
-                msg.content.joined_texts().unwrap_or_default(),
-                msg.content.first_reasoning_content().map(str::to_string),
-            )
-        };
+        let HistoryEntry { message, timestamp } = &self.history[index];
+        let (text, reasoning) = (
+            message.content.joined_texts().unwrap_or_default(),
+            message
+                .content
+                .first_reasoning_content()
+                .map(str::to_string),
+        );
+        let assistant_timestamp = *timestamp;
         let mut owner = None;
         if !text.is_empty() || reasoning.is_some() {
             self.open_pending(index);
-            owner = Some(self.push(Turn::assistant(text, reasoning)));
+            owner = Some(self.push(self.stamp(Turn::assistant(text, reasoning), index)));
         }
 
         let mut trs = Vec::new();
-        for tc in self.history[index].content.tool_calls() {
-            let content = self.results.remove(&tc.call_id).unwrap_or_default();
+        for tc in self.history[index].message.content.tool_calls() {
+            let (content, result_timestamp) = self
+                .results
+                .remove(&tc.call_id)
+                .unwrap_or_else(|| (String::new(), assistant_timestamp));
             // Strip the "Error: " envelope to match live-stream display.
             let result = if is_enveloped_error(&content) {
                 Err(strip_error_envelope(&content).to_string())
@@ -350,7 +447,7 @@ impl<'a> DialogBuilder<'a> {
                 call_id: Some(tc.call_id.clone()),
                 args: tc.fn_arguments.clone(),
                 result,
-                timestamp: String::new(),
+                timestamp: format_turn_time(result_timestamp),
                 streaming: false,
             };
             TrackedFiles::track_result(&mut self.modified, &mut self.accessed, self.round, &tr);
@@ -368,11 +465,11 @@ impl<'a> DialogBuilder<'a> {
                     start: index,
                     title,
                     mode,
-                    tool_turn: Turn::from_tool_results(trs),
+                    tool_turn: self.stamp(Turn::from_tool_results(trs), index),
                 });
             } else {
                 self.open_pending(index);
-                owner = Some(self.push(Turn::from_tool_results(trs)));
+                owner = Some(self.push(self.stamp(Turn::from_tool_results(trs), index)));
             }
         }
         self.history_owners[index] = owner;
@@ -440,9 +537,8 @@ pub fn first_line_label(text: &str, max: usize) -> String {
 impl Session {
     /// Create a new session.
     pub fn new() -> Self {
-        let now = chrono::Local::now();
+        let now = Local::now();
         let id = generate_session_id(now);
-        let time = now.format("%Y-%m-%d %H:%M:%S").to_string();
         Session {
             id,
             parent: String::new(),
@@ -463,19 +559,46 @@ impl Session {
             modified: TrackedFiles::default(),
             accessed: TrackedFiles::default(),
             round: 0,
-            created_at: time,
-            updated_at: String::new(),
+            created_at: now,
+            updated_at: DateTime::default(),
         }
+    }
+
+    /// Append a message and return its recording timestamp.
+    pub fn push_message(&mut self, message: ChatMessage) -> DateTime<Local> {
+        let timestamp = Local::now();
+        self.history.push(HistoryEntry { message, timestamp });
+        timestamp
+    }
+
+    /// Timestamped history in conversation order.
+    pub fn entries(&self) -> &[HistoryEntry] {
+        &self.history
+    }
+
+    /// Raw messages in conversation order.
+    pub fn messages(&self) -> impl DoubleEndedIterator<Item = &ChatMessage> + '_ {
+        self.history.iter().map(|entry| &entry.message)
+    }
+
+    /// Number of recorded messages.
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Clone the messages for an LLM request.
+    pub fn request_history(&self) -> Vec<ChatMessage> {
+        self.messages().cloned().collect()
     }
 
     /// Clone with a fresh id/timestamps — the copy gets its own file and
     /// must rewrite everything on the next save.
     fn fresh_copy(&self) -> Self {
         let mut session = self.clone();
-        let now = chrono::Local::now();
+        let now = Local::now();
         session.id = generate_session_id(now);
-        session.created_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
-        session.updated_at = String::new();
+        session.created_at = now;
+        session.updated_at = DateTime::default();
         session.cost = 0.0;
         session.persisted = 0;
         // Notice turns are dialog-only; the copy rebuilds dialogs from history.
@@ -496,7 +619,9 @@ impl Session {
         };
         // Drop system-prompt audit records, then rebuild dialogs from history
         // so dialog-only turns (error/notice messages) don't carry over.
-        session.history.retain(|m| m.role != ChatRole::System);
+        session
+            .history
+            .retain(|entry| entry.message.role != ChatRole::System);
         session.rebuild_dialogs();
         // Persist the fork's usage too; failures are logged inside `save_with_tally`.
         if session.workspace.is_dir() {
@@ -511,11 +636,12 @@ impl Session {
         let asks = ask_answers(&self.history);
         // Keep the last text-only assistant reply per dialog; flush it before
         // the next user prompt and at the end.
-        let mut answer: Option<ChatMessage> = None;
+        let mut answer: Option<HistoryEntry> = None;
         // Work mode of the latest user prompt, carried into ask prompts.
         let mut mode: Option<WorkMode> = None;
         let mut compacted = Vec::with_capacity(self.dialogs.len() * 2);
-        for msg in &self.history {
+        for entry in &self.history {
+            let msg = &entry.message;
             match msg.role {
                 ChatRole::User => {
                     // Image markers, attachment markers, and auto-injected hints are plumbing.
@@ -528,13 +654,13 @@ impl Session {
                     }
                     mode = mode_from_user_message(msg);
                     compacted.extend(answer.take());
-                    compacted.push(msg.clone());
+                    compacted.push(entry.clone());
                 }
                 ChatRole::Assistant
                     if !msg.content.contains_tool_call()
                         && msg.content.joined_texts().is_some_and(|t| !t.is_empty()) =>
                 {
-                    answer = Some(msg.clone());
+                    answer = Some(entry.clone());
                 }
                 ChatRole::Assistant => {
                     // Preserve the text and reasoning that introduced an ask exchange.
@@ -546,7 +672,10 @@ impl Session {
                         && let Some(preamble) = ask_preamble(msg)
                     {
                         compacted.extend(answer.take());
-                        compacted.push(preamble);
+                        compacted.push(HistoryEntry {
+                            message: preamble,
+                            timestamp: entry.timestamp,
+                        });
                     }
                 }
                 ChatRole::Tool => {
@@ -555,7 +684,10 @@ impl Session {
                             continue;
                         };
                         compacted.extend(answer.take());
-                        compacted.push(ask_user_message(question, response, mode));
+                        compacted.push(HistoryEntry {
+                            message: ask_user_message(question, response, mode),
+                            timestamp: entry.timestamp,
+                        });
                     }
                 }
                 _ => {}
@@ -618,9 +750,13 @@ impl Session {
 
     /// Push a turn.  A `User` turn starts a new dialog; all other roles
     /// append to the last dialog (creating one if none exists yet).
-    pub fn push_turn(&mut self, mut turn: Turn) {
-        let now = chrono::Local::now();
-        turn.timestamp = now.format("%H:%M:%S").to_string();
+    pub fn push_turn(&mut self, turn: Turn) {
+        self.push_turn_at(turn, Local::now());
+    }
+
+    /// Push a turn with an explicit display timestamp.
+    pub fn push_turn_at(&mut self, turn: Turn, timestamp: DateTime<Local>) {
+        let turn = stamp_turn(turn, timestamp);
         if let Some(last) = self.dialogs.last_mut() {
             last.turns.push(turn);
         } else {
@@ -632,11 +768,13 @@ impl Session {
     /// Append a notice turn (warning shown between messages) and persist it as
     /// its own record so it survives a reload; it never enters `history`.
     pub fn push_notice(&mut self, text: String) {
+        let timestamp = Local::now();
         self.notices.push(NoticeTurn {
             at: self.history.len(),
             text: text.clone(),
+            timestamp,
         });
-        self.push_turn(Turn::assistant(text, None));
+        self.push_turn_at(Turn::assistant(text, None), timestamp);
         let _ = self.save();
     }
 
@@ -714,18 +852,19 @@ impl Session {
         })
     }
 
-    /// Time part of `updated_at` ("%H:%M:%S"), for compact display.
-    pub fn updated_at_time(&self) -> String {
-        self.updated_at
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or(&self.updated_at)
-            .to_string()
+    /// Time of the last response ("%H:%M:%S"), or `None` before the first.
+    pub fn updated_at_time(&self) -> Option<String> {
+        (self.updated_at != DateTime::<Local>::default()).then(|| format_turn_time(self.updated_at))
     }
 
     /// Record the time of the last received assistant response.
     pub fn stamp_response(&mut self) {
-        self.updated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        self.updated_at = Local::now();
+    }
+
+    /// Session creation time formatted for display.
+    pub fn created_at_text(&self) -> String {
+        self.created_at.format("%Y-%m-%d %H:%M:%S").to_string()
     }
 
     /// Format session cost as a string with the currency symbol prefix.
@@ -752,12 +891,14 @@ impl Session {
 
     /// First user message, skipping system-prompt audit records.
     pub fn first_user_message(&self) -> Option<&ChatMessage> {
-        self.history.iter().find(|m| m.role == ChatRole::User)
+        self.messages()
+            .find(|message| message.role == ChatRole::User)
     }
 
     /// Whether the conversation contains an assistant reply.
     pub fn has_reply(&self) -> bool {
-        self.history.iter().any(|m| m.role == ChatRole::Assistant)
+        self.messages()
+            .any(|message| message.role == ChatRole::Assistant)
     }
 
     /// Case-insensitive search across dialog headers and turn headers/content.
@@ -862,7 +1003,7 @@ impl Session {
         let cutoff = built.ask_exchanges.get(&index).copied();
         let mut removed = Vec::new();
         let mut kept = Vec::with_capacity(self.history.len());
-        for (history_index, (msg, owner)) in std::mem::take(&mut self.history)
+        for (history_index, (entry, owner)) in std::mem::take(&mut self.history)
             .into_iter()
             .zip(built.history_owners)
             .enumerate()
@@ -870,7 +1011,7 @@ impl Session {
             if owner == Some(index) && cutoff.is_none_or(|cutoff| history_index > cutoff) {
                 removed.push(history_index);
             } else {
-                kept.push(msg);
+                kept.push(entry);
             }
         }
         self.history = kept;
@@ -910,7 +1051,8 @@ impl Session {
         static SUCCESS_RE: OnceLock<Regex> = OnceLock::new();
         let success_re = SUCCESS_RE.get_or_init(|| Regex::new(r"^Updated \d+ todo").unwrap());
         let mut successful: HashSet<&str> = HashSet::new();
-        for msg in self.history.iter().rev() {
+        for entry in self.history.iter().rev() {
+            let msg = &entry.message;
             match msg.role {
                 ChatRole::Tool => {
                     for tr in msg.content.tool_responses() {
@@ -1016,9 +1158,6 @@ impl Session {
         self.persisted_notices = self.notices.len();
         self.saved_meta = Some(meta_json);
 
-        if rewrite || is_new {
-            Self::remove_legacy_json(&path);
-        }
         tracing::debug!(
             session = %self.id,
             path = %path.display(),
@@ -1065,30 +1204,17 @@ impl Session {
         Ok(buf)
     }
 
-    fn remove_legacy_json(path: &Path) {
-        let legacy = path.with_extension("json");
-        if legacy.exists() {
-            let _ = std::fs::remove_file(&legacy);
-        }
-    }
-
-    /// Load a session from disk, preferring the `.jsonl` sibling of a legacy
-    /// `.json` path.
+    /// Load a JSONL session from disk.
     ///
-    /// The workspace is re-resolved from the file's own location — not its
-    /// `Meta` record — so sessions survive the project being moved or renamed;
-    /// the stale `saved_meta` makes the next save rewrite the `Meta` line.
+    /// The workspace is re-resolved from the file path so sessions survive the
+    /// project being moved; the stale `saved_meta` rewrites the next save's Meta.
     pub fn load(path: &Path) -> Result<Self, String> {
         tracing::debug!(path = %path.display(), "loading session");
-        let path = match path.extension().and_then(|e| e.to_str()) {
-            Some("json") if path.with_extension("jsonl").exists() => path.with_extension("jsonl"),
-            _ => path.to_path_buf(),
-        };
-        let mut session = match path.extension().and_then(|e| e.to_str()) {
-            Some("jsonl") => Self::load_jsonl(&path),
-            _ => Self::load_legacy_json(&path),
-        }?;
-        if let Some(workspace) = workspace_from_path(&path) {
+        if !is_jsonl(path) {
+            return Err(format!("Not a session JSONL file: {}", path.display()));
+        }
+        let mut session = Self::load_jsonl(path)?;
+        if let Some(workspace) = workspace_from_path(path) {
             session.workspace = workspace;
         }
         Ok(session)
@@ -1126,9 +1252,19 @@ impl Session {
                     session.workspace = workspace;
                     session.created_at = created_at;
                 }
-                Ok(SessionRecord::Message { message }) => session.history.push(message),
-                Ok(SessionRecord::Notice { at, text }) => {
-                    session.notices.push(NoticeTurn { at, text });
+                Ok(SessionRecord::Message { message, timestamp }) => {
+                    session.history.push(HistoryEntry { message, timestamp });
+                }
+                Ok(SessionRecord::Notice {
+                    at,
+                    text,
+                    timestamp,
+                }) => {
+                    session.notices.push(NoticeTurn {
+                        at,
+                        text,
+                        timestamp,
+                    });
                 }
                 Ok(SessionRecord::Tally {
                     requests,
@@ -1169,30 +1305,18 @@ impl Session {
         Ok(session)
     }
 
-    /// Load from a legacy whole-document `.json` file.
-    fn load_legacy_json(path: &Path) -> Result<Self, String> {
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read session file: {e}"))?;
-        let mut session: Self =
-            serde_json::from_str(&json).map_err(|e| format!("Failed to parse session: {e}"))?;
-        // `persisted` / `saved_meta` are `#[serde(skip)]` → next save writes a full jsonl.
-        session.rebuild_dialogs();
-        Ok(session)
-    }
-
     /// Audit record of the system prompt, deduped against the last record.
     pub fn record_system_prompt(&mut self, prompt: &str) -> bool {
         let changed = !prompt.trim().is_empty()
             && self
-                .history
-                .iter()
+                .messages()
                 .rev()
-                .find(|m| m.role == ChatRole::System)
-                .and_then(|m| m.content.joined_texts())
+                .find(|message| message.role == ChatRole::System)
+                .and_then(|message| message.content.joined_texts())
                 .as_deref()
                 != Some(prompt);
         if changed {
-            self.history.push(ChatMessage::system(prompt));
+            self.push_message(ChatMessage::system(prompt));
         }
         changed
     }
@@ -1200,12 +1324,13 @@ impl Session {
     /// Append `history[start..]` as one `Message` record line per message.
     fn push_messages(
         buf: &mut String,
-        history: &[ChatMessage],
+        history: &[HistoryEntry],
         start: usize,
     ) -> Result<(), String> {
-        for msg in &history[start..] {
+        for entry in &history[start..] {
             let line = serde_json::to_string(&SessionRecord::Message {
-                message: msg.clone(),
+                message: entry.message.clone(),
+                timestamp: entry.timestamp,
             })
             .map_err(|e| format!("Failed to serialize message: {e}"))?;
             buf.push_str(&line);
@@ -1220,6 +1345,7 @@ impl Session {
             let line = serde_json::to_string(&SessionRecord::Notice {
                 at: notice.at,
                 text: notice.text.clone(),
+                timestamp: notice.timestamp,
             })
             .map_err(|e| format!("Failed to serialize notice: {e}"))?;
             buf.push_str(&line);
@@ -1236,7 +1362,7 @@ impl Session {
             last_usage: self.last_usage,
             cost: self.cost,
             currency: self.currency,
-            updated_at: self.updated_at.clone(),
+            updated_at: self.updated_at,
         })
         .map_err(|e| format!("Failed to serialize tally: {e}"))?;
         buf.push_str(&line);
@@ -1252,7 +1378,7 @@ impl Session {
             model: self.model.clone(),
             title: self.title.clone(),
             workspace: self.workspace.clone(),
-            created_at: self.created_at.clone(),
+            created_at: self.created_at,
         }
     }
 }
@@ -1276,10 +1402,11 @@ fn mode_from_user_message(msg: &ChatMessage) -> Option<WorkMode> {
 }
 
 /// Completed, non-empty ask exchanges (answers and timeouts) with their questions.
-fn ask_answers(history: &[ChatMessage]) -> HashMap<&str, (&str, &str)> {
+fn ask_answers(history: &[HistoryEntry]) -> HashMap<&str, (&str, &str)> {
     let mut questions: HashMap<&str, &str> = HashMap::new();
     let mut answers = HashMap::new();
-    for msg in history {
+    for entry in history {
+        let msg = &entry.message;
         match msg.role {
             ChatRole::Assistant => {
                 for tc in msg.content.tool_calls() {
@@ -1363,6 +1490,11 @@ pub struct SearchHit {
     pub kind: SearchHitKind,
 }
 
+/// Whether `path` is a JSONL session file.
+fn is_jsonl(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "jsonl")
+}
+
 /// Extract YYYY-MM from a session id (format: YYYYMMDD-HHMMSS).
 pub fn year_month_from_id(id: &str) -> String {
     if id.len() >= 6 {
@@ -1372,10 +1504,8 @@ pub fn year_month_from_id(id: &str) -> String {
     }
 }
 
-/// List saved session file paths for a workspace (newest first). When `month`
-/// is given (`YYYY-MM`), only that year-month subdirectory is scanned;
-/// otherwise the last 3 months are scanned. The legacy flat base directory is
-/// always scanned. Prefers `.jsonl` over `.json` for the same id.
+/// List JSONL session paths for a workspace (newest first). Scans `month`
+/// (`YYYY-MM`) or the last 3 months, plus the flat base directory.
 pub fn list_session_paths(workspace: &Path, month: Option<&str>) -> Result<Vec<PathBuf>, String> {
     let base = workspace.join(".agent").join("sessions");
     if !base.exists() {
@@ -1402,7 +1532,7 @@ pub fn list_session_paths(workspace: &Path, month: Option<&str>) -> Result<Vec<P
         }
     };
 
-    // Collect paths, preferring .jsonl over .json for the same session id.
+    // Deduplicate by session id; the flat base may shadow a month directory.
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
 
     fn collect_into(dir: &Path, seen: &mut HashMap<String, PathBuf>) {
@@ -1411,19 +1541,11 @@ pub fn list_session_paths(workspace: &Path, month: Option<&str>) -> Result<Vec<P
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !matches!(ext, "jsonl" | "json") {
+            if !is_jsonl(&path) {
                 continue;
             }
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            // Prefer .jsonl over .json for the same stem.
-            let replacing_jsonl_with_json = ext == "json"
-                && seen
-                    .get(stem)
-                    .is_some_and(|p| p.extension().is_some_and(|e| e == "jsonl"));
-            if !replacing_jsonl_with_json {
-                seen.insert(stem.to_string(), path);
-            }
+            seen.insert(stem.to_string(), path);
         }
     }
 
@@ -1433,7 +1555,7 @@ pub fn list_session_paths(workspace: &Path, month: Option<&str>) -> Result<Vec<P
             collect_into(&dir, &mut seen);
         }
     }
-    // Also scan the base directory for legacy flat session files.
+    // Older JSONL sessions may sit directly under the base directory.
     collect_into(&base, &mut seen);
 
     let mut paths: Vec<PathBuf> = seen.into_values().collect();

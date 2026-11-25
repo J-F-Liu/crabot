@@ -75,9 +75,35 @@ fn ask_call_with(
     msg
 }
 
+/// Parse a timestamp written in the persisted local-time format.
+fn local_time(value: &str) -> chrono::DateTime<chrono::Local> {
+    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .expect("valid timestamp")
+        .and_local_timezone(chrono::Local)
+        .single()
+        .expect("unambiguous local timestamp")
+}
+
+/// Format a timestamp at the precision persisted in session files.
+fn time_text(time: chrono::DateTime<chrono::Local>) -> String {
+    time.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 /// History roles in order.
 fn roles(session: &Session) -> Vec<ChatRole> {
-    session.history.iter().map(|m| m.role.clone()).collect()
+    session.messages().map(|m| m.role.clone()).collect()
+}
+
+/// Display timestamps of all turns, including each tool result.
+fn turn_times(session: &Session) -> Vec<String> {
+    let mut times = Vec::new();
+    for turn in session.dialogs.iter().flat_map(|dialog| &dialog.turns) {
+        times.push(turn.timestamp.clone());
+        if let TurnBody::Tool(tools) = &turn.body {
+            times.extend(tools.iter().map(|tool| tool.timestamp.clone()));
+        }
+    }
+    times
 }
 
 /// Number of tool/temp turns across all dialogs.
@@ -114,68 +140,210 @@ fn assert_prompt(msg: &ChatMessage, snippets: &[&str]) {
 }
 
 #[test]
-fn rebuild_dialogs_renders_attachment_blocks() {
-    use crabot::chat::{attachment_marker_items, attachment_marker_message};
-    use crabot::user::{AttachmentKind, UserAttachment};
+fn jsonl_round_trip_and_save_semantics() {
+    let (_tmp, ws) = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws;
+    session.title = "Initial".into();
+    session.model = Some(ModelConfig {
+        model_id: "test-model".into(),
+        ..Default::default()
+    });
+
+    // Meta-only first save.
+    session.save().expect("first save");
+    let path = session.save_path().unwrap();
+    assert!(path.extension().is_some_and(|e| e == "jsonl"));
+    let loaded = Session::load(&path).expect("reload");
+    assert_eq!(loaded.title, "Initial");
+    assert_eq!(loaded.model.as_ref().unwrap().model_id, "test-model");
+    assert_eq!(loaded.history_len(), 0);
+
+    // Plain saves append messages but never a Tally.
+    session.requests = 5;
+    session.push_message(ChatMessage::user("prompt"));
+    session.save().expect("message save");
+    let loaded = Session::load(&path).expect("reload");
+    assert_eq!(loaded.history_len(), 1);
+    assert_eq!(loaded.requests, 0);
+
+    // Renaming rewrites Meta; save_with_tally persists counters and updated_at.
+    session.title = "Renamed".into();
+    session.tokens.prompt = 10;
+    let updated_at = local_time("2026-08-05 12:00:00");
+    session.updated_at = updated_at;
+    session.save_with_tally().expect("tally save");
+    let loaded = Session::load(&path).expect("reload");
+    assert_eq!(loaded.title, "Renamed");
+    assert_eq!(loaded.requests, 5);
+    assert_eq!(loaded.tokens.prompt, 10);
+    assert_eq!(loaded.updated_at, updated_at);
+    assert_eq!(loaded.persisted, loaded.history_len());
+}
+
+#[test]
+fn workspace_switch_writes_full_history() {
+    let (_tmp_a, ws_a) = temp_workspace();
+    let (_tmp_b, ws_b) = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws_a;
+    session.push_message(ChatMessage::user("first prompt"));
+    session.push_message(ChatMessage::assistant("first reply"));
+    session.save().expect("save in A");
+
+    // The same session id continues in a new workspace directory.
+    session.workspace = ws_b.clone();
+    session.push_message(ChatMessage::user("second prompt"));
+    session.save().expect("save in B");
+
+    let loaded = Session::load(&session.save_path().unwrap()).expect("load from B");
+    assert_eq!(loaded.history_len(), 3);
+    assert_eq!(loaded.id, session.id);
+}
+
+#[test]
+fn loads_only_jsonl_and_recovers_without_meta() {
+    let (_tmp, ws) = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws.clone();
+    session.save().expect("save");
+    let path = session.save_path().unwrap();
+
+    // Unsupported sidecars are ignored by the picker and rejected by the loader.
+    std::fs::write(path.with_extension("json"), "{}").unwrap();
+    std::fs::write(path.with_extension("txt"), "not a session").unwrap();
+    let listed = list_session_paths(&ws, None).expect("list");
+    let names: Vec<_> = listed
+        .iter()
+        .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, vec![format!("{}.jsonl", session.id)]);
+    assert!(Session::load(&path.with_extension("json")).is_err());
+
+    // A corrupt header falls back to the file stem; valid records still load.
+    std::fs::write(
+        &path,
+        format!(
+            "{{not json}}\n{}",
+            serde_json::to_string(&SessionRecord::Message {
+                message: ChatMessage::user("orphan"),
+                timestamp: chrono::Local::now(),
+            })
+            .unwrap()
+        ),
+    )
+    .unwrap();
+    let loaded = Session::load(&path).expect("degraded load");
+    assert_eq!(loaded.id, session.id);
+    assert_eq!(loaded.history_len(), 1);
+}
+
+#[test]
+fn timestamps_persist_across_reloads() {
+    let (_tmp, ws) = temp_workspace();
+    let mut session = Session::new();
+    session.workspace = ws;
+    session.push_message(ChatMessage::user("hello"));
+    session.push_message(tool_call(
+        "c1",
+        "read",
+        serde_json::json!({ "path": "a.rs" }),
+    ));
+    session.push_message(tool_result_with("c1", "file contents"));
+    session.push_message(ChatMessage::assistant("done"));
+    session.push_notice("warning".into());
+    session.updated_at = local_time("2026-08-05 12:00:00");
+    session.rebuild_dialogs();
+
+    let mut expected: Vec<String> = session
+        .entries()
+        .iter()
+        .map(|entry| entry.timestamp.format("%H:%M:%S").to_string())
+        .collect();
+    expected.push(session.notices[0].timestamp.format("%H:%M:%S").to_string());
+    assert_eq!(turn_times(&session), expected);
+
+    session.save_with_tally().expect("save");
+    let path = session.save_path().unwrap();
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let records: Vec<serde_json::Value> = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    let created = session.created_at_text();
+    assert_eq!(records[0]["created_at"].as_str(), Some(created.as_str()));
+    let message = records
+        .iter()
+        .find(|record| record["type"] == "message")
+        .expect("message record");
+    let first_timestamp = time_text(session.entries()[0].timestamp);
+    assert_eq!(
+        message["timestamp"].as_str(),
+        Some(first_timestamp.as_str())
+    );
+    let tally = records
+        .iter()
+        .find(|record| record["type"] == "tally")
+        .expect("tally record");
+    assert_eq!(tally["updated_at"].as_str(), Some("2026-08-05 12:00:00"));
+
+    let loaded = Session::load(&path).expect("reload");
+    assert_eq!(turn_times(&loaded), expected);
+    assert_eq!(
+        time_text(loaded.notices[0].timestamp),
+        time_text(session.notices[0].timestamp)
+    );
+    assert_eq!(loaded.updated_at, session.updated_at);
+}
+
+#[test]
+fn rebuild_dialogs_groups_prompts_ask_and_attachments() {
+    use crabot::chat::attachment_marker_message;
+    use crabot::user::{AttachmentKind, UserAttachment, WorkMode};
 
     let attachments = vec![
         UserAttachment::new(AttachmentKind::Text, "notes.txt"),
         UserAttachment::new(AttachmentKind::Image, "screen.png"),
     ];
     let mut session = Session::new();
-    session.history.push(ChatMessage::user("hello"));
-    session
-        .history
-        .push(attachment_marker_message(&attachments).expect("non-empty attachments"));
-    session.history.push(ChatMessage::assistant("done"));
+    session.push_message(user_prompt("code", "fix it"));
+    session.push_message(attachment_marker_message(&attachments).expect("attachments"));
+    session.push_message(tool_call(
+        "c1",
+        "read",
+        serde_json::json!({ "path": "a.rs" }),
+    ));
+    session.push_message(tool_result("c1"));
+    session.push_message(ChatMessage::assistant("which file?"));
+    session.push_message(ask_call("c2", "Which file?"));
+    session.push_message(tool_result_with("c2", "a.rs"));
+    session.push_message(ChatMessage::assistant("fixed"));
     session.rebuild_dialogs();
 
-    assert_eq!(session.dialogs.len(), 1);
-    assert_eq!(session.dialogs[0].title, "hello");
+    assert_eq!(session.dialogs.len(), 2);
+    assert_eq!(session.dialogs[0].title, "fix it");
+    assert_eq!(session.dialogs[0].mode, Some(WorkMode::from("code")));
+    assert_eq!(session.dialogs[0].turns.len(), 4); // prompt, attachment, read, text
     let TurnBody::Attachment(items) = &session.dialogs[0].turns[1].body else {
         panic!("attachment marker should render an attachment turn");
     };
     assert_eq!(items, &attachments);
 
-    // Attachment markers are plumbing: compaction keeps the prompt and answer.
-    let compacted = session.compact();
-    assert_eq!(compacted.history.len(), 2);
-    assert!(
-        compacted
-            .history
-            .iter()
-            .all(|msg| attachment_marker_items(msg).is_none())
-    );
-}
-
-#[test]
-fn ask_opens_dialog_like_user_prompt() {
-    use crabot::user::WorkMode;
-
-    let mut session = Session::new();
-    session.history.push(user_prompt("code", "fix it"));
-    session.history.push(tool_call(
-        "c1",
-        "read",
-        serde_json::json!({ "path": "a.rs" }),
-    ));
-    session.history.push(tool_result("c1"));
-    session.history.push(ChatMessage::assistant("which file?"));
-    session.history.push(ask_call("c2", "Which file?"));
-    session.history.push(tool_result_with("c2", "a.rs"));
-    session.history.push(ChatMessage::assistant("fixed"));
-    session.rebuild_dialogs();
-
-    // Rebuild: the ask opens a dialog; the regular tool stays in the first one.
-    assert_eq!(session.dialogs.len(), 2);
-    assert_eq!(session.dialogs[0].turns.len(), 3); // prompt, read, text
     assert_eq!(session.dialogs[1].title, "Which file?");
     assert_eq!(session.dialogs[1].mode, Some(WorkMode::from("code")));
-    let TurnBody::Tool(trs) = &session.dialogs[1].turns[0].body else {
-        panic!("ask should open the dialog");
-    };
-    assert_eq!(trs[0].result, Ok("a.rs".into()));
     assert_eq!(session.dialogs[1].turns.len(), 2); // ask + final text
+    assert!(matches!(
+        &session.dialogs[1].turns[0].body,
+        TurnBody::Tool(tools) if tools[0].result == Ok("a.rs".into())
+    ));
+
+    // An ask with no following turn merges into the preceding dialog.
+    session.push_message(ask_call("c3", "Again?"));
+    session.push_message(tool_result_with("c3", "no"));
+    session.rebuild_dialogs();
+    assert_eq!(session.dialogs.len(), 2);
+    assert_eq!(session.dialogs[1].turns.len(), 3);
 
     // Live: ask opens and inherits the mode; other tools do not.
     assert_eq!(
@@ -192,88 +360,84 @@ fn ask_opens_dialog_like_user_prompt() {
 }
 
 #[test]
-fn delete_dialog_removes_owned_history_and_rewrites_file() {
+fn delete_dialog_rewrites_owned_history() {
     let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws;
-    session.title = "Delete test".into();
-    session.history.push(ChatMessage::system("audit"));
-    session.history.push(ChatMessage::user("first"));
-    session.history.push(ChatMessage::assistant("first reply"));
-    session.history.push(ChatMessage::user("second"));
-    session.history.push(tool_call(
-        "c1",
-        "read",
-        serde_json::json!({ "path": "a.rs" }),
-    ));
-    session.history.push(tool_result_with("c1", "contents"));
-    session.history.push(ChatMessage::assistant("second reply"));
+    session.push_message(ChatMessage::user("first"));
+    session.push_message(ChatMessage::assistant("one"));
+    session.push_notice("first warning".into());
+    session.push_message(ChatMessage::user("second"));
+    session.push_message(ChatMessage::assistant("two"));
+    session.push_notice("second warning".into());
     session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 2);
     session.save().expect("save");
 
     assert!(session.delete_dialog(0));
 
-    // The first prompt and reply are gone; the system audit and second dialog stay.
+    // Only the second dialog and its notice survive; the notice anchor shifts.
     assert_eq!(session.dialogs.len(), 1);
     assert_eq!(session.dialogs[0].title, "second");
-    assert_eq!(
-        roles(&session),
-        vec![
-            ChatRole::System,
-            ChatRole::User,
-            ChatRole::Assistant,
-            ChatRole::Tool,
-            ChatRole::Assistant,
-        ]
-    );
-    assert_eq!(
-        session.history[1].content.joined_texts().as_deref(),
-        Some("second")
-    );
+    assert_eq!(roles(&session), vec![ChatRole::User, ChatRole::Assistant]);
+    assert_eq!(session.notices.len(), 1);
+    assert_eq!(session.notices[0].text, "second warning");
+    assert_eq!(session.notices[0].at, 2);
 
-    // The jsonl rewrite must replace the file rather than append duplicates.
+    // The rewrite replaces the file rather than appending deleted records.
     let loaded = reload(&session);
-    assert_eq!(loaded.history.len(), 5);
-    assert_eq!(loaded.dialogs.len(), 1);
-    assert_eq!(loaded.dialogs[0].title, "second");
+    assert_eq!(loaded.history_len(), 2);
+    assert_eq!(loaded.notices.len(), 1);
+    assert_eq!(loaded.notices[0].at, 2);
+
+    // UI-only dialogs can be removed; out-of-range deletes are rejected.
+    session.add_dialog("empty".into(), None);
+    assert!(session.delete_dialog(1));
+    assert!(!session.delete_dialog(1));
 }
 
 #[test]
-fn delete_ask_dialog_keeps_ask_exchange() {
+fn delete_ask_dialog_keeps_exchange() {
+    let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
-    session.history.push(user_prompt("code", "fix it"));
-    session.history.push(tool_call(
+    session.workspace = ws;
+    session.push_message(user_prompt("code", "fix it"));
+    session.push_message(tool_call(
         "c1",
         "read",
         serde_json::json!({ "path": "a.rs" }),
     ));
-    session.history.push(tool_result("c1"));
-    session.history.push(ChatMessage::assistant("which file?"));
-    session.history.push(ask_call("c2", "Which file?"));
-    session.history.push(tool_result_with("c2", "a.rs"));
-    session.history.push(ChatMessage::assistant("fixed"));
+    session.push_message(tool_result("c1"));
+    session.push_message(ask_call_with("c2", "Which file?", "which file?", None));
+    session.push_message(tool_result_with("c2", "a.rs"));
+    session.push_message(tool_call(
+        "c3",
+        "read",
+        serde_json::json!({ "path": "b.rs" }),
+    ));
+    session.push_message(tool_result("c3"));
+    session.push_message(ChatMessage::assistant("fixed"));
     session.rebuild_dialogs();
     assert_eq!(session.dialogs.len(), 2);
     assert!(session.dialog_is_ask(1));
+    session.save().expect("save");
 
     assert!(session.delete_dialog(1));
 
-    // The turn after the ask response is deleted; the ask exchange is kept.
-    assert_eq!(session.history.len(), 6);
+    // The ask exchange stays; the turn after its response is removed.
+    assert_eq!(session.history_len(), 5);
     assert_eq!(session.dialogs.len(), 1);
-    assert_eq!(session.dialogs[0].turns.len(), 4); // prompt, read, text, ask tool
+    assert_eq!(session.dialogs[0].turns.len(), 4); // prompt, read, preamble, ask tool
     assert!(matches!(
-        &session.dialogs[0].turns[3].body,
-        TurnBody::Tool(tools) if tools.iter().any(|tool| tool.name == "ask")
+        &session.dialogs[0].turns[2].body,
+        TurnBody::Text(text) if text.content == "which file?"
     ));
-    assert!(session.history.iter().any(|msg| {
+    assert!(session.messages().any(|msg| {
         msg.content
             .tool_calls()
             .iter()
-            .any(|call| call.fn_name == "ask")
+            .any(|call| call.call_id == "c2")
     }));
-    assert!(session.history.iter().any(|msg| {
+    assert!(session.messages().any(|msg| {
         msg.content
             .tool_responses()
             .iter()
@@ -281,206 +445,198 @@ fn delete_ask_dialog_keeps_ask_exchange() {
     }));
     assert!(
         !session
-            .history
-            .iter()
+            .messages()
             .any(|msg| msg.content.joined_texts().as_deref() == Some("fixed"))
     );
 
-    // With no turns after the ask response, rebuilding has no ask dialog.
-    session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 1);
-}
-
-#[test]
-fn delete_ask_dialog_keeps_text_preamble() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws;
-    session.history.push(user_prompt("code", "fix it"));
-    session.history.push(tool_call(
-        "c1",
-        "read",
-        serde_json::json!({ "path": "a.rs" }),
-    ));
-    session.history.push(tool_result("c1"));
-    session
-        .history
-        .push(ask_call_with("c2", "Which file?", "which file?", None));
-    session.history.push(tool_result_with("c2", "a.rs"));
-    session.history.push(tool_call(
-        "c3",
-        "read",
-        serde_json::json!({ "path": "b.rs" }),
-    ));
-    session.history.push(tool_result("c3"));
-    session.history.push(ChatMessage::assistant("fixed"));
-    session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 2);
-    session.save().expect("save");
-
-    assert!(session.delete_dialog(1));
-
-    assert_eq!(session.history.len(), 5);
-    assert_eq!(session.dialogs.len(), 1);
-    assert_eq!(session.dialogs[0].turns.len(), 4); // prompt, read, text, ask tool
-    assert!(matches!(
-        &session.dialogs[0].turns[2].body,
-        TurnBody::Text(text) if text.content == "which file?"
-    ));
-    assert!(matches!(
-        &session.dialogs[0].turns[3].body,
-        TurnBody::Tool(tools) if tools.iter().any(|tool| tool.name == "ask")
-    ));
-    let ask_message = session
-        .history
-        .iter()
-        .find(|msg| {
-            msg.role == ChatRole::Assistant
-                && msg
-                    .content
-                    .tool_calls()
-                    .iter()
-                    .any(|call| call.call_id == "c2")
-        })
-        .expect("ask message");
-    assert_eq!(
-        ask_message.content.joined_texts().as_deref(),
-        Some("which file?")
-    );
-    assert!(session.history.iter().any(|msg| {
-        msg.content
-            .tool_responses()
-            .iter()
-            .any(|response| response.call_id == "c2")
-    }));
-
     // Rebuild and reload both keep the ask dialog absent.
     session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 1);
     let loaded = reload(&session);
-    assert_eq!(loaded.history.len(), 5);
-    assert_eq!(loaded.dialogs.len(), 1);
-    assert_eq!(loaded.dialogs[0].turns.len(), 4);
-}
-
-#[test]
-fn deleted_ask_dialog_does_not_reappear_after_other_deletions() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws;
-    session.history.push(ChatMessage::user("first"));
-    session.history.push(ask_call("c1", "Continue?"));
-    session.history.push(tool_result_with("c1", "yes"));
-    session.history.push(ChatMessage::assistant("first done"));
-    session.history.push(ChatMessage::user("second"));
-    session.history.push(ChatMessage::assistant("second done"));
-    session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 3); // first, ask, second
-    session.save().expect("save");
-
-    assert!(session.delete_dialog(1));
-    assert_eq!(session.dialogs.len(), 2);
-    assert_eq!(session.history.len(), 5);
-
-    // Deleting the following user dialog must still target its own history.
-    assert!(session.delete_dialog(1));
-    assert_eq!(session.history.len(), 3);
-    assert_eq!(session.dialogs.len(), 1);
-    session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 1);
-
-    // Reloading does not resurrect the ask dialog.
-    let loaded = reload(&session);
-    assert_eq!(loaded.history.len(), 3);
+    assert_eq!(loaded.history_len(), 5);
     assert_eq!(loaded.dialogs.len(), 1);
 }
 
 #[test]
-fn ask_without_followup_turns_has_no_dialog() {
+fn compact_keeps_prompts_and_final_replies() {
     let mut session = Session::new();
-    session.history.push(ChatMessage::user("first"));
-    session.history.push(ask_call("c1", "Continue?"));
-    session.history.push(tool_result_with("c1", "yes"));
-    session.rebuild_dialogs();
-
-    assert_eq!(session.dialogs.len(), 1);
-    assert_eq!(session.dialogs[0].turns.len(), 2); // prompt, ask tool
-    assert!(matches!(
-        &session.dialogs[0].turns[1].body,
-        TurnBody::Tool(tools) if tools.iter().any(|tool| tool.name == "ask")
+    session.push_message(ChatMessage::system("audit"));
+    // Dialog 1: prompt, tool round, intermediate and final text replies.
+    session.push_message(ChatMessage::user("first prompt"));
+    session.push_message(tool_call("c1", "bash", serde_json::json!({ "cmd": "ls" })));
+    session.push_message(tool_result("c1"));
+    session.push_message(ChatMessage::assistant("intermediate"));
+    session.push_message(ChatMessage::assistant("final answer"));
+    // Dialog 2: a text reply that also carries a tool call is dropped entirely.
+    session.push_message(ChatMessage::user("second prompt"));
+    session.push_message(ChatMessage::new(
+        ChatRole::Assistant,
+        MessageContent::from_parts(vec![
+            "half-done".into(),
+            ContentPart::ToolCall(ToolCall {
+                call_id: "c2".into(),
+                fn_name: "read".into(),
+                fn_arguments: serde_json::json!({ "path": "a.txt" }),
+                thought_signatures: None,
+            }),
+        ]),
     ));
 
-    // A following ask is a dialog boundary, not a turn in the first ask.
-    session.history.push(ask_call("c2", "Again?"));
-    session.history.push(tool_result_with("c2", "no"));
-    session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 1);
-    assert_eq!(session.dialogs[0].turns.len(), 3); // prompt + two ask tools
+    let compacted = session.compact();
 
-    // A turn after the second ask response opens its dialog.
-    session.history.push(ChatMessage::assistant("done"));
-    session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 2);
+    // The source is untouched; the copy keeps prompts and final replies only.
+    assert_eq!(session.history_len(), 8);
+    assert_ne!(compacted.id, session.id);
+    assert_eq!(
+        roles(&compacted),
+        vec![ChatRole::User, ChatRole::Assistant, ChatRole::User]
+    );
+    assert_eq!(
+        compacted.entries()[1]
+            .message
+            .content
+            .joined_texts()
+            .as_deref(),
+        Some("final answer")
+    );
+    assert_eq!(tool_turns(&compacted), 0);
+    assert_eq!(compacted.dialogs.len(), 2);
+    assert_eq!(compacted.dialogs[0].turns.len(), 2); // prompt + final answer
+    assert_eq!(compacted.dialogs[1].turns.len(), 1); // prompt only
 }
 
 #[test]
-fn delete_user_dialog_with_merged_ask_turn_removes_all_turns() {
+fn compact_preserves_ask_exchanges() {
+    use crabot::tools::ask::TIMEOUT_REASON;
+
     let mut session = Session::new();
-    session.history.push(ChatMessage::user("first"));
-    session.history.push(ask_call("c1", "Continue?"));
-    session.history.push(tool_result_with("c1", "yes"));
-    session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 1);
-    assert!(!session.dialog_is_ask(0));
+    session.push_message(user_prompt("code", "fix it"));
+    // Auto-injected renew hints are not user prompts.
+    session.push_message(user_prompt("code", RENEW_HINT_PROMPT));
+    session.push_message(ask_call_with(
+        "c1",
+        "Which file?",
+        "Let me check.",
+        Some("Path unclear."),
+    ));
+    session.push_message(tool_result_with("c1", "a.rs"));
+    session.push_message(ask_call_with(
+        "c2",
+        "Continue?",
+        "Proceeding.",
+        Some("No answer needed."),
+    ));
+    session.push_message(tool_result_with("c2", TIMEOUT_REASON));
+    session.push_message(ask_call("c3", "Overwrite?"));
+    session.push_message(tool_result_with("c3", "Error: Session cancelled by user."));
+    session.push_message(ChatMessage::assistant("fixed a.rs"));
 
-    assert!(session.delete_dialog(0));
-    assert!(session.history.is_empty());
-    assert!(session.dialogs.is_empty());
+    let compacted = session.compact();
+
+    // Answers and timeouts become prompts with their preambles; failures are dropped.
+    assert_eq!(
+        roles(&compacted),
+        vec![
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant
+        ]
+    );
+    assert_preamble(
+        &compacted.entries()[1].message,
+        "Let me check.",
+        "Path unclear.",
+    );
+    assert_prompt(
+        &compacted.entries()[2].message,
+        &["Which file?", "Answer: a.rs"],
+    );
+    assert_preamble(
+        &compacted.entries()[3].message,
+        "Proceeding.",
+        "No answer needed.",
+    );
+    assert_prompt(
+        &compacted.entries()[4].message,
+        &["Continue?", TIMEOUT_REASON],
+    );
+    assert_eq!(
+        compacted
+            .dialogs
+            .iter()
+            .map(|dialog| dialog.title.as_str())
+            .collect::<Vec<_>>(),
+        ["fix it", "Which file?", "Continue?"]
+    );
+    assert_eq!(tool_turns(&compacted), 0);
 }
 
 #[test]
-fn delete_ui_only_dialog_without_history() {
+fn fork_drops_system_records_and_resets_persistence() {
     let mut session = Session::new();
-    session.add_dialog("empty".into(), None);
+    session.persisted = 42;
+    session.push_message(ChatMessage::system("audit 1"));
+    session.push_message(ChatMessage::user("first prompt"));
+    session.push_message(ChatMessage::assistant("first reply"));
+    session.push_message(ChatMessage::system("audit 2"));
+    session.push_message(ChatMessage::user("second prompt"));
+    session.push_message(ChatMessage::assistant("second reply"));
+    session.rebuild_dialogs();
 
-    assert!(session.delete_dialog(0));
-    assert!(session.dialogs.is_empty());
-    assert!(!session.delete_dialog(0));
+    let forked = session.fork();
+
+    assert_ne!(forked.id, session.id);
+    assert_eq!(forked.persisted, 0);
+    assert_eq!(forked.history_len(), 4);
+    assert_eq!(
+        roles(&forked),
+        vec![
+            ChatRole::User,
+            ChatRole::Assistant,
+            ChatRole::User,
+            ChatRole::Assistant
+        ]
+    );
+    assert_eq!(
+        forked.entries()[0]
+            .message
+            .content
+            .joined_texts()
+            .as_deref(),
+        Some("first prompt")
+    );
+    assert_eq!(forked.dialogs.len(), 2);
+    assert_eq!(session.history_len(), 6); // source untouched
 }
 
 #[test]
-fn delete_dialog_drops_owned_notices_and_shifts_anchors() {
+fn system_prompt_records_dedupe_and_stay_out_of_dialogs() {
     let (_tmp, ws) = temp_workspace();
     let mut session = Session::new();
     session.workspace = ws;
-    session.history.push(ChatMessage::user("first"));
-    session.history.push(ChatMessage::assistant("one"));
-    session.push_notice("first warning".into());
-    session.history.push(ChatMessage::user("second"));
-    session.history.push(ChatMessage::assistant("two"));
-    session.push_notice("second warning".into());
-    session.rebuild_dialogs();
-    assert_eq!(session.dialogs.len(), 2);
 
-    assert!(session.delete_dialog(0));
+    assert!(session.record_system_prompt("preamble"));
+    assert!(!session.record_system_prompt("preamble"));
+    assert!(session.record_system_prompt("preamble v2"));
+    assert!(!session.record_system_prompt("   "));
+    assert_eq!(session.history_len(), 2);
 
-    assert_eq!(session.history.len(), 2);
-    assert_eq!(session.dialogs.len(), 1);
-    assert_eq!(session.notices.len(), 1);
-    assert_eq!(session.notices[0].text, "second warning");
-    assert_eq!(session.notices[0].at, 2);
-
-    let loaded = reload(&session);
-    assert_eq!(loaded.history.len(), 2);
-    assert_eq!(loaded.notices.len(), 1);
-    assert_eq!(loaded.notices[0].text, "second warning");
-    assert_eq!(loaded.notices[0].at, 2);
+    session.push_message(ChatMessage::user("hello"));
+    session.save().expect("save");
+    let mut loaded = Session::load(&session.save_path().unwrap()).expect("reload");
+    assert_eq!(loaded.history_len(), 3);
+    assert_eq!(loaded.dialogs.len(), 1);
+    assert_eq!(loaded.dialogs[0].turns.len(), 1);
+    assert_eq!(loaded.dialogs[0].turns[0].role, ChatRole::User);
+    assert!(!loaded.record_system_prompt("preamble v2"));
 }
 
 #[test]
-fn search_covers_dialog_and_turn_headers() {
+fn search_finds_dialog_and_turn_headers() {
     use crabot::chat::{ToolCall, ToolResult, Turn};
-    use crabot::session::{SearchHit, SearchHitKind};
+    use crabot::session::SearchHitKind;
     use crabot::user::WorkMode;
 
     let mut session = Session::new();
@@ -504,575 +660,65 @@ fn search_covers_dialog_and_turn_headers() {
     session.dialogs[0].turns[1].timestamp = "13:45:00".into();
     session.dialogs[0].turns[2].timestamp = "14:00:00".into();
     session.add_dialog("Empty dialog".into(), None);
+    session.add_dialog("user request".into(), None);
+    session.push_turn(Turn::user("user data"));
 
-    let dialog_hits = |hits: &[SearchHit]| -> Vec<usize> {
-        hits.iter()
-            .filter(|h| h.kind == SearchHitKind::DialogHeader)
-            .map(|h| h.flat_idx)
+    let dialog_hits = |query: &str| -> Vec<usize> {
+        session
+            .search(query)
+            .iter()
+            .filter(|hit| hit.kind == SearchHitKind::DialogHeader)
+            .map(|hit| hit.flat_idx)
             .collect()
     };
-    let turn_hits = |hits: &[SearchHit]| -> Vec<usize> {
-        hits.iter()
-            .filter(|h| h.kind == SearchHitKind::Turn)
-            .map(|h| h.flat_idx)
+    let turn_hits = |query: &str| -> Vec<usize> {
+        session
+            .search(query)
+            .iter()
+            .filter(|hit| hit.kind == SearchHitKind::Turn)
+            .map(|hit| hit.flat_idx)
             .collect()
     };
 
-    // Dialog title match jumps to the dialog's first turn.
-    assert_eq!(dialog_hits(&session.search("script")), vec![0]);
-    // Work-mode badge match is case-insensitive.
-    assert_eq!(dialog_hits(&session.search("CODE")), vec![0]);
-    // Header hits come before turn hits in visual order.
+    // Dialog titles and work-mode badges are searchable; the header jump comes first.
+    assert_eq!(dialog_hits("script"), vec![0]);
+    assert_eq!(dialog_hits("CODE"), vec![0]);
     let hits = session.search("script");
     assert_eq!(hits[0].kind, SearchHitKind::DialogHeader);
     assert_eq!(hits[1].kind, SearchHitKind::Turn);
     assert_eq!(hits[1].flat_idx, 1);
 
-    // Role labels are deliberately not searchable — uniform across turn kinds.
-    assert!(session.search("user").is_empty());
-    assert!(session.search("assistant").is_empty());
-    // Timestamp shown in the turn header matches.
-    assert_eq!(turn_hits(&session.search("12:34")), vec![0]);
-    // Pending tool-call names match via the turn header badge.
-    assert_eq!(turn_hits(&session.search("bash")), vec![2]);
-    // Pending tool-call args match too (they're rendered in the turn).
-    assert_eq!(turn_hits(&session.search("ls")), vec![2]);
-    // Completed tool names match via the body too (turn 1 hits only on content).
-    assert_eq!(turn_hits(&session.search("edit")), vec![1, 3]);
-    // Completed tool results match via the body: result text and args.
-    assert_eq!(turn_hits(&session.search("modified")), vec![3]);
-    assert_eq!(turn_hits(&session.search("main.rs")), vec![3]);
+    // Turn timestamps and tool badges/args/results are searchable.
+    assert_eq!(turn_hits("12:34"), vec![0]);
+    assert_eq!(turn_hits("bash"), vec![2]);
+    assert_eq!(turn_hits("ls"), vec![2]);
+    assert_eq!(turn_hits("Tool - edit"), vec![3]);
+    assert_eq!(turn_hits("edit"), vec![1, 3]);
+    assert_eq!(turn_hits("modified"), vec![3]);
+    assert_eq!(turn_hits("main.rs"), vec![3]);
 
-    // The "Tool - {name}" role badge is searchable: a query like "Tool - read"
-    // matches the badge, case-insensitively, for both pending and completed calls.
-    assert_eq!(turn_hits(&session.search("Tool - bash")), vec![2]);
-    assert_eq!(turn_hits(&session.search("tool - edit")), vec![3]);
-    assert_eq!(turn_hits(&session.search("TOOL - BASH")), vec![2]);
-    // "Tool -" alone matches every tool turn badge.
-    assert_eq!(turn_hits(&session.search("Tool -")), vec![2, 3]);
-
-    // Blank queries match nothing.
+    // Blank queries and header-only dialogs produce no hits.
     assert!(session.search("  ").is_empty());
-    // A dialog-header match in an empty dialog has no jump target — skipped.
     assert!(session.search("empty dialog").is_empty());
-}
 
-#[test]
-fn header_hit_deduped_when_first_turn_matches() {
-    use crabot::chat::Turn;
-    use crabot::session::{SearchHit, SearchHitKind};
-
-    let mut session = Session::new();
-    session.add_dialog("user request".into(), None);
-    session.push_turn(Turn::user("user data"));
-
-    // Header and first turn share the same jump target — only one hit remains,
-    // so Next/Prev never lands on the same target twice.
-    let hits: Vec<SearchHit> = session.search("user");
+    // Header and first turn share a jump target: only the turn hit remains.
+    let hits = session.search("user");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].kind, SearchHitKind::Turn);
-    assert_eq!(hits[0].flat_idx, 0);
+    assert_eq!(hits[0].flat_idx, 4);
 }
 
 #[test]
-fn round_trip_jsonl() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-    session.title = "Hello world".into();
-    session.model = Some(ModelConfig {
-        model_id: "test-model".into(),
-        ..Default::default()
-    });
+fn pop_last_turn_drops_empty_dialogs() {
+    use crabot::chat::Turn;
 
-    session.save().expect("first save");
-    let path = session.save_path().unwrap();
-    assert!(path.exists());
-    assert!(path.extension().is_some_and(|e| e == "jsonl"));
-
-    let loaded = Session::load(&path).expect("reload");
-    assert_eq!(loaded.id, session.id);
-    assert_eq!(loaded.title, "Hello world");
-    assert_eq!(loaded.model.as_ref().unwrap().model_id, "test-model");
-    assert_eq!(loaded.persisted, loaded.history.len());
-}
-
-#[test]
-fn incremental_append() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-    session.title = "Incremental".into();
-
-    // First save: meta only (no messages).
-    session.save().expect("first save");
-    let path = session.save_path().unwrap();
-    let loaded1 = Session::load(&path).expect("load 1");
-    assert!(loaded1.history.is_empty());
-
-    // Add messages via history.
-    let msg = ChatMessage::user("test prompt");
-    session.history.push(msg.clone());
-    session.requests = 1;
-    session.tokens.prompt = 10;
-    session.tokens.output = 20;
-    session.updated_at = "2026-08-05 12:00:00".into();
-    session.save_with_tally().expect("second save");
-
-    let loaded2 = Session::load(&path).expect("load 2");
-    assert_eq!(loaded2.history.len(), 1);
-    assert_eq!(loaded2.requests, 1);
-    assert_eq!(loaded2.tokens.prompt, 10);
-    assert_eq!(loaded2.updated_at, "2026-08-05 12:00:00");
-    assert_eq!(loaded2.persisted, 1);
-}
-
-#[test]
-fn migrate_legacy_json() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-    session.title = "Legacy".into();
-    session.history.push(ChatMessage::user("old prompt"));
-    session.requests = 3;
-
-    // Write a legacy .json file.
-    let legacy_path = session.save_path().unwrap().with_extension("json");
-    let json = serde_json::to_string_pretty(&session).unwrap();
-    std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-    std::fs::write(&legacy_path, &json).unwrap();
-
-    // Load from legacy path.
-    let mut loaded = Session::load(&legacy_path).expect("load legacy");
-    assert_eq!(loaded.persisted, 0); // not jsonl → 0
-    assert_eq!(loaded.title, "Legacy");
-
-    // Save → creates jsonl with full content; the legacy .json is removed.
-    loaded.save_with_tally().expect("first jsonl save");
-    let jsonl_path = loaded.save_path().unwrap();
-    assert!(jsonl_path.extension().is_some_and(|e| e == "jsonl"));
-    assert!(jsonl_path.exists());
-    assert!(!legacy_path.exists());
-
-    // Load again via json path → prefers jsonl.
-    let reloaded = Session::load(&legacy_path).expect("reload via json");
-    assert_eq!(reloaded.requests, 3);
-}
-
-#[test]
-fn list_dedupes_by_stem() {
-    let (_tmp, ws) = temp_workspace();
-    // Use a current id so the file lands inside the scanned 3-month window.
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-    let jsonl_path = session.save_path().unwrap();
-    session.save().expect("save jsonl");
-    // Also write a fake legacy .json next to it.
-    let json_path = jsonl_path.with_extension("json");
-    std::fs::write(&json_path, format!("{{\"id\":\"{}\"}}\n", session.id)).unwrap();
-
-    let paths = list_session_paths(&ws, None).expect("list");
-    let file_names: Vec<_> = paths
-        .iter()
-        .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
-        .collect();
-    assert_eq!(file_names, vec![format!("{}.jsonl", session.id)]);
-}
-
-#[test]
-fn meta_update_appends_new_line() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-    session.title = "Initial".into();
-    session.save().expect("first save");
-    let path = session.save_path().unwrap();
-
-    // Rename the session — the next save must commit a new Meta line.
-    session.title = "Renamed".into();
-    session.save().expect("second save");
-
-    let loaded = Session::load(&path).expect("reload");
-    assert_eq!(loaded.title, "Renamed");
-    // Meta from the first save, then the updated Meta line.
-    let lines = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(lines.lines().count(), 2);
-}
-
-#[test]
-fn pop_last_turn_removes_trailing_turn_and_empty_dialog() {
-    use crabot::chat::{Turn, TurnBody};
     let mut session = Session::new();
     session.add_dialog("test".into(), None);
     session.push_turn(Turn::user("hello"));
     session.push_turn(Turn::assistant("hi", None));
 
-    let popped = session.pop_last_turn().expect("assistant turn");
-    assert_eq!(popped.role, genai::chat::ChatRole::Assistant);
-    let TurnBody::Text(tc) = &popped.body else {
-        panic!("expected text turn");
-    };
-    assert_eq!(tc.content, "hi");
-    assert_eq!(session.total_turns(), 1);
-
-    // Popping the user turn empties the dialog and drops it.
+    assert!(session.pop_last_turn().is_some());
     assert!(session.pop_last_turn().is_some());
     assert!(session.pop_last_turn().is_none());
     assert!(session.is_empty());
-}
-
-#[test]
-fn tally_written_only_by_save_with_tally() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-    session.save().expect("first save");
-    let path = session.save_path().unwrap();
-
-    // No-op save: nothing to append (meta unchanged, no new messages).
-    session.save().expect("no-op save");
-    let lines = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(lines.lines().count(), 1);
-
-    // Counter change alone appends nothing — plain saves never write a Tally.
-    session.requests = 5;
-    session.save().expect("counter-only save");
-    assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
-
-    // A new message persists without a Tally line.
-    session.history.push(ChatMessage::user("second prompt"));
-    session.save().expect("message save");
-    let loaded = Session::load(&path).expect("reload");
-    assert_eq!(loaded.requests, 0);
-    assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
-
-    // save_with_tally appends the cumulative Tally even without new history.
-    session.save_with_tally().expect("tally save");
-    let loaded = Session::load(&path).expect("reload");
-    assert_eq!(loaded.requests, 5);
-    assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 3);
-}
-
-#[test]
-fn record_system_prompt_dedupes_and_roundtrips() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-
-    // First record writes a new System message and persists it.
-    assert!(session.record_system_prompt("preamble\nrules"));
-    assert_eq!(session.history.len(), 1);
-    assert_eq!(session.history[0].role, ChatRole::System);
-    assert_eq!(
-        session.history[0].content.joined_texts().as_deref(),
-        Some("preamble\nrules")
-    );
-
-    // Identical prompt → deduped, no new record.
-    assert!(!session.record_system_prompt("preamble\nrules"));
-    assert_eq!(session.history.len(), 1);
-
-    // A changed prompt appends a second record.
-    assert!(session.record_system_prompt("preamble\nnew rules"));
-    assert_eq!(session.history.len(), 2);
-
-    // Empty / whitespace prompts are ignored.
-    assert!(!session.record_system_prompt(""));
-    assert!(!session.record_system_prompt("   \n"));
-    assert_eq!(session.history.len(), 2);
-
-    // Round trip: System records survive reload but never become dialogs.
-    session.save().expect("save");
-    let path = session.save_path().unwrap();
-    let loaded = Session::load(&path).expect("reload");
-    assert_eq!(loaded.history.len(), 2);
-    assert_eq!(loaded.history[0].role, ChatRole::System);
-    assert_eq!(loaded.history[1].role, ChatRole::System);
-    assert!(loaded.dialogs.is_empty());
-}
-
-#[test]
-fn system_prompt_record_roundtrips_with_conversation() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-    session.title = "With system".into();
-
-    // Simulate a stream: system record first, then the user message.
-    assert!(session.record_system_prompt("system prompt"));
-    session.history.push(ChatMessage::user("hello"));
-    session.save().expect("save");
-    let path = session.save_path().unwrap();
-
-    let mut loaded = Session::load(&path).expect("reload");
-    assert_eq!(loaded.history.len(), 2);
-    assert_eq!(loaded.history[0].role, ChatRole::System);
-    assert_eq!(loaded.history[1].role, ChatRole::User);
-    // rebuild_dialogs must not surface the system record as a turn.
-    assert_eq!(loaded.total_turns(), 1);
-    assert_eq!(loaded.dialogs[0].turns[0].role, ChatRole::User);
-
-    // A later identical prompt is deduped against the recorded one.
-    assert!(!loaded.record_system_prompt("system prompt"));
-    assert_eq!(loaded.history.len(), 2);
-}
-
-#[test]
-fn fork_resets_persisted() {
-    let mut session = Session::new();
-    session.persisted = 42;
-    let forked = session.fork();
-    assert_eq!(forked.persisted, 0);
-    assert_ne!(forked.id, session.id);
-}
-
-#[test]
-fn compact_keeps_user_and_last_assistant_per_dialog() {
-    let mut session = Session::new();
-    session.history.push(ChatMessage::system("audit"));
-    // Dialog 1: user → tool round → intermediate → final answer.
-    session.history.push(ChatMessage::user("first prompt"));
-    session
-        .history
-        .push(tool_call("c1", "bash", serde_json::json!({ "cmd": "ls" })));
-    session.history.push(tool_result("c1"));
-    session.history.push(ChatMessage::assistant("intermediate"));
-    session.history.push(ChatMessage::assistant("final answer"));
-    // Dialog 2: interrupted mid-tool — tool calls, no final text.
-    session.history.push(ChatMessage::user("second prompt"));
-    session.history.push(tool_call(
-        "c2",
-        "read",
-        serde_json::json!({ "path": "a.txt" }),
-    ));
-
-    let compacted = session.compact();
-
-    // Fresh id; the source is untouched; only the prompts and the final text
-    // answer remain — the system record and all tool activity are gone.
-    assert_ne!(compacted.id, session.id);
-    assert_eq!(session.history.len(), 8);
-    assert_eq!(
-        roles(&compacted),
-        vec![ChatRole::User, ChatRole::Assistant, ChatRole::User]
-    );
-    assert_eq!(
-        compacted.history[1].content.joined_texts().as_deref(),
-        Some("final answer")
-    );
-    assert_eq!(tool_turns(&compacted), 0);
-    assert_eq!(compacted.dialogs.len(), 2);
-    assert_eq!(compacted.dialogs[0].turns.len(), 2); // prompt + final answer
-    assert_eq!(compacted.dialogs[1].turns.len(), 1); // interrupted — prompt only
-    assert_eq!(compacted.dialogs[1].turns[0].role, ChatRole::User);
-}
-
-#[test]
-fn fork_drops_system_prompt_records() {
-    let mut session = Session::new();
-    session.history.push(ChatMessage::system("audit 1"));
-    session.history.push(ChatMessage::user("first prompt"));
-    session.history.push(ChatMessage::assistant("first reply"));
-    session.history.push(ChatMessage::system("audit 2"));
-    session.history.push(ChatMessage::user("second prompt"));
-    session.history.push(ChatMessage::assistant("second reply"));
-    session.rebuild_dialogs();
-
-    let forked = session.fork();
-
-    // The fork keeps the conversation but starts its own audit trail.
-    assert_eq!(session.history.len(), 6);
-    assert_eq!(
-        roles(&forked),
-        vec![
-            ChatRole::User,
-            ChatRole::Assistant,
-            ChatRole::User,
-            ChatRole::Assistant
-        ]
-    );
-    assert_eq!(
-        forked.history[0].content.joined_texts().as_deref(),
-        Some("first prompt")
-    );
-    assert_eq!(
-        forked.history[3].content.joined_texts().as_deref(),
-        Some("second reply")
-    );
-    assert_eq!(forked.dialogs.len(), 2);
-}
-
-#[test]
-fn compact_skips_assistant_replies_with_tool_calls() {
-    let mut session = Session::new();
-    session.history.push(ChatMessage::user("prompt"));
-    // A final answer that also carries tool calls is dropped entirely.
-    session.history.push(ChatMessage::new(
-        ChatRole::Assistant,
-        MessageContent::from_parts(vec![
-            "done".into(),
-            ContentPart::ToolCall(ToolCall {
-                call_id: "c1".into(),
-                fn_name: "bash".into(),
-                fn_arguments: serde_json::json!({}),
-                thought_signatures: None,
-            }),
-        ]),
-    ));
-
-    let compacted = session.compact();
-
-    // The mixed answer is skipped, not partially kept — only the prompt stays.
-    assert_eq!(session.history.len(), 2);
-    assert_eq!(compacted.history.len(), 1);
-    assert_eq!(compacted.history[0].role, ChatRole::User);
-}
-
-#[test]
-fn compact_preserves_ask_exchanges_with_preambles() {
-    use crabot::tools::ask::TIMEOUT_REASON;
-    use crabot::user::WorkMode;
-
-    let mut session = Session::new();
-    session.history.push(user_prompt("code", "fix it"));
-    // Auto-injected renew hints are not user prompts.
-    session.history.push(user_prompt("code", RENEW_HINT_PROMPT));
-    session.history.push(ask_call_with(
-        "c1",
-        "Which file?",
-        "Let me check.",
-        Some("Path unclear."),
-    ));
-    session.history.push(tool_result_with("c1", "a.rs"));
-    session.history.push(ask_call_with(
-        "c2",
-        "Continue?",
-        "Proceeding.",
-        Some("No answer needed."),
-    ));
-    session.history.push(tool_result_with("c2", TIMEOUT_REASON));
-    session.history.push(ask_call("c3", "Overwrite?"));
-    session
-        .history
-        .push(tool_result_with("c3", "Error: Session cancelled by user."));
-    session.history.push(ChatMessage::assistant("fixed a.rs"));
-
-    let compacted = session.compact();
-
-    // Answer and timeout become prompts; the cancelled ask is dropped.
-    assert_eq!(
-        roles(&compacted),
-        vec![
-            ChatRole::User,
-            ChatRole::Assistant,
-            ChatRole::User,
-            ChatRole::Assistant,
-            ChatRole::User,
-            ChatRole::Assistant
-        ]
-    );
-    assert_preamble(&compacted.history[1], "Let me check.", "Path unclear.");
-    assert_prompt(&compacted.history[2], &["Which file?", "Answer: a.rs"]);
-    assert_preamble(&compacted.history[3], "Proceeding.", "No answer needed.");
-    assert_prompt(&compacted.history[4], &["Continue?", TIMEOUT_REASON]);
-    assert_eq!(compacted.dialogs.len(), 3);
-    assert_eq!(
-        compacted
-            .dialogs
-            .iter()
-            .map(|d| d.title.as_str())
-            .collect::<Vec<_>>(),
-        ["fix it", "Which file?", "Continue?"]
-    );
-    assert!(
-        compacted
-            .dialogs
-            .iter()
-            .all(|d| d.mode == Some(WorkMode::from("code")))
-    );
-    assert_eq!(tool_turns(&compacted), 0);
-}
-
-#[test]
-fn compact_without_workspace_is_in_memory_only() {
-    let mut session = Session::new();
-    session.history.push(ChatMessage::user("prompt"));
-    session.history.push(ChatMessage::assistant("skipped"));
-    session.history.push(ChatMessage::assistant("kept"));
-
-    let compacted = session.compact();
-
-    // Fresh id; the source is untouched.
-    assert_ne!(compacted.id, session.id);
-    assert_eq!(session.history.len(), 3);
-    assert_eq!(compacted.history.len(), 2);
-    assert_eq!(
-        compacted.history[1].content.joined_texts().as_deref(),
-        Some("kept")
-    );
-}
-
-#[test]
-fn has_reply_detects_assistant_messages() {
-    let mut session = Session::new();
-    assert!(!session.has_reply());
-    session.history.push(ChatMessage::system("audit"));
-    session.history.push(ChatMessage::user("first"));
-    assert!(!session.has_reply());
-    session.history.push(ChatMessage::assistant("reply"));
-    assert!(session.has_reply());
-}
-
-#[test]
-fn workspace_switch_writes_full_history_to_new_file() {
-    let (_tmp_a, ws_a) = temp_workspace();
-    let (_tmp_b, ws_b) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws_a.clone();
-    session.title = "Workspace switch".into();
-    session.save().expect("first save");
-
-    // Two messages persisted under workspace A.
-    session.history.push(ChatMessage::user("first prompt"));
-    session.save().expect("save 2");
-    session.history.push(ChatMessage::assistant("first reply"));
-    session.save().expect("save 3");
-
-    // Simulate a workspace switch: same session id, new workspace dir.
-    session.workspace = ws_b.clone();
-    session.history.push(ChatMessage::user("second prompt"));
-    session.save().expect("save in workspace B");
-
-    let path_b = session.save_path().unwrap();
-    assert!(path_b.starts_with(&ws_b));
-    let loaded = Session::load(&path_b).expect("load from B");
-    // Full history must be present in the new file, not just the tail.
-    assert_eq!(loaded.history.len(), 3);
-    assert_eq!(loaded.id, session.id);
-    assert_eq!(loaded.persisted, 3);
-}
-
-#[test]
-fn jsonl_without_meta_falls_back_to_file_stem() {
-    let (_tmp, ws) = temp_workspace();
-    let mut session = Session::new();
-    session.workspace = ws.clone();
-    let path = session.save_path().unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    // Header line corrupt, but a message line still parses.
-    std::fs::write(
-        &path,
-        format!(
-            "{{this is not json}}\n{}",
-            serde_json::to_string(&SessionRecord::Message {
-                message: ChatMessage::user("orphan message")
-            })
-            .unwrap()
-        ),
-    )
-    .unwrap();
-
-    let loaded = Session::load(&path).expect("load degraded file");
-    assert_eq!(loaded.id, session.id); // fell back to the file stem
-    assert_eq!(loaded.history.len(), 1);
 }

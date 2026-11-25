@@ -33,7 +33,7 @@ A single window with a resizable left pane (model config, system-prompt sections
 | `src/widgets/`                                        | Custom widgets: `TextArea` (undo/redo), `DropDown`, `PopupMenu`          |
 | `src/llm/`                                            | Streaming agent loop, retry/stall handling, parallel tool-call execution, attachment/image materialization |
 | `src/tools/`                                          | Tool trait, registry, built-ins, custom/MCP tools, HTTP plumbing         |
-| `src/chat.rs`, `src/session.rs`                       | Conversation UI types; raw history, JSONL persistence, todos             |
+| `src/chat.rs`, `src/session.rs`                       | Conversation UI types; timestamped history, JSONL persistence, todos     |
 | `src/model.rs`, `src/model_database.rs`               | Model/provider/task-model types; embedded model database generated from models.dev/models-cn |
 | `src/settings.rs`, `src/setup.rs`, `src/workspace.rs` | Persisted settings; first-boot seeding and logging; workspace scanning   |
 | `src/user.rs`, `src/i18n.rs`, `src/fonts.rs`          | Work modes, user prompt, and attachments; translations; CJK font handling |

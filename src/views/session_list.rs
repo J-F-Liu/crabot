@@ -4,6 +4,7 @@ use iced::{
 };
 
 use serde::Deserialize;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::ConversationEvent;
@@ -131,7 +132,6 @@ pub(crate) fn session_view<'a>(
 }
 
 /// Only the fields needed for the dropdown; serde skips the rest.
-/// For `.jsonl` only the first line is parsed; for legacy `.json` the whole file.
 #[derive(Deserialize)]
 struct SessionMeta {
     id: String,
@@ -139,17 +139,12 @@ struct SessionMeta {
     title: String,
 }
 
-/// Read just the `SessionMeta` from a session file — first line for `.jsonl`,
-/// the whole document for legacy `.json`.
+/// Read just the `SessionMeta` from the first line of a session JSONL file.
 fn read_meta(path: &Path) -> Option<SessionMeta> {
     let file = std::fs::File::open(path).ok()?;
-    if path.extension().is_some_and(|e| e == "jsonl") {
-        let mut first = String::new();
-        std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut first).ok()?;
-        serde_json::from_str(&first).ok()
-    } else {
-        serde_json::from_reader(std::io::BufReader::new(file)).ok()
-    }
+    let mut first = String::new();
+    BufReader::new(file).read_line(&mut first).ok()?;
+    serde_json::from_str(&first).ok()
 }
 
 /// List session metadata for a workspace, skipping unreadable/corrupt files.

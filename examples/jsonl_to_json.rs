@@ -9,8 +9,9 @@
 //! A workspace directory converts every session found under `.agent/sessions/`
 //! and writes `{id}.json` next to each source `.jsonl`.
 //!
-//! The output is the serialized [`Session`] struct (the legacy `.json`
-//! format): meta fields, full `history`, and the usage tally.
+//! The output is the serialized [`Session`] struct: meta fields,
+//! timestamped `history`, and the usage tally. The `.json` file is an export
+//! document only; the app loads sessions exclusively from `.jsonl` files.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -49,10 +50,6 @@ fn main() {
         let mut ok = 0usize;
         let mut failed = 0usize;
         for path in &paths {
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                println!("Skipping legacy json (not a jsonl): {}", path.display());
-                continue;
-            }
             match convert_file(path) {
                 Ok(json) => {
                     let out = path.with_extension("json");
