@@ -46,9 +46,12 @@ pub use task::{TASK_MODES, TaskRequest, task_request_from_call};
 
 pub use context::{current_tab_number, with_tab_scope};
 pub(crate) use decoder::{
-    ChunkDecoder, FixedDecoder, PlainTextDecoder, decode_bytes, decode_plain,
+    ByteDecoder, ChunkDecoder, PlainTextDecoder, decode_bytes, decode_plain,
+    decode_plain_with_fallback,
 };
-pub(crate) use text_encoding::{argv_encoding, host_command_encoding, script_encoding};
+pub(crate) use text_encoding::{
+    argv_encoding, console_fallback, host_command_encoding, script_encoding,
+};
 
 // ── tool ────────────────────────────────────────────────────────────
 pub(crate) use tool::CAPTURE_GRACE;

@@ -1,8 +1,8 @@
 //! Decoding for tool input and output.
 //!
-//! Command output uses a fixed encoding: [`PlainTextDecoder`] pins it and adds
-//! the terminal filter of [`super::ansi`]. Arbitrary data (a fetched body) uses
-//! [`decode_bytes`], which still detects legacy charsets.
+//! Shell output uses a fixed encoding or UTF-8 with a Windows console fallback;
+//! [`PlainTextDecoder`] adds the terminal filter. [`decode_bytes`] detects
+//! arbitrary data's charset.
 
 use std::borrow::Cow;
 
@@ -100,10 +100,22 @@ pub(crate) fn decode_bytes(bytes: &[u8]) -> String {
     decode_all(&mut StreamDecoder::new(), bytes)
 }
 
-/// Decode a whole buffer into plain text with `encoding`: [`PlainTextDecoder`]
-/// fed in one go.
+/// Decode a whole buffer as plain text with `encoding`.
 pub(crate) fn decode_plain(bytes: &[u8], encoding: &'static Encoding) -> String {
-    decode_all(&mut PlainTextDecoder::new(encoding), bytes)
+    decode_plain_with_fallback(bytes, encoding, None)
+}
+
+/// Like [`decode_plain`], with a legacy fallback for output that is not valid
+/// UTF-8. Only the bytes after the valid UTF-8 prefix use the fallback.
+pub(crate) fn decode_plain_with_fallback(
+    bytes: &[u8],
+    encoding: &'static Encoding,
+    fallback: Option<&'static Encoding>,
+) -> String {
+    decode_all(
+        &mut PlainTextDecoder::with_fallback(encoding, fallback),
+        bytes,
+    )
 }
 
 /// Feed a whole buffer through `decoder`, flush, and merge the chunks.
@@ -233,7 +245,7 @@ pub(crate) struct FixedDecoder {
 }
 
 impl FixedDecoder {
-    pub(crate) fn new(encoding: &'static Encoding) -> Self {
+    fn new(encoding: &'static Encoding) -> Self {
         Self {
             decoder: encoding.new_decoder_without_bom_handling(),
             pending: Vec::new(),
@@ -242,7 +254,7 @@ impl FixedDecoder {
     }
 
     /// Decode `bytes`, returning the text ready so far (possibly empty).
-    pub(crate) fn feed(&mut self, bytes: &[u8]) -> String {
+    fn feed(&mut self, bytes: &[u8]) -> String {
         if bytes.is_empty() {
             return String::new();
         }
@@ -265,7 +277,7 @@ impl FixedDecoder {
     }
 
     /// Flush the bytes held for BOM sniffing and any partial sequence.
-    pub(crate) fn finish(&mut self) -> String {
+    fn finish(&mut self) -> String {
         let mut text = String::new();
         if self.at_start {
             self.at_start = false;
@@ -277,17 +289,152 @@ impl FixedDecoder {
     }
 }
 
-/// [`FixedDecoder`] plus the [`PlainText`] filter: what a terminal would show.
+/// UTF-8 output that switches once to `fallback` (the Windows console OEM
+/// code page) when output is not valid UTF-8. The valid UTF-8 prefix of a
+/// stream is kept, so a whole-buffer decode matches a chunked one.
+pub(crate) struct AutoDecoder {
+    fallback: &'static Encoding,
+    /// Bytes not yet emitted, including an incomplete UTF-8 sequence.
+    pending: Vec<u8>,
+    legacy: Option<Decoder>,
+    at_start: bool,
+}
+
+impl AutoDecoder {
+    fn new(fallback: &'static Encoding) -> Self {
+        Self {
+            fallback,
+            pending: Vec::new(),
+            legacy: None,
+            at_start: true,
+        }
+    }
+
+    /// Decode `bytes`, returning the text ready so far (possibly empty).
+    fn feed(&mut self, bytes: &[u8]) -> String {
+        if let Some(decoder) = self.legacy.as_mut() {
+            return decode_with(decoder, bytes, false);
+        }
+        if bytes.is_empty() {
+            return String::new();
+        }
+        self.pending.extend_from_slice(bytes);
+        if self.at_start {
+            if let Some((encoding, bom)) = Encoding::for_bom(&self.pending) {
+                self.pending.drain(..bom);
+                self.at_start = false;
+                if encoding != UTF_8 {
+                    return self.switch(encoding);
+                }
+            } else if is_bom_prefix(&self.pending) {
+                return String::new(); // a BOM may still arrive
+            } else {
+                self.at_start = false;
+            }
+        }
+        match std::str::from_utf8(&self.pending) {
+            Ok(text) => {
+                let text = text.to_owned();
+                self.pending.clear();
+                text
+            }
+            Err(error) => {
+                // Emit the valid prefix; only the bytes from the first error on
+                // are undecided, so no valid UTF-8 is re-decoded as legacy.
+                let valid = error.valid_up_to();
+                let mut text = std::str::from_utf8(&self.pending[..valid])
+                    .expect("valid_up_to ends on a UTF-8 boundary")
+                    .to_owned();
+                self.pending.drain(..valid);
+                if error.error_len().is_none() {
+                    return text; // an incomplete sequence may still complete
+                }
+                let fallback = self.fallback;
+                text.push_str(&self.switch(fallback));
+                text
+            }
+        }
+    }
+
+    /// Switch to `encoding`, decoding the bytes buffered so far.
+    fn switch(&mut self, encoding: &'static Encoding) -> String {
+        let mut decoder = encoding.new_decoder_without_bom_handling();
+        let pending = std::mem::take(&mut self.pending);
+        let text = decode_with(&mut decoder, &pending, false);
+        self.legacy = Some(decoder);
+        text
+    }
+
+    /// Flush buffered bytes and the decoder's carried partial sequence.
+    fn finish(&mut self) -> String {
+        if let Some(decoder) = self.legacy.as_mut() {
+            return decode_with(decoder, &[], true);
+        }
+        let pending = std::mem::take(&mut self.pending);
+        String::from_utf8_lossy(&pending).into_owned()
+    }
+}
+
+/// Whether `bytes` is still a prefix of a BOM recognized by encoding_rs.
+fn is_bom_prefix(bytes: &[u8]) -> bool {
+    matches!(bytes, [0xEF] | [0xEF, 0xBB] | [0xFF] | [0xFE])
+}
+
+/// Incremental byte decoder shared by shell output and host-command pumps.
+pub(crate) enum ByteDecoder {
+    Fixed(FixedDecoder),
+    Auto(AutoDecoder),
+}
+
+impl ByteDecoder {
+    pub(crate) fn fixed(encoding: &'static Encoding) -> Self {
+        Self::Fixed(FixedDecoder::new(encoding))
+    }
+
+    pub(crate) fn auto(fallback: &'static Encoding) -> Self {
+        Self::Auto(AutoDecoder::new(fallback))
+    }
+
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> String {
+        match self {
+            Self::Fixed(decoder) => decoder.feed(bytes),
+            Self::Auto(decoder) => decoder.feed(bytes),
+        }
+    }
+
+    pub(crate) fn finish(&mut self) -> String {
+        match self {
+            Self::Fixed(decoder) => decoder.finish(),
+            Self::Auto(decoder) => decoder.finish(),
+        }
+    }
+}
+
+/// A byte decoder plus the [`PlainText`] filter: what a terminal would show.
 pub(crate) struct PlainTextDecoder {
-    decoder: FixedDecoder,
+    decoder: ByteDecoder,
     plain: PlainText,
 }
 
 impl PlainTextDecoder {
     pub(crate) fn new(encoding: &'static Encoding) -> Self {
         Self {
-            decoder: FixedDecoder::new(encoding),
+            decoder: ByteDecoder::fixed(encoding),
             plain: PlainText::new(),
+        }
+    }
+
+    /// UTF-8 command output with a legacy fallback for native console tools.
+    pub(crate) fn with_fallback(
+        encoding: &'static Encoding,
+        fallback: Option<&'static Encoding>,
+    ) -> Self {
+        match fallback {
+            Some(fallback) if encoding == UTF_8 && fallback != UTF_8 => Self {
+                decoder: ByteDecoder::auto(fallback),
+                plain: PlainText::new(),
+            },
+            _ => Self::new(encoding),
         }
     }
 }

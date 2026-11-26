@@ -159,6 +159,7 @@ fn execute_real_bash(
         timeout,
         true, // bash runs in its own process group → kill the whole group
         encoding,
+        None, // mixed script output: keep the script-wide encoding
         cancel,
         Some(&mut forwarder),
     );
@@ -167,7 +168,9 @@ fn execute_real_bash(
     let output = result.map_err(WaitError::into_message)?;
     // The fallback runs a real (MSYS/Cygwin on Windows) bash, whose signal
     // deaths use the `signal << 8` exit-code encoding.
-    Ok(crate::tools::format_command_output(&output, true, encoding))
+    Ok(crate::tools::format_command_output(
+        &output, true, encoding, None,
+    ))
 }
 
 /// Render a timeout in milliseconds as a human-readable duration, e.g.

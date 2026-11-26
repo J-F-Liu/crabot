@@ -8,7 +8,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::decoder::{ChunkDecoder, PlainTextDecoder, decode_plain};
+use super::decode_plain_with_fallback;
+use super::decoder::{ChunkDecoder, PlainTextDecoder};
 #[cfg(unix)]
 use super::exec::is_would_block;
 use super::exec::{kill_process_tree, set_pipe_nonblocking};
@@ -119,7 +120,7 @@ impl ChunkForwarder {
 
     /// Append the captured stdout/stderr to `msg`, like [`kill_and_error`].
     pub fn append_partial_output(&self, msg: &mut String) {
-        append_partial_output(msg, &self.stdout_cap, &self.stderr_cap, self.encoding);
+        append_partial_output(msg, &self.stdout_cap, &self.stderr_cap, self.encoding, None);
     }
 
     fn flush(&mut self) {
@@ -170,9 +171,9 @@ impl WaitError {
 ///
 /// `remaining` is the budget actually waited; `timeout_total` is reported in
 /// the timeout message (they differ when the caller already spent budget).
-/// Output is decoded with `encoding`; `forwarder` also gets each drained chunk
-/// for live streaming and partial capture.
-#[allow(clippy::too_many_arguments)] // 9 params; a context struct would churn 3 call sites
+/// Output is decoded with `encoding`, falling back to `fallback` for invalid
+/// UTF-8; `forwarder` streams chunks and captures partial output.
+#[allow(clippy::too_many_arguments)] // 10 params; a context struct would churn 2 call sites
 pub(crate) fn wait_with_timeout(
     mut child: std::process::Child,
     mut stdout: Option<unnamed_pipe::Recver>,
@@ -181,6 +182,7 @@ pub(crate) fn wait_with_timeout(
     timeout_total: Duration,
     kill_tree: bool,
     encoding: &'static Encoding,
+    fallback: Option<&'static Encoding>,
     cancel: &CancellationToken,
     mut forwarder: Option<&mut ChunkForwarder>,
 ) -> Result<std::process::Output, WaitError> {
@@ -201,6 +203,7 @@ pub(crate) fn wait_with_timeout(
                 &stdout_cap,
                 &stderr_cap,
                 encoding,
+                fallback,
                 &format!("Failed to set pipe non-blocking mode: {e}"),
             )));
         }
@@ -240,6 +243,7 @@ pub(crate) fn wait_with_timeout(
                 &stdout_cap,
                 &stderr_cap,
                 encoding,
+                fallback,
                 CANCEL_REASON,
             )));
         }
@@ -255,6 +259,7 @@ pub(crate) fn wait_with_timeout(
                         &stdout_cap,
                         &stderr_cap,
                         encoding,
+                        fallback,
                         &timeout_message(timeout_total),
                     )));
                 }
@@ -268,6 +273,7 @@ pub(crate) fn wait_with_timeout(
                     &stdout_cap,
                     &stderr_cap,
                     encoding,
+                    fallback,
                     &format!("Failed to wait on command: {e}"),
                 )));
             }
@@ -388,25 +394,28 @@ fn append_partial_output(
     stdout: &BoundedCapture,
     stderr: &BoundedCapture,
     encoding: &'static Encoding,
+    fallback: Option<&'static Encoding>,
 ) {
-    append_stream(msg, "stdout", stdout, encoding);
-    append_stream(msg, "stderr", stderr, encoding);
-}
-
-fn append_stream(msg: &mut String, name: &str, cap: &BoundedCapture, encoding: &'static Encoding) {
-    if cap.total() == 0 {
-        return;
-    }
-    msg.push_str(&format!("\n--- partial {name} ---\n"));
-    msg.push_str(&decode_plain(&cap.materialize(), encoding));
-    let skipped = cap.skipped();
-    if skipped > 0 {
-        msg.push_str(&crate::truncation_marker(skipped, cap.total(), None));
+    for (name, cap) in [("stdout", stdout), ("stderr", stderr)] {
+        if cap.total() == 0 {
+            continue;
+        }
+        msg.push_str(&format!("\n--- partial {name} ---\n"));
+        msg.push_str(&decode_plain_with_fallback(
+            &cap.materialize(),
+            encoding,
+            fallback,
+        ));
+        let skipped = cap.skipped();
+        if skipped > 0 {
+            msg.push_str(&crate::truncation_marker(skipped, cap.total(), None));
+        }
     }
 }
 
 /// Kill and reap the child (its whole tree if `kill_tree`) and build an error
 /// message with the reason and any partial output.
+#[allow(clippy::too_many_arguments)] // 8 params; a context struct would churn 4 call sites
 fn kill_and_error(
     child: &mut std::process::Child,
     pid: u32,
@@ -414,6 +423,7 @@ fn kill_and_error(
     stdout: &BoundedCapture,
     stderr: &BoundedCapture,
     encoding: &'static Encoding,
+    fallback: Option<&'static Encoding>,
     reason: &str,
 ) -> String {
     if kill_tree {
@@ -423,6 +433,6 @@ fn kill_and_error(
     }
     let _ = child.wait();
     let mut msg = reason.to_string();
-    append_partial_output(&mut msg, stdout, stderr, encoding);
+    append_partial_output(&mut msg, stdout, stderr, encoding, fallback);
     msg
 }

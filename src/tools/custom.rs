@@ -248,6 +248,7 @@ impl CustomTool {
             .split_first()
             .ok_or_else(|| "Empty command template".to_string())?;
         let encoding = super::argv_encoding(exe, args);
+        let fallback = super::console_fallback(encoding);
 
         // Resolve through `PATH`: `npx`-style shims (`.cmd`) need a shell lookup.
         let paths = super::host_path_lists(None);
@@ -283,13 +284,16 @@ impl CustomTool {
             timeout,
             false, // custom tools don't run in their own process group
             encoding,
+            fallback,
             cancel,
             None, // custom tools don't stream output
         )
         .map_err(|e| format!("Custom tool '{}': {}", self.name, e.into_message()))?;
 
         // Native executable — no MSYS signal-decode semantics.
-        Ok(super::format_command_output(&output, false, encoding))
+        Ok(super::format_command_output(
+            &output, false, encoding, fallback,
+        ))
     }
 }
 

@@ -27,10 +27,10 @@ use std::os::windows::io::{AsRawHandle, RawHandle};
 use crate::lock;
 use crate::tools::{
     CANCEL_REASON, ChunkDecoder, OutputSink, PlainTextDecoder, ProcessSignal, StdinWriteError,
-    Tool, WindowFacts, arg_str, arg_u64, argv_encoding, convert_path_list_to_native, detach_child,
-    exit_code_of, host_path_lists, is_path_env_key, process_tree_pids, required_str,
-    resolve_command, resolve_path, sanitize_child_env, signal_process_tree, spawn_worker,
-    tool_limits, window_facts, write_stdin_bounded,
+    Tool, WindowFacts, arg_str, arg_u64, argv_encoding, console_fallback,
+    convert_path_list_to_native, detach_child, exit_code_of, host_path_lists, is_path_env_key,
+    process_tree_pids, required_str, resolve_command, resolve_path, sanitize_child_env,
+    signal_process_tree, spawn_worker, tool_limits, window_facts, write_stdin_bounded,
 };
 use xcap::Window;
 
@@ -841,7 +841,7 @@ fn spawn_reader(
     #[cfg(windows)]
     let raw = raw as isize; // RawHandle is !Send; the handle stays owned by `reader`.
     std::thread::spawn(move || {
-        let mut decoder = PlainTextDecoder::new(encoding);
+        let mut decoder = PlainTextDecoder::with_fallback(encoding, console_fallback(encoding));
         let mut out = Vec::new();
         let mut buf = [0u8; 8192];
         let mut exit_seen_at: Option<Instant> = None;

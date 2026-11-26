@@ -1,8 +1,8 @@
 //! Deterministic output encoding for commands.
 //!
-//! Windows PowerShell 5.1 writes its console code page; PowerShell 6+ writes UTF-8.
-//! Parsed command positions keep mere mentions of `powershell` from selecting a
-//! legacy encoding; unparseable scripts use a raw token scan. Probes are cached.
+//! PowerShell 5.1 writes its console code page, PowerShell 6+ UTF-8; native
+//! Windows console tools use the OEM code page, the fallback for invalid UTF-8.
+//! Command positions keep mere mentions from choosing a legacy encoding.
 
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -64,6 +64,55 @@ fn powershell_encoding_for(kind: Option<PowerShell>) -> &'static Encoding {
     match kind {
         Some(PowerShell::Windows) => windows_powershell_encoding(),
         _ => UTF_8,
+    }
+}
+
+/// Encoding of the hidden console a `CREATE_NO_WINDOW` child runs on, from the
+/// system OEM code page. `None` when the page has no `encoding_rs` equivalent.
+#[cfg(windows)]
+fn console_encoding() -> Option<&'static Encoding> {
+    static CACHE: OnceLock<Option<&'static Encoding>> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        // SAFETY: `GetOEMCP` takes no arguments and cannot fail.
+        code_page_encoding(unsafe { windows_sys::Win32::Globalization::GetOEMCP() })
+    })
+}
+
+#[cfg(not(windows))]
+fn console_encoding() -> Option<&'static Encoding> {
+    None
+}
+
+/// Legacy fallback for UTF-8 command output: native Windows console tools
+/// write their localized messages in the console's OEM code page.
+pub(crate) fn console_fallback(encoding: &'static Encoding) -> Option<&'static Encoding> {
+    if encoding != UTF_8 {
+        return None;
+    }
+    console_encoding().filter(|fallback| *fallback != UTF_8)
+}
+
+/// Map a Windows code page to the closest WHATWG encoding.
+/// Only reachable on Windows; the tests below cover the mapping elsewhere.
+#[cfg(any(windows, test))]
+fn code_page_encoding(code_page: u32) -> Option<&'static Encoding> {
+    use encoding_rs::{BIG5, EUC_KR, GBK, IBM866, SHIFT_JIS, UTF_16BE, UTF_16LE, WINDOWS_874};
+
+    match code_page {
+        866 => Some(IBM866),
+        874 => Some(WINDOWS_874),
+        932 => Some(SHIFT_JIS),
+        936 => Some(GBK),
+        949 => Some(EUC_KR),
+        950 => Some(BIG5),
+        1200 => Some(UTF_16LE),
+        1201 => Some(UTF_16BE),
+        65001 => Some(UTF_8),
+        1250..=1258 => {
+            let label = format!("windows-{code_page}");
+            Encoding::for_label(label.as_bytes())
+        }
+        _ => None,
     }
 }
 

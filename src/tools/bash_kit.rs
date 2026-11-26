@@ -59,7 +59,7 @@ use encoding_rs::{Encoding, UTF_8};
 use super::mount_table;
 use super::protected_fs::{MountRule, ProtectedFs};
 use super::{
-    CANCEL_REASON, ChunkForwarder, FixedDecoder, OutStream, OutputSink,
+    ByteDecoder, CANCEL_REASON, ChunkForwarder, OutStream, OutputSink,
     WHOLE_CARGO_REGISTRY_MESSAGE, cargo_home, is_whole_cargo_registry, resolve_path,
     timeout_message,
 };
@@ -1266,11 +1266,15 @@ fn build_bash(
         .builtin("type", Box::new(TypeBuiltin { lookup }));
 
     // Bridge each host command; bashkit's own `uname` reports a virtual platform.
-    let host_command = |program: String| HostCommand {
-        encoding: host_encoding(plan, &program),
-        program,
-        mounts: Arc::clone(&shared_mounts),
-        home: home_mount.clone(),
+    let host_command = |program: String| {
+        let encoding = host_encoding(plan, &program);
+        HostCommand {
+            fallback: super::console_fallback(encoding),
+            encoding,
+            program,
+            mounts: Arc::clone(&shared_mounts),
+            home: home_mount.clone(),
+        }
     };
     for name in &plan.external_names {
         builder = builder.command(name.clone(), host_command(name.clone()));
@@ -1296,6 +1300,8 @@ pub(crate) struct HostCommand {
     program: String,
     /// Re-encode child output from this encoding; `UTF_8` passes through.
     encoding: &'static Encoding,
+    /// Console code page for UTF-8 commands whose output is legacy.
+    fallback: Option<&'static Encoding>,
     /// VFS mount table, shared with `build_bash` via Arc.
     mounts: Arc<[RealMount]>,
     /// Seeded home mount; maps the interpreter's VFS HOME to the host path.
@@ -1394,6 +1400,7 @@ impl Command for HostCommand {
             ctx.stdout.clone(),
             ctx.stderr.clone(),
             self.encoding,
+            self.fallback,
         )
         .await
         {
@@ -1416,11 +1423,12 @@ async fn wait_with_pipes(
     stdout: CommandOutput,
     stderr: CommandOutput,
     encoding: &'static Encoding,
+    fallback: Option<&'static Encoding>,
 ) -> bashkit::Result<std::process::ExitStatus> {
     let mut guard = KillTree(child.id());
     let mut feed = Box::pin(feed_stdin(stdin, child.stdin.take()));
-    let mut out = Box::pin(pump(child.stdout.take(), stdout, encoding));
-    let mut err = Box::pin(pump(child.stderr.take(), stderr, encoding));
+    let mut out = Box::pin(pump(child.stdout.take(), stdout, encoding, fallback));
+    let mut err = Box::pin(pump(child.stderr.take(), stderr, encoding, fallback));
 
     let (mut feed_done, mut out_done, mut err_done) = (false, false, false);
     let status = loop {
@@ -1493,6 +1501,7 @@ async fn pump<R>(
     reader: Option<R>,
     out: CommandOutput,
     encoding: &'static Encoding,
+    fallback: Option<&'static Encoding>,
 ) -> bashkit::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -1500,11 +1509,14 @@ where
     let Some(reader) = reader else {
         return Ok(());
     };
-    if encoding == UTF_8 {
-        pump_raw(reader, &out).await
-    } else {
-        pump_transcoded(reader, &out, encoding).await
+    if fallback.is_none() && encoding == UTF_8 {
+        return pump_raw(reader, &out).await;
     }
+    let decoder = match fallback {
+        Some(fallback) => ByteDecoder::auto(fallback),
+        None => ByteDecoder::fixed(encoding),
+    };
+    pump_decoded(reader, &out, decoder).await
 }
 
 /// Pass bytes through untouched (already UTF-8).
@@ -1523,18 +1535,17 @@ where
     }
 }
 
-/// Re-encode legacy output into UTF-8 on its way into the shell stream.
-async fn pump_transcoded<R>(
+/// Re-encode child output into UTF-8 for the shell stream.
+async fn pump_decoded<R>(
     mut reader: R,
     out: &CommandOutput,
-    encoding: &'static Encoding,
+    mut decoder: ByteDecoder,
 ) -> bashkit::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::io::AsyncReadExt;
 
-    let mut decoder = FixedDecoder::new(encoding);
     let mut buf = [0u8; 8192];
     loop {
         let read = reader.read(&mut buf).await?;

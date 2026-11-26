@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::decoder::decode_plain;
+use super::decode_plain_with_fallback;
 use super::limits::truncate_output;
 use super::tool::{STDIN_CHUNK, STDIN_POLL_INTERVAL};
 
@@ -407,15 +407,17 @@ fn exit_code_of_impl(status: &std::process::ExitStatus, msys: bool) -> i32 {
     -1
 }
 
-/// Combine and truncate stdout/stderr, decoded with `encoding` as plain text.
+/// Combine and truncate stdout/stderr, decoded with `encoding` as plain text;
+/// `fallback` decodes invalid UTF-8 from native console tools.
 /// Pass `msys = true` only for a real MSYS/Cygwin `bash`.
 pub(crate) fn format_command_output(
     output: &std::process::Output,
     msys: bool,
     encoding: &'static encoding_rs::Encoding,
+    fallback: Option<&'static encoding_rs::Encoding>,
 ) -> String {
-    let stdout = decode_plain(&output.stdout, encoding);
-    let stderr = decode_plain(&output.stderr, encoding);
+    let stdout = decode_plain_with_fallback(&output.stdout, encoding, fallback);
+    let stderr = decode_plain_with_fallback(&output.stderr, encoding, fallback);
     truncate_output(combine_output(
         &stdout,
         &stderr,

@@ -1245,6 +1245,19 @@ fn mixed_utf8_and_powershell_output_decodes_both() {
     );
 }
 
+/// Native Windows console tools write localized messages in the console OEM
+/// code page; the host-command bridge must transcode them to UTF-8.
+#[cfg(windows)]
+#[test]
+fn native_console_tool_output_uses_oem_code_page() {
+    let result = run_bash("taskkill /PID 999999 /F", &crabot_workspace(), Some(30_000)).unwrap();
+    assert!(!result.contains('\u{FFFD}'), "unexpected: {result}");
+    assert!(
+        result.contains("没有找到进程") || result.contains("not found"),
+        "unexpected: {result}"
+    );
+}
+
 /// Merely mentioning `powershell` in a fallback script keeps UTF-8 decoding.
 #[test]
 fn fallback_bash_stays_utf8_when_powershell_is_mentioned() {
