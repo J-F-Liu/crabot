@@ -25,11 +25,7 @@ impl Tool for RenewTool {
     }
 
     fn description(&self) -> &str {
-        "Create a new session with a condensed version of the current task. Use this tool when the context window is nearly full and the task is not yet complete. The prompt should restate original goal as title, summarize what has been accomplished so far and describe what still needs to be done."
-    }
-
-    fn instruction(&self) -> &str {
-        "When user says that context fill ratio is near its limit and the current task cannot be completed soon, call the renew tool. If todo was called and items status is outdated, call todo to update status along with the renew call. renew can only be called at most once."
+        "When context is nearly full and work will not finish soon, create a session with a condensed task prompt: title the goal, summarize completed work, and list remaining work. Update a stale `todo` list in the same response. Call renew at most once."
     }
 
     fn schema(&self) -> Value {

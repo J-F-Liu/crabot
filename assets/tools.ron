@@ -2,8 +2,7 @@
     custom_tools: [
         (
             name: "web_search",
-            description: "Search the web via the DeepSeek Search API and return ranked results with titles, URLs, summaries, and optional page content.",
-            instruction: "Use this tool to find current web information. Supports site:, lang:, after:, before:, and quoted phrases.",
+            description: "Search the web via the DeepSeek Search API and return ranked results with titles, URLs, summaries, and optional page content. Use it to find current web information; the query supports site:, lang:, after:, before:, and quoted phrases.",
             parameters: [
                 (name: "query", kind: String, description: "Search query; supports site:, lang:, after:, before:, and quoted phrases.", required: true),
                 (name: "count", kind: Integer, description: "Number of results, 1-50 (default 10).", required: false),
@@ -34,8 +33,7 @@
         ),
         (
             name: "calculator",
-            description: "Evaluate a mathematical expression with kalker. Supports arithmetic, functions, constants, and calculus; unit conversions are not supported.",
-            instruction: "Use this tool for precise math instead of mental arithmetic. Pass the complete expression in `expr`, e.g. `sqrt(2) + sin(pi/4)`.",
+            description: "Evaluate a mathematical expression with kalker. Supports arithmetic, functions, constants, and calculus; unit conversions are not supported. Use it for precise math instead of mental arithmetic; pass the complete expression in `expr`, e.g. `sqrt(2) + sin(pi/4)`.",
             parameters: [
                 (name: "expr", kind: String, description: "Expression to evaluate, e.g. `2^10`, `sqrt(2)`, or `sin(pi/4)`.", required: true),
             ],

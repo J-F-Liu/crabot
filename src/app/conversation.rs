@@ -21,6 +21,7 @@ use crate::app::{
     PreviewContent, PromptOptions, TabBarScrollState,
 };
 use crate::llm::DialogPhase;
+use crate::system;
 use crate::tools::process;
 use crate::views::center_pane::{PREVIEW_MAX_HEIGHT, PREVIEW_MAX_WIDTH};
 use crate::views::export;
@@ -846,13 +847,11 @@ fn continue_task_spawn(app: &mut App, spawn: SuccessorSpawn) -> Task<Message> {
             tab.session.title = title;
         }
     }
-    // A background tab's tools section comes from its own enabled tools.
+    // Compose from the tab's own options, not the live pane's.
     let tab_options = &app.conversation.session_tabs[tab_pos].pane;
-    let system_prompt = preamble.as_deref().map(|preamble| {
-        let tools_section = app.tools_section(tab_pos, tab_options);
-        app.prompt
-            .compose_system_prompt(tab_options, Some(preamble), &tools_section)
-    });
+    let system_prompt = preamble
+        .as_deref()
+        .map(|preamble| system::compose(&app.prompt, tab_options, Some(preamble)));
     let user_prompt = UserPrompt::new(None, spawn.prompt, spawn.workspace_tree);
     launch_dialog(app, tab_pos, &spawn.model, user_prompt, system_prompt)
 }
@@ -1279,10 +1278,7 @@ pub(crate) fn start_dialog(
     // Needs `&app`, so build it before re-borrowing the tab below.
     let system_prompt = match system_prompt_override {
         Some(override_prompt) => override_prompt,
-        None => {
-            let tools_section = app.tools_section(tab_pos, &options);
-            app.prompt.get_system_prompt(&options, &tools_section)
-        }
+        None => system::build(&app.prompt, &options),
     };
 
     // Re-borrow for the remaining setup.

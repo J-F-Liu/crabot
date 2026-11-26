@@ -74,7 +74,7 @@ fn reload_mcp_server(
 }
 
 /// Apply a saved MCP server list: drop removed servers, reload reconfigured
-/// ones, and discover new ones. Refreshes the tools summary afterwards.
+/// ones, and discover new ones.
 pub(crate) fn apply_saved_mcp_servers(
     app: &mut App,
     old_servers: &[tools::mcp::McpServer],
@@ -101,7 +101,6 @@ pub(crate) fn apply_saved_mcp_servers(
             tasks.push(app.tools.start_discovery(new.clone()));
         }
     }
-    app.refresh_tools_summary();
     Task::batch(tasks)
 }
 
@@ -141,11 +140,9 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
                 app.tools.mcp_pending.remove(&server);
                 app.tools.next_epoch(&server);
             }
-            app.refresh_tools_summary();
         }
         ToolEvent::ToggleAgentTool(tool_name, enabled) => {
             app.tools.enabled_tools.set(tool_name, enabled);
-            app.refresh_tools_summary();
         }
         ToolEvent::SetMcpServerTools(server, enabled) => {
             let names = app.tools.tool_registry.mcp_tool_names(&server);
@@ -159,7 +156,6 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
                     }
                 }
             }
-            app.refresh_tools_summary();
         }
         ToolEvent::CycleMcpColumns(server) => app.tools.tool_list_state.cycle_mcp_columns(&server),
         ToolEvent::ToggleMcpServerExpanded(server) => app
@@ -214,7 +210,6 @@ pub(crate) fn update(app: &mut App, event: ToolEvent) -> Task<Message> {
                     app.tools.mcp_errors.insert(server, failure);
                 }
             }
-            app.refresh_tools_summary();
         }
     }
     Task::none()

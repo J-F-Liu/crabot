@@ -201,7 +201,6 @@ pub struct HttpRequest {
 pub struct CustomTool {
     pub name: String,
     pub description: String,
-    pub instruction: String,
     /// Tool parameters definition.
     pub parameters: Vec<ToolParameter>,
     /// Tool type and its configuration.
@@ -215,10 +214,6 @@ impl Tool for CustomTool {
 
     fn description(&self) -> &str {
         &self.description
-    }
-
-    fn instruction(&self) -> &str {
-        &self.instruction
     }
 
     fn schema(&self) -> Value {

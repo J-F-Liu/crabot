@@ -1,6 +1,6 @@
 # Crabot Skills: Loading, Installing, and Authoring
 
-A crabot skill is a UTF-8 Markdown file in `~/.crabot/skills/`. Its file stem becomes the name in the left pane's **Skills** dropdown. With **Skills** enabled and the entry selected, its contents are appended verbatim to the system prompt on every request, after the preamble/work mode and before the tools section. Skills are plain text: no YAML frontmatter, includes, or templating. They guide behavior but cannot add tools, permissions, or network access.
+A crabot skill is a UTF-8 Markdown file in `~/.crabot/skills/`. Its file stem becomes the name in the left pane's **Skills** dropdown. With **Skills** enabled and the entry selected, its contents are appended verbatim to the system prompt on every request, after the preamble/work mode and before the workspace path. Skills are plain text: no YAML frontmatter, includes, or templating. They guide behavior but cannot add tools, permissions, or network access.
 
 Enable this `skill` when installing, converting, or reviewing third-party agent skills.
 

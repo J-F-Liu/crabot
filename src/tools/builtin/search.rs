@@ -41,11 +41,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search for a regex pattern in file contents. Returns file:line:content matches, or line:content when path is a single file. Respects .gitignore."
-    }
-
-    fn instruction(&self) -> &str {
-        "Search file contents using a regular expression. Returns matches as file:line:content, or line:content when path names a single file. Respects .gitignore rules. Use this tool to locate definitions, references, usages, or other patterns across the codebase before reading or editing specific files."
+        "Search file contents by regex to locate definitions, references, usages, or patterns before reading or editing. Respects `.gitignore`. Returns `file:line:content` for directories or `line:content` for a single file."
     }
 
     fn schema(&self) -> Value {

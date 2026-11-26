@@ -83,7 +83,6 @@ fn http_tool(url: String, body: String, response_template: String) -> CustomTool
     CustomTool {
         name: "web_search".into(),
         description: "Search the web".into(),
-        instruction: "Search the web".into(),
         parameters: vec![
             ToolParameter {
                 name: "query".into(),

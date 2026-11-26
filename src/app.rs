@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use iced::widget::scrollable::Viewport;
-use iced::widget::{Space, column, container, row, text_editor};
+use iced::widget::{Space, column, container, row};
 use iced::{Element, Length, Point, Size, Subscription, Task, Theme, Widget as _};
 
 use crabot::model::{self, ModelConfig, ModelList};
@@ -18,12 +18,13 @@ use crabot::settings::{Appearance, FONT_SCALE_MAX, FONT_SCALE_MIN};
 use crabot::setup;
 use crabot::tools;
 use crabot::user::{AttachmentKind, UserAttachment, UserPrompt, WorkMode};
-use prompt::{FilepathEntry, TOOLS};
+use prompt::FilepathEntry;
 
 use crate::views::{
     DividerState, PaneSection, PaneSections, center_pane, divider, left_pane, right_pane,
     session_list::SessionEntry, theme, tool_list::ToolListState,
 };
+use crate::widgets::selection_scope::selection_scope;
 use crate::widgets::textarea::{self, TextArea};
 
 mod attention;
@@ -52,8 +53,6 @@ pub(crate) use session_tab::{AttachmentPreview, PreviewContent, SessionEndStatus
 pub enum FocusedTarget {
     /// The user prompt text area.
     UserPrompt,
-    /// A system-prompt text editor identified by its field name.
-    EditText(&'static str),
     /// The session pick_list in the left pane.
     SessionPicker,
 }
@@ -76,18 +75,10 @@ pub(crate) struct LayoutState {
     pub(crate) ctrl_held: bool,
     pub(crate) scroll_viewport_height: f32,
     pub(crate) focused: Option<FocusedTarget>,
-    /// Horizontal span of the pane where the last text selection began.
-    pub(crate) selection_x: Option<(f32, f32)>,
+    /// Press position of the current text selection; other regions clear theirs.
+    pub(crate) selection_origin: Option<Point>,
     /// Whether the window has OS focus (gates taskbar attention).
     pub(crate) window_focused: bool,
-}
-
-/// Collapsible text-editor field with enable/expand state.
-#[derive(Debug)]
-pub(crate) struct ExpandableEditor {
-    pub(crate) expanded: bool,
-    pub(crate) enabled: bool,
-    pub(crate) content: text_editor::Content,
 }
 
 /// Collapsible read-only preview of the workspace files tree.
@@ -113,7 +104,6 @@ pub(crate) struct PromptWorkspaceState {
     pub(crate) workspace_options: Vec<FilepathEntry>,
     pub(crate) agents_md_exists: bool,
     pub(crate) files: FileTreePane,
-    pub(crate) tools: ExpandableEditor,
     pub(crate) user_prompt: TextArea,
     pub(crate) workmode: WorkMode,
     pub(crate) workmode_enabled: bool,
@@ -142,70 +132,6 @@ impl PromptWorkspaceState {
             prompt::DATE => Some(&mut self.date),
             _ => None,
         }
-    }
-
-    pub(crate) fn content_mut(&mut self, name: &str) -> Option<&mut text_editor::Content> {
-        match name {
-            TOOLS => Some(&mut self.tools.content),
-            _ => None,
-        }
-    }
-
-    /// Concatenate the enabled components of `options`, returning the full
-    /// system prompt. `tools` is that tab's tools section; preamble and skills
-    /// are read from disk on every call.
-    pub(crate) fn get_system_prompt(&self, options: &PromptOptions, tools: &str) -> String {
-        let preamble = options
-            .preamble_enabled
-            .then(|| prompt::load_prompt_file(&self.preamble_options, &options.selected_preamble));
-        self.compose_system_prompt(options, preamble.as_deref(), tools)
-    }
-
-    /// Like [`get_system_prompt`](Self::get_system_prompt), but with a
-    /// caller-provided preamble replacing the configured one (`None` omits it).
-    pub(crate) fn compose_system_prompt(
-        &self,
-        options: &PromptOptions,
-        preamble: Option<&str>,
-        tools: &str,
-    ) -> String {
-        fn section(prompt: &mut String, content: &str) {
-            if !content.is_empty() {
-                prompt.push_str(content);
-                prompt.push('\n');
-            }
-        }
-        let mut prompt = String::new();
-        if let Some(content) = preamble {
-            section(&mut prompt, content);
-        }
-        if options.workmode_enabled
-            && let Some(contents) = crabot::setup::ASSETS
-                .get_file("workmode.md")
-                .and_then(|file| file.contents_utf8())
-        {
-            section(&mut prompt, contents);
-        }
-        if options.skills_enabled {
-            section(
-                &mut prompt,
-                &prompt::load_prompt_files(&self.skills_options, &options.selected_skills),
-            );
-        }
-        if options.tools_enabled {
-            section(&mut prompt, tools);
-        }
-        if options.workspace_enabled && options.workspace.is_dir() {
-            let path = crabot::tools::convert_path_to_unix_style(&options.workspace);
-            prompt.push_str(&format!("Current Workspace: {}\n", path));
-        }
-        if options.agents_md_enabled {
-            section(&mut prompt, &options.agents_md);
-        }
-        if options.date_enabled && !self.date.1.is_empty() {
-            prompt.push_str(&format!("Current Date: {}\n", self.date.1));
-        }
-        prompt
     }
 }
 
@@ -268,47 +194,6 @@ impl ToolState {
                 Message::Tools(ToolEvent::McpToolsDiscovered((name, epoch, result)))
             },
         )
-    }
-
-    /// Generate an XML-formatted summary of the live enabled tools.
-    pub(crate) fn summary(&self) -> String {
-        self.summary_for(&self.enabled_tools, &self.enabled_mcp_servers)
-    }
-
-    /// Same summary for an arbitrary tool set (a tab's own).
-    pub(crate) fn summary_for(
-        &self,
-        enabled: &HashSet<String>,
-        enabled_mcp_servers: &HashSet<String>,
-    ) -> String {
-        let all_tools = self
-            .tool_registry
-            .enabled_tools(enabled, enabled_mcp_servers);
-        let mut result = String::new();
-        result.push_str("<available-tools>\n");
-
-        for tool in &all_tools {
-            let inst = tool.instruction();
-            if inst.is_empty() {
-                continue;
-            }
-            result.push_str(&format!("<tool name=\"{}\">{}</tool>\n", tool.name(), inst));
-        }
-
-        // Build the MCP tools prompt section for the system prompt.
-        for server in &self.tool_registry.mcp_servers {
-            if enabled_mcp_servers.contains(&server.name)
-                && !server.prompt.is_empty()
-                && self
-                    .tool_registry
-                    .mcp_server_has_enabled_tool(&server.name, enabled)
-            {
-                result.push_str(&server.prompt);
-            }
-        }
-        result.push_str("</available-tools>\n");
-        result.push_str("Tools can be enabled or disabled at any time. A tool used earlier in the conversation may no longer be available. Before using a tool, verify that it is currently available. You may also have access to additional tools not listed here.\n");
-        result
     }
 }
 
@@ -596,7 +481,6 @@ pub(crate) enum PromptEvent {
     ToggleEnabled(&'static str, bool),
     ToggleExpanded(&'static str),
     EditTextField(&'static str, String),
-    EditTextContent(&'static str, text_editor::Action),
     /// A freshly built files tree for the expanded preview pane.
     FileTreeReady(String),
     EditTextArea(FocusedTarget, textarea::Message),
@@ -900,7 +784,6 @@ impl App {
             mcp_known_tools: HashMap::new(),
             tool_list_state: ToolListState::default(),
         };
-        let tools_summary = tools.summary();
         let enabled_tools_count = tools.enabled_tools.len();
         let enabled_mcp_count = tools.enabled_mcp_servers.len();
 
@@ -914,7 +797,6 @@ impl App {
         let workspace_options = crate::views::build_workspace_options(&saved.recent_workspaces);
         let window_size = Size::new(saved.window_size.0, saved.window_size.1);
         let window_pos = Point::new(saved.window_pos.0, saved.window_pos.1);
-        let tools_enabled = saved.tools_enabled;
         let dark = saved.appearance.is_dark();
         let acp_server_enabled = saved.acp_server_enabled;
         theme::set_color_style(saved.color_style);
@@ -943,11 +825,6 @@ impl App {
                 enabled: true,
                 expanded: false,
                 tree: String::new(),
-            },
-            tools: ExpandableEditor {
-                expanded: false,
-                enabled: tools_enabled,
-                content: text_editor::Content::with_text(&tools_summary),
             },
             user_prompt: TextArea::with_text(&saved.user_prompt),
             workmode: WorkMode::default_mode(),
@@ -984,7 +861,7 @@ impl App {
                 ctrl_held: false,
                 scroll_viewport_height: 0.0,
                 focused: None,
-                selection_x: None,
+                selection_origin: None,
                 window_focused: true,
             },
             prompt,
@@ -1053,12 +930,6 @@ impl App {
                 acp_task,
             ]),
         )
-    }
-
-    /// Rebuild the tools summary and refresh all UI fields that depend on it.
-    pub(crate) fn refresh_tools_summary(&mut self) {
-        let summary = self.tools.summary();
-        self.prompt.tools.content = text_editor::Content::with_text(&summary);
     }
 
     /// App title plus the viewing tab's workspace folder name, when set.
@@ -1218,7 +1089,6 @@ impl App {
         settings.agents_md_enabled = self.prompt.agents_md.0;
         settings.date_enabled = self.prompt.date.0;
         settings.workspace = self.prompt.workspace.1.clone();
-        settings.tools_enabled = self.prompt.tools.enabled;
         settings.sync_tools(
             &self.tools.tool_registry,
             &self.tools.enabled_tools,
@@ -1409,61 +1279,62 @@ impl App {
             ]
             .boxed()
         };
-        crate::widgets::selection_scope::selection_scope(
-            row![
-                left_pane(
-                    &self.settings,
-                    &self.prompt,
-                    &self.conversation,
-                    &self.tools,
-                    &self.models,
-                )
-                .map(|event| match event {
-                    LeftPaneEvent::ModelConfig(e) => {
-                        Message::ModelSettings(ModelSettingsEvent::ModelConfig(e))
+        let origin = self.layout.selection_origin;
+        let left = selection_scope(
+            left_pane(
+                &self.settings,
+                &self.prompt,
+                &self.conversation,
+                &self.tools,
+                &self.models,
+            )
+            .map(|event| match event {
+                LeftPaneEvent::ModelConfig(e) => {
+                    Message::ModelSettings(ModelSettingsEvent::ModelConfig(e))
+                }
+                LeftPaneEvent::Prompt(e) => Message::Prompt(e),
+                LeftPaneEvent::Conversation(e) => Message::Conversation(e),
+                LeftPaneEvent::Tools(e) => Message::Tools(e),
+            }),
+            origin,
+        );
+        let center = selection_scope(
+            center_pane(
+                &self.conversation,
+                &self.layout.theme,
+                self.settings.font_scale,
+                self.settings.language,
+                model,
+                right_pane_collapsed,
+                origin,
+            )
+            .map(|event| match event {
+                CenterPaneEvent::Conversation(e) => Message::Conversation(e),
+                CenterPaneEvent::CopyCode(code) => {
+                    Message::Conversation(ConversationEvent::CopyCode(code))
+                }
+                CenterPaneEvent::SessionViewScrolled(vp) => {
+                    Message::Layout(LayoutEvent::SessionViewScrolled(vp))
+                }
+                CenterPaneEvent::LinkClicked(url) => {
+                    if self.layout.ctrl_held
+                        && let Err(e) = open::that_detached(&url)
+                    {
+                        tracing::warn!("failed to open link '{url}': {e}");
                     }
-                    LeftPaneEvent::Prompt(e) => Message::Prompt(e),
-                    LeftPaneEvent::Conversation(e) => Message::Conversation(e),
-                    LeftPaneEvent::Tools(e) => Message::Tools(e),
-                }),
-                divider(&self.layout.left_divider),
-                center_pane(
-                    &self.conversation,
-                    &self.layout.theme,
-                    self.settings.font_scale,
-                    self.settings.language,
-                    model,
-                    right_pane_collapsed,
-                )
-                .map(|event| match event {
-                    CenterPaneEvent::Conversation(e) => Message::Conversation(e),
-                    CenterPaneEvent::CopyCode(code) => {
-                        Message::Conversation(ConversationEvent::CopyCode(code))
-                    }
-                    CenterPaneEvent::SessionViewScrolled(vp) => {
-                        Message::Layout(LayoutEvent::SessionViewScrolled(vp))
-                    }
-                    CenterPaneEvent::LinkClicked(url) => {
-                        if self.layout.ctrl_held
-                            && let Err(e) = open::that_detached(&url)
-                        {
-                            tracing::warn!("failed to open link '{url}': {e}");
-                        }
-                        Message::Conversation(ConversationEvent::DefocusSessionPicker)
-                    }
-                    CenterPaneEvent::TabBarScrolled(vp) => {
-                        Message::Layout(LayoutEvent::TabBarScrolled(vp))
-                    }
-                    CenterPaneEvent::ToggleRightPane => {
-                        Message::Layout(LayoutEvent::ToggleRightPane)
-                    }
-                }),
-                right_side,
-            ]
+                    Message::Conversation(ConversationEvent::DefocusSessionPicker)
+                }
+                CenterPaneEvent::TabBarScrolled(vp) => {
+                    Message::Layout(LayoutEvent::TabBarScrolled(vp))
+                }
+                CenterPaneEvent::ToggleRightPane => Message::Layout(LayoutEvent::ToggleRightPane),
+            }),
+            origin,
+        );
+        let right = selection_scope(right_side, origin);
+        row![left, divider(&self.layout.left_divider), center, right]
             .spacing(0)
-            .boxed(),
-            self.layout.selection_x,
-        )
+            .boxed()
     }
 
     /// Optionally prepend the update-available banner.

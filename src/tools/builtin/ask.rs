@@ -42,11 +42,7 @@ impl Tool for AskTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user for clarification or a decision when additional input is required to continue."
-    }
-
-    fn instruction(&self) -> &str {
-        "Use the ask tool when you need user input before you can continue. When possible, provide concise options so the user can choose quickly. If ask times out, assume the user has no preference, make the best decision and continue if the task can reasonably proceed. Otherwise, stop and explain what information is still required."
+        "Ask the user for clarification or a decision only when needed to continue. Provide concise `options` when possible. If the question times out, assume no preference: choose reasonably and continue, or stop and explain what is still needed."
     }
 
     fn schema(&self) -> Value {

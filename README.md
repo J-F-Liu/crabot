@@ -76,7 +76,7 @@ The prompt editor's **Attachment ▾** menu adds text or image files to the next
 
 ## Context Window & Sessions
 
-Crabot's most distinctive feature is the explicit context window: every component — preamble, skills, tools, workspace, rules, date — is visible and independently toggleable. Requests are append-only, keeping the request prefix stable across turns so the provider's server-side prompt cache is reused. The center-pane conversation view also lets you follow the model's chain of thought, which is handy for important tasks.
+Crabot's most distinctive feature is the explicit context window: every component — preamble, skills, workspace, rules, date — is visible and independently toggleable; with every section off, a one-line default prompt is sent instead of an empty one. Requests are append-only, keeping the request prefix stable across turns so the provider's server-side prompt cache is reused. The center-pane conversation view also lets you follow the model's chain of thought, which is handy for important tasks.
 
 To keep context lean, a few habits help:
 

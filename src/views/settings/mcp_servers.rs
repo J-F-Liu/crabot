@@ -3,12 +3,10 @@
 
 use super::{
     SettingsEvent, SettingsState, SettingsTab, add_section, card_rule, collapsible_header,
-    delete_button_style, empty_hint, field_row, form_card_style, hint, label_col, numbered_name,
-    remove_expanded, section_header, sub_card_style, textarea_field_row, toggle_expanded,
-    unique_name,
+    delete_button_style, empty_hint, field_row, form_card_style, label_col, numbered_name,
+    remove_expanded, section_header, sub_card_style, toggle_expanded, unique_name,
 };
 use crate::views::styles::styled_pick_list;
-use crate::widgets::textarea::TextArea;
 use crabot::i18n::Lang;
 use crabot::tools::mcp::{McpServer, McpTransport};
 use iced::{
@@ -41,8 +39,6 @@ pub(crate) enum McpEvent {
     DeleteMcpMapEntry(usize, usize),
     EditMcpMapKey(usize, usize, String),
     EditMcpMapValue(usize, usize, String),
-    /// A [`TextArea`] edit in the MCP server prompt form.
-    McpTextArea(crate::widgets::textarea::Message),
     /// Persist MCP servers to disk.
     SaveMcp,
 }
@@ -72,15 +68,7 @@ pub(super) fn mcp_servers_page<'a>(state: &'a SettingsState) -> Element<'a, Sett
             .servers
             .iter()
             .enumerate()
-            .map(|(i, server)| {
-                server_card(
-                    i,
-                    server,
-                    state.expanded_mcp == Some(i),
-                    &state.mcp_prompt_area,
-                    lang,
-                )
-            })
+            .map(|(i, server)| server_card(i, server, state.expanded_mcp == Some(i), lang))
             .collect();
         column(cards).spacing(8).boxed()
     };
@@ -102,7 +90,6 @@ fn server_card<'a>(
     index: usize,
     server: &'a McpServer,
     expanded: bool,
-    prompt_area: &'a TextArea,
     lang: Lang,
 ) -> Element<'a, SettingsEvent> {
     let display_name = if server.name.trim().is_empty() {
@@ -126,12 +113,7 @@ fn server_card<'a>(
     let header_row = row![title, delete].spacing(4).align_y(Alignment::Center);
 
     container(if expanded {
-        column![
-            header_row,
-            card_rule(),
-            server_form(index, server, prompt_area, lang)
-        ]
-        .spacing(10)
+        column![header_row, card_rule(), server_form(index, server, lang)].spacing(10)
     } else {
         column![header_row]
     })
@@ -157,12 +139,7 @@ fn transport_summary(transport: &McpTransport) -> String {
 
 // ── Edit form ─────────────────────────────────────────────────────
 
-fn server_form<'a>(
-    index: usize,
-    server: &'a McpServer,
-    prompt_area: &'a TextArea,
-    lang: Lang,
-) -> Element<'a, SettingsEvent> {
+fn server_form<'a>(index: usize, server: &'a McpServer, lang: Lang) -> Element<'a, SettingsEvent> {
     let transport_fields: Element<'a, SettingsEvent> = match &server.transport {
         McpTransport::Stdio { cmd, env_vars } => column![
             field_row(
@@ -207,18 +184,6 @@ fn server_form<'a>(
         transport_row(index, &server.transport, lang),
         transport_fields,
         qualify_row(index, server, lang),
-        textarea_field_row(
-            lang.tr("Prompt"),
-            prompt_area,
-            lang.tr("System-prompt text injected when this server is enabled"),
-            64.0,
-            false,
-            move |msg| SettingsEvent::Mcp(McpEvent::McpTextArea(msg)),
-        ),
-        hint(lang.tr(
-            "Prompt is added to the system prompt when the server is enabled and \
-              at least one of its tools is selected.",
-        )),
     ]
     .spacing(8)
     .boxed()
@@ -341,12 +306,9 @@ fn map_entry_card<'a>(
 pub(super) fn update(state: &mut SettingsState, event: McpEvent) {
     match event {
         McpEvent::ToggleMcp(index) => {
-            state.flush_mcp_text_area();
             toggle_expanded(&mut state.expanded_mcp, index);
-            state.init_mcp_text_area();
         }
         McpEvent::NewMcp => {
-            state.flush_mcp_text_area();
             let name = unique_name("new_server", |n| {
                 state.working_mcp.servers.iter().any(|s| s.name == n)
             });
@@ -357,18 +319,14 @@ pub(super) fn update(state: &mut SettingsState, event: McpEvent) {
                     env_vars: IndexMap::new(),
                 },
                 qualify_tool_names: false,
-                prompt: String::new(),
             });
             state.expanded_mcp = Some(state.working_mcp.servers.len() - 1);
-            state.init_mcp_text_area();
         }
         McpEvent::DeleteMcp(index) => {
-            state.flush_mcp_text_area();
             if index < state.working_mcp.servers.len() {
                 state.working_mcp.servers.remove(index);
             }
             state.expanded_mcp = remove_expanded(state.expanded_mcp, index);
-            state.init_mcp_text_area();
         }
         McpEvent::EditMcpName(index, v) => {
             if let Some(s) = state.mcp_mut(index) {
@@ -448,10 +406,7 @@ pub(super) fn update(state: &mut SettingsState, event: McpEvent) {
                 *value = v;
             }
         }
-        McpEvent::McpTextArea(msg) => state.mcp_prompt_area.update(msg, false),
         McpEvent::SaveMcp => {
-            // Flush any pending TextArea edits to server structs.
-            state.flush_mcp_text_area();
             // Drop servers left with a blank name — they cannot be connected.
             state
                 .working_mcp

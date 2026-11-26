@@ -16,11 +16,7 @@ impl Tool for FindTool {
     }
 
     fn description(&self) -> &str {
-        "Find files matching a glob pattern. Respects .gitignore and returns workspace-relative paths."
-    }
-
-    fn instruction(&self) -> &str {
-        "Find files matching a glob pattern (for example, *.rs or src/**/*.ts). Respects .gitignore rules and returns workspace-relative paths, one per line. Use this tool to discover file locations before attempting to read or modify files."
+        "Find files by glob (e.g. `*.rs`, `src/**/*.ts`) before reading or editing. Respects `.gitignore`; returns workspace-relative paths, one per line."
     }
 
     fn schema(&self) -> Value {

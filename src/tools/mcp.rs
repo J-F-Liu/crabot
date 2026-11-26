@@ -66,9 +66,6 @@ pub struct McpServer {
     pub transport: McpTransport,
     /// If true, tool names are prefixed with `{server_name}_`.
     pub qualify_tool_names: bool,
-    /// Prompt text injected into the system prompt when the server is enabled.
-    #[serde(default)]
-    pub prompt: String,
 }
 
 /// Persistable list of configured MCP servers.
@@ -167,10 +164,6 @@ impl Tool for McpTool {
 
     fn description(&self) -> &str {
         &self.description
-    }
-
-    fn instruction(&self) -> &str {
-        ""
     }
 
     fn schema(&self) -> Value {

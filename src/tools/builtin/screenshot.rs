@@ -36,11 +36,7 @@ impl Tool for ScreenshotTool {
     }
 
     fn description(&self) -> &str {
-        "Capture a screenshot of a monitor or window and attach it to the conversation."
-    }
-
-    fn instruction(&self) -> &str {
-        "Capture a monitor or window as a picture attached to the conversation. Omit both targets to list available monitors and windows. Otherwise, specify `monitor` (0-based index, name substring, or \"primary\") or `window` (title, app name, or ID). Screenshots are saved to `.agent/screenshots/` and automatically downscaled."
+        "Capture and attach a monitor or window picture. Omit both targets to list monitors and windows. `monitor`: 0-based index, name substring, or \"primary\"; `window`: title, app name, or ID. Saves to `.agent/screenshots/` and downscales automatically."
     }
 
     fn schema(&self) -> Value {

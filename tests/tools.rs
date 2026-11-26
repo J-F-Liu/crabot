@@ -1307,3 +1307,67 @@ fn search_allows_a_crate_directory_under_the_registry() {
     let result = run_search("needle", &dir, &tmp.path).unwrap();
     assert!(result.contains("needle"), "{result}");
 }
+
+// ── description constraints ─────────────────────────────────
+
+/// Tool usage instructions now live in `description()`; guard the constraints
+/// that used to be a separate system-prompt section against rewording losses.
+#[test]
+fn descriptions_keep_usage_constraints() {
+    let required: &[(&str, &[&str])] = &[
+        ("ask", &["times out", "options"]),
+        ("bash", &["timeout", "`process`", "compgen -b"]),
+        ("crate_source", &["cargo fetch"]),
+        ("edit", &["exactly once", "overlap"]),
+        ("fetch", &["format:", "Use HTML only when"]),
+        ("find", &[".gitignore", "workspace-relative"]),
+        ("process", &["pid", "wait_window"]),
+        ("read", &["offset", "marker", "downscaled"]),
+        ("renew", &["at most once", "todo"]),
+        ("screenshot", &["primary", ".agent/screenshots/"]),
+        ("search", &["file:line:content", ".gitignore"]),
+        ("task", &["self-contained", "easy", "hard"]),
+        ("todo", &["entire list"]),
+        ("write", &["overwriting", "parent directories"]),
+    ];
+    let registry = crabot::tools::ToolRegistry::new();
+    for tool in &registry.builtin {
+        let desc = tool.description();
+        assert!(!desc.is_empty(), "{} has no description", tool.name());
+        let Some((_, keys)) = required.iter().find(|(name, _)| *name == tool.name()) else {
+            panic!("no constraints listed for {}", tool.name());
+        };
+        for key in *keys {
+            assert!(
+                desc.contains(key),
+                "`{}` description lost `{key}`: {desc}",
+                tool.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn bundled_custom_tool_descriptions_keep_usage_hints() {
+    let source = crabot::setup::ASSETS
+        .get_file("tools.ron")
+        .and_then(|file| file.contents_utf8())
+        .expect("bundled tools.ron");
+    let list: crabot::tools::custom::ToolList = ron::from_str(source).unwrap();
+    for (name, hints) in [
+        ("web_search", ["site:", "quoted phrases"].as_slice()),
+        ("calculator", ["complete expression"].as_slice()),
+    ] {
+        let tool = list
+            .custom_tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("missing bundled tool `{name}`"));
+        for hint in hints {
+            assert!(
+                tool.description.contains(hint),
+                "`{name}` description lost `{hint}`"
+            );
+        }
+    }
+}

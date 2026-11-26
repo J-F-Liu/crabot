@@ -47,11 +47,7 @@ impl Tool for TodoTool {
     }
 
     fn description(&self) -> &str {
-        "Create or update the entire todo list in current session."
-    }
-
-    fn instruction(&self) -> &str {
-        "For complex multi-step tasks, use this tool to maintain the todo list of the session."
+        "Track complex multi-step work in the session todo list. Each call replaces the entire list; always submit all items, not just changes."
     }
 
     fn schema(&self) -> Value {

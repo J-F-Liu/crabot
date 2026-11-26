@@ -27,8 +27,6 @@ pub(crate) struct PromptOptions {
     pub(crate) skills_enabled: bool,
     /// Skill files picked for this tab, in selection order.
     pub(crate) selected_skills: Vec<String>,
-    /// Whether the generated tools summary joins the system prompt.
-    pub(crate) tools_enabled: bool,
     /// Whether the workspace line joins the system prompt.
     pub(crate) workspace_enabled: bool,
     /// Workspace picked for this tab.
@@ -74,7 +72,6 @@ impl PromptOptions {
             preamble_enabled: prompt.preamble_enabled,
             skills_enabled: prompt.skills_enabled,
             selected_skills: prompt.selected_skills.clone(),
-            tools_enabled: prompt.tools.enabled,
             workspace_enabled: prompt.workspace.0,
             workspace: prompt.workspace.1.clone(),
             agents_md: prompt.agents_md.1.clone(),
@@ -152,7 +149,6 @@ impl App {
         self.prompt.restore(&options);
         self.tools.enabled_tools = options.enabled_tools;
         self.tools.enabled_mcp_servers = options.enabled_mcp_servers;
-        self.refresh_tools_summary();
 
         // A workspace switch clears the tree; refill it when the pane is open.
         let tree_task = if self.prompt.files.expanded && self.prompt.files.tree.is_empty() {
@@ -164,16 +160,6 @@ impl App {
             .chain(tree_task)
             .chain(connect_missing_mcp_servers(self))
     }
-    /// Tools prompt section for a request on `pos`: the live text when it is
-    /// the viewing tab, a summary of the tab's own tools otherwise.
-    pub(crate) fn tools_section(&self, pos: usize, options: &PromptOptions) -> String {
-        if pos == self.conversation.viewing {
-            self.prompt.tools.content.text()
-        } else {
-            self.tools
-                .summary_for(&options.enabled_tools, &options.enabled_mcp_servers)
-        }
-    }
 }
 
 impl PromptWorkspaceState {
@@ -182,7 +168,6 @@ impl PromptWorkspaceState {
         self.preamble_enabled = options.preamble_enabled;
         self.skills_enabled = options.skills_enabled;
         self.selected_skills.clone_from(&options.selected_skills);
-        self.tools.enabled = options.tools_enabled;
         self.workspace.0 = options.workspace_enabled;
         // Keep the cached AGENTS.md; a workspace switch rescans it off-thread.
         self.agents_md = (options.agents_md_enabled, options.agents_md.clone());

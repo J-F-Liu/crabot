@@ -2,17 +2,15 @@ use iced::{
     Alignment, Element, Fill, Length, Widget,
     widget::{
         Space, button, checkbox, column, container, mouse_area, row, scrollable, text,
-        text::Wrapping, text_editor, text_input,
+        text::Wrapping, text_input,
     },
 };
 
 use crate::PromptEvent;
-use crate::{AGENTS_MD, DATE, FilepathEntry, PREAMBLE, SKILLS, TOOLS, WORKSPACE};
+use crate::{AGENTS_MD, DATE, FilepathEntry, PREAMBLE, SKILLS, WORKSPACE};
 use crabot::i18n::Lang;
 
 use super::styles::{menu_container_style, styled_pick_list};
-use super::theme::thin_vertical;
-use crate::app::ExpandableEditor;
 use crate::widgets::popup_menu::PopupMenu;
 
 use std::borrow::Cow;
@@ -137,30 +135,6 @@ pub(crate) fn skills_picker_view<'a>(
     .spacing(4)
     .align_y(Alignment::Center)
     .boxed()
-}
-
-pub(crate) fn tools_field_view<'a>(
-    tools: &'a ExpandableEditor,
-    lang: crabot::i18n::Lang,
-) -> Element<'a, PromptEvent> {
-    let name = TOOLS;
-    let header = expandable_header(name, tools.enabled, tools.expanded, lang);
-
-    if tools.expanded {
-        column![
-            header,
-            scrollable(
-                text_editor(&tools.content)
-                    .on_action(move |a| PromptEvent::EditTextContent(name, a))
-                    .height(Length::Fixed(120.0)),
-            )
-            .direction(thin_vertical()),
-        ]
-        .spacing(4)
-        .boxed()
-    } else {
-        header
-    }
 }
 
 pub(crate) fn workspace_field_view<'a>(

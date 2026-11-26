@@ -93,11 +93,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace exact string matches in a file through an ordered list of edits. Each old_text must appear exactly once in the original file. Edits must not overlap or nested. If two changes touch the same block or nearby lines, merge them into one edit instead."
-    }
-
-    fn instruction(&self) -> &str {
-        "Perform exact string replacements in an existing file. Use this tool for precise, localized edits instead of rewriting the entire file. Edits are validated before application and will fail if matches are ambiguous, duplicated, overlapping, or missing."
+        "Apply ordered exact string replacements for localized changes instead of rewriting the file. Each `old_text` must occur exactly once in the original. Edits must not overlap or nest; merge changes to the same block or nearby lines. All edits are validated first; ambiguous, duplicate, overlapping, or missing matches fail."
     }
 
     fn schema(&self) -> Value {

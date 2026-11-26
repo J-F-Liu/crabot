@@ -18,11 +18,7 @@ impl Tool for FetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch the content of a webpage or remote document from an HTTP or HTTPS URL. By default, returns cleaned Markdown optimized for LLM consumption. Use HTML only when the page structure or raw markup is required."
-    }
-
-    fn instruction(&self) -> &str {
-        "Fetch the content of a webpage or remote document over HTTP/HTTPS. Returns cleaned Markdown by default; pass format \"text\" for extracted plain text or \"html\" for raw markup."
+        "Fetch a webpage or remote document over HTTP/HTTPS. Defaults to cleaned, LLM-friendly Markdown; `format: \"text\"` returns extracted plain text and `format: \"html\"` raw markup. Use HTML only when page structure or raw markup is required."
     }
 
     fn schema(&self) -> Value {

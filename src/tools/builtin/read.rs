@@ -20,11 +20,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file from the filesystem with line-numbered output. Supports offset and line-limit pagination. Image files are attached to the conversation so they can be looked at."
-    }
-
-    fn instruction(&self) -> &str {
-        "When reading files, prefer larger, context-rich reads over multiple small consecutive reads. Large files may be truncated with a marker such as \"[213 more lines in file. Use offset=2000 to continue.]\". You can use the `read` tool to load additional content if needed. Never pass the truncation marker to an edit tool. You don't need to read a file if it's already provided in context. Reading an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp) attaches the picture itself to the conversation instead of returning its bytes; oversized images are downscaled automatically, so never install image libraries or generate thumbnails to look at one."
+        "Read a file with line numbers. Use `offset`/`limit` for pagination; prefer large, context-rich reads. If output ends with a truncation marker, continue at its offset and never pass the marker to an edit tool. Do not reread files already in context. Images (.png, .jpg, .jpeg, .gif, .webp, .bmp) are attached as pictures; oversized images are downscaled automatically—never install image libraries or create thumbnails."
     }
 
     fn schema(&self) -> Value {

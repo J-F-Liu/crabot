@@ -220,7 +220,6 @@ pub static TABLE: &[(&str, &str)] = &[
     ),
     ("untitled", "未命名"),
     ("Description", "描述"),
-    ("Instruction", "指令"),
     ("Command", "命令"),
     (
         "snake_case name used by the model",
@@ -229,10 +228,6 @@ pub static TABLE: &[(&str, &str)] = &[
     (
         "What the tool does — shown to the model",
         "工具的用途——将展示给模型",
-    ),
-    (
-        "When and how the model should use this tool",
-        "模型在何时以及如何使用此工具",
     ),
     (
         "Command template, e.g. git log {args}",
@@ -300,15 +295,6 @@ pub static TABLE: &[(&str, &str)] = &[
     (
         "Prefix tool names with \"{name}_\"",
         "给工具名添加 \"{name}_\" 前缀",
-    ),
-    ("Prompt", "提示词"),
-    (
-        "System-prompt text injected when this server is enabled",
-        "启用该服务器时注入的系统提示词内容",
-    ),
-    (
-        "Prompt is added to the system prompt when the server is enabled and at least one of its tools is selected.",
-        "启用该服务器且至少选中其一个工具时，提示词会加入系统提示词。",
     ),
     ("value", "值"),
     // ── Prompt Recipes page (prompt_recipes.rs) ──

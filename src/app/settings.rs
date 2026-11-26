@@ -137,7 +137,6 @@ pub(crate) fn handle_event(app: &mut App, event: SettingsEvent) -> Task<Message>
             let added: Vec<String> = new_names.difference(&old_names).cloned().collect();
             tool_state::apply_names(&mut app.tools.enabled_tools, &removed, &added);
             tool_state::sync_tab_tool_names(app, &removed, &added);
-            app.refresh_tools_summary();
         }
         SettingsEvent::Mcp(McpEvent::SaveMcp) => {
             app.settings_dialog.update(event);

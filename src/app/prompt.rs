@@ -1,4 +1,4 @@
-use iced::{Task, widget::text_editor};
+use iced::Task;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -8,7 +8,6 @@ use crabot::workspace;
 
 pub(crate) const PREAMBLE: &str = "Preamble";
 pub(crate) const SKILLS: &str = "Skills";
-pub(crate) const TOOLS: &str = "Tools";
 pub(crate) const WORKSPACE: &str = "Workspace";
 pub(crate) const AGENTS_MD: &str = "AGENTS.md";
 pub(crate) const WORKSPACE_TREE: &str = "Workspace tree";
@@ -52,7 +51,6 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         PromptEvent::ToggleEnabled(name, enabled) => match name {
             WORKSPACE => app.prompt.workspace.0 = enabled,
             WORKSPACE_TREE => app.prompt.files.enabled = enabled,
-            TOOLS => app.prompt.tools.enabled = enabled,
             PREAMBLE => {
                 app.prompt.preamble_enabled = enabled;
             }
@@ -74,8 +72,6 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
                 }
                 // Drop the stale snapshot so re-expanding shows "Loading…".
                 app.prompt.files.tree.clear();
-            } else if name == TOOLS {
-                app.prompt.tools.expanded = !app.prompt.tools.expanded;
             } else {
                 app.tools.tool_list_state.update(name);
             }
@@ -83,19 +79,6 @@ pub(crate) fn update(app: &mut App, event: PromptEvent) -> Task<Message> {
         PromptEvent::EditTextField(name, value) => {
             if let Some(field) = app.prompt.get_mut(name) {
                 field.1 = value;
-            }
-        }
-        PromptEvent::EditTextContent(name, action) => {
-            if matches!(action, text_editor::Action::Click(..)) {
-                app.layout.focused = Some(FocusedTarget::EditText(name));
-            }
-            let Some(content) = app.prompt.content_mut(name) else {
-                return Task::none();
-            };
-            content.perform(action);
-            let text = content.text();
-            if let Some(field) = app.prompt.get_mut(name) {
-                field.1 = text;
             }
         }
         PromptEvent::EditTextArea(target, message) => {

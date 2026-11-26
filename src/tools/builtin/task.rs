@@ -46,11 +46,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Delegate a task to a new isolated agent session."
-    }
-
-    fn instruction(&self) -> &str {
-        "Use the task tool to delegate self-contained subtasks to a sub-agent instead of doing everything yourself. The prompt must be complete and self-contained — the sub-agent does not see this conversation. The mode selects a behavior preamble for the sub-agent, the difficulty (easy or hard) selects the configured subtask model. The call blocks until the sub-agent finishes and returns its final report as the tool result. Sub-agents can spawn further nested subtasks — each call blocks until that nested sub-agent finishes and returns its report."
+        "Delegate a self-contained subtask to an isolated agent instead of doing everything yourself. Include all context in the prompt; the sub-agent cannot see this conversation. `mode` selects its behavior preamble; `difficulty` (`easy`/`hard`) selects the configured model. Blocks until completion and returns the final report. Sub-agents may nest tasks; nested calls behave the same."
     }
 
     fn schema(&self) -> Value {

@@ -22,11 +22,7 @@ impl Tool for CrateSourceTool {
     }
 
     fn description(&self) -> &str {
-        "Find the local source directory of a crate locked in the workspace's Cargo.lock. Resolves registry, git, and path dependencies without scanning the cache. Missing crates.io sources include a download URL."
-    }
-
-    fn instruction(&self) -> &str {
-        "Look up a Rust crate's locked source directory. Before inspecting a dependency's source code, use crate_source to find its local path; run `cargo fetch` if the source is missing."
+        "Locate the local source of a crate locked in the workspace `Cargo.lock`, without scanning the cache. Supports registry, git, and path dependencies; use before inspecting dependency source. Run `cargo fetch` if source is missing. Missing crates.io sources include a download URL."
     }
 
     fn schema(&self) -> Value {

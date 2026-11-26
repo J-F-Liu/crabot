@@ -8,7 +8,7 @@ use super::session_list::session_view;
 use super::styles::{label, pane_side};
 use super::system_prompt::{
     agents_md_field_view, date_field_view, preamble_picker_view, skills_picker_view,
-    tools_field_view, workspace_field_view,
+    workspace_field_view,
 };
 use super::theme::thin_vertical;
 use super::tool_list::{
@@ -85,7 +85,6 @@ pub(crate) fn left_pane<'a>(
                         lang,
                     )
                     .map(LeftPaneEvent::Prompt),
-                    tools_field_view(&prompt.tools, lang).map(LeftPaneEvent::Prompt),
                     workspace_field_view(&prompt.workspace, workspace_options, lang)
                         .map(LeftPaneEvent::Prompt),
                     // Nest the optional row so its absence adds no extra gap.

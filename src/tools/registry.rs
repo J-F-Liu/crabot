@@ -136,13 +136,6 @@ impl ToolRegistry {
             )
     }
 
-    /// Whether any enabled tool belongs to the given MCP server.
-    pub fn mcp_server_has_enabled_tool(&self, server: &str, enabled: &HashSet<String>) -> bool {
-        self.mcp
-            .iter()
-            .any(|(s, tools)| s == server && tools.iter().any(|t| enabled.contains(&t.name)))
-    }
-
     /// Return a snapshot of the current todo list.
     pub fn snapshot_todo(&self) -> Vec<todo::TodoItem> {
         self.todo_items

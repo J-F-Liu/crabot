@@ -9,7 +9,6 @@ pub static TABLE: &[(&str, &str)] = &[
     // ── system prompt fields (system_prompt.rs) ──
     ("Preamble", "前言"),
     ("Skills", "技能"),
-    ("Tools", "工具"),
     ("Workspace", "工作区"),
     ("Date", "日期"),
     ("None selected", "未选择"),

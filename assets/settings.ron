@@ -8,7 +8,6 @@
     selected_skills: ["rust"],
     preamble_enabled: true,
     skills_enabled: true,
-    tools_enabled: true,
     workspace_enabled: true,
     agents_md_enabled: true,
     date_enabled: true,

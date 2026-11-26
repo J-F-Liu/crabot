@@ -1,25 +1,33 @@
-//! Restricts iced's global text selection to the pane where the drag began.
+//! Restricts iced's global text selection to the region where the drag began.
+
+use std::any::Any;
 
 use iced::advanced::layout::{self, Layout};
-use iced::advanced::widget::operation::{Operation, Outcome, Text};
+use iced::advanced::widget::operation::{
+    Focusable, Operation, Outcome, Scrollable, Text, TextInput,
+};
 use iced::advanced::widget::tree::{self, Tree};
 use iced::advanced::widget::{Meta, Widget};
 use iced::advanced::{Shell, overlay, renderer};
 use iced::mouse;
 use iced::widget::Id;
-use iced::{Element, Event, Length, Rectangle, Renderer, Size, Theme, Vector, Widget as _};
+use iced::{Element, Event, Length, Point, Rectangle, Renderer, Size, Theme, Vector, Widget as _};
 
-/// Wraps `content` and filters text-selection operations to `x_bounds`.
-pub(crate) struct SelectionScope<'a, Message> {
+/// Restricts text selection to the region containing `origin`.
+struct SelectionScope<'a, Message> {
     content: Element<'a, Message>,
-    x_bounds: Option<(f32, f32)>,
+    origin: Option<Point>,
 }
 
 pub(crate) fn selection_scope<'a, Message: 'a>(
-    content: Element<'a, Message>,
-    x_bounds: Option<(f32, f32)>,
+    content: impl Widget<Message, Theme, Renderer> + 'a,
+    origin: Option<Point>,
 ) -> Element<'a, Message> {
-    SelectionScope { content, x_bounds }.boxed()
+    SelectionScope {
+        content: content.boxed(),
+        origin,
+    }
+    .boxed()
 }
 
 impl<Message> Meta for SelectionScope<'_, Message> {
@@ -79,13 +87,9 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectionScope<'_, Message> {
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        match self.x_bounds {
-            Some((start, end)) => {
-                let mut scoped = TextScope {
-                    inner: operation,
-                    start,
-                    end,
-                };
+        match self.origin {
+            Some(origin) if !layout.bounds().contains(origin) => {
+                let mut scoped = DeselectText { inner: operation };
                 self.content.operate(
                     &mut tree.children[0],
                     layout,
@@ -94,7 +98,7 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectionScope<'_, Message> {
                     &mut scoped,
                 );
             }
-            None => {
+            _ => {
                 self.content
                     .operate(&mut tree.children[0], layout, viewport, renderer, operation);
             }
@@ -154,25 +158,15 @@ impl<Message> Widget<Message, Theme, Renderer> for SelectionScope<'_, Message> {
     }
 }
 
-/// Forwards every operation except text selection outside `start..end`.
-struct TextScope<'a> {
+/// Forwards every operation except text operations, which clear the selection.
+struct DeselectText<'a> {
     inner: &'a mut dyn Operation,
-    start: f32,
-    end: f32,
 }
 
-impl TextScope<'_> {
-    fn in_scope(&self, bounds: Rectangle) -> bool {
-        bounds.x + bounds.width > self.start && bounds.x < self.end
-    }
-}
-
-impl Operation for TextScope<'_> {
+impl Operation for DeselectText<'_> {
     fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
-        let (start, end) = (self.start, self.end);
-        self.inner.traverse(&mut |inner| {
-            operate(&mut TextScope { inner, start, end });
-        });
+        self.inner
+            .traverse(&mut |inner| operate(&mut DeselectText { inner }));
     }
 
     fn container(&mut self, id: Option<&Id>, bounds: Rectangle, viewport: &Rectangle) {
@@ -185,39 +179,25 @@ impl Operation for TextScope<'_> {
         bounds: Rectangle,
         content: Size,
         translation: Vector,
-        state: &mut dyn iced::advanced::widget::operation::Scrollable,
+        state: &mut dyn Scrollable,
     ) {
         self.inner
             .scrollable(id, bounds, content, translation, state);
     }
 
-    fn focusable(
-        &mut self,
-        id: Option<&Id>,
-        bounds: Rectangle,
-        state: &mut dyn iced::advanced::widget::operation::Focusable,
-    ) {
+    fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
         self.inner.focusable(id, bounds, state);
     }
 
-    fn text_input(
-        &mut self,
-        id: Option<&Id>,
-        bounds: Rectangle,
-        state: &mut dyn iced::advanced::widget::operation::TextInput,
-    ) {
+    fn text_input(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn TextInput) {
         self.inner.text_input(id, bounds, state);
     }
 
-    fn text(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Text) {
-        if self.in_scope(bounds) {
-            self.inner.text(id, bounds, state);
-        } else {
-            state.deselect();
-        }
+    fn text(&mut self, _id: Option<&Id>, _bounds: Rectangle, state: &mut dyn Text) {
+        state.deselect();
     }
 
-    fn custom(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn std::any::Any) {
+    fn custom(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Any) {
         self.inner.custom(id, bounds, state);
     }
 

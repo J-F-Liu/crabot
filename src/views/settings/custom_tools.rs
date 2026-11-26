@@ -29,7 +29,6 @@ const PARAM_KINDS: &[&str] = &["string", "integer", "number", "boolean"];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolTextField {
     Description,
-    Instruction,
     Body,
     ResponseTemplate,
 }
@@ -86,7 +85,6 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Set
         } else {
             let areas = ToolAreas {
                 description: &state.tool_desc_area,
-                instruction: &state.tool_instr_area,
                 body: &state.tool_body_area,
                 response_template: &state.tool_response_template_area,
             };
@@ -120,7 +118,6 @@ pub(super) fn custom_tools_page<'a>(state: &'a SettingsState) -> Element<'a, Set
 /// Multi-line buffers shared by the expanded tool's form.
 struct ToolAreas<'a> {
     description: &'a TextArea,
-    instruction: &'a TextArea,
     body: &'a TextArea,
     response_template: &'a TextArea,
 }
@@ -209,19 +206,6 @@ fn tool_form<'a>(
             move |msg| {
                 SettingsEvent::CustomTools(CustomToolsEvent::ToolTextArea(
                     ToolTextField::Description,
-                    msg,
-                ))
-            },
-        ),
-        textarea_field_row(
-            lang.tr("Instruction"),
-            areas.instruction,
-            lang.tr("When and how the model should use this tool"),
-            64.0,
-            false,
-            move |msg| {
-                SettingsEvent::CustomTools(CustomToolsEvent::ToolTextArea(
-                    ToolTextField::Instruction,
                     msg,
                 ))
             },
@@ -668,7 +652,6 @@ pub(super) fn update(state: &mut SettingsState, event: CustomToolsEvent) {
         }
         CustomToolsEvent::ToolTextArea(field, msg) => match field {
             ToolTextField::Description => state.tool_desc_area.update(msg, false),
-            ToolTextField::Instruction => state.tool_instr_area.update(msg, false),
             ToolTextField::Body => state.tool_body_area.update(msg, false),
             ToolTextField::ResponseTemplate => state.tool_response_template_area.update(msg, false),
         },

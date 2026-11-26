@@ -218,8 +218,6 @@ pub(crate) struct SettingsState {
     pub(super) expanded_tool: Option<usize>,
     /// `TextArea` for the description of the currently expanded tool.
     pub(super) tool_desc_area: TextArea,
-    /// `TextArea` for the instruction of the currently expanded tool.
-    pub(super) tool_instr_area: TextArea,
     /// `TextArea` for the HTTP body of the currently expanded tool.
     pub(super) tool_body_area: TextArea,
     /// `TextArea` for the HTTP response template of the currently expanded tool.
@@ -232,8 +230,6 @@ pub(crate) struct SettingsState {
     pub(crate) working_mcp: McpList,
     /// Index of the MCP server card currently expanded, if any.
     pub(super) expanded_mcp: Option<usize>,
-    /// `TextArea` for the prompt of the currently expanded MCP server.
-    pub(super) mcp_prompt_area: TextArea,
     /// Which tab just saved — drives the "Saved ✓" button label.
     pub(super) save_feedback: Option<SettingsTab>,
     // ── Tool Playground state ────────────────────────────────
@@ -316,14 +312,12 @@ impl Default for SettingsState {
             working_tools: ToolList::default(),
             expanded_tool: None,
             tool_desc_area: TextArea::new(),
-            tool_instr_area: TextArea::new(),
             tool_body_area: TextArea::new(),
             tool_response_template_area: TextArea::new(),
             tool_drafts: Vec::new(),
             tool_form_error: None,
             working_mcp: McpList::default(),
             expanded_mcp: None,
-            mcp_prompt_area: TextArea::new(),
             save_feedback: None,
             update_check: about::UpdateCheck::Idle,
             auto_check_updates: true,
@@ -445,7 +439,6 @@ impl SettingsState {
         self.working_tools = tools;
         self.expanded_tool = None;
         self.tool_desc_area = TextArea::new();
-        self.tool_instr_area = TextArea::new();
         self.tool_body_area = TextArea::new();
         self.tool_response_template_area = TextArea::new();
         self.tool_form_error = None;
@@ -455,7 +448,6 @@ impl SettingsState {
     pub(crate) fn load_mcp(&mut self, servers: McpList) {
         self.working_mcp = servers;
         self.expanded_mcp = None;
-        self.mcp_prompt_area = TextArea::new();
     }
 
     /// Load tool snapshots from the live registry for the playground picker.
@@ -676,7 +668,6 @@ impl SettingsState {
             return;
         };
         tool.description = self.tool_desc_area.text();
-        tool.instruction = self.tool_instr_area.text();
         if let ToolKind::Http(request) = &mut tool.kind {
             request.body = self.tool_body_area.text();
             request.response_template = self.tool_response_template_area.text();
@@ -694,8 +685,6 @@ impl SettingsState {
         };
         self.tool_desc_area
             .set_text(tool.map_or("", |t| &t.description));
-        self.tool_instr_area
-            .set_text(tool.map_or("", |t| &t.instruction));
         self.tool_body_area.set_text(body);
         self.tool_response_template_area.set_text(template);
     }
@@ -715,24 +704,6 @@ impl SettingsState {
                 McpTransport::Stdio { env_vars, .. } => env_vars,
                 McpTransport::Http { headers, .. } => headers,
             })
-    }
-
-    /// Flush TextArea content back to the currently expanded MCP server.
-    fn flush_mcp_text_area(&mut self) {
-        if let Some(i) = self.expanded_mcp
-            && let Some(server) = self.working_mcp.servers.get_mut(i)
-        {
-            server.prompt = self.mcp_prompt_area.text();
-        }
-    }
-
-    /// Initialize TextArea content from the currently expanded MCP server.
-    fn init_mcp_text_area(&mut self) {
-        if let Some(i) = self.expanded_mcp
-            && let Some(server) = self.working_mcp.servers.get(i)
-        {
-            self.mcp_prompt_area.set_text(&server.prompt);
-        }
     }
 
     /// Load prompt recipes into the dialog's working copy (on dialog open).

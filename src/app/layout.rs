@@ -10,13 +10,17 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
     match event {
         LayoutEvent::CursorMoved(pos) => cursor_moved(app, pos),
         LayoutEvent::LeftPressed { ignored } => {
+            app.layout.selection_origin = ignored.then_some(app.layout.cursor);
             if ignored {
                 app.layout.focused = None;
-                app.layout.selection_x = Some(pane_x_bounds(app));
             }
             return left_pressed(app);
         }
-        LayoutEvent::LeftReleased => left_released(app),
+        LayoutEvent::LeftReleased => {
+            // Scoping ends with the drag so copy operations see every selection.
+            app.layout.selection_origin = None;
+            left_released(app)
+        }
         LayoutEvent::WindowResized(size) => {
             if size.width > 0.0 && size.height > 0.0 {
                 app.layout.window_size = size;
@@ -118,22 +122,6 @@ fn cursor_moved(app: &mut App, pos: Point) {
     } else if app.layout.right_divider.dragging {
         let delta = pos.x - app.layout.right_divider.origin;
         set_right_pane_width(app, app.layout.right_divider.start - delta);
-    }
-}
-
-/// Horizontal span of the pane under the pointer.
-fn pane_x_bounds(app: &App) -> (f32, f32) {
-    let x = app.layout.cursor.x;
-    let width = app.layout.window_size.width;
-    let left = app.settings.left_pane_width;
-    let right = app.settings.right_pane_width;
-    if x < left {
-        (0.0, left)
-    } else if right > 0.0 && x > width - right {
-        (width - right, width)
-    } else {
-        let end = if right > 0.0 { width - right } else { width };
-        (left + HANDLE, end)
     }
 }
 

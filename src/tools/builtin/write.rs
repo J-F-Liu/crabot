@@ -16,11 +16,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file, overwriting existing files. Creates parent directories as needed."
-    }
-
-    fn instruction(&self) -> &str {
-        "You may use tools multiple times in a single response and continue writing after tool calls. When editing files, group your changes by file. For each file, provide a brief description of the intended changes."
+        "Write complete file content, overwriting existing files and creating parent directories as needed. Briefly describe each file's intended changes, and make multiple calls in one response when useful."
     }
 
     fn schema(&self) -> Value {

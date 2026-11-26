@@ -91,11 +91,7 @@ impl Tool for ProcessTool {
     }
 
     fn description(&self) -> &str {
-        "Manage long-running processes started by the agent, including starting, monitoring, interacting with, and stopping processes."
-    }
-
-    fn instruction(&self) -> &str {
-        "Use the process tool to start, monitor, interact with, and stop long-running processes such as servers, watchers, and REPLs. `start` returns the operating system `pid`; pass it to every later operation. Prefer this over the `bash` tool for anything that does not exit on its own, and remember to stop processes you no longer need. `wait_window` blocks until the process or a child opens a visible window, useful before screenshotting a GUI; it fails if the timeout expires or the process exits first."
+        "Manage long-running servers, watchers, and REPLs: start, monitor, interact, and stop. Prefer over `bash` for processes that do not exit; stop unneeded processes. `start` returns an OS `pid` for later operations. `wait_window` waits for a visible window from the process or a child, useful before screenshots; it fails on timeout or early process exit."
     }
 
     fn schema(&self) -> Value {

@@ -19,11 +19,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command via Bash. Use only for builds, tests, Git, package managers, and CLI tooling — for file operations use the dedicated `read`, `write`, `search`, and `find` tools instead of `cat`, `echo`, `grep` and `find` commands. `grep -r` does not read `.gitignore`; use the `search` tool or `rg` for repository-wide searches."
-    }
-
-    fn instruction(&self) -> &str {
-        "Commands run in the workspace directory and time out after 120 seconds by default; pass a `timeout` value in milliseconds to adjust. Never background a command (`&`, `nohup`, `setsid`) to keep it running — it is refused, since the process is killed when the call ends; use the process tool for anything that must outlive the call. Run `compgen -b` to list all available built-in commands (such as `json`, `csv`, `tomlq`, `http`); run `help <cmd>` for a description of a specific builtin. Note: `grep -r` follows GNU grep semantics and does not read `.gitignore` or skip hidden/build directories; for repository-wide content search use the `search` tool or `rg`."
+        "Run Bash commands in the workspace for builds, tests, Git, package managers, and CLI tools. Default timeout is 120 seconds; `timeout` is in milliseconds. Backgrounding with `&`, `nohup`, or `setsid` is refused; processes are killed when the call ends. Use `process` for anything that must outlive it. Use `read`, `write`, `search`, and `find` for file operations, not `cat`, `echo`, `grep`, or `find`. `compgen -b` lists built-ins; `help <cmd>` describes one. `grep -r` uses GNU semantics and does not respect `.gitignore` or skip hidden/build directories; use `search` or `rg` for repository-wide searches."
     }
 
     fn schema(&self) -> Value {

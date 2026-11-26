@@ -8,8 +8,8 @@ use crabot::user::{AttachmentKind, UserPrompt};
 use genai::chat::ChatRole;
 use iced::widget::markdown::Viewer as _;
 use iced::{
-    Alignment, Border, Color, Element, Fill, Font, Length, Padding, Rectangle, Size, Task, Theme,
-    Vector, Widget,
+    Alignment, Border, Color, Element, Fill, Font, Length, Padding, Point, Rectangle, Size, Task,
+    Theme, Vector, Widget,
     advanced::text::IntoFragment,
     advanced::widget::operate,
     advanced::widget::operation::{Operation, Outcome, Scrollable},
@@ -27,6 +27,7 @@ use crate::app::{AttachmentPreview, ConversationState, PreviewContent, SessionTa
 use crate::llm::DialogPhase;
 use crate::views::search_bar::SearchState;
 use crate::widgets::popup_menu::PopupMenu;
+use crate::widgets::selection_scope::selection_scope;
 use crate::{AskRequest, CenterPaneEvent, ConversationEvent};
 use crabot::i18n::Lang;
 
@@ -985,6 +986,7 @@ pub(crate) fn center_pane<'a>(
     lang: Lang,
     model: Option<&'a ModelConfig>,
     right_pane_collapsed: bool,
+    selection_origin: Option<Point>,
 ) -> Element<'a, CenterPaneEvent> {
     let tab: &SessionTab = conversation.viewing();
     let dialogs: &[Dialog] = tab.session.dialogs.as_slice();
@@ -1143,8 +1145,14 @@ pub(crate) fn center_pane<'a>(
 
     container(column![
         super::session_tabs::session_tabs(conversation, lang, right_pane_collapsed),
-        session_header(tab.header_title(), conversation, lang),
-        pending_header(pending_user_prompt, viewing_number, lang),
+        selection_scope(
+            session_header(tab.header_title(), conversation, lang),
+            selection_origin,
+        ),
+        selection_scope(
+            pending_header(pending_user_prompt, viewing_number, lang),
+            selection_origin,
+        ),
         if search_state.visible {
             super::search_bar::view(search_query, search_results, search_state.current, lang)
                 .map(|event| CenterPaneEvent::Conversation(ConversationEvent::SearchEvent(event)))
@@ -1152,32 +1160,37 @@ pub(crate) fn center_pane<'a>(
         } else {
             Space::new().width(0).height(0).boxed()
         },
-        scrollable(
-            column![
-                session_info(&tab.session, font_scale, conversation, lang),
-                column(dialog_blocks).spacing(8),
-            ]
-            .spacing(8)
-            .padding(14),
-        )
-        .height(Fill)
-        .direction(Direction::Vertical(
-            Scrollbar::new().width(6).scroller_width(6)
-        ))
-        .id(MESSAGE_SCROLL.clone())
-        .on_scroll(|scroll| CenterPaneEvent::SessionViewScrolled(scroll.viewport)),
+        selection_scope(
+            scrollable(
+                column![
+                    session_info(&tab.session, font_scale, conversation, lang),
+                    column(dialog_blocks).spacing(8),
+                ]
+                .spacing(8)
+                .padding(14),
+            )
+            .height(Fill)
+            .direction(Direction::Vertical(
+                Scrollbar::new().width(6).scroller_width(6)
+            ))
+            .id(MESSAGE_SCROLL.clone())
+            .on_scroll(|scroll| CenterPaneEvent::SessionViewScrolled(scroll.viewport)),
+            selection_origin,
+        ),
         ask_request
             .map(|request| {
-                super::tool_message::ask_view(
-                    request,
-                    ask_input,
-                    ask_custom_input,
-                    tab.session_state.ask_seconds_left,
-                    font_scale,
-                    lang,
+                selection_scope(
+                    super::tool_message::ask_view(
+                        request,
+                        ask_input,
+                        ask_custom_input,
+                        tab.session_state.ask_seconds_left,
+                        font_scale,
+                        lang,
+                    )
+                    .map(CenterPaneEvent::Conversation),
+                    selection_origin,
                 )
-                .map(CenterPaneEvent::Conversation)
-                .boxed()
             })
             .unwrap_or_else(|| Space::new().boxed()),
         status_line(

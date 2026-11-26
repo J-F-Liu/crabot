@@ -143,7 +143,6 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn instruction(&self) -> &str;
     fn schema(&self) -> Value;
 
     /// Cancel-aware wrapper: checks the token *before* delegating to
