@@ -42,7 +42,7 @@ pub(super) struct ExecutionCtx<'a> {
 pub(super) fn is_serial_tool(name: &str) -> bool {
     matches!(
         name,
-        "ask" | "renew" | "write" | "edit" | "bash" | "process"
+        "ask" | "renew" | "write" | "edit" | "bash" | "process" | "send_input"
     )
 }
 
@@ -307,7 +307,7 @@ pub(super) async fn run_parallel_batch(
     }
 }
 
-/// Run one serial tool (ask/renew/write/edit/bash/process) and emit its result;
+/// Run one serial tool (ask/renew/write/edit/bash/process/send_input) and emit its result;
 /// failures are recorded as tool results rather than aborting the run.
 pub(super) async fn run_serial_tool(
     tc: &ToolCall,

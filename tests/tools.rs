@@ -1326,6 +1326,17 @@ fn descriptions_keep_usage_constraints() {
         ("renew", &["at most once", "todo"]),
         ("screenshot", &["primary", ".agent/screenshots/"]),
         ("search", &["file:line:content", ".gitignore"]),
+        (
+            "send_input",
+            &[
+                "screenshot",
+                "press_key",
+                "absolute screen pixels",
+                "window_id",
+                "foreground",
+                "wait_window",
+            ],
+        ),
         ("task", &["self-contained", "easy", "hard"]),
         ("todo", &["entire list"]),
         ("write", &["overwriting", "parent directories"]),
@@ -1344,6 +1355,28 @@ fn descriptions_keep_usage_constraints() {
                 tool.name()
             );
         }
+    }
+}
+
+fn run_send_input(args: serde_json::Value) -> Result<String, String> {
+    let registry = crabot::tools::ToolRegistry::new();
+    let tool = registry
+        .find_tool("send_input")
+        .expect("send_input is a registered built-in");
+    run_tool(tool, args, &crabot_workspace(), CancellationToken::new())
+}
+
+#[test]
+fn send_input_rejects_invalid_actions_before_touching_the_gui() {
+    let error = run_send_input(json!({ "actions": [] })).unwrap_err();
+    assert!(error.contains("at least one action"), "{error}");
+}
+
+#[test]
+fn send_input_rejects_invalid_window_ids_before_touching_the_gui() {
+    for bad in [json!(0), json!(-1), json!("window")] {
+        let error = run_send_input(json!({ "window_id": bad, "actions": [] })).unwrap_err();
+        assert!(error.contains("window_id"), "{error}");
     }
 }
 

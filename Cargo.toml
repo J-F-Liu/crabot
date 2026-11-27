@@ -108,7 +108,7 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 memchr = "2"
 linkify = "0.11.0"
-bashkit = { version = "=0.21.1", default-features = false, features = [
+bashkit = { version = "=0.22.0", default-features = false, features = [
     "http_client",
     "realfs",
     # 0.17: crypto backend is explicit now (ring = default, aws-lc-rs = FIPS).
@@ -141,6 +141,7 @@ base64 = "0.23.1"
 xcap = "0.9.8"
 # Percent-encode custom HTTP tool parameters in URLs.
 url = "2"
+enigo = "0.6.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -156,16 +157,30 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Globalization",
+    # `send_input` moves the pointer across the virtual desktop and focuses windows.
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
 ] }
 
 # X11/Wayland windowing and Linux theme detection only matter on Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
+# `send_input` raises a window through the window manager (`_NET_ACTIVE_WINDOW`).
+x11rb = "0.13"
 iced = { git = "https://github.com/iced-rs/iced", rev = "98bd48fe011efc0ec5819fee0fa7673a7169ff11", default-features = false, features = [
     "x11",
     "wayland",
     "wayland-dlopen",
     "wayland-decorations",
     "linux-theme-detection",
+] }
+
+# App-level window activation for `send_input` on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "libc",
+    "NSRunningApplication",
 ] }
 
 [build-dependencies]

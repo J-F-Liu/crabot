@@ -450,7 +450,7 @@ pub async fn send_stream(
             return;
         }
 
-        // Parallel tools run in batches; serial tools (ask/renew/write/edit/bash) are barriers.
+        // Parallel tools run in batches; serial tools (ask/renew/write/edit/bash/process/send_input) are barriers.
         // Every tool call runs and produces a result, so the tool calls in the
         // assistant message always have matching results in history.
         let mut tool_responses: Vec<ToolResponse> = Vec::with_capacity(tool_calls.len());

@@ -13,6 +13,7 @@ pub mod read;
 pub mod renew;
 pub mod screenshot;
 pub mod search;
+pub mod send_input;
 pub mod task;
 pub mod todo;
 pub mod write;

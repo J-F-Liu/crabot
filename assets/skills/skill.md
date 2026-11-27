@@ -21,7 +21,7 @@ Third-party skills are either a single Markdown file or an Agent Skills director
 3. Convert it to a flat skill:
    - Replace the frontmatter with an `# <Title>` heading and a `Use when …` sentence describing when to apply it.
    - Keep the instructions; drop marketplace, slash-command, and hook steps unsupported by crabot.
-   - Map tool references to crabot built-ins (`read`, `write`, `edit`, `find`, `search`, `bash`, `process`, `fetch`, `task`, `todo`, `ask`); keep language and build commands as `bash` snippets.
+   - Map tool references to crabot built-ins (`read`, `write`, `edit`, `find`, `search`, `bash`, `process`, `fetch`, `send_input`, `task`, `todo`, `ask`); keep language and build commands as `bash` snippets.
    - Copy support files to `~/.crabot/skills/<name>/` and reference them by absolute path (resolve `$HOME` with `bash`, e.g. `echo "$HOME"`), or inline short scripts.
 4. Use `write` to save the result as `~/.crabot/skills/<name>.md`, with an absolute path because `read`/`write` do not expand `~` or `$HOME`. Use a lowercase, hyphenated stem without spaces. Ask before overwriting an existing name, or add a vendor suffix.
 

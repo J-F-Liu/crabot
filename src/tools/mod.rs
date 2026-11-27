@@ -18,6 +18,7 @@ mod capture;
 mod cargo_registry;
 mod context;
 mod exec;
+mod focus;
 mod http;
 pub mod image;
 mod limits;
@@ -37,8 +38,8 @@ mod worker;
 pub mod builtin;
 /// Re-export the tools at the legacy `crate::tools::<tool>` paths.
 pub use builtin::{
-    ask, bash, crate_source, edit, fetch, find, process, read, renew, screenshot, search, task,
-    todo, write,
+    ask, bash, crate_source, edit, fetch, find, process, read, renew, screenshot, search,
+    send_input, task, todo, write,
 };
 
 pub use renew::move_renews_to_end;
