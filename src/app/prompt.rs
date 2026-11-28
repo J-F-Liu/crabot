@@ -291,6 +291,7 @@ fn add_attachments(app: &mut App, accepted: Vec<UserAttachment>) -> Vec<String> 
 /// Warn that an attachment was not added, with the caller-built reason list.
 fn show_attachment_warning(app: &App, details: &str) -> Task<Message> {
     crate::app::conversation::show_message_dialog(
+        app.main_window,
         rfd::MessageLevel::Warning,
         app.settings.language.tr("Attachment not added"),
         details,

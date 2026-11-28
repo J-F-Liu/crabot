@@ -51,32 +51,24 @@ fn localized_header_title(app: &App) -> String {
     }
 }
 
-/// Show an async, window-parented message dialog; the result is ignored.
+/// Show an async, main-window-parented message dialog; the result is ignored.
 pub(crate) fn show_message_dialog(
+    main: window::Id,
     level: rfd::MessageLevel,
     title: &str,
     description: &str,
 ) -> Task<Message> {
-    let title = title.to_owned();
-    let description = description.to_owned();
-    window::latest()
-        .then(move |id| {
-            let dialog = rfd::AsyncMessageDialog::new()
-                .set_level(level)
-                .set_title(title.as_str())
-                .set_description(description.as_str());
-            match id {
-                Some(id) => window::run(id, move |window| dialog.set_parent(window)),
-                None => Task::done(dialog),
-            }
+    let dialog = rfd::AsyncMessageDialog::new()
+        .set_level(level)
+        .set_title(title)
+        .set_description(description);
+    window::run(main, move |window| dialog.set_parent(window)).then(|dialog| {
+        Task::perform(dialog.show(), |_| {
+            Message::Conversation(ConversationEvent::ExportSessionHtmlDone(
+                export::ExportOutcome::Cancelled,
+            ))
         })
-        .then(|dialog| {
-            Task::perform(dialog.show(), |_| {
-                Message::Conversation(ConversationEvent::ExportSessionHtmlDone(
-                    export::ExportOutcome::Cancelled,
-                ))
-            })
-        })
+    })
 }
 
 /// Scroll the tab bar by `delta` pixels, clamping to valid range.
@@ -131,6 +123,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             export::ExportOutcome::SavedButNotOpened(error) => {
                 let lang = app.settings.language;
                 return show_message_dialog(
+                    app.main_window,
                     rfd::MessageLevel::Warning,
                     lang.tr("Export saved"),
                     &error,
@@ -139,6 +132,7 @@ pub(crate) fn update(app: &mut App, event: ConversationEvent) -> Task<Message> {
             export::ExportOutcome::Failed(error) => {
                 let lang = app.settings.language;
                 return show_message_dialog(
+                    app.main_window,
                     rfd::MessageLevel::Error,
                     lang.tr("Export session failed"),
                     &error,
@@ -879,6 +873,7 @@ fn attachment_send_guard(app: &App, model: &ModelConfig) -> Option<Task<Message>
             .tr("{} is no longer available. Remove it and try again.")
             .replacen("{}", missing.display_name(), 1);
         return Some(show_message_dialog(
+            app.main_window,
             rfd::MessageLevel::Warning,
             lang.tr("Attachment not sent"),
             &body,
@@ -894,6 +889,7 @@ fn attachment_send_guard(app: &App, model: &ModelConfig) -> Option<Task<Message>
         && !info.vision
     {
         return Some(show_message_dialog(
+            app.main_window,
             rfd::MessageLevel::Warning,
             lang.tr("Images not supported"),
             lang.tr(

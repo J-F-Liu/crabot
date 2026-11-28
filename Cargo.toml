@@ -161,12 +161,14 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
+    # Clip notice windows to borders with `SetWindowRgn`.
+    "Win32_Graphics_Gdi",
 ] }
 
 # X11/Wayland windowing and Linux theme detection only matter on Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
-# `send_input` raises a window through the window manager (`_NET_ACTIVE_WINDOW`).
-x11rb = "0.13"
+# `send_input` raises windows (`_NET_ACTIVE_WINDOW`) and shapes notices (`SHAPE`).
+x11rb = { version = "0.13", features = ["shape"] }
 iced = { git = "https://github.com/iced-rs/iced", rev = "98bd48fe011efc0ec5819fee0fa7673a7169ff11", default-features = false, features = [
     "x11",
     "wayland",

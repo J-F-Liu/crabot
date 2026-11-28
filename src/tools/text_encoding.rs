@@ -93,8 +93,7 @@ pub(crate) fn console_fallback(encoding: &'static Encoding) -> Option<&'static E
 }
 
 /// Map a Windows code page to the closest WHATWG encoding.
-/// Only reachable on Windows; the tests below cover the mapping elsewhere.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn code_page_encoding(code_page: u32) -> Option<&'static Encoding> {
     use encoding_rs::{BIG5, EUC_KR, GBK, IBM866, SHIFT_JIS, UTF_16BE, UTF_16LE, WINDOWS_874};
 

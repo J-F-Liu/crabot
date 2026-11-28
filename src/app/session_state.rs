@@ -10,7 +10,7 @@ use iced::widget::scrollable::Viewport;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::app::attention::{self, Attention};
+use crate::app::attention::{self, Attention, Owner};
 use crate::app::conversation::{dispatch_pending, switch_tab};
 use crate::app::{
     App, ConversationEvent, Message, SessionEndStatus, SessionTab, StopSubtaskConfirm,
@@ -1403,8 +1403,13 @@ pub(super) fn session_event(app: &mut App, number: usize, event: SessionEvent) -
         other => other,
     };
     let attention_task = match attention {
-        Some(attention) => attention::raise(app.layout.window_focused, attention),
-        None if had_ask && !needs_attention => attention::clear(),
+        Some(attention) => attention::raise(
+            app.main_window,
+            app.layout.window_focused,
+            attention,
+            Owner::Session,
+        ),
+        None if had_ask && !needs_attention => attention::clear(app.main_window, Owner::Session),
         None => Task::none(),
     };
 

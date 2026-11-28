@@ -72,18 +72,32 @@ pub fn main() -> iced::Result {
         let (width, height) = (rgba.width(), rgba.height());
         iced::window::icon::from_rgba(rgba.into_raw(), width, height).ok()
     });
-    iced::application(move || App::boot(saved.clone()), App::update, App::view)
-        .subscription(App::subscription)
-        .theme(|state: &App| state.layout.theme.clone())
-        .backend(backend)
-        .window(iced::window::Settings {
-            size,
-            position,
-            exit_on_close_request: false,
-            icon,
-            ..Default::default()
-        })
-        .title(App::window_title)
-        .antialiasing(true)
-        .run()
+    let window = iced::window::Settings {
+        size,
+        position,
+        exit_on_close_request: false,
+        icon,
+        ..Default::default()
+    };
+    iced::daemon(
+        move || App::boot(saved.clone(), window.clone()),
+        App::update,
+        App::view,
+    )
+    .settings(iced::Settings {
+        backend,
+        ..Default::default()
+    })
+    .subscription(App::subscription)
+    .theme(|state: &App, _window| Some(state.layout.theme.clone()))
+    .style(App::style)
+    .title(|state: &App, window| {
+        if window == state.main_window {
+            state.window_title()
+        } else {
+            String::new()
+        }
+    })
+    .antialiasing(true)
+    .run()
 }

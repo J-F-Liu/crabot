@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use xcap::Window;
 
-use crate::tools::{CANCEL_REASON, WindowFacts, window_facts};
+use crate::tools::{CANCEL_REASON, Rect, WindowFacts, window_facts};
 
 /// How long the window manager gets to hand over the foreground.
 const FOCUS_TIMEOUT: Duration = Duration::from_secs(1);
@@ -27,6 +27,8 @@ pub(crate) struct Focused {
     pub(crate) restored: bool,
     /// One-line report naming the window, without repeating the parameters.
     pub(crate) line: String,
+    /// The window's screen rectangle, for the notice frame around it.
+    pub(crate) rect: Option<Rect>,
 }
 
 /// Resolve `id` without changing focus.
@@ -60,9 +62,7 @@ impl TargetWindow {
                 self.id
             ));
         }
-        focus_native(self.id, before.pid)
-            .and_then(|()| wait_for_focus(&self.window, cancel))
-            .map_err(|error| foreground_error(&before, error))?;
+        self.activate(&before, cancel)?;
         let restored = before.is_minimized();
         let action = if restored {
             "Restored minimized window"
@@ -72,7 +72,20 @@ impl TargetWindow {
         Ok(Focused {
             restored,
             line: format!("{action} \"{}\".", window_label(&before)),
+            // Focus or restore may have changed the window's geometry.
+            rect: window_facts(&self.window).rect(),
         })
+    }
+
+    /// Restore focus after the notice closes, before injecting actions.
+    pub(crate) fn raise(&self, cancel: &CancellationToken) -> Result<(), String> {
+        self.activate(&window_facts(&self.window), cancel)
+    }
+
+    fn activate(&self, facts: &WindowFacts, cancel: &CancellationToken) -> Result<(), String> {
+        focus_native(self.id, facts.pid)
+            .and_then(|()| wait_for_focus(&self.window, cancel))
+            .map_err(|error| foreground_error(facts, error))
     }
 }
 
@@ -121,6 +134,13 @@ fn window_label(facts: &WindowFacts) -> &str {
 /// Restore (when needed) and ask the platform to switch the foreground.
 #[cfg(windows)]
 fn focus_native(id: u32, _pid: u32) -> Result<(), String> {
+    // xcap truncates HWND to u32; sign-extend it back to a handle.
+    foreground(id as i32 as isize, true)
+}
+
+/// Foreground a native handle; `settle` is skipped on the UI thread.
+#[cfg(windows)]
+pub fn foreground(hwnd: isize, settle: bool) -> Result<(), String> {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -128,14 +148,15 @@ fn focus_native(id: u32, _pid: u32) -> Result<(), String> {
         SetForegroundWindow, ShowWindow,
     };
 
-    // xcap truncates HWND to u32; sign-extend it back to a pointer.
-    let hwnd = id as i32 as isize as HWND;
+    let hwnd = hwnd as HWND;
     // SAFETY: calls only read state or request a foreground switch.
     unsafe {
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);
-            // Restoring is asynchronous; let the window become visible first.
-            std::thread::sleep(RESTORE_SETTLE);
+            if settle {
+                // Restoring is asynchronous; let the window become visible first.
+                std::thread::sleep(RESTORE_SETTLE);
+            }
         }
         if SetForegroundWindow(hwnd) != 0 {
             return Ok(());
@@ -153,7 +174,7 @@ fn focus_native(id: u32, _pid: u32) -> Result<(), String> {
         if AttachThreadInput(current_thread, this_thread, 1) == 0 {
             return Err("Windows refused to attach to the foreground thread".into());
         }
-        let raised = SetForegroundWindow(hwnd) != 0 && BringWindowToTop(hwnd) != 0;
+        let raised = SetForegroundWindow(hwnd) != 0 || BringWindowToTop(hwnd) != 0;
         AttachThreadInput(current_thread, this_thread, 0);
         if raised {
             Ok(())

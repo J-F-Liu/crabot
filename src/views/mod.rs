@@ -5,6 +5,7 @@ pub mod left_pane;
 pub mod modal;
 pub mod model_config;
 pub mod right_pane;
+pub mod screen_notice;
 pub mod search_bar;
 pub mod session_list;
 pub mod session_tabs;

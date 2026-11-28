@@ -31,6 +31,7 @@ mod attention;
 pub(crate) mod conversation;
 pub(crate) mod diff;
 mod layout;
+mod notice;
 mod overlay;
 pub(crate) mod paste;
 pub(crate) mod prompt;
@@ -422,6 +423,10 @@ pub(crate) struct OverlayState {
 }
 
 pub(crate) struct App {
+    /// The application window; all others are transient notice overlays.
+    pub(crate) main_window: iced::window::Id,
+    /// Screen-feedback windows shown while `send_input` drives the desktop.
+    pub(crate) notice: notice::NoticeState,
     /// Persisted model/provider list (source of truth for model selection).
     pub models: ModelList,
     /// Persisted configuration shared across domains.
@@ -733,12 +738,27 @@ pub(crate) enum Message {
     SystemThemeChanged(bool),
     /// ACP HTTP server bridge events.
     Acp(crate::acp::AcpMessage),
+    /// Screen-feedback windows for `send_input`.
+    Notice(notice::NoticeEvent),
 }
 
 // ── App impl ──────────────────────────────────────────────────────
 
 impl App {
-    pub(crate) fn boot(mut saved: crabot::settings::Settings) -> (Self, Task<Message>) {
+    pub(crate) fn boot(
+        mut saved: crabot::settings::Settings,
+        window: iced::window::Settings,
+    ) -> (Self, Task<Message>) {
+        // Open explicitly to distinguish the main window from notice overlays.
+        let (main_window, open_window) = iced::window::open(window);
+        subscription::set_main_window(main_window);
+        // Probe the real backend to distinguish native Wayland from XWayland.
+        let notice_probe = open_window.then(move |_| {
+            iced::window::run(main_window, |window| {
+                crabot::tools::notice::set_overlay_supported(notice::supports_overlay(window));
+            })
+        });
+        crabot::tools::notice::activate();
         let models = model::load_models();
         // Baseline before boot-time fixups, so those count as local changes.
         let settings_saved = saved.clone();
@@ -848,6 +868,8 @@ impl App {
         let models_count = models.models.len();
         let right_pane_restore_width = saved.right_pane_width.max(theme::MIN_W);
         let mut app = Self {
+            main_window,
+            notice: notice::NoticeState::default(),
             settings: saved,
             layout: LayoutState {
                 window_size,
@@ -928,6 +950,7 @@ impl App {
                 discover_task,
                 update_task,
                 acp_task,
+                notice_probe.discard(),
             ]),
         )
     }
@@ -1033,6 +1056,7 @@ impl App {
                 Task::none()
             }
             Message::Acp(event) => crate::acp::update(self, event),
+            Message::Notice(event) => notice::update(self, event),
         }
     }
 
@@ -1178,9 +1202,21 @@ impl App {
 
     // ── View composition ──────────────────────────────────────────
 
-    pub(crate) fn view(&self) -> Element<'_, Message> {
+    pub(crate) fn view(&self, window: iced::window::Id) -> Element<'_, Message> {
+        if window != self.main_window {
+            return notice::view(&self.notice, window, self.settings.language);
+        }
         let body = self.view_body();
         self.view_with_banner(body)
+    }
+
+    /// Make macOS notice windows transparent inside the frame.
+    pub(crate) fn style(&self, theme: &Theme) -> iced::theme::Style {
+        let mut style = iced::theme::Base::base(theme);
+        if self.notice.is_active() && cfg!(target_os = "macos") {
+            style.background_color = iced::Color::TRANSPARENT;
+        }
+        style
     }
 
     /// The main three-pane layout with optional overlays.

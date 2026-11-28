@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use futures::Stream;
 use iced::event;
@@ -18,7 +19,19 @@ use super::{App, ConversationEvent, LayoutEvent, Message, PromptEvent};
 static CTRL_HELD: AtomicBool = AtomicBool::new(false);
 
 /// Last `CursorMoved` position, kept off `App` (non-capturing closure) to drop duplicates before they flood the subscription channel.
-static LAST_CURSOR: std::sync::Mutex<Option<Point>> = std::sync::Mutex::new(None);
+static LAST_CURSOR: Mutex<Option<Point>> = Mutex::new(None);
+
+/// Cached for event callbacks, which cannot capture `App`.
+static MAIN_WINDOW: OnceLock<window::Id> = OnceLock::new();
+
+pub(crate) fn set_main_window(id: window::Id) {
+    let _ = MAIN_WINDOW.set(id);
+}
+
+/// Whether `window` is the application's main window.
+fn is_main_window(window: window::Id) -> bool {
+    MAIN_WINDOW.get() == Some(&window)
+}
 
 /// Interval between auto-repeat scroll ticks while an arrow is held.
 const SCROLL_REPEAT_MS: u64 = 50;
@@ -47,11 +60,11 @@ fn until_next_midnight() -> std::time::Duration {
         .max(std::time::Duration::from_secs(1))
 }
 
-/// Global event subscription mapping raw OS/input events to domain [`Message`]s.
-pub(crate) fn subscription(state: &App) -> Subscription<Message> {
-    let event_sub = event::listen_with(|event, status, _window| match event {
+/// Map one raw OS/input event to a domain [`Message`], if it needs one.
+fn map_event(event: Event, status: event::Status) -> Option<Message> {
+    match event {
         Event::Mouse(mouse::Event::CursorMoved { position }) => {
-            let mut last = LAST_CURSOR.lock().unwrap_or_else(|e| e.into_inner());
+            let mut last = crabot::lock(&LAST_CURSOR);
             (last.replace(position) != Some(position))
                 .then_some(Message::Layout(LayoutEvent::CursorMoved(position)))
         }
@@ -188,6 +201,17 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
             ..
         }) => Some(Message::Layout(LayoutEvent::ScrollPageDown)),
         _ => None,
+    }
+}
+
+/// Global event subscription mapping raw OS/input events to domain [`Message`]s.
+pub(crate) fn subscription(state: &App) -> Subscription<Message> {
+    let event_sub = event::listen_with(|event, status, window| {
+        if is_main_window(window) {
+            map_event(event, status)
+        } else {
+            None
+        }
     });
 
     // Only subscribe to the auto-repeat timer while an arrow is held,
@@ -207,7 +231,10 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
     };
     Subscription::batch([
         event_sub,
-        window::close_requests().map(|_id| Message::Conversation(ConversationEvent::AppClosing)),
+        // Closing an overlay is not closing the application.
+        window::close_requests().filter_map(|id| {
+            is_main_window(id).then_some(Message::Conversation(ConversationEvent::AppClosing))
+        }),
         // OS light/dark switch; ignored unless the appearance follows the system.
         iced::system::theme_changes()
             .map(|mode| Message::SystemThemeChanged(mode == iced::theme::Mode::Dark)),
@@ -222,5 +249,8 @@ pub(crate) fn subscription(state: &App) -> Subscription<Message> {
         // drains the queue in App::update (plus one initial drain tick).
         Subscription::run(crate::acp::events)
             .map(|_| Message::Acp(crate::acp::AcpMessage::CommandTick)),
+        // Drain queued screen-notice commands, including one initial tick.
+        Subscription::run(crabot::tools::notice::events)
+            .map(|()| Message::Notice(super::notice::NoticeEvent::Tick)),
     ])
 }

@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::tools::focus::resolve_window;
+use crate::tools::notice;
 use crate::tools::{CANCEL_REASON, Tool};
 
 /// Most actions accepted in one call.
@@ -140,7 +141,7 @@ impl Tool for SendInputTool {
     }
 
     fn description(&self) -> &str {
-        "Drive the desktop with mouse and keyboard actions in one call: click, double_click, right_click, move_to, scroll, drag, type_text, press_key, and wait. Actions run in order; coordinates are absolute screen pixels, so take a screenshot first. `window_id` (from the `screenshot` window list or a `process` `wait_window` report) is brought to the foreground first, and `actions` may then be empty; screenshot after focusing when the window may have moved. `press_key` takes a chord such as [\"CTRL\", \"O\"]; `type_text` types into the focused control."
+        "Run ordered mouse and keyboard actions: click, double_click, right_click, move_to, scroll, drag, type_text, press_key, and wait. Coordinates are absolute screen pixels; take a screenshot first. `screenshot` does not activate windows. Non-empty actions must activate the target with `window_id` (from `screenshot` or `process` `wait_window`); empty `actions` only activates it. `press_key` takes chords like [\"CTRL\", \"O\"]; `type_text` targets the focused control."
     }
 
     fn schema(&self) -> Value {
@@ -178,6 +179,13 @@ impl Tool for SendInputTool {
             .as_ref()
             .map(|target| target.focus(cancel))
             .transpose()?;
+        // Announce the input on screen; the countdown ends right before the first action.
+        let rect = focused.as_ref().and_then(|focused| focused.rect);
+        let _notice = notice::show(notice::frames_for(rect, enigo.location().ok()), cancel)?;
+        // Showing the frame must not leave another window holding the focus.
+        if let Some(target) = target.as_ref() {
+            target.raise(cancel)?;
+        }
         perform_actions(&actions, &mut enigo, cancel)?;
 
         let mut report = Vec::new();
@@ -989,11 +997,11 @@ fn build_schema() -> Value {
         "properties": {
             "window_id": {
                 "type": "integer",
-                "description": "Window to bring to the foreground before the actions, from the `screenshot` window list or a `process` `wait_window` report. Accepts a number or a numeric string."
+                "description": "Target window ID from `screenshot` or `process` `wait_window`; accepts a number or numeric string. Required to activate the target before mouse/keyboard input; screenshots do not activate windows."
             },
             "actions": {
                 "type": "array",
-                "description": "Ordered GUI actions. Each object has a `type` plus only that action's fields; may be empty when `window_id` is given.",
+                "description": "Ordered actions; each has `type` and only its own fields. Empty with `window_id` means focus only.",
                 "maxItems": MAX_ACTIONS,
                 "items": {"anyOf": actions}
             }

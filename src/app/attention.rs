@@ -1,6 +1,8 @@
 //! Taskbar attention for background sessions: a finished turn flashes once,
 //! a pending `ask` or a failed run keeps flashing until the window is focused.
 
+use std::sync::Mutex;
+
 use iced::{Task, window};
 
 use crate::app::Message;
@@ -14,94 +16,95 @@ pub(crate) enum Attention {
     UntilFocused,
 }
 
+/// Who asked for the current taskbar attention request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Owner {
+    /// A session turn or a pending question.
+    Session,
+    /// The screen notice shown before `send_input` acts.
+    Notice,
+}
+
+/// The owner of the outstanding request, so one feature cannot cancel another's.
+static OWNER: Mutex<Option<Owner>> = Mutex::new(None);
+
 /// Raise attention for an unfocused window.
-pub(crate) fn raise(window_focused: bool, attention: Attention) -> Task<Message> {
+pub(crate) fn raise(
+    main: window::Id,
+    window_focused: bool,
+    attention: Attention,
+    owner: Owner,
+) -> Task<Message> {
     if window_focused {
         return Task::none();
     }
+    *crabot::lock(&OWNER) = Some(owner);
     // Windows flashes only the taskbar button: once, or repeatedly until focus.
     #[cfg(windows)]
     return match attention {
-        Attention::Flash => {
-            win32::flash_once();
-            Task::none()
+        Attention::Flash => window::run(main, win32::flash).discard(),
+        Attention::UntilFocused => {
+            window::request_user_attention(main, Some(window::UserAttention::Informational))
         }
-        Attention::UntilFocused => request(Some(window::UserAttention::Informational)),
     };
     // Elsewhere the dock or taskbar bounces once, or repeats until focus.
     #[cfg(not(windows))]
-    request(Some(match attention {
-        Attention::Flash => window::UserAttention::Informational,
-        Attention::UntilFocused => window::UserAttention::Critical,
-    }))
+    window::request_user_attention(
+        main,
+        Some(match attention {
+            Attention::Flash => window::UserAttention::Informational,
+            Attention::UntilFocused => window::UserAttention::Critical,
+        }),
+    )
 }
 
-/// Drop an outstanding request nothing needs any more.
-pub(crate) fn clear() -> Task<Message> {
-    request(None)
+/// Drop the request `owner` raised; anyone else's request is left alone.
+pub(crate) fn clear(main: window::Id, owner: Owner) -> Task<Message> {
+    {
+        let mut current = crabot::lock(&OWNER);
+        if *current != Some(owner) {
+            return Task::none();
+        }
+        *current = None;
+    }
+    window::request_user_attention(main, None)
 }
 
-fn request(attention: Option<window::UserAttention>) -> Task<Message> {
-    window::latest().then(move |id| match id {
-        Some(id) => window::request_user_attention(id, attention),
-        None => Task::none(),
-    })
+/// Whether `owner` has an outstanding request.
+pub(crate) fn owned_by(owner: Owner) -> bool {
+    *crabot::lock(&OWNER) == Some(owner)
 }
 
-/// Single taskbar flash; the button stays highlighted until the window is activated.
+/// Forget the outstanding request after the window regained the focus, which
+/// already stopped it.
+pub(crate) fn forget() {
+    *crabot::lock(&OWNER) = None;
+}
+
+/// Single taskbar flash.
 #[cfg(windows)]
 mod win32 {
-    use std::ffi::{c_int, c_void};
+    use iced::window;
+    use iced::window::raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FLASHW_TRAY, FLASHWINFO, FlashWindowEx};
 
-    /// Flash only the taskbar button.
-    const FLASHW_TRAY: u32 = 0x0000_0002;
-
-    #[repr(C)]
-    struct FlashWInfo {
-        cb_size: u32,
-        hwnd: *mut c_void,
-        dw_flags: u32,
-        u_count: u32,
-        dw_timeout: u32,
-    }
-
-    unsafe extern "system" {
-        fn FlashWindowEx(info: *mut FlashWInfo) -> c_int;
-        fn EnumWindows(
-            callback: extern "system" fn(*mut c_void, *mut c_void) -> c_int,
-            param: *mut c_void,
-        ) -> c_int;
-        fn GetWindowThreadProcessId(hwnd: *mut c_void, pid: *mut u32) -> u32;
-        fn GetCurrentProcessId() -> u32;
-        fn IsWindowVisible(hwnd: *mut c_void) -> c_int;
-    }
-
-    // First visible top-level window of this process.
-    extern "system" fn own_window(hwnd: *mut c_void, param: *mut c_void) -> c_int {
-        unsafe {
-            let mut pid = 0;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == GetCurrentProcessId() && IsWindowVisible(hwnd) != 0 {
-                *(param as *mut *mut c_void) = hwnd;
-                return 0; // stop enumerating
-            }
-        }
-        1
-    }
-
-    pub(crate) fn flash_once() {
-        let mut hwnd: *mut c_void = std::ptr::null_mut();
-        unsafe { EnumWindows(own_window, &mut hwnd as *mut _ as *mut c_void) };
-        if hwnd.is_null() {
+    /// Flash the main window's taskbar button once, whatever else is on screen.
+    pub(super) fn flash(window: &dyn window::Window) {
+        let Ok(handle) = window.window_handle() else {
             return;
-        }
-        let mut info = FlashWInfo {
-            cb_size: std::mem::size_of::<FlashWInfo>() as u32,
-            hwnd,
-            dw_flags: FLASHW_TRAY,
-            u_count: 1,
-            dw_timeout: 0,
         };
-        unsafe { FlashWindowEx(&mut info) };
+        let RawWindowHandle::Win32(raw) = handle.as_raw() else {
+            return;
+        };
+        let info = FLASHWINFO {
+            cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+            hwnd: raw.hwnd.get() as HWND,
+            dwFlags: FLASHW_TRAY,
+            uCount: 1,
+            dwTimeout: 0,
+        };
+        // SAFETY: the handle belongs to this window; the call only flashes it.
+        unsafe { FlashWindowEx(&info) };
     }
 }

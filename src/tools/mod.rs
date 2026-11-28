@@ -24,6 +24,7 @@ pub mod image;
 mod limits;
 mod mount_table;
 mod normalize;
+pub mod notice;
 mod paths;
 mod protected_fs;
 mod proxy;
@@ -120,7 +121,12 @@ pub(crate) use exec::{
 pub use capture::{ChunkForwarder, OutStream};
 pub(crate) use capture::{WaitError, timeout_message, try_lock_for, wait_with_timeout};
 
+// ── focus ───────────────────────────────────────────────────────────
+#[cfg(windows)]
+pub use focus::foreground;
+
 // ── window ──────────────────────────────────────────────────────────
+pub use window::Rect;
 pub(crate) use window::{WindowFacts, window_facts};
 
 // ── worker ──────────────────────────────────────────────────────────

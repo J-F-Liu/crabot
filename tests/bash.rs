@@ -4,7 +4,9 @@
 mod common;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 use common::{TempDir, await_tool, crabot_workspace, run_tool, test_runtime};
 use tokio_util::sync::CancellationToken;
@@ -1833,7 +1835,8 @@ fn bashkit_watch_runs_host_command() {
 #[test]
 fn bashkit_path_is_msys_style() {
     let result = run_bash("echo \"$PATH\"", &crabot_workspace(), None).unwrap();
-    let expected = crabot::tools::convert_path_list_to_posix(&std::env::var("PATH").unwrap());
+    let path = std::env::var("PATH").unwrap();
+    let expected = crabot::tools::convert_path_list_to_posix(&path);
     assert_eq!(result.trim(), expected, "unexpected: {result}");
     #[cfg(windows)]
     assert!(

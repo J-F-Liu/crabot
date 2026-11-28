@@ -55,4 +55,9 @@ pub static TABLE: &[(&str, &str)] = &[
         "Wrote {} but could not open it in a browser: {e}",
         "已写入 {}，但无法在浏览器中打开：{e}",
     ),
+    // ── views/screen_notice.rs ──
+    (
+        "Crabot is about to control the mouse and keyboard",
+        "Crabot 将要操作鼠标/键盘",
+    ),
 ];

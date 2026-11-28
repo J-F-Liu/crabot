@@ -1,5 +1,6 @@
 use iced::{Point, Task};
 
+use crate::app::attention;
 use crate::app::session_state;
 use crate::app::{App, LayoutEvent, Message, ModelSettingsEvent, TabBarScrollState};
 use crate::views;
@@ -32,7 +33,10 @@ pub(crate) fn update(app: &mut App, event: LayoutEvent) -> Task<Message> {
         LayoutEvent::WindowMoved(pos) => app.layout.window_pos = pos,
         LayoutEvent::WindowFocusChanged(focused) => {
             app.layout.window_focused = focused;
-            if !focused {
+            if focused {
+                // Regaining the focus already stopped any taskbar request.
+                attention::forget();
+            } else {
                 app.prompt.clear_drop_hover();
             }
         }
